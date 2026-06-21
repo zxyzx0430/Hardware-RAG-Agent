@@ -1,13 +1,78 @@
+# ─── Python ───
 __pycache__/
 *.pyc
-.env
-.venv/
-venv/
 *.egg-info/
 dist/
 build/
-.pytest_cache/
+.venv/
+venv/
+
+# ─── 环境变量 ───
+.env
+!.env.example
+
+# ─── 数据 ───
 data/*.db
 data/*.json
+
+# 加密存储（与 backend/app/api/auth.py 中的路径对齐）
+backend/app/db/.enc_key
+backend/app/db/keys_store.json
+**/.enc_key
+**/keys_store.json
+
+# PDF 原始资料（不进仓库）
+backend/data/pdfs/
+data/pdfs/
+
+# ─── Node / 前端 ───
+node_modules/
+frontend/node_modules/
+frontend/dist/
+
+# ─── 系统 ───
 .DS_Store
 *.log
+
+# ─── IDE ───
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 工具协作临时文件（实际交办单不进仓库，模板文件保留）
+docs/handoff/*.md
+!docs/handoff/README.md
+!docs/handoff/*TEMPLATE.md
+# 临时文件
+tmp.txt
+*.tmp
+
+# IDE / 编辑器
+.history/
+
+# 操作系统
+Thumbs.db
+Desktop.ini
+
+# ChromaDB 向量数据库（运行时生成）
+backend/data/chroma_db/
+
+# 日志
+backend/logs/
+
+# 运行时数据库和上传文件
+backend/data/hardware_rag.db
+backend/data/chroma/
+backend/data/uploads/
+
+# 临时测试文件
+backend/test_api.py
+*.pyc
+
+# 前端设计参考（不进仓库）
+frontend/REVIEW.md
+frontend/ref-design.html
+
+# PLUR 记忆文件
+**/.plur/
