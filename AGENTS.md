@@ -82,6 +82,46 @@ Codex 和 Trae 权限对等，均可读写代码和文档。唯一区别：
 - **主动发现**：用户说“帮我看看项目结构”，我要主动发现临时文件、.gitignore 缺漏、该删的旧代码，列出来让用户决定，而不是抛一堆技术细节
 - **容忍模糊**：用户说“去github看看”，意思是“帮我找有用的工具”；用户说“看看代码有没有安全问题”，意思是“帮我检查一下会不会出事”。先猜再确认，不要让用户补充技术细节
 
+
+
+## Commit 规范
+
+每次提交用 conventional commits 格式，禁止用「v0.1」「update」「fix bug」这种通用说明。
+
+### 格式
+`
+<type>(<scope>): <一句话说清楚改了什么>
+
+<可选：详细说明>
+`
+
+### Type 对照
+| type | 什么时候用 |
+|------|-----------|
+| feat | 新功能 |
+| fix | 修 bug |
+| docs | 文档 |
+| refactor | 重构，不改变行为 |
+| style | 代码格式，不改变逻辑 |
+| build | 构建/依赖/配置 |
+
+### Scope 对照
+| scope | 对应 |
+|-------|------|
+| frontend | 前端 React 代码 |
+| backend | 后端 Python 代码 |
+| docs | 文档 |
+| scripts | 工具脚本 |
+| build | 项目配置 |
+
+### 示例
+`
+feat(backend): /api/models 代理上游模型列表
+fix(frontend): SSE 断连后不自动重连
+docs: 补充 api-contract.md 错误码表
+refactor(backend): 拆分 routes.py 到独立模块
+`
+
 ## Language
 - 回复默认中文
 - 代码和注释用英文
