@@ -7,7 +7,7 @@ import secrets
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Header
 from pydantic import BaseModel
 from cryptography.fernet import Fernet
 
@@ -104,9 +104,16 @@ async def store_key(req: StoreKeyRequest):
     return {"success": True, "data": {"session_token": token, "provider": req.provider}}
 
 @router.get("/keys")
-async def list_keys():
+async def list_keys(authorization: Optional[str] = Header(default=None)):
     """列出已存储的 Provider（不含明文 Key）"""
     store = _load_store()
+    # 内联鉴权检查（避免与 dependencies.py 循环导入）
+    if store.get("providers"):
+        if not authorization or not authorization.lower().startswith("bearer "):
+            raise HTTPException(401, detail={"success": False, "error": {"code": "AUTH_REQUIRED", "message": "未提供认证 token"}})
+        token = authorization.split(" ", 1)[1].strip()
+        if not get_provider_key_by_session(token):
+            raise HTTPException(401, detail={"success": False, "error": {"code": "AUTH_INVALID", "message": "token 无效或已过期"}})
     providers = []
     for name, info in store["providers"].items():
         providers.append({
@@ -118,9 +125,16 @@ async def list_keys():
     return {"success": True, "data": {"providers": providers}}
 
 @router.delete("/keys/{provider}")
-async def delete_key(provider: str):
+async def delete_key(provider: str, authorization: Optional[str] = Header(default=None)):
     """删除 Provider 的 API Key"""
+    # 内联鉴权检查（避免与 dependencies.py 循环导入）
     store = _load_store()
+    if store.get("providers"):
+        if not authorization or not authorization.lower().startswith("bearer "):
+            raise HTTPException(401, detail={"success": False, "error": {"code": "AUTH_REQUIRED", "message": "未提供认证 token"}})
+        token = authorization.split(" ", 1)[1].strip()
+        if not get_provider_key_by_session(token):
+            raise HTTPException(401, detail={"success": False, "error": {"code": "AUTH_INVALID", "message": "token 无效或已过期"}})
     if provider in store["providers"]:
         del store["providers"][provider]
         _save_store(store)

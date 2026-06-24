@@ -18,6 +18,15 @@ __all__ = [
     "HardwareVectorStore",
     "SearchResult",
     "KnowledgePipeline",
+    "KnowledgeBaseManager",
+    "get_kb_manager",
+    "BM25Index",
+    "rrf_fusion",
+    "get_chunker",
+    "ChunkResult",
+    "BaseChunker",
+    "HybridChunker",
+    "AgentChunker",
 ]
 
 
@@ -36,6 +45,15 @@ def __getattr__(name):
         "HardwareVectorStore": "src.rag.vector_store",
         "SearchResult": "src.rag.vector_store",
         "KnowledgePipeline": "src.rag.pipeline",
+        "KnowledgeBaseManager": "src.rag.kb_manager",
+        "get_kb_manager": "src.rag.kb_manager",
+        "BM25Index": "src.rag.kb_manager",
+        "rrf_fusion": "src.rag.kb_manager",
+        "get_chunker": "src.rag.chunking",
+        "ChunkResult": "src.rag.chunking",
+        "BaseChunker": "src.rag.chunking",
+        "HybridChunker": "src.rag.chunking",
+        "AgentChunker": "src.rag.chunking",
     }
 
     if name in _module_map:

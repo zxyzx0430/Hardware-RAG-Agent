@@ -8,7 +8,20 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      "/api": { target: "http://127.0.0.1:58080", changeOrigin: true },
+      "/api": {
+        target: "http://127.0.0.1:58080",
+        changeOrigin: true,
+        // SSE support: disable proxy buffering for streaming responses
+        configure: (proxy) => {
+          proxy.on("proxyRes", (proxyRes) => {
+            if (proxyRes.headers["content-type"]?.includes("text/event-stream")) {
+              proxyRes.headers["cache-control"] = "no-cache";
+              proxyRes.headers["x-accel-buffering"] = "no";
+              proxyRes.headers["connection"] = "keep-alive";
+            }
+          });
+        },
+      },
     },
   },
   build: { outDir: "dist" },

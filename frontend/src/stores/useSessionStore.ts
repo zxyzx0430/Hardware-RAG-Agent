@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import type { Session } from "../types/session";
-import { loadFromStorage, saveToStorage, saveSessionMessages, removeSessionMessages } from "../utils/persistence";
+import { loadFromStorage, saveToStorage, removeSessionMessages } from "../utils/persistence";
 import { useChatStore } from "./useChatStore";
 import { useAppStore } from "./useAppStore";
 import { useSettingsStore } from "./useSettingsStore";
@@ -85,7 +85,7 @@ interface SessionState {
 
   // Actions
   initSessions: () => Promise<void>;
-  newSession: () => void;
+  newSession: () => Promise<void>;
   selectSession: (id: string) => void;
   deleteSession: (id: string, confirm?: () => boolean) => boolean;
   pinSession: (id: string) => boolean;
@@ -138,61 +138,49 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set({ initialized: true });
   },
 
-  newSession: () => {
+  newSession: async () => {
     const { model } = useSettingsStore.getState();
     const { activeProject } = get();
     // activeProject 为 "all" 时不指定项目
     const project = activeProject === "all" ? "" : activeProject;
+    const sessionModel = model || "GPT-4o";
 
-    const localId = `s${Date.now()}`;
-    const now = Date.now();
+    // 先调用后端创建会话，拿到真实 ID 再创建本地会话
+    // 消除 localId/res.id 双 ID 并存窗口，避免 SSE 回调写入幽灵会话
+    let sid = "";
+    try {
+      const res = await apiPost<{ id: string }>("sessions", {
+        title: "新对话",
+        model: sessionModel,
+        project,
+      });
+      if (res?.id) {
+        sid = res.id;
+        log("ok", "session", `会话已创建于后端: ${sid}`);
+      } else {
+        log("warn", "session", "后端未返回 id，回退到本地会话");
+      }
+    } catch {
+      log("warn", "session", "后端创建失败，回退到本地会话");
+    }
+
+    // 后端失败时回退到 localId
+    if (!sid) {
+      sid = `s${Date.now()}`;
+    }
+
     const session: Session = {
-      id: localId,
+      id: sid,
       title: "新对话",
       preview: "",
-      model: model || "GPT-4o",
-      createdAt: now,
+      model: sessionModel,
+      createdAt: Date.now(),
       project,
       pinned: false,
       msgCount: 0,
     };
 
-    log("info", "session", `新建会话: ${localId}`);
-
-    // 尝试调用后端 API
-    apiPost<{ id: string }>("sessions", { title: "新对话", model: session.model, project })
-      .then((res) => {
-        if (res?.id) {
-          log("ok", "session", `会话已同步到后端: ${res.id}`);
-          set((s) => {
-            const updated = {
-              sessions: s.sessions.map((x) => x.id === localId ? { ...x, id: res.id } : x),
-            };
-            saveToStorage("sessions", updated.sessions);
-            return updated;
-          });
-          const chatStore = useChatStore.getState();
-          const msgs = chatStore.sessionMessages[localId];
-          if (msgs) {
-            const newSM = { ...chatStore.sessionMessages };
-            newSM[res.id] = msgs;
-            delete newSM[localId];
-            useChatStore.setState({ sessionMessages: newSM });
-            saveSessionMessages(res.id, msgs);
-            removeSessionMessages(localId);
-          }
-          if (useAppStore.getState().activeSession === localId) {
-            useAppStore.getState().setActiveSession(res.id);
-          }
-          if (chatStore.activeSessionId === localId) {
-            useChatStore.setState({ activeSessionId: res.id });
-            saveToStorage("activeSession", res.id);
-          }
-        }
-      })
-      .catch(() => {
-        log("warn", "session", "会话仅保存在本地");
-      });
+    log("info", "session", `新建会话: ${sid}`);
 
     set((s) => {
       const updated = { sessions: [session, ...s.sessions] };
@@ -200,9 +188,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return updated;
     });
 
-    // 自动切换到新会话
-    useChatStore.getState().setActiveSession(localId);
-    useAppStore.getState().setActiveSession(localId);
+    // 切换到新会话
+    useChatStore.getState().setActiveSession(sid);
+    useAppStore.getState().setActiveSession(sid);
   },
 
   selectSession: (id) => {
@@ -223,6 +211,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
 
     const chatStore = useChatStore.getState();
+    // 删除活跃会话时先中止正在进行的 SSE
+    if (chatStore.activeSessionId === id && chatStore.isStreaming) {
+      chatStore.stopStreaming();
+    }
     const newSM = { ...chatStore.sessionMessages };
     delete newSM[id];
     useChatStore.setState({ sessionMessages: newSM });

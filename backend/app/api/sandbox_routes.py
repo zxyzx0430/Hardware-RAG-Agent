@@ -1,8 +1,9 @@
 """沙箱执行 API 端点"""
 import asyncio
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from src.sandbox import execute_code, check_docker_available
+from app.api.dependencies import current_user
 
 router = APIRouter(prefix="/api/sandbox", tags=["sandbox"])
 
@@ -17,7 +18,7 @@ class ExecuteRequest(BaseModel):
     language: str = "python"
 
 @router.post("/execute")
-async def execute(req: ExecuteRequest):
+async def execute(req: ExecuteRequest, user: dict = Depends(current_user)):
     """在沙箱中执行代码"""
     if not req.code.strip():
         raise HTTPException(400, detail="代码不能为空")

@@ -1,5 +1,9 @@
 # 01-app — 产品外壳线程
 
+> **Version:** 1.0.0 | **Last updated:** 2026-06-21
+> **Thread Overview (AGENTS.md):** 布局 / 导航 / 主题
+> **TODO 文件:** docs/todos/01-app.md
+
 ## 线程元信息
 
 | 字段 | 值 |
@@ -7,7 +11,7 @@
 | 线程编号 | 01 |
 | 线程名 | app |
 | 创建日期 | 2026-06-21 |
-| 职责 | React 应用骨架、页面布局、导航、全局主题、Error Boundary、面板系统 |
+| 职责 | React 应用骨架、布局、导航、全局主题、Error Boundary、面板系统 |
 
 ## 负责范围
 
@@ -47,7 +51,6 @@
 | frontend/src/hooks/usePanelResize.ts | 面板拖拽调整 hook |
 | frontend/src/hooks/useKeyboard.ts | 键盘快捷键管理 |
 | frontend/src/styles/globals.css | 全局样式与 CSS 变量 |
-| docs/pitfalls.md | 项目踩坑记录（所有线程共用） |
 
 ## 当前完成状态
 
@@ -64,26 +67,23 @@
 - [x] 全局状态：useAppStore 覆盖导航/面板/主题/硬件/辅助 UI 状态
 - [x] 全局样式：完整 CSS 设计 Token
 
-### ❌ 待实现/待检查
+### ❌ 待实现
 
 - [ ] 响应式布局退化（窄屏/移动端）
 - [ ] Loading skeleton 组件
 - [ ] App-level 持久化（面板宽度/主题偏好保存到 localStorage）
-- [ ] 键盘快捷键统一管理（Ctrl+K 搜索等已实现，其余待验证）
+- [ ] 键盘快捷键统一管理（Ctrl+K 搜索已实现，其余待验证）
 - [ ] 前端日志面板入口
+- [ ] 附件上传（文件/图片）对接真实接口
+- [ ] 对话导出/分享功能验证与完善
+
+> 完整待办清单见 docs/todos/01-app.md（倒序排列，每次只读前 2 项）
 
 ## 细颗粒模块清单
 
 ### AppRoot 布局结构
 
-┌──────────┬──────────────────────────────┬──────────────┐
-│ IconNav  │  TopBar                      │  RightPanel  │
-│ (48px)   ├──────────────────────────────┤  (workbench  │
-│          │  ChatArea / KnowledgePanel   │   /content)  │
-│          │  / BookmarkPanel             │              │
-│          │                              │              │
-│          │  InputBar (底部)              │              │
-└──────────┴──────────────────────────────┴──────────────┘
+布局结构参考 AppRoot.tsx：IconNav(48px) | [TopBar / ChatArea+InputBar / 模式页面] | RightPanel
 
 ### 导航视图切换
 
@@ -93,18 +93,6 @@
 - settings：显示 SettingsPage（覆盖在主布局上）
 
 ## 踩坑记录
-
-本项目所有踩坑统一记录在 docs/pitfalls.md，不按线程分散。
-修复 bug 后直接追加到 docs/pitfalls.md，格式：
-
-`md
-## YYYY-MM-DD - 简短标题
-
-- 错误现象：
-- 错误原因：
-- 修复方式：
-- 下次注意：
-`
 
 | 日期 | 问题 | 状态 |
 |------|------|------|
@@ -129,30 +117,24 @@
 - RightPanel workbench 模式渲染 WorkbenchPanel（由 07-hardware 提供）
 - 硬件相关状态（serialConnected, flashState 等）存储在 useAppStore
 
-## 构建状态
+## 构建报告
 
-> 待验证 — 首次初始化后需运行 npm run build 确认
+> 验证时间：2026-06-21 | 命令：npm run build（tsc -b && vite build）
 
+| 检查项 | 结果 |
+|--------|------|
+| vite build | ✅ 成功（750 modules, 15.8s） |
+| tsc -b | ❌ 33 项 TS 错误（均在 02-chat / 04-session 范围） |
+| 01-app 内错误 | ⚠️ TopBar.tsx:20 — Message.content 联合类型 |
 
-## 构建报告（首次初始化）
+---
 
-> 验证时间：2026-06-21
-> 命令：npm run build（tsc -b && vite build）
+## 下次开工先看
 
-### TypeScript 错误摘要
+按 AGENTS.md Start Here 流程：
 
-| 严重度 | 数量 | 涉及文件 | 归属 |
-|--------|------|----------|------|
-| ✅ 不影响 Vite 构建 | 33 项 TS 错误 | 多个组件 | 02-chat / 04-session / 06-sandbox |
-
-### 01-app 范围内的错误
-
-| 文件 | 错误 | 说明 |
-|------|------|------|
-| src/components/topbar/TopBar.tsx:20 | content 类型为 string | ContentPart[]，不能直接 slice 或用作 ReactNode | TopBar 取 sessionTitle 时假设 content 为 string，但 Message.content 是联合类型 |
-
-### 结论
-
-- ✅ Vite 构建成功（esbuild 编译通过）
-- ❌ tsc 类型检查未通过（33 项错误，均在 01-app 范围之外或边界）
-- ⚠️ TopBar.tsx 有 1 项类型问题属于 01-app 范围，待修复
+1. `plur inject "01-app 当前任务" --fast --json` — 读 PLUR 长期记忆
+2. 读 docs/completed.md — 知哪些功能已做完
+3. 读 docs/pitfalls.md — 知前人踩过什么坑
+4. 读 docs/todos/01-app.md — 知自己要做啥（只读前 2 项）
+5. 读完前 2 项就开始干活，不要一次扛太多

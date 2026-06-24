@@ -1,11 +1,11 @@
 // API 请求/响应类型 — 保持与现有组件兼容的导出集合
 
-import type { SourceRef, ActivityBlock } from './session';
+import type { SourceRef, ActivityBlock, ContentPart } from './session';
 import type { ProviderInfo } from './settings';
 import type { KBItem } from './kb';
 import type { SerialDevice } from './serial';
 
-export type { SourceRef, ActivityBlock, ProviderInfo, KBItem as KBDoc, SerialDevice };
+export type { SourceRef, ActivityBlock, ContentPart, ProviderInfo, KBItem as KBDoc, SerialDevice };
 
 export interface ModelInfo {
   id: string;
@@ -21,13 +21,13 @@ export interface Attachment {
 }
 
 export interface ChatRequest {
-  messages: { role: 'user' | 'assistant' | 'system'; content: string }[];
+  messages: { role: 'user' | 'assistant' | 'system'; content: string | ContentPart[] }[];
   model?: string;
   temperature?: number;
   max_tokens?: number;
   top_k?: number;
   system_prompt?: string;
-  long_term_memory?: boolean;
+  long_term_memory?: string;
   provider?: string;
   api_key?: string;
   base_url?: string;
@@ -70,6 +70,8 @@ export interface SourceSSEEvent {
   page?: number;
   score?: number;
   excerpt?: string;
+  kb_id?: string;
+  kb_name?: string;
 }
 
 export interface DoneSSEEvent {

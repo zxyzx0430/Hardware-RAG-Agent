@@ -4,20 +4,31 @@ import { useLogStore } from "../../stores/useLogStore";
 import { useAppStore } from "../../stores/useAppStore";
 import { apiPost } from "../../api/client";
 import { useI18n } from "../../i18n";
+import { KbCollectionManager } from "./KbCollectionManager";
 
 export function KnowledgePanel() {
   const { t } = useI18n();
-  const { items, isUploading, setIsUploading, addItem, toggleItem, deleteItemWithAPI, fetchItems } = useKnowledgeStore();
+  const {
+    items, isUploading, setIsUploading, addItem, toggleItem, deleteItemWithAPI, fetchItems,
+    collections, activeKbId, fetchCollections, setActiveKb,
+  } = useKnowledgeStore();
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
+  const [showKbManager, setShowKbManager] = useState(false);
+  const [chunkMethodOverride, setChunkMethodOverride] = useState<string>("");
 
-  // 组件挂载时从 API 加载 KB 列表
+  // Load collections + items on mount
   useEffect(() => {
+    fetchCollections();
     fetchItems();
-  }, [fetchItems]);
+  }, [fetchCollections, fetchItems]);
 
   const enabledCount = items.filter((i) => i.enabled).length;
   const totalChunks = items.reduce((sum, i) => sum + i.chunks, 0);
+
+  // Active KB object (for default chunk method)
+  const activeKb = collections.find((k) => k.id === activeKbId);
+  const effectiveChunkMethod = chunkMethodOverride || activeKb?.chunk_method || "hybrid";
 
   const handleFiles = async (files: FileList | null) => {
     if (!files?.length) return;
@@ -25,8 +36,12 @@ export function KnowledgePanel() {
     for (const file of Array.from(files)) {
       const formData = new FormData();
       formData.append("file", file);
+      formData.append("kb_id", activeKbId);
+      if (chunkMethodOverride) {
+        formData.append("chunk_method", chunkMethodOverride);
+      }
       try {
-        const res = await apiPost<{ doc_id: string; filename: string; chunks: number; status?: string }>("kb/upload", formData, 120000);
+        const res = await apiPost<{ doc_id: string; filename: string; chunks: number; status?: string; chunk_method_used?: string }>("kb/upload", formData, 120000);
         const docId = res.doc_id ?? `kb-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
         const docStatus = (res.status ?? "indexed") as "indexed" | "indexing" | "error";
         addItem({
@@ -39,6 +54,8 @@ export function KnowledgePanel() {
           updatedAt: new Date().toISOString().slice(0, 10),
           docType: file.name.endsWith(".pdf") ? "Reference Manual" : file.name.endsWith(".md") ? "Markdown" : "Text",
           tags: [],
+          kb_id: activeKbId,
+          chunk_method_used: res.chunk_method_used ?? effectiveChunkMethod,
         });
         // 如果后端返回 indexing 状态，启动轮询等待向量化完成
         if (res.status === "indexing") {
@@ -116,7 +133,50 @@ export function KnowledgePanel() {
             <span>{totalChunks.toLocaleString()}</span>
           </div>
         </div>
-        <button className="btn-new" onClick={() => inputRef.current?.click()}>+ {t('add')}</button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button className="btn-new" onClick={() => setShowKbManager(true)} title={t('manageKb')}>
+            ⚙ {t('manageKb')}
+          </button>
+          <button className="btn-new" onClick={() => inputRef.current?.click()}>+ {t('add')}</button>
+        </div>
+      </div>
+
+      {/* KB selector + chunk method override */}
+      <div style={{ padding: "0 16px 12px", display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <label style={{ fontSize: 12, color: "var(--muted-fg)" }}>{t('targetKb')}:</label>
+          <select
+            value={activeKbId}
+            onChange={(e) => setActiveKb(e.target.value)}
+            style={{
+              fontSize: 12, padding: "2px 6px", borderRadius: 4,
+              border: "1px solid var(--border)", background: "var(--bg)", color: "var(--fg)",
+            }}
+          >
+            {collections.length === 0 && <option value="builtin-001">{t('builtinKb')}</option>}
+            {collections.map((kb) => (
+              <option key={kb.id} value={kb.id}>
+                {kb.name}{kb.is_builtin ? ` (${t('builtinKb')})` : ""}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <label style={{ fontSize: 12, color: "var(--muted-fg)" }}>{t('chunkMethod')}:</label>
+          <select
+            value={chunkMethodOverride}
+            onChange={(e) => setChunkMethodOverride(e.target.value)}
+            style={{
+              fontSize: 12, padding: "2px 6px", borderRadius: 4,
+              border: "1px solid var(--border)", background: "var(--bg)", color: "var(--fg)",
+            }}
+          >
+            <option value="">{t('kbLevelOverride')} ({activeKb?.chunk_method === "agent" ? t('agent') : t('hybrid')})</option>
+            <option value="hybrid">{t('hybrid')}</option>
+            <option value="agent">{t('agent')}</option>
+          </select>
+        </div>
       </div>
 
       <div className="content-page-scroll kb-scroll-page">
@@ -138,6 +198,7 @@ export function KnowledgePanel() {
                 </div>
                 <div className="kb-extended">
                   <span>{item.docType}</span>
+                  {item.chunk_method_used && <span className="kb-tag">{item.chunk_method_used}</span>}
                   {item.tags.map((t) => <span className="kb-tag" key={t}>{t}</span>)}
                 </div>
                 <div className="kb-item-meta"><span>{item.size}</span></div>
@@ -171,6 +232,11 @@ export function KnowledgePanel() {
           >
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M12 3v12"/><path d="M7 8l5-5 5 5"/><path d="M4 21h16"/></svg>
             <div style={{ fontSize: 13 }}>{isUploading ? t('uploading') : t('uploadDoc')}</div>
+            {effectiveChunkMethod === "agent" && (
+              <div style={{ fontSize: 11, color: "var(--muted-fg)", marginTop: 4 }}>
+                💡 {t('agentChunkHint')}
+              </div>
+            )}
           </div>
           <button className="kb-upload-bottom-btn" onClick={() => inputRef.current?.click()}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M12 3v12"/><path d="M7 8l5-5 5 5"/><path d="M4 21h16"/></svg>
@@ -178,6 +244,8 @@ export function KnowledgePanel() {
           </button>
         </div>
       </div>
+
+      <KbCollectionManager open={showKbManager} onClose={() => setShowKbManager(false)} />
     </div>
   );
 }

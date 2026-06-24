@@ -620,6 +620,7 @@ input, textarea { font-family: inherit; }
 .source-chip svg { flex-shrink: 0; }
 .source-chip-title { }
 .source-chip-score { font-family: var(--font-mono); color: var(--muted-fg); font-size: 11px; }
+.source-chip-kb { background: var(--primary); color: var(--primary-fg, #fff); font-size: 10px; padding: 1px 5px; border-radius: 3px; margin-right: 4px; white-space: nowrap; }
 .msg-actions { display: flex; align-items: center; gap: 4px; }
 .action-btn {
   display: flex; align-items: center; gap: 4px; padding: 4px 8px;
@@ -911,6 +912,7 @@ input, textarea { font-family: inherit; }
 .source-card.highlight { border-color: var(--primary); background: rgba(232,237,251,0.4); }
 .source-card.default { background: var(--bg); }
 .source-card-title { font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.source-kb-tag { display: inline-block; background: var(--primary); color: var(--primary-fg, #fff); font-size: 10px; padding: 1px 5px; border-radius: 3px; margin-right: 4px; font-weight: 400; }
 .source-card-score { font-size: 11px; font-family: var(--font-mono); flex-shrink: 0; }
 .source-card-score.high { color: #22A37C; }
 .source-card-score.med { color: #C4793B; }
@@ -1882,6 +1884,7 @@ input, textarea { font-family: inherit; }
 .source-chip.highlight { border-color: var(--primary); background: var(--accent); color: var(--accent-fg); }
 .source-chip svg { flex-shrink: 0; }
 .source-chip-score { font-family: var(--font-mono); color: var(--muted-fg); font-size: 11px; }
+.source-chip-kb { background: var(--primary); color: var(--primary-fg, #fff); font-size: 10px; padding: 1px 5px; border-radius: 3px; margin-right: 4px; white-space: nowrap; }
 .msg-actions { display: flex; align-items: center; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
 .action-btn {
   display: inline-flex;
@@ -2124,6 +2127,7 @@ input, textarea { font-family: inherit; }
 .source-card-body { padding: 8px 10px; }
 .source-card-row { display: flex; align-items: flex-start; gap: 8px; }
 .source-card-title { font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.source-kb-tag { display: inline-block; background: var(--primary); color: var(--primary-fg, #fff); font-size: 10px; padding: 1px 5px; border-radius: 3px; margin-right: 4px; font-weight: 400; }
 .source-card-score { font-size: 11px; font-family: var(--font-mono); flex-shrink: 0; }
 .source-card-score.high { color: #22A37C; }
 .source-card-score.med { color: #C4793B; }

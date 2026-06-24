@@ -293,3 +293,50 @@ class HardwareVectorStore:
             logger.info(f"已清空 collection: {self.collection_name}")
         except Exception as e:
             logger.exception(f"清空 collection 失败")
+
+    def ingest_chunks(self, chunks: list, doc_id: str) -> int:
+        """
+        Ingest pre-chunked data (ChunkResult list) into ChromaDB.
+
+        Args:
+            chunks: List of ChunkResult objects from chunking module.
+            doc_id: Document ID for metadata.
+
+        Returns:
+            Number of chunks ingested.
+        """
+        if self.embeddings is None:
+            logger.warning("未配置 embedding API，跳过入库")
+            return 0
+
+        from langchain_core.documents import Document as LCDocument
+
+        lc_docs: list[LCDocument] = []
+        for chunk in chunks:
+            if not chunk.text.strip():
+                continue
+            metadata = {
+                **chunk.metadata,
+                "doc_id": doc_id,
+                "chunk_method": chunk.chunk_method,
+                "fingerprint": chunk.fingerprint,
+                "section_title": chunk.section_title,
+                "page_start": chunk.page_range[0],
+                "page_end": chunk.page_range[1],
+            }
+            lc_docs.append(LCDocument(page_content=chunk.text, metadata=metadata))
+
+        if lc_docs:
+            self.db.add_documents(lc_docs)
+            logger.info(f"入库完成: {doc_id} → {len(lc_docs)} chunks")
+
+        return len(lc_docs)
+
+    def get_all_texts(self) -> list[str]:
+        """Get all document texts from ChromaDB (for BM25 index building)."""
+        try:
+            collection = self.db.get()
+            return collection.get("documents", [])
+        except Exception:
+            logger.exception("获取 ChromaDB 文本失败")
+            return []

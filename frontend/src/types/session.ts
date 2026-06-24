@@ -87,4 +87,6 @@ export interface SourceRef {
   page: number;
   score: number;
   excerpt: string;
+  kb_id?: string;
+  kb_name?: string;
 }

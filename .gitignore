@@ -57,6 +57,12 @@ Desktop.ini
 
 # ChromaDB 向量数据库（运行时生成）
 backend/data/chroma_db/
+# BM25 索引（用户 KB 运行时生成，内置 KB 的索引需保留见下方白名单）
+backend/data/bm25/
+
+# 内置知识库（ChromaDB persist_dir + BM25 索引，走 git 便于首次启动）
+!backend/data/builtin_kb/
+!backend/data/bm25/hardware-docs.pkl
 
 # 日志
 backend/logs/
@@ -76,3 +82,12 @@ frontend/ref-design.html
 
 # PLUR 记忆文件
 **/.plur/
+
+# ─── 临时脚本（开发用，不进仓库）───
+codex_contents.json
+tree.json
+fix_completed.py
+temp_check_docs.py
+update_thread.py
+scripts/gh_search.py
+scripts/lf_convert.py

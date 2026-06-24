@@ -532,8 +532,84 @@ branchThread 会话 ID 不一致 + 后端 CRUD 不返回分支字段
   2) FastAPI 依赖注入函数（`Depends`）必须对自身异常做兜底，否则一个依赖崩了整条路由链全崩
   3) 前端 `useQuery` 的 `queryFn` 不应直接抛异常，应 catch 后返回空值/默认值
   4) Windows 兼容性必须作为测试项，不能只在 Linux/Mac 上验证
+## 2026-06-23 - SSE 事件分隔符转义错误导致前端不显示思考卡片与回答
+
+- **错误现象**：用户输入正常提交，后端日志显示 SSE 正常输出内容，但前端只能看到 assistant 消息底部的五个功能按钮，看不到思考卡片和回答内容。
+- **错误原因**：
+  1. **根因**：`backend/app/api/common.py` 的 `sse_event()` 函数返回的 SSE 数据使用 `\\n\\n`（两个字符 `\n`）作为事件分隔符，而不是真正的换行符 `\n\n`。前端 SSE 解析器以空行作为事件边界，收不到真正的空行，导致所有 `text`/`thinking`/`source`/`done` 事件都解析失败，`onEvent` 从未被调用，消息 content 和 activity 始终保持初始空值。
+  2. **附带问题**：`backend/app/api/chat_routes.py` 的 system_prompt 拼接也错误使用 `\\n`，污染提示词；同时 `while...else` 结构导致正常流程中不会发送 `done` 事件。
+- **修复方式**：
+  1. `common.py`：`sse_event()` 改为 `f"data: {json.dumps(payload)}\n\n"`，使用真正的换行符作为 SSE 事件分隔符。
+  2. `chat_routes.py`：将附件/RAG/system_prompt 中的 `\\n` 全部改为 `\n`；重写 LLM 流式循环，正常结束时显式 `yield sse_event("done", ...)`。
+  3. `frontend/src/api/client.ts`：SSE 解析前统一把 `\r\n`/`|` 归一化为 `\n`，并兜底处理连接关闭时缓冲区中剩余的完整事件。
+  4. `frontend/src/components/chat/ChatArea.tsx`：流式状态判断从对象引用比较改为 `msg.id === messages[last]?.id`。
+- **下次注意**：
+  1. Python 字符串中 `\\n` 是字面量 `\n`（两个字符），不是换行符；SSE 必须用真正的 `\n\n` 或 `\r\n\r\n` 分隔事件。
+  2. 新增/修改 SSE 辅助函数后，用 curl/wget 抓包检查原始字节，确认事件分隔符正确。
+  3. 前端 SSE 解析器应兼容 CRLF/LF/CR，不能假设只有一种行尾。
+  4. Python `while...else` 的 `else` 只在循环未被 `break` 时执行，流式读取场景下通常不适用，应避免用此模式发送收尾事件。
+
+
+
+
+
+
+
+## 2026-06-23 - BaseHTTPMiddleware 缓冲 SSE 流式响应导致前端不显示内容
+
+- **错误现象**：用户输入正常提交，后端日志显示 SSE 事件逐个生成，但前端界面只显示五个功能按钮，思考卡片和回答内容区域完全空白。curl 直接请求后端端口可以看到 SSE 事件，但通过前端 Vite 代理访问时内容不显示。
+- **错误原因**：`app/main.py` 中使用 `@app.middleware("http")` 注册的中间件（`limit_request_body_middleware` 和 `request_log_middleware`）被 Starlette 包装为 `BaseHTTPMiddleware`。`BaseHTTPMiddleware` 的工作机制是：先消费整个响应体（包括所有 SSE 事件），然后再一次性转发给客户端。对于 `StreamingResponse`（SSE），这意味着所有事件被缓冲直到流结束才发送，前端无法逐个接收事件，导致 `onEvent` 回调从未被触发，消息 content 和 activity 始终为空。
+- **修复方式**：将两个 `BaseHTTPMiddleware` 函数改为纯 ASGI 中间件类（`_RequestBodyLimitMiddleware` 和 `_RequestLogMiddleware`），直接操作 `scope`/`receive`/`send`，不缓冲响应体。用 `app.add_middleware()` 注册纯 ASGI 中间件。
+- **下次注意**：
+  1. `@app.middleware("http")` 创建的 `BaseHTTPMiddleware` 会缓冲整个 `StreamingResponse`，绝对不能用于 SSE 端点
+  2. 需要在 SSE 流式响应上执行中间件逻辑时，必须用纯 ASGI 中间件（直接操作 scope/receive/send）
+  3. SSE 不显示内容时，先用 curl 直接请求后端确认事件是否正常推送，再检查中间件是否缓冲了响应
+
+## 2026-06-23 - 双重 falsy fallback 导致系统提示词无法修改和注入
+
+- **错误现象**：前端设置页修改系统提示词后，发送消息时后端仍使用默认提示词；清空提示词也无法生效，始终回退到默认值。
+- **错误原因**：前后端双重 falsy fallback：
+  1. 前端 `useChatStore.ts` 中 `system_prompt: systemPrompt || undefined`，空字符串 `""` 被转为 `undefined`，JSON 序列化时该字段被省略
+  2. 后端 `chat_routes.py` 中 `payload.system_prompt or DEFAULT_SYSTEM_PROMPT`，Python 的 `or` 对空字符串也视为 falsy，回退到默认值
+  3. 两层叠加：前端省略字段 → 后端收到 None → 使用默认值；前端传空字符串 → 后端 `or` 视为 falsy → 使用默认值。用户无论怎么修改都无法生效。
+- **修复方式**：
+  1. 前端：`system_prompt: systemPrompt`（保留空字符串，不做 `|| undefined` 转换）
+  2. 后端：`system_prompt = payload.system_prompt if payload.system_prompt is not None else DEFAULT_SYSTEM_PROMPT`（用 `is None` 检查代替 `or`，空字符串不再被吞没）
+- **下次注意**：
+  1. JavaScript `||` 和 Python `or` 对空字符串都视为 falsy，当业务语义需要区分"未设置"和"设置为空"时，必须用 `is None`/`=== undefined` 精确判断
+  2. 前后端对同一字段的 falsy 处理逻辑必须对齐，避免双重 fallback 导致用户输入永远无法生效
+  3. 测试系统提示词时，要同时验证"自定义内容"和"清空为空字符串"两种场景
+
+## 2026-06-24 - newSession 异步 ID 迁移竞态导致新对话输入丢失
+
+- **错误现象**：新对话开始时输入消息后，回答"莫名其妙退出/消失"——用户消息显示了但 assistant 回答永远为空。
+- **错误原因**：`useSessionStore.ts` 的 `newSession` 采用"先本地后同步"策略：同步生成 `localId` 并切换为当前会话，异步调后端拿 `res.id` 后迁移。若用户在后端响应前发送消息，SSE 回调闭包捕获 `requestSessionId = localId`，迁移后 `sessionMessages[localId]` 已被删除，SSE 数据全部写入幽灵会话。
+- **修复方式**：将 `newSession` 改为 `async` 函数，先 `await apiPost("sessions", ...)` 拿到后端真实 ID，再用该 ID 创建本地会话并切换。彻底消除 localId/res.id 双 ID 并存窗口。后端失败时回退到本地 ID。
+- **下次注意**：1) 异步创建资源时不要假设本地生成的临时 ID 与后端返回的 ID 一致，应以后端返回为准；2) `newSession` 类操作应先拿后端 ID 再切换 UI，避免迁移竞态；3) 调用方 `onClick={() => newSession()}` 无需 await，fire-and-forget 兼容 Promise 返回。
+
+## 2026-06-24 - SSE 切换会话不中止导致切回内容被空覆盖
+
+- **错误现象**：SSE 流式输出中途切换到其他会话再切回来，回答内容消失或只剩最后一两个字符。
+- **错误原因**：`setActiveSession` 流式切换时保存了部分内容到 `sessionMessages` 但**不中止 SSE**（保留 `currentSseRequest`），同时清空了 `streamingContent=""`。后台 SSE 继续运行，切回原会话时 `isActive=true`，用空的 `streamingContent` 重新累积，覆盖了 `sessionMessages` 中已保存的完整内容。
+- **修复方式**：`setActiveSession` 流式切换时调用 `currentSseRequest.abort()` 中止 SSE（`apiSSE` 的 catch 块会识别为用户中止，不触发 `onError`），同时清空 `currentSseRequest`。`stopStreaming` 增加防御：`streamingSessionId` 为 null 时跳过写入避免误伤当前会话；优先取已有 `lastMsg.content` 而非空的 `streamingContent`。
+- **下次注意**：1) 流式输出期间切换会话必须中止 SSE 并保存部分内容，不能让后台 SSE 继续运行（`streamingContent`/`streamingSteps` 是单例状态，切回后无法恢复对应缓冲区）；2) `stopStreaming` 必须用 `streamingSessionId` 精确定位会话，不能回退到 `activeSessionId`；3) `apiSSE` 的 `controller.signal.aborted` 检查确保用户中止不触发 `onError`。
+
+## 2026-06-24 - 鉴权异常降级为匿名访问 + 多端点缺少鉴权
+
+- **错误现象**：`dependencies.py` 的 `current_user` 在鉴权存储读取异常时返回 `anonymous=True`，攻击者可通过触发文件异常绕过鉴权。MCP/sandbox/auth 端点完全无鉴权，任何人可执行任意命令/代码/篡改 API Key。
+- **错误原因**：1) `except Exception` 捕获器降级为匿名访问而非拒绝；2) `mcp_routes.py`、`sandbox_routes.py`、`auth.py` 的 `list_keys`/`delete_key` 端点未添加 `Depends(current_user)`；3) `auth.py` 与 `dependencies.py` 存在循环依赖，无法直接导入 `current_user`。
+- **修复方式**：1) `dependencies.py` 异常时返回 503 而非匿名访问；2) MCP 全部端点和 sandbox 端点添加 `Depends(current_user)`；3) `auth.py` 的 `list_keys`/`delete_key` 用内联 `Header` 检查避免循环导入（`store-key` 作为认证端点本身不要求鉴权）。
+- **下次注意**：1) 鉴权异常时必须默认拒绝访问（fail-closed），不能降级为匿名（fail-open）；2) 所有执行代码/命令的端点必须鉴权；3) 存在循环依赖时可用内联 `Header` 检查替代 `Depends(current_user)`；4) 认证端点本身（如 `store-key`）不需要鉴权，因为用户首次设置 Key 时还没有 token。
+
+## 2026-06-24 - deleteSession 未中止 SSE + SSE 解析失败未中止流 + 导出 ContentPart[] 损坏
+
+- **错误现象**：1) 删除正在流式输出的会话后 SSE 继续写入已删除的会话；2) SSE 连续 3 次 JSON 解析失败后仅回调 `onError` 但不中止流，可能无限循环；3) 导出 Markdown 时多模态消息内容输出 `[object Object]`。
+- **错误原因**：1) `deleteSession` 未调用 `stopStreaming`；2) `apiSSE` 解析失败 3 次后没有 `controller.abort()`；3) `exportConversation` 用 `${m.content}` 模板字符串对 `ContentPart[]` 输出 `[object Object]`。
+- **修复方式**：1) `deleteSession` 删除活跃会话时先调 `chatStore.stopStreaming()`；2) `apiSSE` 3 次失败后调 `controller.abort()` 并 `return`；3) `exportConversation` 对 `ContentPart[]` 转为 Markdown 文本后再导出。
+- **下次注意**：1) 删除资源前必须先清理关联的异步操作（SSE/定时器）；2) 错误回调后必须中止流读取，不能仅通知错误；3) 模板字符串对对象类型输出 `[object Object]`，必须先转为字符串。
+
 ## 2026-06-21: 模型下拉框不显示上游模型
-- **错误现象**：验证 API Key 成功后，设置页和聊天输入框的模型下拉框只显示硬编码的 fallback 模型（gpt-4o/llama3.3/deepseek-v3），不显示上游 Provider 返回的真实模型列表。
+→- **错误现象**：验证 API Key 成功后，设置页和聊天输入框的模型下拉框只显示硬编码的 fallback 模型（gpt-4o/llama3.3/deepseek-v3），不显示上游 Provider 返回的真实模型列表。
 - **错误原因**：
   1. SettingsPage.tsx handleVerify 成功后没有 invalidate TanStack Query 缓存，useQuery 的数据仍是空的
   2. useQuery queryKey 只依赖 baseUrl + provider，切换 Key 不触发 refetch
@@ -546,4 +622,27 @@ branchThread 会话 ID 不一致 + 后端 CRUD 不返回分支字段
   1. TanStack Query 的 cache 是隐式的，手动调用 API（如 handleVerify）后必须 invalidate 对应 query，否则 useQuery 不更新
   2. queryKey 必须包含所有会影响结果的输入，否则值变化不触发 refetch
   3. 后端 Key 优先级：用户刚输入的 X-API-Key header > 后端已加密存储的旧 Key > .env 默认值。Header 代表用户当前意图，必须优先
+
+## 2026-06-23 - kb_routes.py 重写后测试用例与旧 API 不匹配
+- **错误现象**：`pytest tests/test_routes_kb.py` 两个测试全部失败。`test_upload_success` 报 `assert False is True`；`test_upload_file_too_large` 报 `assert 200 == 400`。
+- **错误原因**：
+  1. 旧测试期望 upload 响应中 `chunks > 0`（同步入库），但新 API 改为异步索引，响应返回 `status="indexing"` + `chunks=0`，后台任务完成后再更新 DB
+  2. 旧测试期望文件超限时返回 HTTP 400（`HTTPException`），但新 API 改为返回 HTTP 200 + `{"success": False, "error": {"code": "FILE_TOO_LARGE"}}`（错误体包装）
+  3. 旧测试 patch `app.api.routes.MAX_UPLOAD_SIZE`，但新代码在 `app.api.kb_routes` 模块，patch 路径不对
+  4. 测试 fixture 未创建 builtin KB 记录，导致 `kb_manager.get_kb("builtin-001")` 返回 None → `KB_NOT_FOUND`
+- **修复方式**：
+  1. 测试 fixture 中调用 `init_db()` + 创建 `KnowledgeBase(is_builtin=True)` 记录
+  2. `test_upload_success` 改为断言 `status == "indexing"` 而非 `chunks > 0`
+  3. `test_upload_file_too_large` 改为断言 `response.status_code == 200` + `data["error"]["code"] == "FILE_TOO_LARGE"`
+  4. patch 路径改为 `app.api.kb_routes.MAX_UPLOAD_SIZE`
+- **下次注意**：
+  1. 重写 API 路由后必须同步更新对应测试，尤其是响应格式和状态码变更
+  2. 异步索引 API 的测试只能验证"已接受请求"，不能验证"索引完成"——后者需要 mock 后台任务或等待完成
+  3. `unittest.mock.patch` 的路径必须是代码实际定义的模块，不是旧模块路径
+
+## 2026-06-23 - kb_manager.ingest_chunks 重复实现 vector_store 逻辑
+- **错误现象**：`kb_manager.ingest_chunks()` 方法内部重复实现了 embedding 检查、metadata 构建和 ChromaDB 写入逻辑，与 `vector_store.ingest_chunks()` 高度重复。
+- **错误原因**：kb_manager 最初设计时没有委托给 vector_store，而是自己处理入库，导致两处逻辑需要同步维护。
+- **修复方式**：`kb_manager.ingest_chunks()` 改为：1) 注入 `kb_id` 到每个 chunk 的 metadata；2) 委托 `store.ingest_chunks(chunks, doc_id)` 处理 embedding 检查和写入；3) 标记 BM25 stale。
+- **下次注意**：Manager 层应委托给 Store 层处理底层操作，不要重复实现。Manager 职责是路由和协调，Store 职责是持久化。
 

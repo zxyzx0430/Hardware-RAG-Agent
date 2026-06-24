@@ -137,7 +137,7 @@
 
 - `apiPost('models', { base_url })` → `POST http://127.0.0.1:58080/api/models`
 - `apiSSE('chat', body, { onEvent, onDone })` → `POST http://127.0.0.1:58080/api/chat`
-- `apiWS('/monitor/COM3?baud=115200', { onMessage })` → `ws://127.0.0.1:58080/api/monitor/COM3?baud=115200`
+- `apiWS('/api/monitor/COM3?baud=115200', { onMessage })` → `ws://127.0.0.1:58080/api/monitor/COM3?baud=115200`
 - `apiGet('devices')` → `GET http://127.0.0.1:58080/api/devices`
 
 
@@ -217,6 +217,12 @@
 | `FLASH_FAILED` | 500 | 烧录失败 |
 | `INTERNAL_ERROR` | 500 | 未预期的服务端错误 |
 | `DOC_NOT_FOUND` | 404 | 知识库文档不存在 |
+| `KB_NOT_FOUND` | 404 | 知识库不存在 |
+| `KB_NOT_DELETABLE` | 400 | 内置知识库不可删除 |
+| `KB_CREATE_FAILED` | 500 | 创建知识库失败 |
+| `KB_DELETE_FAILED` | 500 | 删除知识库失败 |
+| `AGENT_CHUNK_FAILED` | 500 | Agent 分块失败（LLM 调用错误） |
+| `AGENT_CHUNK_INCOMPLETE` | 500 | Agent 分块漏页，覆盖不完整 |
 
 历史错误码 `MISSING_API_KEY`、`FETCH_FAILED` 已废弃，分别统一使用 `AUTH_FAILED`、`MODEL_FETCH_FAILED`。
 
@@ -296,6 +302,12 @@
 | `agreed` | `POST` | `/api/kb/upload` | 上传知识库文件 | `apiPost('kb/upload', formData)` | multipart |
 | `agreed` | `GET` | `/api/kb/list` | 列出已上传文档 | `apiGet('kb/list')` | JSON |
 | `agreed` | `POST` | `/api/kb/delete` | 删除知识库文档 | `apiPost('kb/delete', { doc_id })` | JSON |
+| `implemented` | `GET` | `/api/kb/collections` | 列出所有知识库 | `apiGet('kb/collections')` | JSON |
+| `implemented` | `POST` | `/api/kb/collections` | 创建知识库 | `apiPost('kb/collections', ...)` | JSON |
+| `implemented` | `GET` | `/api/kb/collections/{kb_id}` | 知识库详情（含文档） | `apiGet('kb/collections/{id}')` | JSON |
+| `implemented` | `DELETE` | `/api/kb/collections/{kb_id}` | 删除知识库 | `apiDelete('kb/collections/{id}')` | JSON |
+| `implemented` | `PATCH` | `/api/kb/collections/{kb_id}/toggle` | 切换 KB 搜索开关 | `apiPatch('kb/collections/{id}/toggle', { enabled })` | JSON |
+| `implemented` | `POST` | `/api/kb/embedding-models` | 代理上游 embedding 模型列表 | `apiPost('kb/embedding-models', ...)` | JSON |
 | `agreed` | `GET` | `/api/devices` | 扫描串口设备 | `apiGet('devices')` | JSON |
 | `implemented` | `POST` | `/api/wiring` | 生成接线图 SVG | `apiPost('wiring', ...)` | JSON |
 | `agreed` | `POST` | `/api/audit_pins` | 引脚冲突审计 | `apiPost('audit_pins', ...)` | JSON |
@@ -339,11 +351,12 @@
   "messages": [
     { "role": "user", "content": "ESP32 I2C NACK 怎么排查？" }
   ],
-  "settings": {
-    "top_k": 5,
-    "temperature": 0.2,
-    "system_prompt": "你是一个嵌入式硬件助手"
-  }
+  "top_k": 5,
+  "temperature": 0.2,
+  "max_tokens": 8192,
+  "system_prompt": "你是一个嵌入式硬件助手",
+  "long_term_memory": "",
+  "model": "gpt-4o"
 }
 ```
 
@@ -360,6 +373,8 @@
 | `error` | 出错时 | `message` |
 
 - 字段说明：
+  - `messages` 为历史消息数组，最后一条通常为当前用户消息；`content` 支持字符串或 OpenAI 格式的多模态数组 `[{type:"text",text:"..."},{type:"image_url",image_url:{url:"..."}}]`。
+  - `top_k`、`temperature`、`max_tokens`、`system_prompt`、`long_term_memory`、`model` 均为可选参数，后端有默认值；`system_prompt` 为空时后端使用默认系统提示词。
   - `thinking` 的 `content` 为人类可读思考文本；`source` 枚举 `rag` / `llm` / `reasoning`，标识思考来源。
   - `source` 的 `id` 为文档片段唯一标识；`doc` 为所属文档 ID；`page` 为可选页码/位置；`score` 为相似度得分；`excerpt` 为命中片段摘要。
   - `tool` 的 `icon` 为前端展示图标名；`args` 为结构化调用参数；`result` 为工具执行结果字符串（聊天流中可空，完成后再填充）。
@@ -369,7 +384,7 @@
 
 ```json
 { "type": "thinking", "content": "正在检索知识库...", "source": "rag" }
-{ "type": "source", "id": "chunk-001", "title": "ESP32 Technical Reference Manual", "doc": "doc-001", "page": 42, "score": 0.92, "excerpt": "I2C 总线需要 4.7kΩ 上拉电阻..." }
+{ "type": "source", "id": "chunk-001", "title": "ESP32 Technical Reference Manual", "doc": "doc-001", "page": 42, "score": 0.92, "excerpt": "I2C 总线需要 4.7kΩ 上拉电阻...", "kb_id": "builtin-001", "kb_name": "硬件手册库" }
 { "type": "tool", "name": "search_docs", "icon": "search", "args": { "query": "ESP32 I2C NACK" }, "result": "" }
 { "type": "thinking", "content": "已找到相关资料，正在生成回答。", "source": "reasoning" }
 { "type": "text", "content": "先检查上拉电阻和时钟配置。" }
@@ -381,7 +396,7 @@
   - `messages` 至少包含一条用户消息。
   - `type` 枚举只允许：`thinking`、`text`、`tool`、`source`、`progress`、`done`、`error`。
   - `done` 事件和 `error` 事件是终态事件，发送后流结束。
-  - `settings` 均非必填，后端有默认值。
+  - 除 `messages` 外，其余字段均非必填，后端有默认值。
 
 - Mock 规则：前端先使用固定 `thinking → text → done` 三段流占位。
 
@@ -430,15 +445,24 @@
 
 ### 5.3 知识库管理
 
-知识库接口已扩展到四个端点，覆盖基本 CRUD。
+知识库接口分为两层：
+- **文档层**：`/api/kb/upload`、`/api/kb/list`、`/api/kb/delete` — 上传/列出/删除单个文档
+- **Collection 层**：`/api/kb/collections/*` — 管理知识库本身（多 KB、不同 embedding、开关）
 
 #### `POST /api/kb/upload`
 
-- 状态：`agreed`
-- 用途：上传知识库资料。后端自动处理解析、切块、向量化入库。
+- 状态：`implemented`
+- 用途：上传知识库文档，自动解析、分块（hybrid/agent）、向量化入库到指定 KB。
 - 前端入口：`apiPost('kb/upload', formData)`，需传 `FormData`，非 JSON。
 - 请求体：`multipart/form-data`
-- 请求字段：`file`，支持 `pdf`、`md`、`txt`。
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `file` | File | 是 | 上传的文件，支持 `pdf`/`md`/`txt`/`xlsx`/`csv`/`json` |
+| `kb_id` | string | 否 | 目标知识库 ID，默认 `builtin-001` |
+| `chunk_method` | string | 否 | 覆盖 KB 默认分块方式：`hybrid` / `agent` |
+| `chunk_size` | int | 否 | 覆盖默认 chunk_size（仅 hybrid 有效） |
+
 - 成功响应：
 
 ```json
@@ -446,11 +470,16 @@
   "success": true,
   "data": {
     "doc_id": "uuid-xxx",
+    "kb_id": "builtin-001",
     "filename": "esp32_datasheet.pdf",
-    "chunks": 128
+    "chunk_method_used": "hybrid",
+    "chunks": 0,
+    "status": "indexing"
   }
 }
 ```
+
+- 说明：上传后立即返回 `status: "indexing"`，后台异步入库。前端可通过 `GET /api/kb/list` 轮询文档状态（`indexing` → `indexed` / `error`）。
 
 - 错误响应：
 
@@ -467,9 +496,9 @@
 
 #### `GET /api/kb/list`
 
-- 状态：`agreed`
-- 用途：列出所有已上传的知识库文档。
-- 前端入口：`apiGet('kb/list')`
+- 状态：`implemented`
+- 用途：列出所有已上传的知识库文档，可按 `kb_id` 过滤。
+- 前端入口：`apiGet('kb/list')` 或 `apiGet('kb/list?kb_id=xxx')`
 - 成功响应：
 
 ```json
@@ -477,7 +506,19 @@
   "success": true,
   "data": {
     "documents": [
-      { "doc_id": "uuid-xxx", "filename": "esp32_datasheet.pdf", "chunks": 128, "uploaded_at": "2026-06-19T10:00:00Z" }
+      {
+        "doc_id": "uuid-xxx",
+        "kb_id": "builtin-001",
+        "title": "esp32_datasheet.pdf",
+        "category": "user_upload",
+        "file_type": "pdf",
+        "file_size": 1048576,
+        "chunk_count": 128,
+        "chunk_method_used": "hybrid",
+        "status": "indexed",
+        "error_message": null,
+        "created_at": "2026-06-19T10:00:00Z"
+      }
     ]
   }
 }
@@ -485,7 +526,7 @@
 
 #### `POST /api/kb/delete`
 
-- 状态：`agreed`
+- 状态：`implemented`
 - 用途：删除知识库中的一篇文档及其向量数据。
 - 前端入口：`apiPost('kb/delete', { doc_id: "uuid-xxx" })`
 - 请求体：
@@ -501,9 +542,205 @@
 ```json
 {
   "success": true,
-  "data": null
+  "data": {
+    "doc_id": "uuid-xxx",
+    "deleted_chunks": 128
+  }
 }
 ```
+
+#### `GET /api/kb/collections`
+
+- 状态：`implemented`
+- 用途：列出所有知识库（含统计信息）。
+- 前端入口：`apiGet('kb/collections')`
+- 成功响应：
+
+```json
+{
+  "success": true,
+  "data": {
+    "collections": [
+      {
+        "id": "builtin-001",
+        "name": "硬件手册库",
+        "description": "系统内置硬件手册知识库",
+        "collection_name": "hardware-docs",
+        "chunk_method": "hybrid",
+        "embedding_model": "text-embedding-3-small",
+        "agent_chunker_model": "gpt-4o-mini",
+        "enabled": true,
+        "is_builtin": true,
+        "doc_count": 10,
+        "chunk_count": 1280,
+        "created_at": "2026-06-19T10:00:00Z"
+      }
+    ]
+  }
+}
+```
+
+#### `POST /api/kb/collections`
+
+- 状态：`implemented`
+- 用途：创建新知识库。
+- 前端入口：`apiPost('kb/collections', body)`
+- 请求体：
+
+```json
+{
+  "name": "ESP32 笔记库",
+  "description": "我整理的 ESP32 踩坑记录",
+  "chunk_method": "hybrid",
+  "embedding_model": "text-embedding-3-small",
+  "embedding_base_url": "https://api.openai.com/v1",
+  "embedding_api_key": "sk-...",
+  "agent_chunker_model": "gpt-4o-mini",
+  "agent_chunker_base_url": "https://api.openai.com/v1",
+  "agent_chunker_api_key": "sk-...",
+  "context_window": 256000
+}
+```
+
+- 字段说明：
+  - `chunk_method`：`hybrid`（默认）或 `agent`
+  - `embedding_api_key` / `agent_chunker_api_key`：明文传入，后端用 Fernet 加密存储
+  - `context_window`：Agent 分块用的上下文窗口，默认 256000
+
+- 成功响应：
+
+```json
+{
+  "success": true,
+  "data": {
+    "id": "kb-a1b2c3d4",
+    "name": "ESP32 笔记库",
+    "description": "我整理的 ESP32 踩坑记录",
+    "collection_name": "kb_kb_a1b2c3d4",
+    "chunk_method": "hybrid",
+    "embedding_model": "text-embedding-3-small",
+    "agent_chunker_model": "gpt-4o-mini",
+    "enabled": true,
+    "is_builtin": false,
+    "created_at": "2026-06-19T10:00:00Z"
+  }
+}
+```
+
+#### `GET /api/kb/collections/{kb_id}`
+
+- 状态：`implemented`
+- 用途：获取单个知识库详情（含文档列表）。
+- 前端入口：`apiGet('kb/collections/{kb_id}')`
+- 成功响应：
+
+```json
+{
+  "success": true,
+  "data": {
+    "id": "kb-a1b2c3d4",
+    "name": "ESP32 笔记库",
+    "description": "...",
+    "collection_name": "kb_kb_a1b2c3d4",
+    "chunk_method": "hybrid",
+    "embedding_model": "text-embedding-3-small",
+    "embedding_base_url": "https://api.openai.com/v1",
+    "agent_chunker_model": "gpt-4o-mini",
+    "agent_chunker_base_url": "https://api.openai.com/v1",
+    "context_window": 256000,
+    "enabled": true,
+    "is_builtin": false,
+    "created_at": "2026-06-19T10:00:00Z",
+    "documents": [
+      {
+        "doc_id": "uuid-xxx",
+        "title": "esp32_notes.md",
+        "file_type": "md",
+        "file_size": 2048,
+        "chunk_count": 5,
+        "chunk_method_used": "hybrid",
+        "status": "indexed",
+        "created_at": "2026-06-19T10:00:00Z"
+      }
+    ]
+  }
+}
+```
+
+#### `DELETE /api/kb/collections/{kb_id}`
+
+- 状态：`implemented`
+- 用途：删除知识库（内置 KB 不可删除）。同时删除 ChromaDB collection、BM25 索引、关联文档记录。
+- 前端入口：`apiDelete('kb/collections/{kb_id}')`
+- 成功响应：
+
+```json
+{
+  "success": true,
+  "data": {
+    "kb_id": "kb-a1b2c3d4"
+  }
+}
+```
+
+- 错误响应：
+
+| 场景 | code | 状态码 |
+| --- | --- | --- |
+| KB 不存在 | `KB_NOT_FOUND` | 404 |
+| 内置 KB 不可删除 | `KB_NOT_DELETABLE` | 400 |
+
+#### `PATCH /api/kb/collections/{kb_id}/toggle`
+
+- 状态：`implemented`
+- 用途：切换知识库搜索开关。关闭后该 KB 不参与 `search_all_enabled`。
+- 前端入口：`apiPatch('kb/collections/{kb_id}/toggle', { enabled: true })`
+- 请求体：
+
+```json
+{
+  "enabled": true
+}
+```
+
+- 成功响应：
+
+```json
+{
+  "success": true,
+  "data": {
+    "kb_id": "kb-a1b2c3d4",
+    "enabled": true
+  }
+}
+```
+
+#### `POST /api/kb/embedding-models`
+
+- 状态：`implemented`
+- 用途：代理上游 embedding 模型列表。用 POST 是因为需要传 API Key（避免走 URL/logs）。
+- 前端入口：`apiPost('kb/embedding-models', { base_url, api_key })`
+- 请求体：
+
+```json
+{
+  "base_url": "https://api.openai.com/v1",
+  "api_key": "sk-..."
+}
+```
+
+- 成功响应：
+
+```json
+{
+  "success": true,
+  "data": {
+    "models": ["text-embedding-3-small", "text-embedding-3-large", "text-embedding-ada-002"]
+  }
+}
+```
+
+- 说明：后端会过滤名称含 `embed` 的模型；若无匹配则返回全部模型。
 
 ### 5.4 `GET /api/devices`
 
@@ -683,7 +920,7 @@
 
 - 状态：`agreed`
 - 用途：推送串口实时数据到前端 Serial Monitor。
-- 前端入口：`apiWS('/monitor/' + port + '?baud=' + baud, onMessage)`
+- 前端入口：`apiWS('/api/monitor/' + port + '?baud=' + baud, onMessage)`
 - 路径参数：`port`，串口号，例如 `COM3`。
 - 查询参数：`baud`，波特率，例如 `115200`。
 - 连接后行为：前端连接成功后立即发送 `{ "type": "start" }`，后端持续推送串口数据。
@@ -1123,6 +1360,9 @@
 | 2026-06-20 | 对齐 SSE 事件字段：`thinking` 改 `content` 并加 `source`、`source` 改 `id` 并扩展字段、`tool` 加 `icon`/`result`、done 加 `usage`、新增 `progress` 事件（5.1/5.7/5.8）；标准化接口响应：`/api/kb/upload` 增加错误响应、`/api/wiring` 增加 `bom`、`/api/models` 错误码区分 `AUTH_FAILED`/`MODEL_FETCH_FAILED`；错误响应 `details` 统一必填可 null（2.6）；废弃 `MISSING_API_KEY`、`FETCH_FAILED`（2.14） | Codex |
 | 2026-06-21 | 新增沙箱执行接口（5.21）和沙箱状态接口（5.22）、审计日志接口（5.23） | Codex |
 | 2026-06-20 | 前端真实对接：SerialPane WebSocket 去 fallback、FlashPane build/upload 去模拟、SafetyPane 动态提取引脚、PreviewPane 接入 `/api/diagnose`；`/api/diagnose` 补入接口目录；移除 5.7/5.8/5.10 前端 mock 规则 | Trae |
+| 2026-06-23 | 修复 `/api/chat` 请求体：将嵌套 `settings` 结构改为扁平结构，新增 `max_tokens`、`long_term_memory`、`model` 字段；补充 `messages.content` 多模态支持说明 | Trae |
+| 2026-06-23 | RAG 全量化实现：新增 6 个 KB collection 管理接口（5.3）：`GET/POST /api/kb/collections`、`GET/DELETE /api/kb/collections/{kb_id}`、`PATCH /api/kb/collections/{kb_id}/toggle`、`POST /api/kb/embedding-models`；`/api/kb/upload` 改造支持 `kb_id`+`chunk_method`+`chunk_size` 参数；`/api/kb/list` 加 `kb_id` 过滤；新增错误码 `KB_NOT_FOUND`/`KB_NOT_DELETABLE`/`KB_CREATE_FAILED`/`KB_DELETE_FAILED`/`AGENT_CHUNK_FAILED`/`AGENT_CHUNK_INCOMPLETE`；KB 接口状态推进为 `implemented` | Trae |
+| 2026-06-23 | `/api/chat` SSE `source` 事件新增 `kb_id`+`kb_name` 字段，RAG 搜索改为走 `KnowledgeBaseManager.search_all_enabled()` 多 KB 融合检索 | Trae |
 
 ## 8. 包工头检查清单
 

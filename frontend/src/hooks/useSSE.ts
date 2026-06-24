@@ -17,7 +17,7 @@ export function useSSE() {
     async (path: string, body: unknown, opts: UseSSEOptions) => {
       abortRef.current?.abort();
       abortRef.current = new AbortController();
-      await apiSSE(path, body, opts);
+      await apiSSE(path, body, opts, abortRef.current);
     },
     []
   );

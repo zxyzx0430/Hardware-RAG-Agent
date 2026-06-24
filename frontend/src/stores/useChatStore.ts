@@ -118,26 +118,30 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setSources: (sources) => set({ sources }),
 
   setActiveSession: (id) => {
-    const { activeSessionId, messages, sessionMessages, isStreaming, streamingSessionId } = get();
+    const { activeSessionId, messages, sessionMessages, isStreaming,
+            streamingSessionId, currentSseRequest } = get();
     if (id === activeSessionId) return;
     log("info", "chat", `切换会话: ${activeSessionId} → ${id}`);
 
-    // 如果正在流式输出，保存当前部分消息到 sessionMessages，但不中止 SSE
-    // SSE 回调通过 requestSessionId 闭包继续写入正确的 sessionMessages
+    // 流式中切换会话：保存部分内容并中止 SSE（符合项目约束）
+    // 不中止会导致切回时空的 streamingContent 覆盖已有内容
     let finalMessages = messages;
-    if (isStreaming) {
+    if (isStreaming && streamingSessionId) {
       const { streamingContent, streamingSteps } = get();
       finalMessages = messages.map((m, i) =>
         i === messages.length - 1 && m.role === "assistant"
           ? {
               ...m,
               content: streamingContent || m.content,
-              ...(streamingSteps.length > 0 ? { activity: { durationMs: 0, steps: streamingSteps } } : {}),
+              ...(streamingSteps.length > 0
+                ? { activity: { durationMs: 0, steps: streamingSteps, status: "done" as const } }
+                : {}),
             }
           : m
       );
-      // 注意：不中止 SSE，让后台继续接收数据
-      log("info", "chat", `会话 ${streamingSessionId} 的流式输出将在后台继续`);
+      // 中止后台 SSE（apiSSE 的 catch 块会识别为用户中止，不触发 onError）
+      if (currentSseRequest) currentSseRequest.abort();
+      log("info", "chat", `会话 ${streamingSessionId} 流式输出已中止并保存部分内容`);
     }
 
     // 保存当前会话的消息
@@ -152,14 +156,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
       activeSessionId: id,
       messages: loadedMessages,
       sessionMessages: updatedSessionMessages,
-      // 清除 UI 层面的流式状态（SSE 后台继续运行，通过 requestSessionId 写入 sessionMessages）
       isStreaming: false,
       streamingContent: "",
       streamingSteps: [],
       streamingSources: [],
       streamingSessionId: null,
       streamingStartTime: null,
-      // 保留 currentSseRequest，SSE 完成时 onDone/onError 会通过闭包清理
+      currentSseRequest: null,
     });
 
     saveSessionMessages(activeSessionId, finalMessages);
@@ -219,7 +222,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     // 构建请求体：历史消息 + 设置（扁平结构，对齐后端 ChatRequest）
     const { topK, temperature, systemPrompt, longTermMemory, model, maxTokens } = useSettingsStore.getState();
-    log("debug", "chat", `model=${model} topK=${topK} maxTokens=${maxTokens} sessionId=${activeSessionId}`);
+    log("info", "chat", `model=${model} topK=${topK} maxTokens=${maxTokens} sessionId=${activeSessionId} systemPrompt="${systemPrompt?.slice(0, 50)}..."`);
     const history = messages.map((m) => ({ role: m.role, content: m.content }));
     const newMsg = { role: "user" as const, content: apiContent };
     const requestBody = {
@@ -227,7 +230,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       top_k: topK,
       temperature,
       max_tokens: maxTokens,
-      system_prompt: systemPrompt || undefined,
+      system_prompt: systemPrompt,
       long_term_memory: longTermMemory || undefined,
       model: model || undefined,
       attachments: attachments && attachments.length > 0 ? attachments : undefined,
@@ -354,6 +357,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 page: sse.page ?? 0,
                 score: sse.score ?? 0,
                 excerpt: sse.excerpt ?? "",
+                kb_id: sse.kb_id,
+                kb_name: sse.kb_name,
               };
               const msgs = [...currentMsgs];
               const last = msgs[msgs.length - 1];
@@ -476,14 +481,35 @@ export const useChatStore = create<ChatState>((set, get) => ({
       log("warn", "chat", errorMessage ? "流式输出因错误停止" : "用户手动停止流式输出");
       if (currentSseRequest) currentSseRequest.abort();
 
-      const finalContent = errorMessage
-        ? (streamingContent ? `${streamingContent}\n\n❌ ${errorMessage}` : `❌ ${errorMessage}`)
-        : streamingContent;
+      // 防御：streamingSessionId 已丢失说明状态已过期（如切换会话后被清空），
+      // 跳过写入避免误伤当前会话
+      if (!streamingSessionId) {
+        log("warn", "chat", "streamingSessionId 已丢失，跳过 stopStreaming 写入");
+        return {
+          isStreaming: false,
+          streamingContent: "",
+          streamingSteps: [],
+          streamingSources: [],
+          streamingSessionId: null,
+          streamingStartTime: null,
+          currentSseRequest: null,
+        };
+      }
 
-      // 始终针对发起流式请求的会话写入结果，避免切换会话后状态过期
-      const sid = streamingSessionId ?? activeSessionId;
+      const sid = streamingSessionId;
       const isActive = activeSessionId === sid;
       const targetMsgs = isActive ? messages : (sessionMessages[sid] ?? []);
+
+      // 优先取已有内容，避免 streamingContent 为空时用纯错误消息覆盖
+      const lastMsg = targetMsgs[targetMsgs.length - 1];
+      const existingContent = isActive
+        ? streamingContent
+        : (typeof lastMsg?.content === "string" ? lastMsg.content : "");
+
+      const finalContent = errorMessage
+        ? (existingContent ? `${existingContent}\n\n❌ ${errorMessage}` : `❌ ${errorMessage}`)
+        : (streamingContent || existingContent);
+
       const finalTargetMsgs = targetMsgs.map((m, i) =>
         i === targetMsgs.length - 1 && m.role === "assistant" && finalContent
           ? { ...m, content: finalContent, ...(streamingSteps.length > 0 ? { activity: { durationMs: 0, steps: streamingSteps, status: "done" as const } } : {}) }
@@ -766,7 +792,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (format === "markdown") {
       content = messages.map((m) => {
         const role = m.role === "user" ? "**用户**" : "**Assistant**";
-        return `${role}\n\n${m.content}\n\n---`;
+        // Handle ContentPart[] content (images/multimodal)
+        const text = typeof m.content === "string"
+          ? m.content
+          : Array.isArray(m.content)
+            ? m.content.map((p) => {
+                if (p.type === "text") return p.text;
+                if (p.type === "image_url") return `![Image](${p.image_url.url})`;
+                return "";
+              }).join("\n\n")
+            : "";
+        return `${role}\n\n${text}\n\n---`;
       }).join("\n\n");
       filename = `chat-export-${Date.now()}.md`;
       mimeType = "text/markdown";

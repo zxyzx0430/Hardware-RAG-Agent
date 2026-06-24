@@ -61,8 +61,11 @@ def current_user(
     except HTTPException:
         raise
     except Exception:
-        logger.warning("鉴权存储读取失败，跳过鉴权")
-        return {"provider": None, "api_key": None, "anonymous": True}
+        logger.warning("鉴权存储读取失败，拒绝访问")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"success": False, "error": {"code": "AUTH_STORE_ERROR", "message": "鉴权服务暂时不可用"}},
+        )
 
 
 def current_user_optional(

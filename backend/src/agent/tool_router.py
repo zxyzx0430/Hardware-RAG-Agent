@@ -206,7 +206,7 @@ class AuditPinsTool:
 
     async def run(self, args: dict) -> dict:
         return {
-            "output": "引脚冲突审计完成：未发现冲突（stub）。",
+            "output": f"引脚冲突审计完成：chip={args.get('chip', 'N/A')}, pins={list((args.get('pin_assignments', {}) or {}).keys())}（stub）。",
             "duration_ms": 0,
         }
 
@@ -217,7 +217,7 @@ class WiringTool:
 
     async def run(self, args: dict) -> dict:
         return {
-            "output": "接线图生成完成（stub）。",
+            "output": f"接线图生成完成：title={args.get('title', 'N/A')}, components={len(args.get('components', []))}（stub）。",
             "duration_ms": 0,
         }
 
@@ -228,7 +228,7 @@ class BuildTool:
 
     async def run(self, args: dict) -> dict:
         return {
-            "output": "固件编译完成（stub）。",
+            "output": f"固件编译完成：env={args.get('env', 'N/A')}, project_dir={args.get('project_dir', 'N/A')}（stub）。",
             "duration_ms": 0,
         }
 
@@ -239,7 +239,7 @@ class UploadTool:
 
     async def run(self, args: dict) -> dict:
         return {
-            "output": "固件烧录完成（stub）。",
+            "output": f"固件烧录完成：env={args.get('env', 'N/A')}, port={args.get('port', 'N/A')}（stub）。",
             "duration_ms": 0,
         }
 
@@ -249,8 +249,8 @@ class SearchDocsTool:
     name = "search_docs"
 
     async def run(self, args: dict) -> dict:
-        query = args.get("query", "")
-        top_k = args.get("top_k", 5)
+        query = args.get('query', '')
+        top_k = args.get('top_k', 5)
         return {
             "output": f"文档检索完成：query={query}, top_k={top_k}（stub）。",
             "duration_ms": 0,
@@ -272,8 +272,8 @@ class CodeExecutorTool:
 
     async def run(self, args: dict) -> dict:
         from src.sandbox import execute_code
-        code = args.get("code", "")
-        language = args.get("language", "python")
+        code = args.get('code', '')
+        language = args.get('language', 'python')
         result = await execute_code(code, language)
         return {
             "output": result.stdout if result.exit_code == 0 else result.stderr,

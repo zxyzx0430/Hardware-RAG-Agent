@@ -28,6 +28,15 @@ interface SettingsState {
   lang: string;
   baseUrls: Record<string, string>;
 
+  // RAG global defaults (for KB creation)
+  embeddingDefaultModel: string;
+  embeddingDefaultBaseUrl: string;
+  embeddingDefaultApiKey: string;
+  agentChunkerDefaultModel: string;
+  agentChunkerDefaultBaseUrl: string;
+  agentChunkerDefaultApiKey: string;
+  defaultContextWindow: number;
+
   setActiveProvider: (p: string) => void;
   setProviderKey: (p: string, k: string) => void;
   toggleShowKey: (p: string) => void;
@@ -68,6 +77,9 @@ const PERSIST_KEYS: (keyof SettingsState)[] = [
   "activeProvider", "providerKeys", "model", "visionModel", "imageModel",
   "temperature", "topK", "maxTokens", "systemPrompt", "longTermMemory",
   "skills", "mcpServers", "toolKeys", "chatFontSize", "themeMode", "lang", "baseUrls",
+  "embeddingDefaultModel", "embeddingDefaultBaseUrl", "embeddingDefaultApiKey",
+  "agentChunkerDefaultModel", "agentChunkerDefaultBaseUrl", "agentChunkerDefaultApiKey",
+  "defaultContextWindow",
 ];
 
 // 默认值
@@ -84,7 +96,7 @@ const DEFAULTS = {
   temperature: 0.2,
   topK: 5,
   maxTokens: 8192,
-  systemPrompt: "你是一个嵌入式系统专家助手，专注于 STM32、ESP32、ARM Cortex-M 等硬件平台。回答时请优先引用官方手册，给出精确的寄存器名和配置步骤。",
+  systemPrompt: "",
   longTermMemory: "",
   skills: [
     { name: "search_docs", desc: "在向量知识库中检索文档片段", enabled: true },
@@ -105,6 +117,13 @@ const DEFAULTS = {
   themeMode: "light",
   lang: "zh",
   baseUrls: {} as Record<string, string>,
+  embeddingDefaultModel: "text-embedding-3-small",
+  embeddingDefaultBaseUrl: "https://api.openai.com/v1",
+  embeddingDefaultApiKey: "",
+  agentChunkerDefaultModel: "gpt-4o-mini",
+  agentChunkerDefaultBaseUrl: "https://api.openai.com/v1",
+  agentChunkerDefaultApiKey: "",
+  defaultContextWindow: 256000,
 };
 
 // 从 localStorage 加载已保存的值，覆盖默认值
@@ -270,3 +289,5 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 useSettingsStore.subscribe((state) => {
   persist(state);
 });
+
+

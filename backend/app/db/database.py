@@ -49,6 +49,17 @@ def init_db():
             except Exception:
                 pass  # 列已存在
 
+        # 为 knowledge_docs 添加 kb_id 和 chunk_method_used（幂等）
+        for col_def in ("kb_id TEXT DEFAULT 'builtin-001'", "chunk_method_used TEXT DEFAULT 'hybrid'"):
+            try:
+                conn.execute(
+                    __import__("sqlalchemy").text(
+                        f"ALTER TABLE knowledge_docs ADD COLUMN {col_def}"
+                    )
+                )
+            except Exception:
+                pass  # 列已存在
+
         # 创建 FTS5 虚拟表（用于消息全文搜索，幂等）
         try:
             conn.execute(

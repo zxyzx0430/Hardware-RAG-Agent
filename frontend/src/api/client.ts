@@ -137,6 +137,25 @@ export async function apiDelete<T>(path: string, body?: unknown, timeoutMs?: num
   }
 }
 
+// ─── apiPatch ───────────────────────────────────────────────
+export async function apiPatch<T>(path: string, body?: unknown, timeoutMs?: number): Promise<T> {
+  const authHeaders = getAuthHeaders();
+  const opts: RequestInit = {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", ...authHeaders },
+    body: body ? JSON.stringify(body) : undefined,
+  };
+  try {
+    const res = await fetchWithTimeout(`/api/${path.replace(/^\//, "")}`, opts, timeoutMs);
+    const result = await unwrapResponse<T>(res);
+    getLog()("ok", "api", `PATCH ${path} → OK`);
+    return result;
+  } catch (err) {
+    getLog()("error", "api", `PATCH ${path} → ${err instanceof Error ? err.message : String(err)}`);
+    throw err;
+  }
+}
+
 // ─── SSE Callbacks ───────────────────────────────────────────
 type SSEHandler = (event: ChatSSEEvent | BuildSSEEvent) => void;
 type SSECallback = {
@@ -201,7 +220,9 @@ export async function apiSSE(
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
         resetIdleTimer();
-        const lines = buffer.split("\n");
+        // Normalize line endings to support CRLF / CR / LF (SSE spec allows all)
+        const normalized = buffer.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+        const lines = normalized.split("\n");
         buffer = lines.pop() ?? "";
         for (const line of lines) {
           if (line.startsWith("event: ")) {
@@ -231,6 +252,8 @@ export async function apiSSE(
                 if (consecutiveFailures >= 3) {
                   callbacks.onError?.(new Error("SSE 连续解析失败，请检查网络连接"));
                   consecutiveFailures = 0;
+                  controller.abort();
+                  return;
                 }
               }
               dataBuffer = "";
@@ -238,6 +261,26 @@ export async function apiSSE(
             }
           }
         }
+      }
+
+      // Process any trailing event that didn't end with an empty line (defensive)
+      if (dataBuffer) {
+        try {
+          const parsed = JSON.parse(dataBuffer);
+          consecutiveFailures = 0;
+          if (!parsed.type && currentEvent) parsed.type = currentEvent;
+          const event = parsed as ChatSSEEvent | BuildSSEEvent;
+          getLog()("debug", "sse", `SSE ${path} trailing event: ${event.type}`);
+          callbacks.onEvent(event);
+          if (event.type === "done") {
+            getLog()("ok", "sse", `SSE ${path} completed (trailing)`);
+          }
+        } catch {
+          consecutiveFailures++;
+          getLog()("warn", "sse", `SSE trailing JSON 解析失败 (${consecutiveFailures}): ${dataBuffer.slice(0, 100)}`);
+        }
+        dataBuffer = "";
+        currentEvent = "";
       }
     } catch (readErr) {
       // reader.read() threw (network error, stream aborted by server, etc.)
@@ -284,7 +327,7 @@ export function apiWS(
     const port = window.location.port === "5173" || window.location.hostname === "127.0.0.1"
       ? "58080"
       : window.location.port || (window.location.protocol === "https:" ? "443" : "80");
-    url = `${protocol}//${window.location.hostname}:${port}/api${endpoint}`;
+    url = `${protocol}//${window.location.hostname}:${port}${endpoint}`;
   }
   const ws = new WebSocket(url);
   ws.addEventListener("open", () => {

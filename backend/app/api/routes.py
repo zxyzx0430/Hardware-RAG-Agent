@@ -288,46 +288,74 @@ async def chat_sse(payload: ChatRequest, request: Request):
 
         # 在 LLM 开始输出前，发送一个 thinking 事件表示"正在生成回答"
         yield sse_event("thinking", {"content": "正在生成回答...", "source": "llm"})
-
         try:
             usage_data = None
-            async for chunk in client.chat_stream(
-                user_message=last_user_msg,
-                system_prompt=system_prompt,
-                history=history[:-1] if len(history) > 1 else None,
-                api_key=api_key,
-                base_url=base_url,
-                model=model,
-                provider=provider,
-            ):
-                # 根据 StreamChunk.type 发送对应的 SSE 事件
-                if chunk.type == "thinking":
-                    yield sse_event("thinking", {"content": chunk.content, "source": "reasoning"})
-                elif chunk.type == "usage":
-                    usage_data = chunk.usage
-                    logger.info(f"LLM usage: {usage_data}")
-                else:
-                    # TODO: ReAct loop — 检测 LLM 响应中的 tool_call，自动调用 dispatch 并将结果注入下一轮对话
-                    #
-                    # 扩展方式：
-                    # 1. 在 SSE 流中解析 LLM 的 tool_calls/function_call 参数
-                    # 2. 调用 tool_router.dispatch() 执行工具
-                    # 3. 将工具结果作为 tool message 注入对话历史
-                    # 4. 继续调用 LLM 直到无更多 tool_call
-                    # 5. 中间结果通过 SSE tool 事件推送给前端
-                    # 6. 注意处理工具超时、降级、错误恢复
-                    # 当前实现：LLM 输出纯文本，工具调用需用户手动触发
-                    # ReAct 模式：解析 LLM 输出中的 function_call/tool_calls，调用 tool_router.dispatch()，
-                    #   将工具结果作为 tool message 注入对话历史，继续调用 LLM 直到无更多 tool_call
-                    # 接口预留：SSE "tool" 事件已支持 args/result 字段，前端 ActivityBlock 已支持工具节点渲染
-                    yield sse_event("text", {"content": chunk.content})
-            done_payload: dict = {"success": True}
-            if usage_data:
-                done_payload["usage"] = usage_data
-            yield sse_event("done", done_payload)
+            IDLE_TIMEOUT = 300
+            _queue = asyncio.Queue()
+
+            async def _llm_worker(q):
+                try:
+                    async for chunk in client.chat_stream(
+                        user_message=last_user_msg,
+                        system_prompt=system_prompt,
+                        history=history[:-1] if len(history) > 1 else None,
+                        api_key=api_key,
+                        base_url=base_url,
+                        model=model,
+                        provider=provider,
+                    ):
+                        await q.put(chunk)
+                except asyncio.CancelledError:
+                    pass
+                except Exception as exc:
+                    logger.error(f"LLM stream error: {exc}")
+                    await q.put(exc)
+                finally:
+                    await q.put(None)
+
+            worker_task = asyncio.create_task(_llm_worker(_queue))
+            _stream_ok = False
+            try:
+                while True:
+                    try:
+                        chunk = await asyncio.wait_for(_queue.get(), timeout=IDLE_TIMEOUT)
+                    except asyncio.TimeoutError:
+                        logger.error("LLM 响应超时 (5min)")
+                        yield sse_event("error", {"message": "LLM 响应超时，请重试"})
+                        yield sse_event("done", {"success": False})
+                        break
+                    if chunk is None:
+                        _stream_ok = True
+                        break
+                    if isinstance(chunk, Exception):
+                        raise chunk
+                    if chunk.type == "thinking":
+                        yield sse_event("thinking", {"content": chunk.content, "source": "reasoning"})
+                    elif chunk.type == "usage":
+                        usage_data = chunk.usage
+                        logger.info(f"LLM usage: {usage_data}")
+                    else:
+                        # TODO: ReAct loop
+                        yield sse_event("text", {"content": chunk.content})
+            finally:
+                worker_task.cancel()
+                try:
+                    await worker_task
+                except asyncio.CancelledError:
+                    pass
+
+            if _stream_ok:
+                done_payload = {"success": True}
+                if usage_data:
+                    done_payload["usage"] = usage_data
+                yield sse_event("done", done_payload)
+        except asyncio.CancelledError:
+            logger.info("SSE 流被客户端取消")
+            raise
         except Exception as e:
             logger.error(f"LLM call failed: {e}")
             yield sse_event("error", {"message": _sanitize_error(f"LLM 调用失败: {str(e)}")})
+            yield sse_event("done", {"success": False})
             yield sse_event("done", {"success": False})
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")

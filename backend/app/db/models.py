@@ -53,6 +53,32 @@ class Message(Base):
     session = relationship("Session", back_populates="messages")
 
 
+class KnowledgeBase(Base):
+    """Knowledge base collection — supports multiple KBs with different embeddings."""
+
+    __tablename__ = "knowledge_bases"
+
+    id = Column(String, primary_key=True)
+    name = Column(String, nullable=False)
+    description = Column(String, default="")
+    collection_name = Column(String, unique=True, nullable=False)
+    chunk_method = Column(String, default="hybrid")  # hybrid / agent
+    embedding_model = Column(String, default="text-embedding-3-small")
+    embedding_base_url = Column(String, nullable=True)
+    embedding_api_key_encrypted = Column(String, nullable=True)
+    agent_chunker_model = Column(String, default="gpt-4o-mini")
+    agent_chunker_base_url = Column(String, default="https://api.openai.com/v1")
+    agent_chunker_api_key_encrypted = Column(String, nullable=True)
+    context_window = Column(Integer, default=256000)
+    enabled = Column(Boolean, default=True)
+    is_builtin = Column(Boolean, default=False)
+    builtin_path = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+    docs = relationship("KnowledgeDoc", back_populates="kb")
+
+
 class KnowledgeDoc(Base):
     """知识库文档入库记录。"""
 
@@ -60,14 +86,18 @@ class KnowledgeDoc(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     doc_id = Column(String, unique=True, index=True)  # 文档唯一标识（文件名）
+    kb_id = Column(String, ForeignKey("knowledge_bases.id"), default="builtin-001", index=True)
     title = Column(String, default="")
     category = Column(String, default="user_upload")
     file_type = Column(String, default="")  # pdf / md / txt
     file_size = Column(Integer, default=0)  # bytes
     chunk_count = Column(Integer, default=0)
+    chunk_method_used = Column(String, default="hybrid")
     status = Column(String, default="indexed")  # indexing / indexed / error
     error_message = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    kb = relationship("KnowledgeBase", back_populates="docs")
 
 
 class BookmarkFolder(Base):

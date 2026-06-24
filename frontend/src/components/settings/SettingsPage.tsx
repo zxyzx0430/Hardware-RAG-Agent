@@ -8,6 +8,7 @@ import { useLogStore } from "../../stores/useLogStore";
 import { apiPost } from "../../api/client";
 import { useI18n } from "../../i18n";
 import type { ContentPart } from "../../types/session";
+import { RagSettingsPanel } from "./RagSettingsPanel";
 
 const TAB_IDS = ["api", "rag", "memory", "appearance", "usage", "logs", "mcp", "skills", "about"] as const;
 
@@ -316,7 +317,9 @@ export function SettingsPage() {
                 <div style={{ marginBottom: 24 }}><div className="field-label">{t('temperature')}: {temperature}</div><p style={{ fontSize:12,color:'var(--muted-fg)',marginBottom:8 }}>{t('tempDesc')}</p><div className="range-wrap"><span className="range-label">0</span><input type="range" min="0" max="1" step="0.05" value={temperature} onChange={(e) => updateSetting('temperature', parseFloat(e.target.value))} className="range-slider" /><span className="range-label">1</span></div></div>
                 <div style={{ marginBottom: 24 }}><div className="field-label">{t('topK')}: {topK}</div><p style={{ fontSize:12,color:'var(--muted-fg)',marginBottom:8 }}>{t('topKDesc')}</p><div className="range-wrap"><span className="range-label">1</span><input type="range" min="1" max="20" step="1" value={topK} onChange={(e) => updateSetting('topK', parseInt(e.target.value))} className="range-slider" /><span className="range-label">20</span></div></div>
                 <div style={{ marginBottom: 24 }}><div className="field-label">{t('maxTokens')}: {maxTokens}</div><p style={{ fontSize:12,color:'var(--muted-fg)',marginBottom:8 }}>{t('maxTokensDesc')}</p><div className="range-wrap"><span className="range-label">512</span><input type="range" min="512" max="8192" step="256" value={maxTokens} onChange={(e) => updateSetting('maxTokens', parseInt(e.target.value))} className="range-slider" /><span className="range-label">8192</span></div></div>
-                <div style={{ borderRadius:6,border:'1px solid var(--border)',background:'var(--thinking-bg)',padding:'12px 16px' }}><p style={{ fontSize:12,color:'var(--muted-fg)' }}>{t('currentConfig')}: Top-{topK}, Temperature {temperature}, {maxTokens.toLocaleString()} tokens</p></div>
+                <div style={{ borderRadius:6,border:'1px solid var(--border)',background:'var(--thinking-bg)',padding:'12px 16px',marginBottom:24 }}><p style={{ fontSize:12,color:'var(--muted-fg)' }}>{t('currentConfig')}: Top-{topK}, Temperature {temperature}, {maxTokens.toLocaleString()} tokens</p></div>
+
+                <RagSettingsPanel />
               </div>
             )}
 

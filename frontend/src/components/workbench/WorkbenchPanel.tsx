@@ -204,7 +204,7 @@ function SerialPane() {
     const portValue = port || ports[0];
     const portName = portValue.split(" — ")[0];
     useLogStore.getState().log("info", "serial", `连接串口: ${portName} @ ${baudRate}`);
-    const ws = apiWS(`/monitor/${portName}?baud=${baudRate}`, {
+    const ws = apiWS(`/api/monitor/${portName}?baud=${baudRate}`, {
       onOpen: () => {
         setConnected(true);
         wsRef.current = ws;

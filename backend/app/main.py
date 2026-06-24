@@ -8,6 +8,7 @@ Hardware RAG Agent — FastAPI 后端入口
 
 import sys
 import os
+import json
 import logging
 import time
 import uuid
@@ -23,7 +24,12 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api.routes import router
+# v1: routes.py 保留不动，新代码走拆分路由
+from app.api.chat_routes import router as chat_router
+from app.api.kb_routes import router as kb_router
+from app.api.hardware_routes import router as hardware_router
+from app.api.build_routes import router as build_router
+from app.api.tool_routes import router as tool_router
 from app.api.auth import router as auth_router
 from app.api.crud import db_router
 from app.api.sandbox_routes import router as sandbox_router
@@ -39,41 +45,86 @@ MAX_REQUEST_BODY_SIZE = int(os.getenv("MAX_BODY_SIZE", 20 * 1024 * 1024))
 # 日志配置
 _LOGGER = logging.getLogger(__name__)
 
-async def limit_request_body_middleware(request: Request, call_next):
-    """限制 /api/chat 请求体不超过 20MB。"""
-    if request.url.path == "/api/chat":
-        content_length = request.headers.get("content-length")
-        if content_length and int(content_length) > MAX_REQUEST_BODY_SIZE:
-            return JSONResponse(
-                status_code=413,
-                content={"success": False, "error": {"code": "PAYLOAD_TOO_LARGE", "message": "请求体超过 20MB 限制"}},
-            )
-    return await call_next(request)
+# ═══════════════════════════════════════════════════════════
+# 纯 ASGI 中间件 — 不缓冲 SSE 流式响应
+# （替换原 BaseHTTPMiddleware，后者会消费整个响应体再转发，
+#   导致 /api/chat 的 SSE 事件无法逐个推送到前端）
+# ═══════════════════════════════════════════════════════════
+
+class _RequestBodyLimitMiddleware:
+    """纯 ASGI 中间件：拒绝超大体请求，不缓冲流式响应。"""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        path = scope.get("path", "")
+        if path == "/api/chat":
+            headers = {k.decode(): v.decode() for k, v in scope.get("headers", [])}
+            cl = headers.get("content-length")
+            if cl and int(cl) > MAX_REQUEST_BODY_SIZE:
+                body = json.dumps({
+                    "success": False,
+                    "error": {"code": "PAYLOAD_TOO_LARGE", "message": "请求体超过 20MB 限制"},
+                }).encode()
+                await send({
+                    "type": "http.response.start",
+                    "status": 413,
+                    "headers": [
+                        (b"content-type", b"application/json"),
+                        (b"content-length", str(len(body)).encode()),
+                    ],
+                })
+                await send({"type": "http.response.body", "body": body})
+                return
+
+        await self.app(scope, receive, send)
 
 
-async def request_log_middleware(request: Request, call_next):
-    """为每个请求分配 request-id，记录访问日志，返回 X-Request-Id 响应头。
+class _RequestLogMiddleware:
+    """纯 ASGI 中间件：注入 X-Request-Id + 访问日志，不缓冲流式响应。"""
 
-    对应 api-contract.md §2.15 请求追踪 ID 约定。
-    """
-    request_id = str(uuid.uuid4())
-    request.state.request_id = request_id
+    def __init__(self, app):
+        self.app = app
 
-    start_ns = time.time_ns()
-    response = await call_next(request)
-    elapsed_ms = (time.time_ns() - start_ns) / 1_000_000
+    async def __call__(self, scope, receive, send):
+        if scope["type"] not in ("http", "websocket"):
+            await self.app(scope, receive, send)
+            return
 
-    response.headers["X-Request-Id"] = request_id
+        request_id = str(uuid.uuid4())
+        start_ns = time.time_ns()
+        status_code = 0
 
-    _LOGGER.info(
-        "%s %s %s %.0fms %s",
-        request.method,
-        request.url.path,
-        response.status_code,
-        elapsed_ms,
-        request_id,
-    )
-    return response
+        # 注入 request_id 到 scope.state，路由中可通过 request.state.request_id 访问
+        if "state" not in scope:
+            scope["state"] = {}
+        scope["state"]["request_id"] = request_id
+
+        async def _send(message):
+            nonlocal status_code
+            if message["type"] == "http.response.start":
+                status_code = message.get("status", 0)
+                headers = list(message.get("headers", []))
+                headers.append((b"x-request-id", request_id.encode()))
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, _send)
+
+        elapsed_ms = (time.time_ns() - start_ns) / 1_000_000
+        _LOGGER.info(
+            "%s %s %s %.0fms %s",
+            scope.get("method", "?"),
+            scope.get("path", "?"),
+            status_code,
+            elapsed_ms,
+            request_id,
+        )
 
 
 def configure_logging():
@@ -113,11 +164,11 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # 请求体大小限制中间件
-    app.middleware("http")(limit_request_body_middleware)
+    # 请求体大小限制中间件（纯 ASGI，不缓冲 SSE）
+    app.add_middleware(_RequestBodyLimitMiddleware)
 
-    # 请求追踪与访问日志中间件（在 CORS 之后注册，确保能被遍历）
-    app.middleware("http")(request_log_middleware)
+    # 请求追踪与访问日志中间件（纯 ASGI，不缓冲 SSE）
+    app.add_middleware(_RequestLogMiddleware)
 
     # 全局异常处理器：捕获未处理异常，避免堆栈泄露给客户端
     @app.exception_handler(Exception)
@@ -135,7 +186,11 @@ def create_app() -> FastAPI:
             },
         )
 
-    app.include_router(router)
+    app.include_router(chat_router)
+    app.include_router(kb_router)
+    app.include_router(hardware_router)
+    app.include_router(build_router)
+    app.include_router(tool_router)
     app.include_router(auth_router)
     app.include_router(db_router)
     app.include_router(sandbox_router)
@@ -145,6 +200,16 @@ def create_app() -> FastAPI:
 
     env = os.getenv("ENVIRONMENT", "development")
     _LOGGER.info("App created: env=%s cors=%s", env, allowed_origins)
+
+    @app.on_event("startup")
+    async def _ensure_builtin_kb():
+        """启动时确保内置 KB 存在（若 builtin_kb 路径存在）。"""
+        try:
+            from src.rag.kb_manager import get_kb_manager
+            kb_manager = get_kb_manager()
+            kb_manager.ensure_builtin_kb()
+        except Exception:
+            _LOGGER.warning("初始化内置 KB 失败（非致命）", exc_info=True)
 
     @app.get("/")
     async def root():

@@ -186,7 +186,7 @@ export function ChatArea() {
 
         const bookmarked = isBookmarked(msg.id);
         // 判断该消息是否正在流式输出（最后一条 assistant 消息且正在 streaming）
-        const isCurrentlyStreaming = isStreaming && msg === messages[messages.length - 1];
+        const isCurrentlyStreaming = isStreaming && msg.id === messages[messages.length - 1]?.id;
 
         return (
           <div className="msg-row" id={`msg-${msg.id}`} key={msg.id}>
@@ -216,6 +216,7 @@ export function ChatArea() {
                         }}
                       >
                         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color:'var(--primary)' }}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                        {src.kb_name ? <span className="source-chip-kb">{src.kb_name}</span> : null}
                         <span>{src.title}</span>
                         <span className="source-chip-score">{(src.score * 100).toFixed(0)}%</span>
                       </button>

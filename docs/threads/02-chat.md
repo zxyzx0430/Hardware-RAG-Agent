@@ -33,7 +33,7 @@
   - InputBar 模型选择、附件上传、Markdown 预览
   - 收藏/引用/导出功能
 - 正在做：
-  - （等待任务分配）
+  - 等待 00-control 验收 routes.py 拆分 + SSE 修复
 - 已修复：
   - #3 vite.config.ts test 配置移除（构建阻断）
   - #10 SSE tool args 改为 JSON 对象
@@ -41,6 +41,9 @@
   - #13 添加 SSE 读超时（5 分钟无数据断开）
   - #21 onDone 非活跃会话清理流式状态
   - ReAct TODO 注释增强（保持可扩展性）
+  - #B1 SSE 消灭僵尸协程（CancelledError 捕获 + re-raise）
+  - #B2 SSE 添加 5min idle timeout（asyncio.wait_for + queue 模式）
+  - #B3 流式结束后资源清理（worker_task.cancel + finally）
 - 阻塞：
   - 无
 
@@ -75,6 +78,7 @@
 - 2026-06-21：SSE 客户端中将 onDone 移到 read loop 自然结束后，避免早发
 - 2026-06-21：增加 SSE idle timeout（5分钟无数据断开），避免界面卡死
 - 2026-06-21：非活跃会话的 onDone 也清理全局流式状态，避免 streaming 状态残留
+- 2026-06-21：routes.py 拆分完成：chat_routes.py/kb_routes.py/hardware_routes.py/build_routes.py/tool_routes.py + common.py，共用函数抽出到 common.py
 - 2026-06-19：AbortController 必须从外部传入 apiSSE，避免 store 与 fetch 各持一个 controller 导致中止无效
 - 2026-06-20：thinking step 合并必须检查 source 字段，不同来源（rag/llm/reasoning）不可合并
 - 2026-06-20：普通模型不返回 reasoning_content，后端主动发 thinking 事件模拟思考状态
@@ -92,5 +96,9 @@
 ## 下次开工先看
 1. 读 docs/thread-map.md 确认职责边界
 2. 读 docs/api-contract.md 中聊天相关章节（S5.1）
-3. 读 docs/pitfalls.md 中聊天相关踩坑
-4. 修复错误后更新 docs/pitfalls.md
+3. 读 docs/todos/02-chat.md 查看当前 TODO 列表
+4. 读 docs/pitfalls.md 中聊天相关踩坑
+5. 修复错误后更新 docs/pitfalls.md
+
+---
+小结：02-chat 负责 SSE 流式聊天全链路，不越界改其他线程代码。当前所有 SSE 相关优化已完成（CancelledError/idle timeout/cleanup）。下一步等待 00-control 验收 routes.py 拆分和 SSE 修复。

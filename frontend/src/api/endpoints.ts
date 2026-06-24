@@ -7,6 +7,12 @@ export const ENDPOINTS = {
   chat: "/api/chat",           // POST SSE
   models: "/api/models",       // POST JSON
   kbUpload: "/api/kb/upload",  // POST multipart
+  kbList: "/api/kb/list",      // GET JSON
+  kbDelete: "/api/kb/delete",  // POST JSON
+  kbCollections: "/api/kb/collections",              // GET/POST JSON
+  kbCollectionDetail: (id: string) => `/api/kb/collections/${id}`,           // GET/DELETE JSON
+  kbCollectionToggle: (id: string) => `/api/kb/collections/${id}/toggle`,    // PATCH JSON
+  kbEmbeddingModels: "/api/kb/embedding-models",     // POST JSON
   devices: "/api/devices",     // GET JSON
   wiring: "/api/wiring",       // POST JSON
   auditPins: "/api/audit_pins",// POST JSON
@@ -14,7 +20,7 @@ export const ENDPOINTS = {
   upload: "/api/upload",       // POST SSE
   tool: "/api/tool",           // POST JSON
   monitor: (port: string, baud?: number) =>
-    `/monitor/${port}${baud ? `?baud=${baud}` : ""}`, // WS
+    `/api/monitor/${port}${baud ? `?baud=${baud}` : ""}`, // WS
 } as const;
 
 export const SSE_EVENTS = {
