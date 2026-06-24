@@ -97,7 +97,7 @@ interface SessionState {
   deleteProject: (name: string) => void;
   setCreateProjectInputVisible: (visible: boolean) => void;
   /** 更新会话元数据（msgCount, preview, title, branchFromSessionId, branchFromMessageId 等） */
-  updateSessionMeta: (sessionId: string, updates: Partial<Pick<Session, "msgCount" | "preview" | "title" | "branchFromSessionId" | "branchFromMessageId">>) => void;
+  updateSessionMeta: (sessionId: string, updates: Partial<Pick<Session, "msgCount" | "preview" | "title" | "model" | "branchFromSessionId" | "branchFromMessageId">>) => void;
 }
 
 export const useSessionStore = create<SessionState>((set, get) => ({

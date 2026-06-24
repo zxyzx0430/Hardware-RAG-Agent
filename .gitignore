@@ -91,3 +91,10 @@ temp_check_docs.py
 update_thread.py
 scripts/gh_search.py
 scripts/lf_convert.py
+
+# ─── 临时后端测试文件 ───
+backend/backend_log.txt
+backend/start_backend.py
+backend/test_db.py
+backend/test_sqla.py
+tmp_scan.txt

@@ -117,13 +117,13 @@ const DEFAULTS = {
   themeMode: "light",
   lang: "zh",
   baseUrls: {} as Record<string, string>,
-  embeddingDefaultModel: "text-embedding-3-small",
-  embeddingDefaultBaseUrl: "https://api.openai.com/v1",
+  embeddingDefaultModel: "",
+  embeddingDefaultBaseUrl: "",
   embeddingDefaultApiKey: "",
-  agentChunkerDefaultModel: "gpt-4o-mini",
-  agentChunkerDefaultBaseUrl: "https://api.openai.com/v1",
+  agentChunkerDefaultModel: "",
+  agentChunkerDefaultBaseUrl: "",
   agentChunkerDefaultApiKey: "",
-  defaultContextWindow: 256000,
+  defaultContextWindow: 0,
 };
 
 // 从 localStorage 加载已保存的值，覆盖默认值

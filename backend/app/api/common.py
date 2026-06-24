@@ -74,7 +74,7 @@ def sse_event(event_type: str, data: dict) -> str:
 def sanitize_error(msg: str) -> str:
     """脱敏错误信息：替换 sk-xxx 和 URL 中的 API key 参数。"""
     msg = re.sub(r"sk-[a-zA-Z0-9]{8,}", "sk-***", msg)
-    msg = re.sub(r"([?&](?:api[_-]?key|key|secret|token)=)[^&\\s]+", r"\\1***", msg, flags=re.IGNORECASE)
+    msg = re.sub(r"([?&](?:api[_-]?key|key|secret|token)=)[^&\s]+", r"\1***", msg, flags=re.IGNORECASE)
     return msg
 
 

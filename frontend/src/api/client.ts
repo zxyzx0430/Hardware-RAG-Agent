@@ -43,7 +43,18 @@ function getAuthHeaders(): Record<string, string> {
 
 // ─── Response Unwrapping ─────────────────────────────────────
 async function unwrapResponse<T>(res: Response): Promise<T> {
-  if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`);
+  if (!res.ok) {
+    // Try to read error body for a more informative message
+    let detail = "";
+    try {
+      const body = await res.json();
+      if (body?.error?.message) detail = body.error.message;
+      else if (body?.message) detail = body.message;
+    } catch {
+      // body not JSON, fall back to statusText
+    }
+    throw new Error(detail || `API ${res.status}: ${res.statusText}`);
+  }
   const json = await res.json();
   if (!("success" in json)) {
     // 兼容旧格式响应（如 /api/sessions, /api/settings 等不带 success 字段）
@@ -283,6 +294,12 @@ export async function apiSSE(
         currentEvent = "";
       }
     } catch (readErr) {
+      // 如果 controller 已被中止（如 onEvent 处理 error 事件后调用了 stopStreaming），
+      // 不再触发 onError，避免重复处理
+      if (controller.signal.aborted && !abortedByTimeout) {
+        getLog()("info", "sse", `SSE ${path} read aborted (controller already aborted)`);
+        return;
+      }
       // reader.read() threw (network error, stream aborted by server, etc.)
       const errMsg = readErr instanceof Error ? readErr.message : String(readErr);
       getLog()("error", "sse", `SSE ${path} read error: ${errMsg}`);

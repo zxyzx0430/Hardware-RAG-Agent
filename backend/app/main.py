@@ -205,11 +205,17 @@ def create_app() -> FastAPI:
     async def _ensure_builtin_kb():
         """启动时确保内置 KB 存在（若 builtin_kb 路径存在）。"""
         try:
+            import sys
+            print("STARTUP: importing kb_manager...", flush=True)
             from src.rag.kb_manager import get_kb_manager
+            print("STARTUP: getting kb_manager...", flush=True)
             kb_manager = get_kb_manager()
+            print("STARTUP: ensuring builtin kb...", flush=True)
             kb_manager.ensure_builtin_kb()
+            print("STARTUP: done!", flush=True)
         except Exception:
             _LOGGER.warning("初始化内置 KB 失败（非致命）", exc_info=True)
+            print("STARTUP: FAILED!", flush=True)
 
     @app.get("/")
     async def root():

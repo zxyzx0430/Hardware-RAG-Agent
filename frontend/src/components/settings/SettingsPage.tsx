@@ -9,6 +9,7 @@ import { apiPost } from "../../api/client";
 import { useI18n } from "../../i18n";
 import type { ContentPart } from "../../types/session";
 import { RagSettingsPanel } from "./RagSettingsPanel";
+import { TokenUsagePanel } from "./TokenUsagePanel";
 
 const TAB_IDS = ["api", "rag", "memory", "appearance", "usage", "logs", "mcp", "skills", "about"] as const;
 
@@ -341,7 +342,7 @@ export function SettingsPage() {
             )}
 
             {tab === 'usage' && (
-              <UsageTab />
+              <TokenUsagePanel />
             )}
 
             {tab === 'logs' && (

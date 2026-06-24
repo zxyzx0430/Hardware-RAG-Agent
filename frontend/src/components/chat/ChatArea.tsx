@@ -26,11 +26,60 @@ function renderContent(content: string | ContentPart[]): string {
   }).join("\n\n");
 }
 
+/** 渲染用户消息内容：文本走 MarkdownRenderer，图片直接用 <img> 避免超长 base64 URL 解析问题 */
+function UserMessageContent({ content }: { content: string | ContentPart[] }) {
+  const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
+  if (typeof content === "string") {
+    return <MarkdownRenderer content={content} streaming={false} />;
+  }
+  // ContentPart[]: 分别渲染文本和图片
+  const textParts = content.filter((p) => p.type === "text").map((p) => p.type === "text" ? p.text : "").join("\n\n");
+  const imageParts = content.filter((p) => p.type === "image_url");
+  // Debug log: trace image count to find duplication root cause
+  if (imageParts.length > 0) {
+    // eslint-disable-next-line no-console
+    console.log("[UserMessageContent] imageParts=", imageParts.length, "content parts=", content.length);
+  }
+  return (
+    <>
+      {textParts.trim() && <MarkdownRenderer content={textParts} streaming={false} />}
+      {imageParts.map((p, idx) => {
+        const imgPart = p as Extract<ContentPart, { type: "image_url" }>;
+        return (
+          <div key={idx} className="user-image-wrap" style={{ marginTop: 8, cursor: "zoom-in", display: "inline-block" }}>
+            <img
+              src={imgPart.image_url.url}
+              alt="uploaded"
+              onClick={() => setLightboxSrc(imgPart.image_url.url)}
+              style={{ maxWidth: 320, maxHeight: 320, borderRadius: 8, border: "1px solid var(--border)", display: "block" }}
+            />
+          </div>
+        );
+      })}
+      {lightboxSrc && (
+        <div
+          onClick={() => setLightboxSrc(null)}
+          style={{
+            position: "fixed", inset: 0, zIndex: 9999,
+            background: "rgba(0,0,0,0.85)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            cursor: "zoom-out",
+          }}
+        >
+          <img src={lightboxSrc} alt="original" style={{ maxWidth: "95vw", maxHeight: "95vh", objectFit: "contain" }} />
+        </div>
+      )}
+    </>
+  );
+}
+
 export function ChatArea() {
   const { t } = useI18n();
   const scrollRef = useRef<HTMLDivElement | null>(null);
   // Track whether the user is near the bottom; only auto-scroll when true
   const isAtBottomRef = useRef(true);
+  // Track whether user has manually scrolled — user scroll has highest priority
+  const userScrolledRef = useRef(false);
   const {
     messages,
     isStreaming,
@@ -73,15 +122,53 @@ export function ChatArea() {
   const [pickerMsgId, setPickerMsgId] = useState<string | null>(null);
   const [pickerNewName, setPickerNewName] = useState("");
 
-  // 仅在用户处于底部时自动滚动到底部；用户上滑后不再强制滚动
+  // 自动滚动策略：
+  // 1. 新消息添加时（messages.length 变化）自动滚到底部
+  // 2. 流式输出期间（isStreaming）完全不自动滚动，由用户滑轮控制
+  // 3. 用户手动滚动后，userScrolledRef 置 true，停止自动滚动直到用户主动回到底部
   useEffect(() => {
-    if (scrollRef.current && isAtBottomRef.current) {
+    // 只在新消息添加时滚动，不在流式内容更新时滚动
+    if (scrollRef.current && !userScrolledRef.current) {
+      scrollRef.current.scrollTo({
+        top: scrollRef.current.scrollHeight,
+        behavior: "auto",  // 用 auto 避免 smooth 动画堆积卡顿
+      });
+    }
+  }, [messages.length]);
+
+  // 流式结束时滚到底部（如果用户没有手动滚动过）
+  useEffect(() => {
+    if (!isStreaming && scrollRef.current && !userScrolledRef.current) {
       scrollRef.current.scrollTo({
         top: scrollRef.current.scrollHeight,
         behavior: "smooth",
       });
     }
-  }, [messages.length, isStreaming, streamingContent, streamingSteps]);
+    // 流式开始时重置 userScrolledRef，允许新的一轮自动滚动
+    if (isStreaming) {
+      userScrolledRef.current = false;
+    }
+  }, [isStreaming]);
+
+  // 滑轮事件：用 addEventListener + { passive: true } 确保浏览器原生滚动优先级最高
+  // 不用 preventDefault，让浏览器立即响应滑轮
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      // 用户滑轮操作，标记为手动滚动
+      userScrolledRef.current = true;
+      // 检查是否滚回底部，如果是则清除标记
+      const threshold = 80;
+      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
+      if (atBottom && e.deltaY > 0) {
+        // 向下滚到底部时清除标记
+        userScrolledRef.current = false;
+      }
+    };
+    el.addEventListener("wheel", onWheel, { passive: true });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
 
   // Track scroll position to detect whether user is at the bottom
   const handleScroll = () => {
@@ -175,7 +262,9 @@ export function ChatArea() {
                     </div>
                   </div>
                 ) : (
-                  <div className="user-bubble" id={`userBubble-${msg.id}`}>{renderContent(msg.content)}</div>
+                  <div className="user-bubble" id={`userBubble-${msg.id}`}>
+                    <UserMessageContent content={msg.content} />
+                  </div>
                 )}
               </div>
               {!isEditing && <button className="msg-edit-trigger" onClick={() => startEdit(msg.id, renderContent(msg.content))}>{t('edit')}</button>}

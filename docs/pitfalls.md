@@ -608,6 +608,29 @@ branchThread 会话 ID 不一致 + 后端 CRUD 不返回分支字段
 - **修复方式**：1) `deleteSession` 删除活跃会话时先调 `chatStore.stopStreaming()`；2) `apiSSE` 3 次失败后调 `controller.abort()` 并 `return`；3) `exportConversation` 对 `ContentPart[]` 转为 Markdown 文本后再导出。
 - **下次注意**：1) 删除资源前必须先清理关联的异步操作（SSE/定时器）；2) 错误回调后必须中止流读取，不能仅通知错误；3) 模板字符串对对象类型输出 `[object Object]`，必须先转为字符串。
 
+## 2026-06-24 - 图片上传多个问题：显示 base64 原文/分裂/SSE abort/模型不独立
+
+- **错误现象**：1) 用户上传图片后，对话界面显示 `data:image/png;base64,...` 原文而非图片；2) 图片消息在界面"分裂成两个"；3) 第二次上传图片时 SSE 报 `BodyStreamBuffer was aborted`；4) 一个对话选择 A 模型后所有对话都变成 A 模型。
+- **错误原因**：
+  1) 用户消息气泡用 `{renderContent(msg.content)}` 纯文本渲染，`![Image](data:...)` Markdown 语法不被解析，显示为文字
+  2) 消息 content 用字符串拼接 base64 数据 URL（可达数 MB），渲染时视觉上"分裂"
+  3) 后端发 `error` 事件 → `onEvent` 调 `stopStreaming` → `stopStreaming` 调 `currentSseRequest.abort()` → body stream 中断 → 内层 catch 捕获 "BodyStreamBuffer was aborted" → 内层 catch **未检查 controller 是否已 abort** → 再次调 `onError` → 再次调 `stopStreaming` → `streamingSessionId` 已被第一次清空
+  4) `sendMessage` 从全局 `useSettingsStore.getState().model` 读取模型，而非当前会话的 `session.model`
+- **修复方式**：
+  1) 用户气泡改用 `<MarkdownRenderer content={renderContent(msg.content)} />` 渲染，正确解析图片 Markdown
+  2) 消息 content 改为 `ContentPart[]` 类型存储（而非拼接 base64 字符串），`renderContent` 已支持转换
+  3) `apiSSE` 内层 catch 增加 `controller.signal.aborted` 检查，已 abort 时不调 `onError`；`stopStreaming` 增加幂等检查（`!isStreaming && !streamingSessionId && !currentSseRequest` 时直接返回）
+  4) `sendMessage` 改为从 `useSessionStore.getState().sessions.find(s => s.id === activeSessionId)?.model` 读取模型；`InputBar` 选择模型时同时调 `updateSessionMeta(activeSessionId, { model: m.id })` 更新当前会话
+  5) `sendMessage` 和 `handleSend` 的空文本守卫改为允许只有附件没有文字（`!content.trim() && (!attachments || attachments.length === 0)` 才拒绝）
+  6) `onDone` 中 preview/title 生成增加 `extractText` 函数处理 `ContentPart[]` 类型
+- **下次注意**：
+  1) 用户消息和 assistant 消息都应通过 `MarkdownRenderer` 渲染，不能用纯文本
+  2) 图片消息应用 `ContentPart[]` 类型存储，不要把 base64 数据 URL 拼接进字符串
+  3) SSE 错误处理链中，`onEvent` 的 error 处理和 `onError` 回调可能对同一错误重复调用 `stopStreaming`，必须做幂等检查
+  4) `apiSSE` 的内层 catch（reader.read 异常）也要检查 `controller.signal.aborted`，避免 abort 导致的读取错误触发 `onError`
+  5) 模型等会话级配置应从 `session` 对象读取，不能从全局 `settingsStore` 读取
+  6) 空文本守卫要考虑"只有附件"的场景
+
 ## 2026-06-21: 模型下拉框不显示上游模型
 →- **错误现象**：验证 API Key 成功后，设置页和聊天输入框的模型下拉框只显示硬编码的 fallback 模型（gpt-4o/llama3.3/deepseek-v3），不显示上游 Provider 返回的真实模型列表。
 - **错误原因**：
@@ -622,6 +645,37 @@ branchThread 会话 ID 不一致 + 后端 CRUD 不返回分支字段
   1. TanStack Query 的 cache 是隐式的，手动调用 API（如 handleVerify）后必须 invalidate 对应 query，否则 useQuery 不更新
   2. queryKey 必须包含所有会影响结果的输入，否则值变化不触发 refetch
   3. 后端 Key 优先级：用户刚输入的 X-API-Key header > 后端已加密存储的旧 Key > .env 默认值。Header 代表用户当前意图，必须优先
+
+## 2026-06-24 - 图片渲染分裂/SSE 滚动卡顿
+
+- **错误现象**：1) 发送单张图片在对话界面分裂为两张；2) 无法查看图片原图；3) SSE 输出时滑轮上下滑动卡顿。
+- **错误原因**：
+  1) `renderContent` 把 `ContentPart[]` 转成 `![Image](data:image/png;base64,...)` markdown 字符串，超长 base64 URL（可达数 MB）导致 ReactMarkdown 解析异常，可能重复渲染图片
+  2) 图片通过 markdown `<img>` 渲染，没有点击查看原图的交互
+  3) 自动滚动 `useEffect` 依赖 `[messages.length, isStreaming, streamingContent, streamingSteps]`，`streamingContent` 每个 token 变化触发 `scrollTo({ behavior: "smooth" })`，smooth 动画堆积导致滑轮卡顿
+- **修复方式**：
+  1) 新建 `UserMessageContent` 组件：`ContentPart[]` 中的文本走 `MarkdownRenderer`，图片直接用 `<img>` 渲染（不走 markdown 解析），避免超长 base64 URL 问题
+  2) 图片点击弹出 lightbox 全屏查看原图（`position: fixed; inset: 0; background: rgba(0,0,0,0.85)`）
+  3) 自动滚动策略改为：只在 `messages.length` 变化时滚动（用 `behavior: "auto"`），流式期间完全不自动滚动；`isStreaming` 变为 false 时才 smooth 滚动到底部；`wheel` 事件用 `addEventListener + { passive: true }` 确保浏览器原生滚动优先级最高
+- **下次注意**：
+  1) 超长 base64 data URL 不能放进 markdown 图片语法，ReactMarkdown 解析会出问题；图片应用 `<img>` 直接渲染
+  2) 流式输出期间不能频繁 `scrollTo({ behavior: "smooth" })`，smooth 动画会堆积卡顿；流式期间应禁用自动滚动或用 `behavior: "auto"`
+  3) 滑轮事件用 `addEventListener + { passive: true }` 注册，不用 React 的 `onWheel`（React onWheel 在某些浏览器中是 passive 的，无法保证优先级）
+
+## 2026-06-24 - 图片重复发送 + 重试丢失图片内容
+
+- **错误现象**：1) 发送单张图片在对话界面显示两张相同图片；2) 点重试按钮后用户发送的图片内容丢失。
+- **错误原因**：
+  1) 前端 `sendMessage` 同时通过 `messages` 的 `ContentPart[]` 和 `attachments` 字段发送图片。后端 `chat_routes.py` 第 85-96 行从 `attachments` 提取图片到 `image_parts`，第 112-115 行再把 `image_parts` 拼到 `last_user_msg`，导致图片被发送两次给 LLM。虽然前端渲染用的是本地 `messages`（只有一份图片），但后端处理逻辑会导致 LLM 看到两张图片，可能返回异常结果。
+  2) `retryMessage` 第 563 行 `typeof userContent === "string" ? userContent : ""`，当用户消息是 `ContentPart[]`（含图片）时传空字符串给 `sendMessage`，图片和文本全部丢失。
+- **修复方式**：
+  1) 前端 `requestBody.attachments` 过滤掉图片类型（`attachments.filter(a => !a.type.startsWith("image/"))`），图片只在 `messages` 的 `ContentPart[]` 中发送，避免后端重复处理
+  2) `retryMessage` 增加 `ContentPart[]` 处理：提取文本部分作为 `content`，提取图片部分重建为 `Attachment[]` 传给 `sendMessage`
+  3) `branchThread` 的 model 也改为从当前会话读取（之前从全局设置读取）
+- **下次注意**：
+  1) 前后端不要通过多个通道发送同一数据（图片既在 `messages.ContentPart[]` 又在 `attachments`），后端会重复处理
+  2) `retryMessage`/`editAndResend` 必须处理 `ContentPart[]` 类型的消息内容，不能简单地用 `typeof === "string"` 判断后传空字符串
+  3) 所有读取 model 的地方都应从当前会话读取，不从全局设置读取
 
 ## 2026-06-23 - kb_routes.py 重写后测试用例与旧 API 不匹配
 - **错误现象**：`pytest tests/test_routes_kb.py` 两个测试全部失败。`test_upload_success` 报 `assert False is True`；`test_upload_file_too_large` 报 `assert 200 == 400`。
@@ -645,4 +699,41 @@ branchThread 会话 ID 不一致 + 后端 CRUD 不返回分支字段
 - **错误原因**：kb_manager 最初设计时没有委托给 vector_store，而是自己处理入库，导致两处逻辑需要同步维护。
 - **修复方式**：`kb_manager.ingest_chunks()` 改为：1) 注入 `kb_id` 到每个 chunk 的 metadata；2) 委托 `store.ingest_chunks(chunks, doc_id)` 处理 embedding 检查和写入；3) 标记 BM25 stale。
 - **下次注意**：Manager 层应委托给 Store 层处理底层操作，不要重复实现。Manager 职责是路由和协调，Store 职责是持久化。
+
+## 2026-06-24 - 上传文件 0 片段：未配 embedding 时 ingest_chunks 返回 0
+- **错误现象**：上传文件后显示 "0 片段"，但文件已成功上传。
+- **错误原因**：`vector_store.ingest_chunks()` 在 `self.embeddings is None` 时直接返回 0（未配置 embedding API）。chunking 本身正常工作，但无法向量化入库 ChromaDB。`_update_doc_status` 用 `ingested`（入库返回值）作为 `chunk_count`，导致显示 0。
+- **修复方式**：在 `kb_routes.py._index_document()` 中，用 `len(chunks)` 作为 `chunk_count`（而非 `ingested`）。如果 `ingested == 0`，标记 status="indexed" 但加 error_message 提示"未配置 Embedding 模型，已分块但未向量化"。
+- **下次注意**：chunking 和 embedding 是两个独立步骤。chunk_count 应反映实际分块数，而非入库数。入库失败不应影响 chunk_count 显示。
+
+## 2026-06-24 - fetchEmbeddingModels 吞掉错误导致 UI 永远显示"未找到模型"
+- **错误现象**：配置 Embedding 模型时点"获取模型列表"，无论 API Key 是否正确、网络是否通，都显示"未找到模型"。
+- **错误原因**：`useKnowledgeStore.fetchEmbeddingModels` 在 catch 块中 `return []`，永远不向外抛异常。`RagSettingsPanel` 的 catch 块是死代码，用户看不到真实错误（如 401 Unauthorized、超时等）。
+- **修复方式**：移除 store 层的 try/catch，让错误传播到调用方。`RagSettingsPanel` catch 块显示 `e.message`。同时改进 `unwrapResponse` 读取错误响应体中的 `error.message` 字段。
+- **下次注意**：Store 层不要吞掉错误。让调用方决定如何处理错误（显示 toast、设置状态等）。
+
+## 2026-06-24 - sanitize_error 正则双重转义导致 API Key 脱敏失效
+- **错误现象**：错误日志中 URL 参数里的 API Key 未被脱敏，明文显示。
+- **错误原因**：`re.sub(r"([^&\\s]+)", r"\\1***", ...)` 中 raw string 的 `\\s` 是 3 个字符（反斜杠+反斜杠+s），regex 引擎解释为"非反斜杠且非 s"，而非"非空白"。`\\1` 同理，解释为字面反斜杠+1 而非后向引用。
+- **修复方式**：改为 `r"([^&\s]+)"` 和 `r"\1***"`（单反斜杠）。
+- **下次注意**：Python raw string 中 `r"\s"` 是 2 个字符（反斜杠+s），regex 引擎解释为空白符。`r"\\s"` 是 3 个字符，regex 引擎解释为字面反斜杠+s。不要混淆。
+
+## 2026-06-24 - addAttachments 在 StrictMode 下双重调用导致图片重复
+
+- **错误现象**：发送单张图片在对话界面显示两张相同图片，跨多轮修复仍未解决。
+- **错误原因**：
+  1) `InputBar.tsx` 的 `addAttachments` 将异步副作用（`Promise.all(fileToAttachment)`）放在 `setAttachments` 的 state updater 函数内部。React 18 StrictMode 下 state updater 会被双重调用，导致**两个 Promise.all 同时处理同一个文件**，产生两个 Attachment 对象（id 不同但 content 相同）。
+  2) 虽然 `mergeUniqueAttachments` 按 `name+type+content` 去重，但两个 Promise 解析时序可能导致两个 `setAttachments` 回调都看到空的 `current`，各自添加一份，绕过去重。
+  3) `sendMessage` 的 for 循环对每个 attachment 都 push 一个 `image_url` part，如果 attachments 有重复，parts 就有重复。
+- **修复方式**：
+  1) 把 `Promise.all` 从 state updater 中移出，改为先读取 `attachmentsRef.current`（ref 镜像），在 updater 外部处理文件，再调用 `setAttachments` 合并
+  2) 添加 `attachmentsRef` 同步 attachments state，避免 async 回调中读取 stale state
+  3) 添加 `sendingRef` guard 防止 `handleSend` 重入
+  4) 在 `sendMessage` 中添加 `seenImageUrls` Set 去重，防御性确保同一图片 content 只创建一个 `image_url` part
+  5) 添加调试日志：`sendMessage` 记录 attachments/images 数量，`UserMessageContent` 记录 imageParts 数量
+- **下次注意**：
+  1) **永远不要在 state updater 函数内部放副作用**（Promise、setTimeout、fetch 等）。updater 必须是纯函数，StrictMode 会双重调用。
+  2) 需要在 async 回调中读取最新 state 时，用 `useRef` 镜像 state，不要依赖闭包捕获的值
+  3) 关键操作（如发送消息）应加 ref guard 防止重入
+  4) 数据层去重是最后一道防线，即使上游逻辑正确也应做防御性去重
 

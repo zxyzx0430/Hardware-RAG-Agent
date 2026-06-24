@@ -6,6 +6,9 @@ import { apiPost } from "../../api/client";
 import { useI18n } from "../../i18n";
 import { KbCollectionManager } from "./KbCollectionManager";
 
+const POLL_INTERVAL = 2000;
+const POLL_TIMEOUT = 120000;
+
 export function KnowledgePanel() {
   const { t } = useI18n();
   const {
@@ -16,12 +19,27 @@ export function KnowledgePanel() {
   const [dragOver, setDragOver] = useState(false);
   const [showKbManager, setShowKbManager] = useState(false);
   const [chunkMethodOverride, setChunkMethodOverride] = useState<string>("");
+  // Track active poll timers so they can be cleared on unmount
+  const pollTimersRef = useRef<Set<number>>(new Set());
 
-  // Load collections + items on mount
+  // Load collections on mount
   useEffect(() => {
     fetchCollections();
-    fetchItems();
-  }, [fetchCollections, fetchItems]);
+  }, [fetchCollections]);
+
+  // When active KB changes (including mount): reset chunk method override and reload items filtered by KB
+  useEffect(() => {
+    setChunkMethodOverride("");
+    fetchItems(activeKbId);
+  }, [activeKbId, fetchItems]);
+
+  // Clear all poll timers on unmount to prevent memory leaks
+  useEffect(() => {
+    return () => {
+      pollTimersRef.current.forEach((id) => clearTimeout(id));
+      pollTimersRef.current.clear();
+    };
+  }, []);
 
   const enabledCount = items.filter((i) => i.enabled).length;
   const totalChunks = items.reduce((sum, i) => sum + i.chunks, 0);
@@ -61,9 +79,9 @@ export function KnowledgePanel() {
         if (res.status === "indexing") {
           pollIndexingStatus(docId);
         }
-      } catch {
-      useLogStore.getState().log("warn", "kb", `轮询索引状态失败`);
-      useLogStore.getState().log("error", "kb", `上传失败: ${file.name}`);
+      } catch (e) {
+        const errMsg = e instanceof Error ? e.message : t('fileIncompatible');
+        useLogStore.getState().log("error", "kb", `上传失败: ${file.name} - ${errMsg}`);
         addItem({
           id: `kb-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
           name: file.name,
@@ -74,7 +92,7 @@ export function KnowledgePanel() {
           updatedAt: new Date().toISOString().slice(0, 10),
           docType: "Technical Reference",
           tags: [],
-          errorMessage: t('fileIncompatible'),
+          errorMessage: errMsg,
         });
       }
     }
@@ -82,8 +100,6 @@ export function KnowledgePanel() {
   };
 
   const pollIndexingStatus = (docId: string) => {
-    const POLL_INTERVAL = 2000;
-    const POLL_TIMEOUT = 120000;
     const startTime = Date.now();
 
     const poll = async () => {
@@ -94,23 +110,29 @@ export function KnowledgePanel() {
             item.id === docId ? { ...item, status: "error" as const, errorMessage: "索引超时" } : item
           )
         );
+        pollTimersRef.current.delete(timerId);
         return;
       }
 
       try {
-        await fetchItems();
+        // Use current activeKbId from store to keep KB filter consistent
+        const currentKbId = useKnowledgeStore.getState().activeKbId;
+        await fetchItems(currentKbId);
         const item = useKnowledgeStore.getState().items.find((i) => i.id === docId);
         if (item && (item.status === "indexed" || item.status === "error")) {
+          pollTimersRef.current.delete(timerId);
           return; // 向量化完成或出错，停止轮询
         }
       } catch {
         // 轮询请求失败，继续重试
       }
 
-      setTimeout(poll, POLL_INTERVAL);
+      timerId = window.setTimeout(poll, POLL_INTERVAL);
+      pollTimersRef.current.add(timerId);
     };
 
-    setTimeout(poll, POLL_INTERVAL);
+    let timerId = window.setTimeout(poll, POLL_INTERVAL);
+    pollTimersRef.current.add(timerId);
   };
 
   const handlePreview = (itemId: string) => {
@@ -118,6 +140,11 @@ export function KnowledgePanel() {
     useAppStore.getState().setRightPanelOpen(true);
     useAppStore.getState().setRightMode('content');
     useAppStore.getState().setFileViewerSource(itemId);
+  };
+
+  const handleRefresh = () => {
+    fetchItems(activeKbId);
+    fetchCollections();
   };
 
   return (
@@ -199,7 +226,7 @@ export function KnowledgePanel() {
                 <div className="kb-extended">
                   <span>{item.docType}</span>
                   {item.chunk_method_used && <span className="kb-tag">{item.chunk_method_used}</span>}
-                  {item.tags.map((t) => <span className="kb-tag" key={t}>{t}</span>)}
+                  {item.tags.map((tag) => <span className="kb-tag" key={tag}>{tag}</span>)}
                 </div>
                 <div className="kb-item-meta"><span>{item.size}</span></div>
                 {item.errorMessage ? <div className="kb-error"><span style={{ color: 'var(--danger)' }}>◉</span>{item.errorMessage}</div> : null}
@@ -209,7 +236,7 @@ export function KnowledgePanel() {
                 <button className="kb-item-icon-btn" title={t('previewBtn')} onClick={() => handlePreview(item.id)}>
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>
                 </button>
-                <button className="kb-item-icon-btn" title={t('refreshBtn')}>
+                <button className="kb-item-icon-btn" title={t('refreshBtn')} onClick={handleRefresh}>
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
                 </button>
                 <button className="kb-item-icon-btn" title={t('delete')} onClick={() => deleteItemWithAPI(item.id)}>

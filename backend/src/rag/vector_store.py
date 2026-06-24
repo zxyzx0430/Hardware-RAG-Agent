@@ -9,6 +9,7 @@ ChromaDB 向量存储模块。
 """
 
 import re
+import uuid
 import logging
 import hashlib
 from pathlib import Path
@@ -340,3 +341,62 @@ class HardwareVectorStore:
         except Exception:
             logger.exception("获取 ChromaDB 文本失败")
             return []
+
+    def export_data(self) -> dict:
+        """Export all documents, embeddings, and metadatas from ChromaDB.
+
+        Returns a dict suitable for JSON serialization.
+        """
+        try:
+            collection = self.db._collection
+            result = collection.get(include=["documents", "embeddings", "metadatas"])
+            return {
+                "ids": result.get("ids", []),
+                "documents": result.get("documents", []),
+                "embeddings": result.get("embeddings", []),
+                "metadatas": result.get("metadatas", []),
+            }
+        except Exception:
+            logger.exception("导出 ChromaDB 数据失败")
+            return {"ids": [], "documents": [], "embeddings": [], "metadatas": []}
+
+    def import_data(self, data: dict) -> int:
+        """Import documents, embeddings, and metadatas into ChromaDB.
+
+        Args:
+            data: Dict with keys 'ids', 'documents', 'embeddings', 'metadatas'.
+
+        Returns:
+            Number of documents imported.
+        """
+        try:
+            collection = self.db._collection
+            ids = data.get("ids", [])
+            documents = data.get("documents", [])
+            embeddings = data.get("embeddings", [])
+            metadatas = data.get("metadatas", [])
+
+            if not documents:
+                return 0
+
+            # Filter out empty documents
+            valid_indices = [i for i, doc in enumerate(documents) if doc and doc.strip()]
+            if not valid_indices:
+                return 0
+
+            valid_ids = [ids[i] if i < len(ids) else str(uuid.uuid4()) for i in valid_indices]
+            valid_docs = [documents[i] for i in valid_indices]
+            valid_embeddings = [embeddings[i] for i in valid_indices] if embeddings and len(embeddings) == len(documents) else None
+            valid_metadatas = [metadatas[i] if i < len(metadatas) else {} for i in valid_indices]
+
+            collection.add(
+                ids=valid_ids,
+                documents=valid_docs,
+                embeddings=valid_embeddings,
+                metadatas=valid_metadatas,
+            )
+            logger.info(f"导入完成: {len(valid_docs)} chunks")
+            return len(valid_docs)
+        except Exception:
+            logger.exception("导入 ChromaDB 数据失败")
+            return 0

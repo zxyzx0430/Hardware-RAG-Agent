@@ -152,3 +152,22 @@ class Feedback(Base):
     session_id = Column(String, nullable=False, index=True)
     rating = Column(Integer, nullable=False)  # 1=👍, -1=👎
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+class TokenUsage(Base):
+    """Token 用量记录 — 每次 LLM 调用记录一条。"""
+
+    __tablename__ = "token_usage"
+    __table_args__ = (
+        Index("idx_token_usage_created", "created_at"),
+        Index("idx_token_usage_model", "model"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    model = Column(String, nullable=False, index=True)
+    provider = Column(String, default="", nullable=True)
+    session_id = Column(String, nullable=True, index=True)
+    prompt_tokens = Column(Integer, default=0)
+    completion_tokens = Column(Integer, default=0)
+    total_tokens = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)

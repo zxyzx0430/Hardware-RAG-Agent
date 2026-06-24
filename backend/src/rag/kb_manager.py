@@ -233,7 +233,10 @@ class KnowledgeBaseManager:
                     "collection_name": kb.collection_name,
                     "chunk_method": kb.chunk_method,
                     "embedding_model": kb.embedding_model,
+                    "embedding_base_url": kb.embedding_base_url or "",
                     "agent_chunker_model": kb.agent_chunker_model,
+                    "agent_chunker_base_url": kb.agent_chunker_base_url or "",
+                    "context_window": kb.context_window or 0,
                     "enabled": kb.enabled,
                     "is_builtin": kb.is_builtin,
                     "doc_count": doc_count,
@@ -336,6 +339,64 @@ class KnowledgeBaseManager:
 
         logger.info(f"Ingested {ingested} chunks into KB {kb_id}")
         return ingested
+
+    def export_kb(self, kb_id: str) -> dict:
+        """Export KB data (documents + embeddings + metadatas) for migration.
+
+        Returns a dict with KB metadata and ChromaDB data, suitable for JSON serialization.
+        """
+        kb = self.get_kb(kb_id)
+        if not kb:
+            raise ValueError(f"KB not found: {kb_id}")
+
+        store = self._get_store(kb)
+        if not store:
+            return {"kb_id": kb_id, "name": kb.name, "data": {"ids": [], "documents": [], "embeddings": [], "metadatas": []}}
+
+        data = store.export_data()
+        return {
+            "kb_id": kb_id,
+            "name": kb.name,
+            "embedding_model": kb.embedding_model,
+            "embedding_base_url": kb.embedding_base_url,
+            "chunk_method": kb.chunk_method,
+            "exported_at": __import__("datetime").datetime.now().isoformat(),
+            "chunk_count": len(data.get("documents", [])),
+            "data": data,
+        }
+
+    def import_kb(self, kb_id: str, export_data: dict) -> int:
+        """Import previously exported KB data into an existing KB.
+
+        This directly writes embeddings into ChromaDB without re-embedding.
+        The target KB should use the same embedding model as the source.
+
+        Args:
+            kb_id: Target KB ID (must already exist).
+            export_data: Dict from export_kb().
+
+        Returns:
+            Number of chunks imported.
+        """
+        kb = self.get_kb(kb_id)
+        if not kb:
+            raise ValueError(f"KB not found: {kb_id}")
+
+        store = self._get_store(kb)
+        if not store:
+            raise ValueError(f"Store not available for KB {kb_id}")
+
+        data = export_data.get("data", {})
+        imported = store.import_data(data)
+
+        # Mark BM25 as stale so it gets rebuilt on next search
+        if imported > 0:
+            self._bm25_stale.add(kb_id)
+            # Invalidate store cache to force reload
+            self._stores.pop(kb_id, None)
+
+        logger.info(f"Imported {imported} chunks into KB {kb_id}")
+        return imported
 
     # ═══════════════════════════════════════
     # Search

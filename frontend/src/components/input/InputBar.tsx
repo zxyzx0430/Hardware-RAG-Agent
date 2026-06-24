@@ -6,6 +6,7 @@ import { useChatStore } from "../../stores/useChatStore";
 import { useLogStore } from "../../stores/useLogStore";
 import { useSettingsStore, baseUrlByProvider } from "../../stores/useSettingsStore";
 import { useAppStore } from "../../stores/useAppStore";
+import { useSessionStore } from "../../stores/useSessionStore";
 import { TemplatePanel } from "../shared/TemplatePanel";
 import { mdToHtml } from "../../utils/markdown";
 import DOMPurify from "dompurify";
@@ -43,6 +44,22 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   ollama: 'Ollama (Local)',
 };
 
+function attachmentSignature(attachment: Attachment): string {
+  return `${attachment.name}\u0000${attachment.type}\u0000${attachment.content}`;
+}
+
+function mergeUniqueAttachments(current: Attachment[], incoming: Attachment[]): Attachment[] {
+  const seen = new Set(current.map(attachmentSignature));
+  const merged = [...current];
+  for (const attachment of incoming) {
+    const signature = attachmentSignature(attachment);
+    if (seen.has(signature)) continue;
+    seen.add(signature);
+    merged.push(attachment);
+    if (merged.length >= 3) break;
+  }
+  return merged;
+}
 export function InputBar() {
   const { t } = useI18n();
   const [text, setText] = useState("");
@@ -53,15 +70,27 @@ export function InputBar() {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const dropdownRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  // Ref mirror of attachments to read latest value inside async callbacks
+  const attachmentsRef = useRef<Attachment[]>([]);
+  // Guard against double send (e.g. rapid Enter + click)
+  const sendingRef = useRef(false);
 
   // Model cache per provider
   const [modelCache, setModelCache] = useState<Record<string, ModelItem[]>>({});
 
   const { sendMessage, stopStreaming, isStreaming } = useChatStore();
-  const { model, setModel, activeProvider, baseUrls, providerKeys } = useSettingsStore();
+  const { setModel, activeProvider, baseUrls, providerKeys } = useSettingsStore();
+  const { sessions, updateSessionMeta } = useSessionStore();
+  const { activeSessionId } = useChatStore();
+  // 模型优先从当前会话读取（各对话独立），回退到全局设置
+  const currentSession = sessions.find((s) => s.id === activeSessionId);
+  const model = currentSession?.model || useSettingsStore.getState().model;
   const { quotedMsg, setQuotedMsg, templatePanelOpen, setTemplatePanelOpen } = useAppStore();
 
   const resolvedBaseUrl = baseUrls[activeProvider] || baseUrlByProvider(activeProvider);
+
+  // Keep ref in sync with attachments state for reading inside async callbacks
+  attachmentsRef.current = attachments;
 
   // Fetch models for the current provider（只走后端代理，避免 CORS）
   const { data: fetchedModels } = useQuery<ModelItem[]>({
@@ -178,39 +207,51 @@ export function InputBar() {
   }, []);
 
   const handleSend = () => {
-    if (!text.trim() || isStreaming) return;
-    sendMessage(text.trim(), attachments.length > 0 ? attachments : undefined);
+    if (isStreaming) return;
+    if (sendingRef.current) return;  // 防止重入
+    if (!text.trim() && attachments.length === 0) return;
+    sendingRef.current = true;
+    const attachmentsCopy = attachments.length > 0 ? attachments : undefined;
+    sendMessage(text.trim() || "", attachmentsCopy);
     setText("");
     setAttachments([]);
     setAttachError(null);
     setTemplatePanelOpen(false);
     if (textareaRef.current) textareaRef.current.style.height = "auto";
+    // Reset guard on next tick so subsequent sends work
+    setTimeout(() => { sendingRef.current = false; }, 0);
   };
 
   const addAttachments = useCallback(async (files: File[]) => {
     if (files.length === 0) return;
     setAttachError(null);
-    setAttachments((prev) => {
-      const remainingSlots = 3 - prev.length;
-      if (remainingSlots <= 0) {
-        setAttachError("最多 3 个文件");
-        return prev;
-      }
-      const toAdd = files.slice(0, remainingSlots);
-      if (files.length > remainingSlots) {
-        setAttachError("最多 3 个文件");
-      }
-      Promise.all(toAdd.map(fileToAttachment)).then((newAttachments) => {
-        setAttachments((current) => {
-          const merged = [...current, ...newAttachments];
-          return merged.slice(0, 3);
-        });
-      }).catch((err) => {
-        setAttachError(err.message || "文件处理失败");
-        useLogStore.getState().log("error", "chat", `附件处理失败: ${err.message}`);
+
+    // Read current attachments from ref (avoids stale closure and StrictMode double-invoke issues)
+    const current = attachmentsRef.current;
+    const remainingSlots = 3 - current.length;
+    if (remainingSlots <= 0) {
+      setAttachError("最多 3 个文件");
+      return;
+    }
+    const toAdd = files.slice(0, remainingSlots);
+    if (files.length > remainingSlots) {
+      setAttachError("最多 3 个文件");
+    }
+
+    // Process files outside of state updater — no side effects inside setAttachments
+    try {
+      const newAttachments = await Promise.all(toAdd.map(fileToAttachment));
+      setAttachments((prev) => {
+        const merged = mergeUniqueAttachments(prev, newAttachments);
+        if (merged.length === prev.length) {
+          setAttachError("已忽略重复文件");
+        }
+        return merged;
       });
-      return prev;
-    });
+    } catch (err) {
+      setAttachError(err instanceof Error ? err.message : "文件处理失败");
+      useLogStore.getState().log("error", "chat", `附件处理失败: ${err}`);
+    }
   }, [fileToAttachment]);
 
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
@@ -431,7 +472,10 @@ export function InputBar() {
                   className={`model-option${m.id === model ? " selected" : ""}`}
                   onClick={(e) => {
                     e.stopPropagation();
-                    setModel(m.id);
+                    setModel(m.id); // 更新全局默认
+                    if (activeSessionId) {
+                      updateSessionMeta(activeSessionId, { model: m.id }); // 更新当前会话
+                    }
                     setShowModelDropdown(false);
                   }}
                 >

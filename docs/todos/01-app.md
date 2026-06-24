@@ -4,6 +4,8 @@
 
 > 新任务加到最前面（倒序排列），每次只读前 2 项
 
+- [x] 全面代码扫描（Pass 1 广度 + Pass 2 深度）
+      ✅ docs/handoff/scan/01-app-scan.md 任务 → 扫描完成，结果在 docs/review/01-app-scan.md，发现 P1×4 + P2×5 问题，0 P0
 - [ ] 附件上传（文件/图片）对接真实接口
 - [ ] Loading / Skeleton 状态
 - [ ] 响应式布局退化（窄屏/移动端）

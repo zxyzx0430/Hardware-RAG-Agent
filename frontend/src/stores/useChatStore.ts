@@ -171,22 +171,30 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   sendMessage: async (content, attachments) => {
     const { messages, isStreaming, activeSessionId } = get();
-    if (isStreaming || !content.trim()) return;
-    log("info", "chat", `发送消息: ${content.slice(0, 50)}...`);
+    // 允许只有附件没有文字（如只发图片）
+    if (isStreaming || (!content.trim() && (!attachments || attachments.length === 0))) return;
+    const imgCount = attachments?.filter((a) => a.type.startsWith("image/")).length ?? 0;
+    log("info", "chat", `发送消息: ${content.slice(0, 50) || "(仅附件)"}... attachments=${attachments?.length ?? 0} images=${imgCount}`);
 
     try {
 
     // 编码图片附件为 base64 ContentPart
-    // 存储到 messages 的 content 用字符串（避免 React 渲染 ContentPart[] 对象）
-    let messageContent: string = content.trim();
-    // 发到后端的 SSE 请求体里用 ContentPart[]（支持图片）
+    // 本地消息用 ContentPart[] 存储（支持图片渲染），API 请求也用 ContentPart[]
+    let messageContent: string | import("../types/session").ContentPart[] = content.trim();
     let apiContent: string | import("../types/session").ContentPart[] = content.trim();
     if (attachments && attachments.length > 0) {
       const parts: import("../types/session").ContentPart[] = [
-        { type: "text", text: content.trim() }
+        { type: "text", text: content.trim() || "请描述这张图片" }
       ];
+      // Deduplicate image attachments by content to prevent duplicate rendering
+      const seenImageUrls = new Set<string>();
       for (const attachment of attachments) {
         if (attachment.type.startsWith("image/")) {
+          if (seenImageUrls.has(attachment.content)) {
+            log("warn", "chat", `跳过重复图片附件: ${attachment.name}`);
+            continue;
+          }
+          seenImageUrls.add(attachment.content);
           parts.push({
             type: "image_url",
             image_url: { url: attachment.content, detail: "auto" },
@@ -194,11 +202,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
       }
       apiContent = parts;
-      // 本地显示：图片转 Markdown 图片语法
-      messageContent = content.trim() + "\n\n" + parts
-        .filter((p): p is import("../types/session").ImagePart => p.type === "image_url")
-        .map((p) => "![Image](" + p.image_url.url + ")")
-        .join("\n\n");
+      // 本地显示也用 ContentPart[]，让 MarkdownRenderer 正确渲染图片
+      messageContent = parts;
     }
     const userMsg: Message = { id: crypto.randomUUID(), role: "user", content: messageContent, timestamp: Date.now() };
     const assistantMsg: Message = { id: crypto.randomUUID(), role: "assistant", content: "", timestamp: Date.now() };
@@ -221,7 +226,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
     });
 
     // 构建请求体：历史消息 + 设置（扁平结构，对齐后端 ChatRequest）
-    const { topK, temperature, systemPrompt, longTermMemory, model, maxTokens } = useSettingsStore.getState();
+    // 模型优先从当前会话读取（各对话独立），回退到全局设置
+    const { topK, temperature, systemPrompt, longTermMemory, maxTokens } = useSettingsStore.getState();
+    const currentSession = useSessionStore.getState().sessions.find((s) => s.id === activeSessionId);
+    const model = currentSession?.model || useSettingsStore.getState().model;
     log("info", "chat", `model=${model} topK=${topK} maxTokens=${maxTokens} sessionId=${activeSessionId} systemPrompt="${systemPrompt?.slice(0, 50)}..."`);
     const history = messages.map((m) => ({ role: m.role, content: m.content }));
     const newMsg = { role: "user" as const, content: apiContent };
@@ -233,7 +241,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       system_prompt: systemPrompt,
       long_term_memory: longTermMemory || undefined,
       model: model || undefined,
-      attachments: attachments && attachments.length > 0 ? attachments : undefined,
+      // 只发送非图片附件（图片已在 messages 的 ContentPart[] 中）
+      // 后端会从 attachments 提取图片再拼到消息里，导致重复
+      attachments: attachments && attachments.length > 0
+        ? attachments.filter((a) => !a.type.startsWith("image/"))
+        : undefined,
     };
 
     const startTime = Date.now();
@@ -422,11 +434,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
           // 更新会话元数据
           const msgCount = finalMessages.filter((m) => m.role === "user" || (m.role === "assistant" && m.content)).length;
           const lastUserMsg = finalMessages.filter((m) => m.role === "user").pop();
-          const preview = lastUserMsg && typeof lastUserMsg.content === "string" ? lastUserMsg.content.slice(0, 60) : "";
+          // 从 ContentPart[] 或 string 中提取文本用于 preview/title
+          const extractText = (content: string | import("../types/session").ContentPart[]): string => {
+            if (typeof content === "string") return content;
+            return content.filter((p) => p.type === "text").map((p) => p.text).join(" ");
+          };
+          const userText = lastUserMsg ? extractText(lastUserMsg.content) : "";
+          const preview = userText.slice(0, 60) || "(图片)";
           const sessionStore = useSessionStore.getState();
           const currentSession = sessionStore.sessions.find((x) => x.id === sid);
-          const title = currentSession?.title === "新对话" && lastUserMsg
-            ? (typeof lastUserMsg.content === "string" ? lastUserMsg.content : "").slice(0, 30).replace(/\n/g, " ")
+          const title = currentSession?.title === "新对话" && userText
+            ? userText.slice(0, 30).replace(/\n/g, " ")
             : undefined;
           useSessionStore.getState().updateSessionMeta(sid, {
             msgCount,
@@ -477,6 +495,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   stopStreaming: (errorMessage?: string) => {
     set((state) => {
+      // 幂等检查：如果已经停止过（isStreaming=false 且无 SSE 请求），直接返回
+      if (!state.isStreaming && !state.streamingSessionId && !state.currentSseRequest) {
+        return {};
+      }
       const { currentSseRequest, messages, streamingContent, streamingSteps, streamingSessionId, activeSessionId, sessionMessages } = state;
       log("warn", "chat", errorMessage ? "流式输出因错误停止" : "用户手动停止流式输出");
       if (currentSseRequest) currentSseRequest.abort();
@@ -550,7 +572,26 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     // 同步更新 sessionMessages
     set((s) => syncToSession({ ...s, messages: truncated }));
-    setTimeout(() => get().sendMessage(typeof userContent === "string" ? userContent : ""), 50);
+
+    // 从 ContentPart[] 中提取文本和图片附件
+    if (typeof userContent === "string") {
+      setTimeout(() => get().sendMessage(userContent), 50);
+    } else {
+      // ContentPart[]: 提取文本和图片
+      const text = userContent
+        .filter((p): p is Extract<import("../types/session").ContentPart, { type: "text" }> => p.type === "text")
+        .map((p) => p.text)
+        .join("\n");
+      const imageAttachments: import("../types/session").Attachment[] = userContent
+        .filter((p): p is Extract<import("../types/session").ContentPart, { type: "image_url" }> => p.type === "image_url")
+        .map((p) => ({
+          id: `retry-img-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          name: "image.png",
+          type: "image/png",
+          content: p.image_url.url,
+        }));
+      setTimeout(() => get().sendMessage(text || "", imageAttachments.length > 0 ? imageAttachments : undefined), 50);
+    }
   },
 
   editAndResend: (msgId, newContent) => {
@@ -579,7 +620,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     );
 
     // 通过后端 API 创建带分支信息的新会话
-    const { model } = useSettingsStore.getState();
+    const currentSession = useSessionStore.getState().sessions.find((s) => s.id === activeSessionId);
+    const model = currentSession?.model || useSettingsStore.getState().model;
     const project = useSessionStore.getState().activeProject === "all" ? "" : useSessionStore.getState().activeProject;
 
     apiPost<{ id: string }>("sessions", {

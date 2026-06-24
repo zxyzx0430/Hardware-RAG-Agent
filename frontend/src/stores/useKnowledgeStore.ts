@@ -13,7 +13,7 @@ interface KnowledgeState {
   toggleItem: (id: string) => void;
   deleteItem: (id: string) => void;
   setIsUploading: (v: boolean) => void;
-  fetchItems: () => Promise<void>;
+  fetchItems: (kbId?: string) => Promise<void>;
   deleteItemWithAPI: (id: string) => Promise<void>;
 
   // ─── Collection-level (multi-KB) ───
@@ -27,9 +27,18 @@ interface KnowledgeState {
   toggleCollection: (kbId: string, enabled: boolean) => Promise<boolean>;
   getCollectionDetail: (kbId: string) => Promise<KBCollectionDetail | null>;
   fetchEmbeddingModels: (baseUrl: string, apiKey: string) => Promise<string[]>;
+  exportCollection: (kbId: string) => Promise<void>;
+  importCollection: (kbId: string, file: File) => Promise<number>;
 }
 
 const DEFAULT_KB_ID = "builtin-001";
+
+function formatFileSize(bytes: number): string {
+  if (!bytes || bytes <= 0) return "—";
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
 
 export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
   // ─── Document-level ───
@@ -51,21 +60,24 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
     set((s) => ({ items: s.items.filter((x) => x.id !== id) })),
   setIsUploading: (isUploading) => set({ isUploading }),
 
-  fetchItems: async () => {
+  fetchItems: async (kbId?: string) => {
     try {
-      const data = await apiGet<{ documents: any[] }>("kb/list");
+      const endpoint = kbId ? `kb/list?kb_id=${encodeURIComponent(kbId)}` : "kb/list";
+      const data = await apiGet<{ documents: any[] }>(endpoint);
       if (data?.documents) {
         const items: KBDoc[] = data.documents.map((doc: any) => ({
           id: doc.doc_id ?? doc.id,
-          name: doc.filename ?? doc.name ?? "未知文件",
-          size: doc.size ?? "—",
-          chunks: doc.chunks ?? 0,
+          name: doc.title ?? doc.doc_id ?? "未知文件",
+          size: formatFileSize(doc.file_size ?? 0),
+          chunks: doc.chunk_count ?? 0,
           status: doc.status ?? "indexed",
-          enabled: doc.enabled ?? true,
-          updatedAt: doc.updated_at ?? doc.updatedAt ?? new Date().toISOString().slice(0, 10),
-          docType: doc.doc_type ?? doc.docType ?? "Text",
-          tags: doc.tags ?? [],
-          errorMessage: doc.error_message ?? doc.errorMessage,
+          enabled: true,
+          updatedAt: doc.created_at ? doc.created_at.slice(0, 10) : new Date().toISOString().slice(0, 10),
+          docType: doc.file_type ?? "Text",
+          tags: [],
+          errorMessage: doc.error_message,
+          kb_id: doc.kb_id,
+          chunk_method_used: doc.chunk_method_used,
         }));
         set({ items });
         useLogStore.getState().log("ok", "kb", `加载 ${items.length} 个知识库文档`);
@@ -103,11 +115,11 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
           description: kb.description ?? "",
           collection_name: kb.collection_name,
           chunk_method: kb.chunk_method ?? "hybrid",
-          embedding_model: kb.embedding_model ?? "text-embedding-3-small",
-          embedding_base_url: kb.embedding_base_url,
-          agent_chunker_model: kb.agent_chunker_model ?? "gpt-4o-mini",
-          agent_chunker_base_url: kb.agent_chunker_base_url,
-          context_window: kb.context_window,
+          embedding_model: kb.embedding_model ?? "",
+          embedding_base_url: kb.embedding_base_url ?? "",
+          agent_chunker_model: kb.agent_chunker_model ?? "",
+          agent_chunker_base_url: kb.agent_chunker_base_url ?? "",
+          context_window: kb.context_window ?? 0,
           enabled: kb.enabled ?? true,
           is_builtin: kb.is_builtin ?? false,
           doc_count: kb.doc_count ?? 0,
@@ -116,11 +128,11 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
         }));
         set({ collections: kbs });
 
-        // If active KB no longer exists, reset to default
+        // If active KB no longer exists, reset to first available (prefer builtin)
         const activeExists = kbs.some((k) => k.id === get().activeKbId);
-        if (!activeExists && kbs.length > 0) {
+        if (!activeExists) {
           const builtin = kbs.find((k) => k.is_builtin);
-          set({ activeKbId: builtin?.id ?? kbs[0].id });
+          set({ activeKbId: builtin?.id ?? kbs[0]?.id ?? DEFAULT_KB_ID });
         }
 
         useLogStore.getState().log("ok", "kb", `加载 ${kbs.length} 个知识库`);
@@ -152,10 +164,14 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
   deleteCollection: async (kbId) => {
     try {
       await apiDelete(`kb/collections/${kbId}`);
-      set((s) => ({
-        collections: s.collections.filter((k) => k.id !== kbId),
-        activeKbId: s.activeKbId === kbId ? DEFAULT_KB_ID : s.activeKbId,
-      }));
+      const remaining = get().collections.filter((k) => k.id !== kbId);
+      // Reset activeKbId if we just deleted the active KB
+      const newActiveId = get().activeKbId === kbId
+        ? (remaining.find((k) => k.is_builtin)?.id ?? remaining[0]?.id ?? DEFAULT_KB_ID)
+        : get().activeKbId;
+      set({ collections: remaining, activeKbId: newActiveId });
+      // Sync with backend to ensure consistency
+      get().fetchCollections();
       useLogStore.getState().log("ok", "kb", `删除知识库: ${kbId}`);
       return true;
     } catch (e) {
@@ -197,15 +213,53 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
   },
 
   fetchEmbeddingModels: async (baseUrl, apiKey) => {
+    // Do not swallow errors — let callers show the real failure reason
+    const data = await apiPost<{ models: string[] }>("kb/embedding-models", {
+      base_url: baseUrl,
+      api_key: apiKey,
+    }, 30000);
+    return data?.models ?? [];
+  },
+
+  exportCollection: async (kbId) => {
     try {
-      const data = await apiPost<{ models: string[] }>("kb/embedding-models", {
-        base_url: baseUrl,
-        api_key: apiKey,
-      });
-      return data?.models ?? [];
+      const data = await apiPost<any>(`kb/${kbId}/export`, {});
+      if (data) {
+        // Trigger browser download
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `kb_${data.name || kbId}_${Date.now()}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        useLogStore.getState().log("ok", "kb", `导出知识库: ${data.name || kbId} (${data.chunk_count || 0} chunks)`);
+      }
     } catch (e) {
-      useLogStore.getState().log("error", "kb", `获取 embedding 模型列表失败: ${e instanceof Error ? e.message : String(e)}`);
-      return [];
+      useLogStore.getState().log("error", "kb", `导出知识库失败: ${e instanceof Error ? e.message : String(e)}`);
+      throw e;
+    }
+  },
+
+  importCollection: async (kbId, file) => {
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const data = await apiPost<{ imported_chunks: number; source_kb: string; source_model: string }>(
+        `kb/${kbId}/import`,
+        formData,
+        120000,
+      );
+      const imported = data?.imported_chunks ?? 0;
+      useLogStore.getState().log("ok", "kb", `导入知识库: ${data?.source_kb || ""} (${imported} chunks)`);
+      // Refresh collections to update doc/chunk counts
+      get().fetchCollections();
+      return imported;
+    } catch (e) {
+      useLogStore.getState().log("error", "kb", `导入知识库失败: ${e instanceof Error ? e.message : String(e)}`);
+      throw e;
     }
   },
 }));

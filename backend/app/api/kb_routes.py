@@ -243,13 +243,25 @@ async def kb_upload(
             from src.rag.chunking import verify_page_coverage
             coverage = verify_page_coverage(chunks, total_pages)
 
-            _update_doc_status(
-                doc_id,
-                "indexed",
-                chunk_count=ingested,
-                coverage=coverage,
-            )
-            logger.info(f"文档入库完成: {doc_id} → {ingested} chunks (method={effective_method})")
+            # Always record actual chunk count (ingested may be 0 if embedding not configured)
+            actual_chunk_count = len(chunks)
+
+            if ingested == 0:
+                # Embedding not configured — chunks were created but not vectorized
+                _update_doc_status(
+                    doc_id,
+                    "indexed",
+                    chunk_count=actual_chunk_count,
+                    error_message="未配置 Embedding 模型，已分块但未向量化。配置 Embedding 后请删除重新上传。",
+                )
+            else:
+                _update_doc_status(
+                    doc_id,
+                    "indexed",
+                    chunk_count=actual_chunk_count,
+                    coverage=coverage,
+                )
+            logger.info(f"文档入库完成: {doc_id} → {actual_chunk_count} chunks (向量化: {ingested}, method={effective_method})")
 
         except Exception as e:
             logger.exception(f"后台索引失败: {doc_id}")
@@ -628,7 +640,8 @@ async def list_embedding_models(payload: EmbeddingModelsRequest):
         import httpx
         async with httpx.AsyncClient(timeout=30.0) as client:
             headers = {"Authorization": f"Bearer {payload.api_key}"}
-            url = payload.base_url.rstrip("/") + "/models"
+            base = payload.base_url.rstrip("/")
+            url = base if base.endswith("/models") else base + "/models"
             resp = await client.get(url, headers=headers)
             if resp.status_code != 200:
                 return {
@@ -656,4 +669,119 @@ async def list_embedding_models(payload: EmbeddingModelsRequest):
                 "message": sanitize_error(str(e)),
                 "details": None,
             },
+        }
+
+
+# ═══════════════════════════════════════════════
+# POST /api/kb/{kb_id}/export — Export KB data as JSON
+# ═══════════════════════════════════════════════
+@router.post("/kb/{kb_id}/export")
+async def kb_export(kb_id: str):
+    """Export a KB's ChromaDB data (documents + embeddings + metadatas) as JSON.
+
+    The exported file can be imported into another instance using the same embedding model.
+    """
+    kb_manager = _get_kb_manager()
+    kb = kb_manager.get_kb(kb_id)
+    if not kb:
+        return {
+            "success": False,
+            "error": {"code": "KB_NOT_FOUND", "message": f"知识库不存在: {kb_id}", "details": None},
+        }
+    try:
+        export_data = kb_manager.export_kb(kb_id)
+        return {"success": True, "data": export_data}
+    except Exception as e:
+        logger.exception(f"导出知识库失败: {kb_id}")
+        return {
+            "success": False,
+            "error": {"code": "EXPORT_FAILED", "message": sanitize_error(str(e)), "details": None},
+        }
+
+
+# ═══════════════════════════════════════════════
+# POST /api/kb/{kb_id}/import — Import KB data from JSON file
+# ═══════════════════════════════════════════════
+@router.post("/kb/{kb_id}/import")
+async def kb_import(
+    kb_id: str,
+    file: UploadFile = File(...),
+):
+    """Import a previously exported KB JSON file into an existing KB.
+
+    The target KB should use the same embedding model as the source.
+    This directly writes embeddings into ChromaDB without re-embedding.
+
+    The JSON file should be the output of POST /api/kb/{kb_id}/export.
+    """
+    kb_manager = _get_kb_manager()
+    kb = kb_manager.get_kb(kb_id)
+    if not kb:
+        return {
+            "success": False,
+            "error": {"code": "KB_NOT_FOUND", "message": f"知识库不存在: {kb_id}", "details": None},
+        }
+
+    if not file.filename:
+        return {
+            "success": False,
+            "error": {"code": "INVALID_REQUEST", "message": "未提供文件名", "details": None},
+        }
+
+    try:
+        content = await file.read()
+        import json
+        export_data = json.loads(content.decode("utf-8"))
+
+        # Validate structure
+        if "data" not in export_data:
+            return {
+                "success": False,
+                "error": {"code": "INVALID_FORMAT", "message": "文件格式无效：缺少 data 字段", "details": None},
+            }
+
+        # Warn if embedding model mismatch
+        source_model = export_data.get("embedding_model", "")
+        if source_model and kb.embedding_model and source_model != kb.embedding_model:
+            logger.warning(
+                f"Embedding model mismatch: source={source_model}, target={kb.embedding_model}"
+            )
+
+        imported = kb_manager.import_kb(kb_id, export_data)
+
+        # Update doc count in DB — create a KnowledgeDoc record for the import
+        if imported > 0:
+            doc_id = str(uuid.uuid4())
+            with get_db_ctx() as db:
+                record = KnowledgeDoc(
+                    doc_id=doc_id,
+                    kb_id=kb_id,
+                    title=f"[导入] {export_data.get('name', '未知')}",
+                    category="imported",
+                    file_type="json",
+                    file_size=len(content),
+                    chunk_count=imported,
+                    chunk_method_used=export_data.get("chunk_method", "hybrid"),
+                    status="indexed",
+                )
+                db.add(record)
+
+        return {
+            "success": True,
+            "data": {
+                "imported_chunks": imported,
+                "source_kb": export_data.get("name", ""),
+                "source_model": source_model,
+            },
+        }
+    except json.JSONDecodeError:
+        return {
+            "success": False,
+            "error": {"code": "INVALID_FORMAT", "message": "文件不是有效的 JSON", "details": None},
+        }
+    except Exception as e:
+        logger.exception(f"导入知识库失败: {kb_id}")
+        return {
+            "success": False,
+            "error": {"code": "IMPORT_FAILED", "message": sanitize_error(str(e)), "details": None},
         }
