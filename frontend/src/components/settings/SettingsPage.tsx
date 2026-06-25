@@ -3,11 +3,9 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAppStore } from "../../stores/useAppStore";
 import { useSettingsStore, baseUrlByProvider } from "../../stores/useSettingsStore";
 import { useChatStore } from "../../stores/useChatStore";
-import { useSessionStore } from "../../stores/useSessionStore";
 import { useLogStore } from "../../stores/useLogStore";
 import { apiPost } from "../../api/client";
 import { useI18n } from "../../i18n";
-import type { ContentPart } from "../../types/session";
 import { RagSettingsPanel } from "./RagSettingsPanel";
 import { TokenUsagePanel } from "./TokenUsagePanel";
 
@@ -83,6 +81,7 @@ export function SettingsPage() {
   const [mcpFormName, setMcpFormName] = useState("");
   const [mcpFormCommand, setMcpFormCommand] = useState("");
   const [mcpLoading, setMcpLoading] = useState<string | null>(null);
+  const [logRefreshKey, setLogRefreshKey] = useState(0);
   const currentKey = providerKeys[activeProvider] || "";
   const queryClient = useQueryClient();
 
@@ -109,7 +108,7 @@ export function SettingsPage() {
     { value: 10080, label: t('last7Days') },
   ];
 
-  const filteredBuffer = useMemo(() => getFiltered(), [buffer, filter.levels, filter.timeRange]);
+  const filteredBuffer = useMemo(() => getFiltered(), [buffer, filter.levels, filter.timeRange, logRefreshKey]);
 
   const resolvedBaseUrl = baseUrls[activeProvider] || baseUrlByProvider(activeProvider);
 
@@ -375,7 +374,13 @@ export function SettingsPage() {
                       <div style={{ display: 'flex', gap: 6 }}>
                         <button
                           className={`verify-btn ${srv.status === 'running' ? 'danger' : 'primary'}`}
-                          onClick={() => srv.status === 'running' ? stopMCPServer(srv.id) : startMCPServer(srv.id)}
+                          onClick={async () => {
+                            setMcpLoading(srv.id);
+                            try {
+                              if (srv.status === 'running') { await stopMCPServer(srv.id); }
+                              else { await startMCPServer(srv.id); }
+                            } finally { setMcpLoading(null); }
+                          }}
                           disabled={mcpLoading === srv.id}
                         >
                           {mcpLoading === srv.id ? '...' : srv.status === 'running' ? t('stopServer') : t('start')}
@@ -383,7 +388,7 @@ export function SettingsPage() {
                         <button
                           className="verify-btn danger"
                           onClick={() => removeMCPServer(srv.id)}
-                          title={t('delete') || '删除'}
+                          title={t('delete')}
                           style={{ minWidth: 36, padding: '0 8px', fontSize: 14 }}
                         >
                           ✕
@@ -431,105 +436,6 @@ export function SettingsPage() {
           </div>
         </div>
       </div>
-    </div>
-  );
-}
-
-/** 粗略估算 token 数 */
-function estimateTokens(text: string): number {
-  const cnChars = [...text].filter(c => '\u4e00' <= c && c <= '\u9fff').length;
-  const otherChars = text.length - cnChars;
-  return Math.ceil(cnChars * 1.5 + otherChars * 0.5);
-}
-
-/** Extract plain text from Message content (string | ContentPart[]) */
-function contentToText(content: string | ContentPart[]): string {
-  if (typeof content === 'string') return content;
-  return content.map(p => 'text' in p ? p.text : '').join('');
-}
-
-function formatTokenCount(n: number): string {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
-  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K';
-  return n.toString();
-}
-
-/** Usage 标签页：真实数据 */
-function UsageTab() {
-  const { t } = useI18n();
-  const { sessionMessages } = useChatStore();
-  const { sessions } = useSessionStore();
-  const { model } = useSettingsStore();
-
-  // 汇总所有会话的消息
-  const allMessages = useMemo(() => {
-    return Object.values(sessionMessages).flat();
-  }, [sessionMessages]);
-
-  const totalSessions = sessions.length;
-  const totalMessages = allMessages.filter(m => m.role === 'user' || (m.role === 'assistant' && m.content)).length;
-
-  // 真实 usage 数据
-  let realPrompt = 0, realCompletion = 0, realTotal = 0;
-  let hasRealUsage = false;
-  allMessages.forEach(m => {
-    if (m.role === 'assistant' && m.usage) {
-      realPrompt += m.usage.promptTokens;
-      realCompletion += m.usage.completionTokens;
-      realTotal += m.usage.totalTokens;
-      hasRealUsage = true;
-    }
-  });
-
-  // 估算 fallback
-  const estInput = allMessages.filter(m => m.role === 'user').reduce((a, m) => a + estimateTokens(contentToText(m.content)), 0);
-  const estOutput = allMessages.filter(m => m.role === 'assistant').reduce((a, m) => a + estimateTokens(contentToText(m.content)), 0);
-
-  const totalTokens = hasRealUsage ? realTotal : (estInput + estOutput);
-  const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
-  const todayMessages = allMessages.filter(m => m.timestamp >= todayStart.getTime());
-  const dailyTokens = todayMessages.filter(m => m.role === 'assistant').reduce((a, m) =>
-    a + (m.usage?.totalTokens || estimateTokens(contentToText(m.content))), 0);
-
-  // 模型分布
-  const modelDist = useMemo(() => {
-    const map: Record<string, number> = {};
-    allMessages.forEach(m => {
-      if (m.role === 'assistant') {
-        const tokens = m.usage?.totalTokens || estimateTokens(contentToText(m.content));
-        map[model] = (map[model] || 0) + tokens;
-      }
-    });
-    const maxTokens = Math.max(...Object.values(map), 1);
-    return Object.entries(map).map(([m, tokens]) => ({ model: m, tokens, pct: Math.round(tokens / maxTokens * 100) }));
-  }, [allMessages, model]);
-
-  return (
-    <div className="settings-section">
-      <h3>{t('usageAnalysis')}</h3>
-      <div className="stats-grid">
-        <div className="stat-card"><div className="stat-label">{t('totalSessions')}</div><div className="stat-value">{totalSessions}</div></div>
-        <div className="stat-card"><div className="stat-label">{t('totalMessages')}</div><div className="stat-value">{totalMessages}</div></div>
-        <div className="stat-card"><div className="stat-label">{t('totalTokens')}</div><div className="stat-value">{formatTokenCount(totalTokens)}{hasRealUsage ? ' ✓' : ' ~'}</div></div>
-        <div className="stat-card"><div className="stat-label">{t('dailyTokens')}</div><div className="stat-value">{formatTokenCount(dailyTokens)}</div></div>
-      </div>
-      {modelDist.length > 0 && (
-        <div className="chart-card">
-          <div className="chart-title">{t('modelDistribution')}</div>
-          {modelDist.map((row) => (
-            <div className="model-bar-row" key={row.model}>
-              <span className="model-bar-name">{row.model}</span>
-              <div className="model-bar-track"><div className="model-bar-fill" style={{ width: `${row.pct}%` }}></div></div>
-              <span className="model-bar-tokens">{formatTokenCount(row.tokens)}</span>
-            </div>
-          ))}
-        </div>
-      )}
-      {!hasRealUsage && (
-        <div style={{ fontSize: 11, color: 'var(--muted-fg)', fontStyle: 'italic', marginTop: 8 }}>
-          ~ 为估算值，发送消息后 API 返回 usage 数据将显示真实值
-        </div>
-      )}
     </div>
   );
 }

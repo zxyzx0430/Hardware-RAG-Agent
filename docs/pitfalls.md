@@ -737,3 +737,174 @@ branchThread 会话 ID 不一致 + 后端 CRUD 不返回分支字段
   3) 关键操作（如发送消息）应加 ref guard 防止重入
   4) 数据层去重是最后一道防线，即使上游逻辑正确也应做防御性去重
 
+## 2026-06-25 - docs/review 扫描报告验证与标准化修复
+
+- **错误现象**：`docs/review/` 下 8 份扫描报告存在大量事实性错误，部分声明行号不对、部分声明完全虚假、部分真实 bug 未修复。直接按报告修复会引入新问题。
+- **错误原因**：
+  1) 报告基于旧版代码编写，行号与当前代码不匹配（多数 P2/P3 声明）
+  2) 5 个声明完全虚假：TopBar slice bug（已修复）、chatFontSize 未用（实际在用）、_summarize_messages 未调用（实际在用）、create_session 500（已有守卫）、database.py 无 try/except（实际有）、FALLBACK_PORTS 未用（实际在用）
+  3) 真实 bug 未被修复：AuditPinsRequest 字段不匹配契约、file_parsers 缺 parse_from_bytes 方法、tool_routes 读 dict.__doc__、sandbox 错误码不匹配契约、CPU_TIMEOUT=10 vs 契约 30s、vite 端口 58080 vs 后端 8000
+- **修复方式**：
+  1) **标准化验证流程**：4 个并行 search agent 逐条验证声明，区分 ❌ FALSE / ⚠️ PARTIALLY TRUE / ✅ TRUE
+  2) **P0 契约对齐**：hardware_routes.py AuditPinsRequest 改为 `pin_assignments: dict[str, PinAssignmentInfo]`，响应 conflicts/warnings 改为 `list[PinWarning]` 对象数组
+  3) **P0 错误码对齐**：sandbox_routes.py 错误码改为 EMPTY_CODE/CODE_TOO_LONG/UNSUPPORTED_LANGUAGE/EXECUTION_TIMEOUT/SANDBOX_UNAVAILABLE，移除 HTTPException 改用标准 {success: False, error: {code, message}} 格式
+  4) **P0 端口对齐**：vite.config.ts 代理端口 58080→8000；executor.py CPU_TIMEOUT 10→30
+  5) **P1 缺失方法**：file_parsers.py 添加 BaseParser.parse_from_bytes 默认实现、PdfParser 类、ExcelParser 别名、各解析器 parse_from_bytes 覆盖
+  6) **P1 逻辑 bug**：tool_routes.py 修复 `func.__doc__` → `entry["fn"].__doc__`；添加 Depends(current_user) 鉴权；chat_routes.py 修复 attachment_texts.append 缩进（移入 if text: 块内）
+- **下次注意**：
+  1) 扫描报告必须逐条验证后才能修复，不能盲目信任报告内容
+  2) 行号声明最容易过时，验证时以代码实际内容为准
+  3) 契约文档（api-contract.md）是接口对齐的唯一真相源，前后端字段不匹配时以契约为准
+  4) Windows 终端运行 Python import 验证时，用 subprocess + timeout 避免重依赖卡死，不要用 signal.SIGALRM（Windows 不支持）
+
+## 2026-06-25 - 后端启动卡在 "Waiting for application startup" + token-usage 404
+
+- **错误现象**：后端重启后卡在 `INFO: Waiting for application startup.`，前端请求 `/api/token-usage/stats` 返回 404。看起来像死锁。
+- **错误原因**：
+  1) `_ensure_builtin_kb()` startup 事件中 `from src.rag.kb_manager import get_kb_manager` 触发连锁重依赖导入（chromadb + langchain + sqlalchemy），在本机约需 2-3 分钟
+  2) 新增的 `/api/token-usage/stats` 路由虽然代码正确，但后端未完全启动时路由未注册，导致 404
+  3) `trae-sandbox` 会吞掉终端 stdout，无法看到 `print()` 调试输出，误判为卡死
+- **修复方式**：
+  1) 用 `Start-Process -RedirectStandardOutput stdout.txt -RedirectStandardError stderr.txt` 启动后端，绕过 trae-sandbox 输出吞没
+  2) 等待 2-3 分钟后后端正常启动，`/health` 返回 healthy，`/api/token-usage/stats` 返回 200
+  3) 移除调试 print 语句，清理临时文件
+- **下次注意**：
+  1) 后端启动慢不是 bug，是 sqlalchemy/chromadb/langchain 导入开销大，需耐心等待 2-3 分钟
+  2) 调试后端启动问题时，用 `Start-Process -RedirectStandardOutput` 重定向到文件，再用 Read 工具读取，避免 trae-sandbox 吞输出
+  3) 新增 API 路由后 404 = 后端未重启或未完全启动，先检查 `/health` 确认后端状态
+
+## 2026-06-25 - Token 用量记录：部分 provider 不返回 stream usage
+
+- **错误现象**：用户反馈看不到 Token 用量图表，即使聊天后数据库仍为 0 条记录。
+- **错误原因**：`stream_options: {"include_usage": True}` 是 OpenAI 专有参数，部分 provider（如某些 Ollama 配置、非标准 OpenAI 兼容 API）不返回 `chunk.usage`，导致 `usage_data` 始终为 None，不写入数据库。
+- **修复方式**：在 `chat_routes.py` 流式结束后添加 fallback：如果 `usage_data` 为 None，用 `LLMClient._estimate_tokens()` 估算输入（从 messages + system_prompt）和输出（从累积的 `full_response_text`）token 数，并写入数据库。
+- **下次注意**：
+  1) 不能假设所有 provider 都支持 `stream_options`，必须有 fallback 估算机制
+  2) 累积 `full_response_text` 用于估算输出 token，不能只 yield 不保存
+  3) Token 记录失败不应阻断聊天流程，用 try/except 包裹并 logger.warning
+
+## 2026-06-25 - 重复上传检测 DetachedInstanceError 导致 500
+
+- **错误现象**：用户上传同名文件时返回 500 "服务器内部错误"，用户误以为是向量化失败。
+- **错误原因**：`kb_routes.py` 重复上传检测代码在 `with get_db_ctx() as db:` 块关闭后访问 ORM 对象属性 `existing.doc_id` / `existing.status`，触发 `DetachedInstanceError`（session 已关闭，无法懒加载属性）。
+- **修复方式**：在 session 块内提取标量值：
+  ```python
+  with get_db_ctx() as db:
+      existing = db.query(KnowledgeDoc).filter(...).first()
+      existing_doc_id = existing.doc_id if existing else None
+      existing_status = existing.status if existing else None
+  ```
+- **下次注意**：SQLAlchemy ORM 对象离开 session 后不能访问属性（除非 `expire_on_commit=False`）。在 session 块内提取所有需要的标量值。
+
+## 2026-06-25 - Builtin KB 缺少 Embedding API Key 导致向量化失败
+
+- **错误现象**：用户在前端全局设置中配置了 Embedding 模型后上传文件，仍显示"未配置 Embedding 模型，已分块但未向量化"。
+- **错误原因**：
+  1) `ensure_builtin_kb()` 创建 builtin KB 时只设 `embedding_model`，未设 `embedding_api_key_encrypted` 和 `embedding_base_url`
+  2) 前端全局 Embedding 设置存在 localStorage，从未同步到后端 KB 记录
+  3) `HardwareVectorStore.__init__` 中 `api_key = embedding_api_key or settings.embedding_api_key`，两者都为空 → `self.embeddings = None` → 向量化跳过
+- **修复方式**：
+  1) 后端：`PATCH /api/kb/collections/{kb_id}/config` 接口 + `kb_manager.update_kb_config()` 方法（含缓存失效）
+  2) 前端：KB 管理界面加齿轮"编辑配置"按钮 + 表单
+  3) `startEditConfig` 从全局设置（localStorage）预填 embedding 配置到 KB 配置表单，用户只需点保存即可同步
+- **下次注意**：
+  1) 前端全局设置不会自动同步到后端，需要显式调用 API
+  2) 每个 KB 需要独立配置 embedding，不能依赖全局 fallback
+  3) `ensure_builtin_kb()` 应该从 settings 读取默认 embedding 配置（如果 settings 有 API Key）
+
+
+## 2026-06-25 - LangChain OpenAIEmbeddings tiktoken 导致百炼 400 错误
+
+- **错误现象**：上传文件后向量化报 `Error code: 400 - InternalError.Algo.InvalidParameter: Value error, contents is neither str nor list of str.: input.contents`。
+- **错误原因**：LangChain `OpenAIEmbeddings` 默认 `tiktoken_enabled=True` + `check_embedding_ctx_length=True`，会用 tiktoken 把文本分词成整数 token ID 列表再作为 `input` 发送。OpenAI 原生 API 接受 token ID 列表，但阿里云百炼（DashScope）OpenAI 兼容模式只接受字符串或字符串列表，遇到整数列表就报 400。
+- **修复方式**：在 `HardwareVectorStore.__init__` 的 `OpenAIEmbeddings` 初始化中设置 `tiktoken_enabled=False`、`check_embedding_ctx_length=False`（发送原始文本字符串），以及 `chunk_size=10`（百炼 text-embedding-v4 单次最多 10 条）。
+- **下次注意**：1) 非 OpenAI 原生 API（百炼/Azure/其他兼容服务）使用 LangChain `OpenAIEmbeddings` 时必须禁用 tiktoken；2) 官方文档明确 `input` 类型为 `array<string> 或 string`，不接受 token ID；3) 百炼 v4 批量上限 10 条，v1/v2 是 25 条。
+
+
+## 2026-06-25 - asyncio.create_task 任务被 GC 导致索引状态卡死
+
+- **错误现象**：文件上传后文档状态永远停在 "indexing"，不变成 "indexed" 也不变成 "error"，stderr 无任何错误日志。
+- **错误原因**：`asyncio.create_task(_index_document())` 创建后台任务后未保留引用。Python 事件循环只对 task 保持弱引用，请求处理函数返回后 task 可被垃圾回收。GC 触发时 task 收到 `CancelledError`（Python 3.8+ 是 `BaseException` 子类），`except Exception` 无法捕获，状态更新代码永远不执行。
+- **修复方式**：1) 模块级 `_bg_tasks: set = set()` 保持强引用；2) `task = asyncio.create_task(...); _bg_tasks.add(task); task.add_done_callback(_bg_tasks.discard)`；3) 新增 `except asyncio.CancelledError` 分支更新状态为 "error" 后 `raise`。
+- **下次注意**：1) `asyncio.create_task` 返回值必须保存引用，否则 task 会被 GC；2) Python 3.8+ `CancelledError` 继承 `BaseException` 而非 `Exception`，`except Exception` 捕获不到；3) 后台任务无日志且状态不变 = 被 GC 的典型症状。
+
+
+## 2026-06-25 - verify_page_coverage 返回 set 导致 JSON 序列化失败
+
+- **错误现象**：向量和 chunks 都已成功入库（日志显示 "Ingested 4 chunks"），但文档状态仍卡在 "indexing"，后台日志报 `TypeError: Object of type set is not JSON serializable`。
+- **错误原因**：`verify_page_coverage()` 返回 `{"covered_pages": covered_set, ...}`，其中 `covered_set` 是 `set` 类型。`_update_doc_status` 用 `json.dumps(coverage)` 序列化时，`set` 不可 JSON 序列化，抛出 `TypeError`。该异常被 `_update_doc_status` 的 `except Exception` 捕获并仅记日志，不重新抛出，导致 `record.status = "indexed"` 这行虽然执行了但因异常回滚未提交到数据库。
+- **修复方式**：1) `verify_page_coverage` 返回 `sorted(covered_set)`（list 代替 set）；2) `_update_doc_status` 的 `json.dumps` 加 `default=str` 安全网。
+- **下次注意**：1) 返回值如果要 JSON 序列化，不能用 `set`，用 `sorted(list)`；2) `_update_doc_status` 的 `except Exception` 会吞掉错误导致状态不更新，关键操作的状态更新失败应该让调用方知道；3) "向量化成功但状态卡住" = 状态更新函数静默失败的典型症状。
+
+
+
+## 2026-06-25 - HybridChunker 双层 overlap 嵌套导致大量重复 chunk
+
+- **错误现象**：60KB 的 .md 文档切出 166 chunks，平均 350 字节。目录树被切成 19 片，JSON 示例被切到对象中间。检测发现 chunk 17/18 完全相同，chunk 70/71 完全相同。`big_chunk_text` 只是 1000 字符的 sub_chunk 片段，不是完整 section，小-大映射名存实亡。
+- **错误原因**：`hybrid_chunker.py` 的双层切分设计有缺陷——先用 `_splitter`(1000/overlap=200) 切 section 得到 sub_chunks，sub_chunks 之间有 200 字符 overlap；然后对每个 sub_chunk 用 `_small_splitter`(500/overlap=100) 切小 chunk。overlap 区域的 200 字符在两个相邻 sub_chunk 中都存在，被 `_small_splitter` 各自独立切分，产出重复或近似重复的 small chunks。`big_chunk_text = sub_text` 也只是 1000 字符的中间产物，不是完整 section。
+- **修复方式**：采用方案 C（先小后大聚合）——去掉中间层 `_splitter`，让 `_small_splitter`(500/overlap=0) 直接切 section。`big_chunk_text = section_text[:4000]`（完整 section 截断到 4000）。overlap=0 消除所有重复。同时：separators 最前加 `"\n```\n"` 保护代码块；`section_title` 改为带父标题路径（用 header_stack 维护层级）；`.md/.txt` 的 `page_range` 设为 `(0, 0)` 不造假页码。
+- **下次注意**：1) 不要在嵌套切分中用 overlap——内外两层 overlap 会乘积式产生重复区域；2) 小-大映射的 big_chunk 应该是完整结构单元（section），不是中间切分产物；3) `.md` 文件没有真实页码，不要用字符估算造假，直接 `(0, 0)` 让前端显示"无页码信息"；4) `section_title` 要带父路径避免同名子标题混淆。
+
+## 2026-06-25 - KB 管理三连崩：刷新丢文件 / 删不掉 / 重复阻挡
+
+- **错误现象**：用户报告三个连锁问题：1) 刷新界面后看不到已上传的文件列表；2) 重新上传同名文件被"重复文件"错误阻挡；3) 点删除按钮一直删不掉，提示冲突。
+- **错误原因**：
+  1) **刷新丢文件**：前端 `useKnowledgeStore` 的 `activeKbId` 初始化硬编码 `DEFAULT_KB_ID = "builtin-001"`，没有持久化。用户切换到自定义 KB 上传文件后刷新页面 → `activeKbId` 重置回 `builtin-001` → `fetchItems("builtin-001")` 过滤不到任何文件 → 列表为空。
+  2) **重复文件阻挡**：`kb/upload` 的重复检测对所有状态的记录都阻挡，包括 `status='error'`（上次上传失败留下的孤儿）和 `status='indexing'`（服务器重启留下的卡死记录）。用户被指引去删除孤儿，但删除又失败 → 死循环。
+  3) **删不掉**：`kb_delete` 端点把 `file_path.unlink()` 放在 `get_db_ctx()` 事务内。Windows 文件锁（ChromaDB/其他进程持有句柄）导致 unlink 抛 `PermissionError` → 整个事务回滚 → DB 记录始终删不掉。同时前端 `deleteItemWithAPI` 只做乐观更新，成功后没有 reload 列表，UI 与后端状态不一致。
+- **修复方式**：
+  1) **activeKbId 持久化**：新增 `loadActiveKbId()`/`saveActiveKbId()` 两个 helper 读写 `localStorage["kb-active-kb-id"]`；store 初始化、`setActiveKb`、`fetchCollections` fallback、`deleteCollection` 切换四处都同步持久化。
+  2) **重复检测覆盖孤儿**：`kb/upload` 遇到 `status in ('error', 'indexing')` 的同名记录时自动清理（DB 记录 + 向量 + 文件 best-effort）后继续上传；仅 `status='indexed'` 的成功记录阻挡。
+  3) **删除事务解耦**：`kb_delete` 把文件 unlink 移到 `get_db_ctx()` 事务外作为 best-effort，DB 记录删除不再被文件锁阻塞。前端 `deleteItemWithAPI` 成功后调 `fetchItems(kbId)` 重新加载列表。
+- **下次注意**：
+  1) 用户切换的状态（activeKbId、activeSessionId、当前选中项等）必须持久化到 localStorage，否则刷新就丢
+  2) 重复检测要区分"成功"和"失败"状态——失败/卡死的记录应该被自动覆盖，而不是阻挡用户重试
+  3) Windows 文件锁是常见问题，文件 I/O 不要放在 DB 事务内，事务只管 DB 操作
+  4) 乐观更新成功后必须 reload 后端列表，否则 UI 与后端状态漂移
+
+## 2026-06-25 - import 端点创建新 doc_id 导致向量永远删不掉
+
+- **错误现象**：通过 `kb_import` 导入的文档，删除时 DB 记录能删，但 ChromaDB 里的向量永远删不掉，越积越多。
+- **错误原因**：`kb_import` 端点创建 `doc_id = str(uuid.uuid4())` 作为 KnowledgeDoc 记录，但 `store.import_data` 直接把源 KB 的 chunks 写入 ChromaDB 时保留**源 doc_id**（在 chunk metadata 里）。删除时 `store.delete_document(new_doc_id)` 在 ChromaDB 里 `where={"doc_id": new_doc_id}` 找不到任何匹配的 chunk（chunks 的 metadata 里是源 doc_id）→ 返回 0 删除 → 向量孤儿留下。
+- **修复方式**：`kb_import` 从 `export_data.data.metadatas` 提取所有源 doc_id，按源 doc_id 分组（每组聚合 title 和 chunk_count），创建多条 KnowledgeDoc 记录时直接复用源 doc_id。删除时按 doc_id 查 ChromaDB 就能匹配。已有同 doc_id 记录时改为 update 而非 insert（避免 unique constraint）。
+- **下次注意**：1) 跨存储层级（DB + ChromaDB）的实体 ID 必须一致，不能在写入时改 ID；2) import 类操作要把源数据里的关键字段（doc_id、metadata）原样保留，不能凭空生成新 ID；3) 删除操作失败时检查 DB 记录的 ID 与向量存储中的 ID 是否真的匹配。
+
+## 2026-06-25 - 服务器重启后 indexing 状态卡死（1 小时阈值太长）
+
+- **错误现象**：服务器重启后，DB 里 status='indexing' 的记录卡住不变成 error，前端轮询 2 分钟超时，用户也无法重新上传同名文件（被重复检测阻挡）。
+- **错误原因**：startup 事件里虽然有清理 indexing 记录的逻辑，但加了 `created_at < now - 1 hour` 阈值——意思是只清理创建超过 1 小时的 indexing 记录。如果用户上传后 5 分钟内服务器重启，记录创建时间在 1 小时内，不会被清理，永远卡在 indexing。
+- **修复方式**：移除时间阈值，启动时把所有 `status='indexing'` 的记录全部改成 `status='error'` + `error_message='服务重启时索引中断，请重新上传'`。理由：startup 只在进程启动时跑一次，此时任何 indexing 状态都是孤儿（后台 asyncio task 已随进程退出）。
+- **下次注意**：1) 启动时的状态清理不要加时间阈值——只要进程重启了，所有未完成的后台任务都是孤儿；2) 后台异步任务（asyncio.create_task）的状态字段在重启后必须被显式重置，不能假设任务能恢复。
+
+## 2026-06-26 - HybridChunker 代码块碎片化 + 文本块不合并导致大量无上下文短 chunk
+
+- **错误现象**：用户上传 3 个 Markdown 文件后，chunk 质量极差：frontend-prompt.md 60 chunks、backend-prompt.md 82 chunks、backend-api-spec.md 25 chunks，总计 167 chunks 其中 51 个 <100 chars。文件树代码块（5161 chars）被 RecursiveCharacterTextSplitter 切成 18 个无意义行片段；API 规范段被切成 7 个 40-100 chars 的碎片（"响应：`{ok: true}`" 独立成块），完全没有上下文。
+- **错误原因**（三层 bug 叠加）：
+  1. **长代码块被 small_splitter 碎切**：`_split_markdown` 把所有内容（含代码块）作为纯文本传给 `RecursiveCharacterTextSplitter`，splitter 在代码块内部按行切开，文件树变成 18 个碎片。
+  2. **短代码块合并但文本块不合并**：迭代2修复了短代码块合并回前一个文本块，但 `else` 分支里文本块（text part）直接 `merged.append` 创建新条目，不合并到前一个文本块。导致 `text→code→text→code` 产生多个独立 merged 条目，每个变成单独 section。section 3.5（会话管理 API，~542 chars）被拆成 7 个 section，每个 40-100 chars。
+  3. **small_splitter 的 `"\n```\n"` 分隔符**：即使短代码块已合并回文本，splitter 仍能在 ``` 边界处切开，产生更多碎片。
+- **修复方式**（三层修复）：
+  1. **长代码块独立 section**：`_split_markdown` 用 `re.split(r"(```[\s\S]*?```)", text)` 提取代码块，长代码块（>500 chars）作为独立 section，`chunk()` 方法跳过 small_splitter 直接输出。短代码块（≤500 chars）用 `\x00CB{i}\x00` 占位符合并回文本，防止 bash `#` 注释被误认为 Markdown 标题。
+  2. **文本块合并**：`else` 分支里文本块也合并到前一个文本块（`if merged and not merged[-1][0]: merged[-1] = (False, merged[-1][1] + part)`），整个 section 的文本+内联代码块成为一个 merged 条目，header split 正确地按标题分割。
+  3. **small_splitter 占位符保护**：`chunk()` 方法在调用 small_splitter 前用 `_INLINE_CODE_RE.sub(_stash_code, section_text)` 替换所有内联代码块为占位符，split 完成后恢复。从 separators 列表移除 `"\n```\n"`。
+  4. **后处理合并 tiny chunk**：`_merge_tiny_chunks` 方法把 <100 chars 的非代码块 chunk 合并到同 section 的前一个 chunk。
+- **结果**：3 个文件从 167 chunks → 83 chunks（-50%），短块从 51 → 8（-84%）。剩余 8 个短块都是"标题+长代码块"前的标题行（如 "### 3.2 LLM 代理层" 40 chars），属于结构性边界。
+- **下次注意**：1) Markdown chunker 必须在 structural split 阶段就把代码块提取为独立单元，不能依赖 RecursiveCharacterTextSplitter 处理代码块；2) 文本块和代码块的 merge 逻辑要对称——代码块合并到前文本，文本块也要合并到前文本，否则 `text→code→text→code` 会产生碎片；3) 在调用 RecursiveCharacterTextSplitter 前用占位符保护代码块，防止 ``` 边界被误用为分隔符；4) 永远加一个后处理步骤合并 tiny chunk，因为 RecursiveCharacterTextSplitter 总会在大块之间留下小碎片。
+
+## 2026-06-26 - Agent 分块器黑箱化：prompt 简陋 + 子分块代码块碎片化 + 无透明度
+
+- **错误现象**：Agent 分块器（LLM 驱动）存在三大问题：1) prompt 模板极简（纯英文、6 行、不指导代码块保护/上下文保持/分块大小），LLM 输出质量不可控；2) `_build_chunks` 中的子分块用 `RecursiveCharacterTextSplitter(1000/200)` 无代码块保护，与 HybridChunker 之前修复的碎片化 bug 完全相同；3) 整个 LLM 分块过程是黑箱——无日志、无投票轮次记录、无争议边界暴露、API 不返回 `is_code_block`/`boundary_disputed`/`section_summary`/`agent_trace` 等元数据。
+- **错误原因**：
+  1) `_AGENT_CHUNK_PROMPT` 只要求 `start_page/end_page/title/summary`，没有代码块保护指令、上下文保持指令、分块大小目标、关键词提取、置信度评估，也没有双语支持
+  2) `_build_chunks` 的子分块直接用 `splitter.split_text(section_text)`，代码块中的 `#` 注释被误认为 Markdown 标题，``` 边界被 `"\n\n"` 分隔符切开
+  3) `chunk()` 方法只在最后 `logger.info` 了一行总结，没有记录每轮 LLM 调用的 prompt/response/timing，`ChunkResult.metadata` 中没有 `agent_trace` 字段
+  4) `kb_routes.py` 的 `get_doc_chunks` 端点只暴露 `chunk_index/content/section_title` 等基础字段，不暴露 `is_code_block`/`boundary_disputed`/`section_summary`/`agent_trace`
+  5) 所有参数（prompt、temperature、rounds、batch_size）硬编码，无法按 KB 调整
+- **修复方式**（四层修复）：
+  1. **重写 prompt 模板**：双语（中文为主）、6 条分析规则（语义完整性/代码块保护/上下文保持/大小目标/标题层级/特殊内容）、要求输出 `keywords/has_code_block/confidence`、可通过 `prompt_template` 和 `prompt_system_extra` 构造参数覆盖
+  2. **子分块代码块保护**：`_build_chunks` 在调用 `_sub_splitter` 前用 `_INLINE_CODE_RE.sub(_stash_code, section_text)` 替换内联代码块为 `\x00CB{i}\x00` 占位符，split 后恢复；整个 section 是代码块时直接输出不切分；`_merge_tiny_chunks` 合并 <100 chars 的非代码块 chunk
+  3. **ChunkTrace 透明度**：新增 `ChunkTrace` 和 `RoundResult` dataclass，记录 model/num_rounds/temperature/toc_entries/num_batches/每轮 sections_found/elapsed_seconds/error/voted_sections/disputed_sections/final_chunks/total_elapsed/config，嵌入每个 chunk 的 `metadata["agent_trace"]`；`chunk()` 方法每步都有 `logger.info` 日志（TOC/batches/每轮 LLM 调用/vote/build）
+  4. **API 暴露新字段**：`get_doc_chunks` 端点新增 `is_code_block`/`has_code_block`/`boundary_disputed`/`section_summary`/`section_keywords`/`section_confidence`/`agent_trace`（trace 做了摘要避免响应过大）；`_get_kb_chunker` 预留了 `num_rounds`/`max_batch_chars`/`sub_chunk_size` 的 KB 级配置接口
+- **下次注意**：1) LLM 驱动的处理流程必须有完整的 trace 数据结构记录每步决策，不能只靠日志——日志是给人看的，trace 是给 API/前端看的；2) Agent chunker 的子分块逻辑必须复用 HybridChunker 的代码块保护技术，不能用裸 RecursiveCharacterTextSplitter；3) prompt 模板要双语（中文项目用中文为主）、要有具体规则和示例、要可通过构造参数覆盖；4) API 返回的 chunk 元数据要尽可能丰富，让用户能判断分块质量——`is_code_block`/`boundary_disputed`/`section_summary`/`agent_trace` 都是关键透明度字段。
+
+

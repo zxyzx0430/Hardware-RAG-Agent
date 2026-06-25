@@ -37,6 +37,9 @@ from contextlib import contextmanager
 router = APIRouter(prefix="/api")
 logger = logging.getLogger(__name__)
 
+# Hold strong references to background tasks so they aren't GC'd mid-execution.
+_bg_tasks: set = set()
+
 
 # P1: per-port locks to prevent concurrent serial access from multiple clients
 _port_locks: dict[str, asyncio.Lock] = {}
@@ -541,6 +544,13 @@ async def kb_upload(file: UploadFile = File(...), request: Request = None):
 
                 record.chunk_count = chunk_count
                 record.status = "indexed"
+            except asyncio.CancelledError:
+                logger.warning(f"向量化任务被取消 doc_id={doc_id}")
+                record = db_bg.query(KnowledgeDoc).filter(KnowledgeDoc.doc_id == doc_id).first()
+                if record:
+                    record.status = "error"
+                    record.error_message = "任务被取消"
+                raise
             except Exception as e:
                 logger.exception(f"向量化失败 doc_id={doc_id}")
                 if save_path.exists():
@@ -550,7 +560,9 @@ async def kb_upload(file: UploadFile = File(...), request: Request = None):
                     record.status = "error"
                     record.error_message = str(e)
 
-    asyncio.create_task(_index_document())
+    task = asyncio.create_task(_index_document())
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
 
     return {
         "success": True,

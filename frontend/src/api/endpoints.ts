@@ -13,6 +13,7 @@ export const ENDPOINTS = {
   kbCollectionDetail: (id: string) => `/api/kb/collections/${id}`,           // GET/DELETE JSON
   kbCollectionToggle: (id: string) => `/api/kb/collections/${id}/toggle`,    // PATCH JSON
   kbEmbeddingModels: "/api/kb/embedding-models",     // POST JSON
+  kbDocChunks: (docId: string) => `/api/kb/documents/${docId}/chunks`,       // GET JSON
   devices: "/api/devices",     // GET JSON
   wiring: "/api/wiring",       // POST JSON
   auditPins: "/api/audit_pins",// POST JSON

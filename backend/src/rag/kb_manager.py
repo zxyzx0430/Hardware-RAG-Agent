@@ -210,6 +210,61 @@ class KnowledgeBaseManager:
         finally:
             db.close()
 
+    def update_kb_config(
+        self,
+        kb_id: str,
+        embedding_model: Optional[str] = None,
+        embedding_base_url: Optional[str] = None,
+        embedding_api_key: Optional[str] = None,
+        agent_chunker_model: Optional[str] = None,
+        agent_chunker_base_url: Optional[str] = None,
+        agent_chunker_api_key: Optional[str] = None,
+        chunk_method: Optional[str] = None,
+        context_window: Optional[int] = None,
+        description: Optional[str] = None,
+    ) -> Optional[KnowledgeBase]:
+        """Update KB configuration. Pass None to skip a field.
+        For api_key fields, pass empty string to CLEAR, None to KEEP existing.
+        Invalidates store cache so next access creates a fresh store.
+        """
+        db = self._db_factory()
+        try:
+            kb = db.query(KnowledgeBase).filter(KnowledgeBase.id == kb_id).first()
+            if not kb:
+                return None
+
+            if embedding_model is not None:
+                kb.embedding_model = embedding_model
+            if embedding_base_url is not None:
+                kb.embedding_base_url = embedding_base_url or None
+            if embedding_api_key is not None:
+                kb.embedding_api_key_encrypted = encrypt_key(embedding_api_key) if embedding_api_key else None
+            if agent_chunker_model is not None:
+                kb.agent_chunker_model = agent_chunker_model
+            if agent_chunker_base_url is not None:
+                kb.agent_chunker_base_url = agent_chunker_base_url
+            if agent_chunker_api_key is not None:
+                kb.agent_chunker_api_key_encrypted = encrypt_key(agent_chunker_api_key) if agent_chunker_api_key else None
+            if chunk_method is not None:
+                kb.chunk_method = chunk_method
+            if context_window is not None:
+                kb.context_window = context_window
+            if description is not None:
+                kb.description = description
+
+            db.commit()
+            db.refresh(kb)
+
+            # Invalidate store cache — next _get_store will create fresh store with new config
+            self._stores.pop(kb_id, None)
+            # Also mark BM25 stale since embedding change might affect search
+            self._bm25_stale.add(kb_id)
+
+            logger.info(f"Updated KB config: {kb_id} (cache invalidated)")
+            return kb
+        finally:
+            db.close()
+
     def list_kbs(self) -> list[dict]:
         """List all knowledge bases with stats."""
         db = self._db_factory()
@@ -340,6 +395,26 @@ class KnowledgeBaseManager:
         logger.info(f"Ingested {ingested} chunks into KB {kb_id}")
         return ingested
 
+    def get_doc_chunks(self, kb_id: str, doc_id: str) -> list[dict]:
+        """Get all chunks for a specific document in a KB."""
+        kb = self.get_kb(kb_id)
+        if not kb:
+            return []
+        store = self._get_store(kb)
+        if not store:
+            return []
+        return store.get_chunks_by_doc(doc_id)
+
+    def get_chunk_by_small_id(self, kb_id: str, small_chunk_id: str) -> Optional[dict]:
+        """Get a single chunk by its small_chunk_id metadata field."""
+        kb = self.get_kb(kb_id)
+        if not kb:
+            return None
+        store = self._get_store(kb)
+        if not store:
+            return None
+        return store.get_chunk_by_small_id(small_chunk_id)
+
     def export_kb(self, kb_id: str) -> dict:
         """Export KB data (documents + embeddings + metadatas) for migration.
 
@@ -433,11 +508,20 @@ class KnowledgeBaseManager:
             for r in fused[:k]
         ]
 
-    def search_all_enabled(self, query: str, k: int = 3) -> list[FusedResult]:
-        """Search all enabled KBs, merge results."""
+    def search_all_enabled(self, query: str, k: int = 3, kb_ids: Optional[list[str]] = None) -> list[FusedResult]:
+        """Search all enabled KBs (or selected KBs if kb_ids provided), merge results.
+
+        Args:
+            query: Search query text
+            k: Top-k results to return
+            kb_ids: If provided, only search these KBs; if None/empty, search all enabled KBs
+        """
         db = self._db_factory()
         try:
-            kbs = db.query(KnowledgeBase).filter(KnowledgeBase.enabled == True).all()
+            query_q = db.query(KnowledgeBase).filter(KnowledgeBase.enabled == True)
+            if kb_ids:
+                query_q = query_q.filter(KnowledgeBase.id.in_(kb_ids))
+            kbs = query_q.all()
         finally:
             db.close()
 

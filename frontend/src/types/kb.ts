@@ -61,6 +61,32 @@ export interface KBCollectionDoc {
   created_at: string;
 }
 
+// ─── Chunk detail (single chunk within a document) ───
+export interface ChunkDetail {
+  id: string;
+  chunk_index: number;
+  content: string;
+  page_start: number | null;
+  page_end: number | null;
+  section_title: string;
+  chunk_method: string;
+  chunk_size: number;
+}
+
+// ─── Document chunk (richer chunk view from /kb/documents/{doc_id}/chunks) ───
+export interface DocChunk {
+  id: string;
+  chunk_index: number;
+  content: string;
+  content_length: number;
+  page_start?: number | null;
+  page_end?: number | null;
+  section_title?: string;
+  chunk_method?: string;
+  chunk_size?: number;
+  title?: string;
+}
+
 // ─── Embedding models ───
 export interface EmbeddingModelInfo {
   id: string;

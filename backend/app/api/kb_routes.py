@@ -30,6 +30,12 @@ ALLOWED_EXTENSIONS = {".pdf", ".md", ".txt", ".py", ".c", ".h", ".ino", ".xlsx",
 # Default KB ID when none specified (fallback to builtin)
 DEFAULT_KB_ID = "builtin-001"
 
+# Hold strong references to background indexing tasks so they aren't GC'd.
+# Python's event loop only keeps weak refs to tasks; without this, a task can
+# be collected mid-execution, raising CancelledError (BaseException) that
+# escapes the `except Exception` handler and leaves doc status stuck at "indexing".
+_bg_tasks: set = set()
+
 
 # ═══════════════════════════════════════════
 # File parsing helpers
@@ -41,7 +47,7 @@ def _validate_file_magic(ext: str, content_bytes: bytes) -> None:
         return
     magic_map = {
         b"%PDF": ".pdf",
-        b"PK": {".xlsx", ".xls", ".docx"},
+        b"PK": {".xlsx", ".xls"},
     }
     for magic, expected in magic_map.items():
         if content_bytes.startswith(magic):
@@ -112,6 +118,12 @@ def _get_kb_chunker(kb: KnowledgeBase, chunk_method_override: Optional[str] = No
             base_url=kb.agent_chunker_base_url or "https://api.openai.com/v1",
             api_key=agent_key,
             context_window=kb.context_window or 256000,
+            # The following parameters use AgentChunker defaults but are
+            # wired here so future KB-level config (e.g. a chunk_config JSON
+            # column) can override them without touching this function.
+            # num_rounds=getattr(kb, "agent_num_rounds", 3),
+            # max_batch_chars=getattr(kb, "agent_max_batch_chars", 80000),
+            # sub_chunk_size=getattr(kb, "agent_sub_chunk_size", 1000),
         )
     else:
         kwargs = {}
@@ -130,7 +142,6 @@ async def kb_upload(
     kb_id: str = Form(DEFAULT_KB_ID),
     chunk_method: Optional[str] = Form(None),
     chunk_size: Optional[int] = Form(None),
-    request: Request = None,
 ):
     """上传知识库文档，自动解析、分块、向量化入库。
 
@@ -174,12 +185,81 @@ async def kb_upload(
             "error": {"code": "KB_NOT_FOUND", "message": f"知识库不存在: {kb_id}", "details": None},
         }
 
+    # Check for duplicate filename in same KB
+    with get_db_ctx() as db:
+        existing = db.query(KnowledgeDoc).filter(
+            KnowledgeDoc.kb_id == kb_id,
+            KnowledgeDoc.title == file.filename
+        ).first()
+        # Extract scalar values inside the session to avoid DetachedInstanceError
+        existing_doc_id = existing.doc_id if existing else None
+        existing_status = existing.status if existing else None
+    if existing_doc_id:
+        # Auto-reclaim orphan records left by failed uploads (error) or crashed
+        # indexing tasks (stale "indexing" status). Only block re-upload when
+        # the previous upload genuinely succeeded ("indexed") — in that case
+        # the user must explicitly delete first.
+        if existing_status in ("error", "indexing"):
+            logger.info(f"清理孤儿记录 {existing_doc_id} (status={existing_status}) 以便重新上传 {file.filename}")
+            try:
+                with get_db_ctx() as db:
+                    rec = db.query(KnowledgeDoc).filter(KnowledgeDoc.doc_id == existing_doc_id).first()
+                    if rec:
+                        kb_id_of_rec = rec.kb_id
+                        db.delete(rec)
+                        if kb_id_of_rec:
+                            _get_kb_manager()._bm25_stale.add(kb_id_of_rec)
+                # Best-effort vector cleanup
+                try:
+                    kb_existing = kb_manager.get_kb(kb_id)
+                    if kb_existing:
+                        store = kb_manager._get_store(kb_existing)
+                        if store:
+                            store.delete_document(existing_doc_id)
+                except Exception:
+                    logger.warning(f"清理孤儿向量失败（不影响继续上传）: {existing_doc_id}")
+                # Best-effort file cleanup
+                for ext in ALLOWED_EXTENSIONS:
+                    orphan_path = UPLOAD_DIR / f"{existing_doc_id}{ext}"
+                    if orphan_path.exists():
+                        try:
+                            orphan_path.unlink()
+                        except Exception:
+                            logger.warning(f"清理孤儿文件失败: {orphan_path}")
+                        break
+            except Exception:
+                logger.exception(f"清理孤儿记录失败: {existing_doc_id}")
+                return {
+                    "success": False,
+                    "error": {
+                        "code": "DUPLICATE_FILE",
+                        "message": f"知识库中已存在同名文件: {file.filename}，且自动清理失败，请先手动删除旧文件再上传",
+                        "details": {"existing_doc_id": existing_doc_id, "existing_status": existing_status},
+                    },
+                }
+        else:
+            return {
+                "success": False,
+                "error": {
+                    "code": "DUPLICATE_FILE",
+                    "message": f"知识库中已存在同名文件: {file.filename}，请先删除旧文件再上传",
+                    "details": {"existing_doc_id": existing_doc_id, "existing_status": existing_status},
+                },
+            }
+
     # Validate chunk_method
     effective_method = chunk_method or kb.chunk_method or "hybrid"
     if effective_method not in ("hybrid", "agent"):
         return {
             "success": False,
             "error": {"code": "INVALID_REQUEST", "message": f"不支持的 chunk_method: {effective_method}", "details": None},
+        }
+
+    # Validate chunk_size range
+    if chunk_size is not None and (chunk_size < 100 or chunk_size > 10000):
+        return {
+            "success": False,
+            "error": {"code": "INVALID_REQUEST", "message": "chunk_size 必须在 100-10000 之间", "details": None},
         }
 
     doc_id = str(uuid.uuid4())
@@ -263,6 +343,10 @@ async def kb_upload(
                 )
             logger.info(f"文档入库完成: {doc_id} → {actual_chunk_count} chunks (向量化: {ingested}, method={effective_method})")
 
+        except asyncio.CancelledError:
+            logger.warning(f"后台索引被取消: {doc_id}")
+            _update_doc_status(doc_id, "error", error_message="索引任务被取消")
+            raise
         except Exception as e:
             logger.exception(f"后台索引失败: {doc_id}")
             if save_path.exists():
@@ -272,7 +356,9 @@ async def kb_upload(
                     pass
             _update_doc_status(doc_id, "error", error_message=sanitize_error(str(e)))
 
-    asyncio.create_task(_index_document())
+    task = asyncio.create_task(_index_document())
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
 
     return {
         "success": True,
@@ -306,9 +392,8 @@ def _update_doc_status(
             if error_message is not None:
                 record.error_message = error_message
             if coverage:
-                # Store coverage as JSON in error_message field if status=error,
-                # otherwise we skip (coverage only returned in upload response for success)
-                pass
+                import json as _json
+                record.coverage_json = _json.dumps(coverage, default=str)
     except Exception:
         logger.exception(f"更新文档状态失败: {doc_id}")
 
@@ -354,7 +439,16 @@ class KbDeleteRequest(BaseModel):
 
 @router.post("/kb/delete")
 async def kb_delete(payload: KbDeleteRequest):
-    """删除知识库文档。"""
+    """删除知识库文档：向量 → DB 记录（事务内）→ 文件（事务外 best-effort）。
+
+    文件删除放在事务外，避免 Windows 文件锁导致 unlink 失败时整个事务回滚、
+    DB 记录删不掉的死循环。文件删不掉只记日志，不影响 DB 一致性。
+    """
+    actual_doc_id = None
+    kb_id = None
+    deleted_chunks = 0
+
+    # ── Phase 1: Delete vectors + DB record in transaction ──
     try:
         with get_db_ctx() as db:
             record = db.query(KnowledgeDoc).filter(KnowledgeDoc.doc_id == payload.doc_id).first()
@@ -365,36 +459,29 @@ async def kb_delete(payload: KbDeleteRequest):
                 }
 
             kb_id = record.kb_id
-            # Delete vectors from ChromaDB
+            actual_doc_id = record.doc_id
             kb_manager = _get_kb_manager()
+
+            # Step 1: Delete vectors from ChromaDB
             kb = kb_manager.get_kb(kb_id) if kb_id else None
             if kb:
                 store = kb_manager._get_store(kb)
                 if store:
                     try:
-                        deleted_chunks = store.delete_document(payload.doc_id)
+                        deleted_chunks = store.delete_document(actual_doc_id)
                     except Exception:
-                        deleted_chunks = 0
-                        logger.warning(f"删除向量失败: {payload.doc_id}")
-                else:
-                    deleted_chunks = 0
-            else:
-                deleted_chunks = 0
+                        logger.exception(f"删除向量失败: {actual_doc_id}")
+                        return {
+                            "success": False,
+                            "error": {"code": "VECTOR_DELETE_FAILED", "message": "向量删除失败，DB 记录已保留以便重试", "details": None},
+                        }
 
-            # Delete uploaded file
-            for ext in ALLOWED_EXTENSIONS:
-                file_path = UPLOAD_DIR / f"{payload.doc_id}{ext}"
-                if file_path.exists():
-                    file_path.unlink()
-                    break
-
+            # Step 2: Delete DB record (vectors already cleaned)
             db.delete(record)
 
             # Mark BM25 stale
             if kb_id:
                 kb_manager._bm25_stale.add(kb_id)
-
-            return {"success": True, "data": {"doc_id": payload.doc_id, "deleted_chunks": deleted_chunks}}
     except Exception as e:
         logger.exception("删除知识库文档失败")
         return {
@@ -405,6 +492,20 @@ async def kb_delete(payload: KbDeleteRequest):
                 "details": sanitize_error(str(e)),
             },
         }
+
+    # ── Phase 2: Best-effort file deletion (outside transaction) ──
+    # File deletion failure must NOT rollback the DB record.
+    if actual_doc_id:
+        for ext in ALLOWED_EXTENSIONS:
+            file_path = UPLOAD_DIR / f"{actual_doc_id}{ext}"
+            if file_path.exists():
+                try:
+                    file_path.unlink()
+                except Exception:
+                    logger.warning(f"文件删除失败（不影响 DB 记录）: {file_path}")
+                break
+
+    return {"success": True, "data": {"doc_id": actual_doc_id, "deleted_chunks": deleted_chunks}}
 
 
 # ═══════════════════════════════════════════
@@ -617,6 +718,241 @@ async def toggle_collection(kb_id: str, payload: ToggleKBRequest):
 
 
 # ═══════════════════════════════════════════
+# PATCH /api/kb/collections/{kb_id}/rename
+# ═══════════════════════════════════════════
+
+class RenameKBRequest(BaseModel):
+    name: str
+
+
+@router.patch("/kb/collections/{kb_id}/rename")
+async def rename_collection(kb_id: str, payload: RenameKBRequest):
+    """重命名知识库。"""
+    try:
+        with get_db_ctx() as db:
+            kb = db.query(KnowledgeBase).filter(KnowledgeBase.id == kb_id).first()
+            if not kb:
+                return {
+                    "success": False,
+                    "error": {"code": "KB_NOT_FOUND", "message": f"知识库不存在: {kb_id}", "details": None},
+                }
+            old_name = kb.name
+            kb.name = payload.name.strip()
+            if not kb.name:
+                return {
+                    "success": False,
+                    "error": {"code": "INVALID_REQUEST", "message": "名称不能为空", "details": None},
+                }
+            return {"success": True, "data": {"kb_id": kb_id, "old_name": old_name, "new_name": kb.name}}
+    except Exception as e:
+        logger.exception("重命名知识库失败")
+        return {
+            "success": False,
+            "error": {"code": "INTERNAL_ERROR", "message": sanitize_error(str(e)), "details": None},
+        }
+
+
+# ═══════════════════════════════════════════
+# PATCH /api/kb/collections/{kb_id}/config
+# ═══════════════════════════════════════════
+
+class UpdateKBConfigRequest(BaseModel):
+    embedding_model: Optional[str] = None
+    embedding_base_url: Optional[str] = None
+    embedding_api_key: Optional[str] = None  # None=keep, ""=clear, "xxx"=set
+    agent_chunker_model: Optional[str] = None
+    agent_chunker_base_url: Optional[str] = None
+    agent_chunker_api_key: Optional[str] = None
+    chunk_method: Optional[str] = None
+    context_window: Optional[int] = None
+    description: Optional[str] = None
+
+
+@router.patch("/kb/collections/{kb_id}/config")
+async def update_kb_config(kb_id: str, payload: UpdateKBConfigRequest):
+    """更新知识库配置（embedding/agent chunker/分块策略等）。"""
+    try:
+        kb_manager = _get_kb_manager()
+        kb = kb_manager.update_kb_config(
+            kb_id,
+            embedding_model=payload.embedding_model,
+            embedding_base_url=payload.embedding_base_url,
+            embedding_api_key=payload.embedding_api_key,
+            agent_chunker_model=payload.agent_chunker_model,
+            agent_chunker_base_url=payload.agent_chunker_base_url,
+            agent_chunker_api_key=payload.agent_chunker_api_key,
+            chunk_method=payload.chunk_method,
+            context_window=payload.context_window,
+            description=payload.description,
+        )
+        if not kb:
+            return {
+                "success": False,
+                "error": {"code": "KB_NOT_FOUND", "message": f"知识库不存在: {kb_id}", "details": None},
+            }
+        return {"success": True, "data": {"kb_id": kb_id, "message": "配置已更新，Store 缓存已失效"}}
+    except Exception as e:
+        logger.exception("更新知识库配置失败")
+        return {
+            "success": False,
+            "error": {"code": "INTERNAL_ERROR", "message": sanitize_error(str(e)), "details": None},
+        }
+# ═══════════════════════════════════════════
+
+@router.get("/kb/documents/{doc_id}/chunks")
+async def get_doc_chunks(doc_id: str):
+    """获取文档的所有 chunks（内容 + 元数据）。"""
+    try:
+        with get_db_ctx() as db:
+            record = db.query(KnowledgeDoc).filter(KnowledgeDoc.doc_id == doc_id).first()
+            if not record:
+                return {
+                    "success": False,
+                    "error": {"code": "DOC_NOT_FOUND", "message": f"文档不存在: {doc_id}", "details": None},
+                }
+            kb_id = record.kb_id
+
+        kb_manager = _get_kb_manager()
+        chunks = kb_manager.get_doc_chunks(kb_id, doc_id) if kb_id else []
+
+        # Build response with relevant fields
+        chunk_list = []
+        for c in chunks:
+            meta = c.get("metadata", {})
+            # Extract agent trace (may be large — include key summary fields
+            # but omit the full rounds detail to keep response size sane).
+            agent_trace = meta.get("agent_trace")
+            trace_summary = None
+            if agent_trace and isinstance(agent_trace, dict):
+                trace_summary = {
+                    "method": agent_trace.get("method"),
+                    "model": agent_trace.get("model"),
+                    "num_rounds": agent_trace.get("num_rounds"),
+                    "temperature": agent_trace.get("temperature"),
+                    "toc_entries": agent_trace.get("toc_entries"),
+                    "num_batches": agent_trace.get("num_batches"),
+                    "voted_sections": agent_trace.get("voted_sections"),
+                    "disputed_sections": agent_trace.get("disputed_sections"),
+                    "final_chunks": agent_trace.get("final_chunks"),
+                    "total_elapsed_seconds": round(agent_trace.get("total_elapsed_seconds", 0), 2),
+                    "rounds": [
+                        {
+                            "round_num": r.get("round_num"),
+                            "sections_found": r.get("sections_found"),
+                            "elapsed_seconds": round(r.get("elapsed_seconds", 0), 2),
+                            "error": r.get("error"),
+                        }
+                        for r in agent_trace.get("rounds", [])
+                    ],
+                }
+            chunk_list.append({
+                "id": c.get("id", ""),
+                "chunk_index": meta.get("chunk_index", 0),
+                "content": c.get("content", ""),
+                "content_length": len(c.get("content", "")),
+                "page_start": meta.get("page_start"),
+                "page_end": meta.get("page_end"),
+                "section_title": meta.get("section_title", ""),
+                "chunk_method": meta.get("chunk_method", ""),
+                "chunk_size": meta.get("chunk_size", 0),
+                "title": meta.get("title", ""),
+                "small_chunk_id": meta.get("small_chunk_id", ""),
+                "big_chunk_text": meta.get("big_chunk_text", ""),
+                "fingerprint": meta.get("fingerprint", ""),
+                # New transparency fields:
+                "is_code_block": meta.get("is_code_block", False),
+                "has_code_block": meta.get("has_code_block", False),
+                "boundary_disputed": meta.get("boundary_disputed", False),
+                "section_summary": meta.get("section_summary", ""),
+                "section_keywords": meta.get("section_keywords", []),
+                "section_confidence": meta.get("section_confidence"),
+                "agent_trace": trace_summary,
+            })
+
+        return {
+            "success": True,
+            "data": {
+                "doc_id": doc_id,
+                "kb_id": kb_id,
+                "total_chunks": len(chunk_list),
+                "chunks": chunk_list,
+            },
+        }
+    except Exception as e:
+        logger.exception("获取文档 chunks 失败")
+        return {
+            "success": False,
+            "error": {"code": "INTERNAL_ERROR", "message": sanitize_error(str(e)), "details": None},
+        }
+
+
+# ═══════════════════════════════════════════
+# GET /api/kb/chunks/{small_chunk_id}
+# ═══════════════════════════════════════════
+
+@router.get("/kb/chunks/{small_chunk_id}")
+async def get_chunk_by_small_id(small_chunk_id: str):
+    """按 small_chunk_id 查询单个 chunk 的完整信息（含 big_chunk_text）。
+
+    small_chunk_id 格式: {doc_id}#s{chunk_index}
+    前端点击"查看完整上下文"时调用此接口拉取 big_chunk_text。
+    """
+    try:
+        # Parse doc_id from small_chunk_id: "{doc_id}#s{chunk_index}"
+        if "#" not in small_chunk_id:
+            return {
+                "success": False,
+                "error": {"code": "INVALID_ID", "message": "small_chunk_id 格式错误，缺少 '#'", "details": None},
+            }
+        doc_id = small_chunk_id.split("#", 1)[0]
+
+        # Look up kb_id from KnowledgeDoc record
+        with get_db_ctx() as db:
+            record = db.query(KnowledgeDoc).filter(KnowledgeDoc.doc_id == doc_id).first()
+            if not record:
+                return {
+                    "success": False,
+                    "error": {"code": "DOC_NOT_FOUND", "message": f"文档不存在: {doc_id}", "details": None},
+                }
+            kb_id = record.kb_id
+
+        kb_manager = _get_kb_manager()
+        chunk = kb_manager.get_chunk_by_small_id(kb_id, small_chunk_id)
+        if not chunk:
+            return {
+                "success": False,
+                "error": {"code": "CHUNK_NOT_FOUND", "message": f"Chunk 不存在: {small_chunk_id}", "details": None},
+            }
+
+        meta = chunk.get("metadata", {})
+        return {
+            "success": True,
+            "data": {
+                "id": chunk.get("id", ""),
+                "small_chunk_id": small_chunk_id,
+                "content": chunk.get("content", ""),
+                "content_length": len(chunk.get("content", "")),
+                "big_chunk_text": meta.get("big_chunk_text", ""),
+                "section_title": meta.get("section_title", ""),
+                "chunk_index": meta.get("chunk_index", 0),
+                "chunk_size": meta.get("chunk_size", 0),
+                "chunk_method": meta.get("chunk_method", ""),
+                "page_start": meta.get("page_start"),
+                "page_end": meta.get("page_end"),
+                "title": meta.get("title", ""),
+                "doc_id": doc_id,
+                "kb_id": kb_id,
+            },
+        }
+    except Exception as e:
+        logger.exception("按 small_chunk_id 查询 chunk 失败")
+        return {
+            "success": False,
+            "error": {"code": "INTERNAL_ERROR", "message": sanitize_error(str(e)), "details": None},
+        }
+
+
+# ═══════════════════════════════════════════
 # GET /api/kb/embedding-models
 # ═══════════════════════════════════════════
 
@@ -638,6 +974,22 @@ async def list_embedding_models(payload: EmbeddingModelsRequest):
         }
     try:
         import httpx
+        import ipaddress
+        from urllib.parse import urlparse
+
+        # SSRF protection: block private/internal IP ranges
+        parsed = urlparse(payload.base_url)
+        hostname = parsed.hostname or ""
+        try:
+            ip = ipaddress.ip_address(hostname)
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+                return {
+                    "success": False,
+                    "error": {"code": "SSRF_BLOCKED", "message": "不允许访问内网地址", "details": None},
+                }
+        except ValueError:
+            pass  # Not an IP, it's a domain name — allowed
+
         async with httpx.AsyncClient(timeout=30.0) as client:
             headers = {"Authorization": f"Bearer {payload.api_key}"}
             base = payload.base_url.rstrip("/")
@@ -730,6 +1082,11 @@ async def kb_import(
 
     try:
         content = await file.read()
+        if len(content) > MAX_UPLOAD_SIZE:
+            return {
+                "success": False,
+                "error": {"code": "FILE_TOO_LARGE", "message": f"文件大小超过限制 ({MAX_UPLOAD_SIZE // 1024 // 1024}MB)", "details": None},
+            }
         import json
         export_data = json.loads(content.decode("utf-8"))
 
@@ -749,22 +1106,58 @@ async def kb_import(
 
         imported = kb_manager.import_kb(kb_id, export_data)
 
-        # Update doc count in DB — create a KnowledgeDoc record for the import
+        # Create KnowledgeDoc records keyed by the SOURCE doc_id stored in
+        # each chunk's metadata. This is critical: ChromaDB stores vectors
+        # with the original doc_id, so the DB record's doc_id MUST match for
+        # delete to actually remove vectors. Previously we generated a new
+        # uuid here, which meant imports could never be cleaned up.
         if imported > 0:
-            doc_id = str(uuid.uuid4())
+            metadatas = export_data.get("data", {}).get("metadatas", []) or []
+            source_name = export_data.get("name", "未知")
+            chunk_method = export_data.get("chunk_method", "hybrid")
+
+            # Group chunks by source doc_id → (title, count)
+            doc_groups: dict[str, dict] = {}
+            for meta in metadatas:
+                if not isinstance(meta, dict):
+                    continue
+                src_doc_id = meta.get("doc_id", "")
+                if not src_doc_id:
+                    continue
+                if src_doc_id not in doc_groups:
+                    doc_groups[src_doc_id] = {
+                        "title": meta.get("title") or f"[导入] {source_name}",
+                        "count": 0,
+                    }
+                doc_groups[src_doc_id]["count"] += 1
+
             with get_db_ctx() as db:
-                record = KnowledgeDoc(
-                    doc_id=doc_id,
-                    kb_id=kb_id,
-                    title=f"[导入] {export_data.get('name', '未知')}",
-                    category="imported",
-                    file_type="json",
-                    file_size=len(content),
-                    chunk_count=imported,
-                    chunk_method_used=export_data.get("chunk_method", "hybrid"),
-                    status="indexed",
-                )
-                db.add(record)
+                for src_doc_id, info in doc_groups.items():
+                    # If a record with this doc_id already exists in the
+                    # target KB (e.g. re-import), update it instead of
+                    # raising a unique constraint violation.
+                    existing = db.query(KnowledgeDoc).filter(
+                        KnowledgeDoc.doc_id == src_doc_id
+                    ).first()
+                    if existing:
+                        existing.kb_id = kb_id
+                        existing.title = info["title"]
+                        existing.chunk_count = info["count"]
+                        existing.chunk_method_used = chunk_method
+                        existing.status = "indexed"
+                        existing.error_message = None
+                    else:
+                        db.add(KnowledgeDoc(
+                            doc_id=src_doc_id,
+                            kb_id=kb_id,
+                            title=info["title"],
+                            category="imported",
+                            file_type="json",
+                            file_size=0,
+                            chunk_count=info["count"],
+                            chunk_method_used=chunk_method,
+                            status="indexed",
+                        ))
 
         return {
             "success": True,

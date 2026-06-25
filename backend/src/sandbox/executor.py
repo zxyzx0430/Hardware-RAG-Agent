@@ -34,7 +34,7 @@ LANGUAGE_IMAGES = {
 }
 
 # 资源限制
-CPU_TIMEOUT = 10  # 秒
+CPU_TIMEOUT = 30  # 秒（契约 5.21 规定默认 30 秒）
 MEMORY_LIMIT = "256m"
 NETWORK_DISABLED = True
 

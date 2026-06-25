@@ -66,21 +66,26 @@ class _RequestBodyLimitMiddleware:
         if path == "/api/chat":
             headers = {k.decode(): v.decode() for k, v in scope.get("headers", [])}
             cl = headers.get("content-length")
-            if cl and int(cl) > MAX_REQUEST_BODY_SIZE:
-                body = json.dumps({
-                    "success": False,
-                    "error": {"code": "PAYLOAD_TOO_LARGE", "message": "请求体超过 20MB 限制"},
-                }).encode()
-                await send({
-                    "type": "http.response.start",
-                    "status": 413,
-                    "headers": [
-                        (b"content-type", b"application/json"),
-                        (b"content-length", str(len(body)).encode()),
-                    ],
-                })
-                await send({"type": "http.response.body", "body": body})
-                return
+            if cl:
+                try:
+                    cl_int = int(cl)
+                except (TypeError, ValueError):
+                    cl_int = 0
+                if cl_int > MAX_REQUEST_BODY_SIZE:
+                    body = json.dumps({
+                        "success": False,
+                        "error": {"code": "PAYLOAD_TOO_LARGE", "message": "请求体超过 20MB 限制"},
+                    }).encode()
+                    await send({
+                        "type": "http.response.start",
+                        "status": 413,
+                        "headers": [
+                            (b"content-type", b"application/json"),
+                            (b"content-length", str(len(body)).encode()),
+                        ],
+                    })
+                    await send({"type": "http.response.body", "body": body})
+                    return
 
         await self.app(scope, receive, send)
 
@@ -202,20 +207,36 @@ def create_app() -> FastAPI:
     _LOGGER.info("App created: env=%s cors=%s", env, allowed_origins)
 
     @app.on_event("startup")
-    async def _ensure_builtin_kb():
-        """启动时确保内置 KB 存在（若 builtin_kb 路径存在）。"""
+    async def _startup_tasks():
+        """启动时执行初始化任务。"""
+        # 1. Ensure builtin KB exists
         try:
-            import sys
-            print("STARTUP: importing kb_manager...", flush=True)
             from src.rag.kb_manager import get_kb_manager
-            print("STARTUP: getting kb_manager...", flush=True)
             kb_manager = get_kb_manager()
-            print("STARTUP: ensuring builtin kb...", flush=True)
             kb_manager.ensure_builtin_kb()
-            print("STARTUP: done!", flush=True)
         except Exception:
             _LOGGER.warning("初始化内置 KB 失败（非致命）", exc_info=True)
-            print("STARTUP: FAILED!", flush=True)
+
+        # 2. Reset stuck indexing documents (crash recovery)
+        # Any record still in "indexing" at startup is an orphan: the
+        # background asyncio task that was processing it died with the
+        # previous process. Reset all of them — no time threshold, because
+        # even a 5-second-old "indexing" record is stale after a restart.
+        try:
+            from app.db.database import SessionLocal
+            from app.db.models import KnowledgeDoc
+            db = SessionLocal()
+            stuck = db.query(KnowledgeDoc).filter(
+                KnowledgeDoc.status == "indexing"
+            ).all()
+            for doc in stuck:
+                doc.status = "error"
+                doc.error_message = "服务重启时索引中断，请重新上传"
+                _LOGGER.warning(f"Reset stuck indexing doc: {doc.doc_id}")
+            db.commit()
+            db.close()
+        except Exception:
+            _LOGGER.warning("清理卡住的索引任务失败（非致命）", exc_info=True)
 
     @app.get("/")
     async def root():

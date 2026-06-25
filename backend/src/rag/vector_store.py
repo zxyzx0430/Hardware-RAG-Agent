@@ -69,6 +69,12 @@ class HardwareVectorStore:
                 model=self.embedding_model,
                 openai_api_key=api_key,
                 openai_api_base=base_url,
+                # Disable tiktoken tokenization — send raw text strings instead of token IDs.
+                # Non-OpenAI providers (e.g. Alibaba Cloud Bailian/DashScope) reject token ID lists.
+                tiktoken_enabled=False,
+                check_embedding_ctx_length=False,
+                # Limit batch size: Alibaba Cloud Bailian text-embedding-v4 allows max 10 rows per request.
+                chunk_size=10,
             )
         else:
             self.embeddings = None
@@ -285,6 +291,48 @@ class HardwareVectorStore:
         except Exception as e:
             logger.exception(f"删除文档向量失败")
             return 0
+
+    def get_chunks_by_doc(self, doc_id: str) -> list[dict]:
+        """Retrieve all chunks for a given doc_id. Returns list of dicts with id, content, metadata."""
+        try:
+            result = self.db.get(where={"doc_id": doc_id}, include=["documents", "metadatas"])
+            ids = result.get("ids", [])
+            documents = result.get("documents", [])
+            metadatas = result.get("metadatas", [])
+            chunks = []
+            for i, cid in enumerate(ids):
+                chunks.append({
+                    "id": cid,
+                    "content": documents[i] if i < len(documents) else "",
+                    "metadata": metadatas[i] if i < len(metadatas) else {},
+                })
+            # Sort by chunk_index if available
+            chunks.sort(key=lambda c: c["metadata"].get("chunk_index", 0))
+            return chunks
+        except Exception as e:
+            logger.exception(f"获取文档 chunks 失败: {doc_id}")
+            return []
+
+    def get_chunk_by_small_id(self, small_chunk_id: str) -> Optional[dict]:
+        """Retrieve a single chunk by its small_chunk_id metadata field."""
+        try:
+            result = self.db.get(
+                where={"small_chunk_id": small_chunk_id},
+                include=["documents", "metadatas"],
+            )
+            ids = result.get("ids", [])
+            if not ids:
+                return None
+            documents = result.get("documents", [])
+            metadatas = result.get("metadatas", [])
+            return {
+                "id": ids[0],
+                "content": documents[0] if documents else "",
+                "metadata": metadatas[0] if metadatas else {},
+            }
+        except Exception:
+            logger.exception(f"按 small_chunk_id 查询失败: {small_chunk_id}")
+            return None
 
     def delete_collection(self):
         """清空当前 collection。"""

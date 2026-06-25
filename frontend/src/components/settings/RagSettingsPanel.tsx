@@ -4,9 +4,10 @@
  * These values are used as defaults when creating a new KB.
  * Individual KBs can override them.
  */
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useSettingsStore } from "../../stores/useSettingsStore";
 import { useKnowledgeStore } from "../../stores/useKnowledgeStore";
+import { useChatStore } from "../../stores/useChatStore";
 import { useI18n } from "../../i18n";
 
 type FetchState = "idle" | "ok" | "fail";
@@ -20,7 +21,15 @@ export function RagSettingsPanel() {
     updateSetting,
   } = useSettingsStore();
 
-  const { fetchEmbeddingModels } = useKnowledgeStore();
+  const { fetchEmbeddingModels, collections, fetchCollections } = useKnowledgeStore();
+  const { selectedKbIds, toggleKbSelection } = useChatStore();
+
+  // Ensure collections are loaded for the KB selection list
+  useEffect(() => {
+    if (collections.length === 0) {
+      fetchCollections();
+    }
+  }, [collections.length, fetchCollections]);
 
   // ─── Embedding model fetch state ───
   const [showEmbKey, setShowEmbKey] = useState(false);
@@ -138,6 +147,48 @@ export function RagSettingsPanel() {
     <div className="settings-section provider-detail-card" style={{ marginTop: 26 }}>
       <h3 style={{ fontSize: 16, fontWeight: 500, marginBottom: 18 }}>{t('ragSettings')}</h3>
 
+      {/* ─── Chat KB Selection ─── */}
+      <div style={{ marginBottom: 20 }}>
+        <div className="field-label" style={{ fontWeight: 600, fontSize: 13, color: "var(--fg)", marginBottom: 6 }}>
+          {t('chatSearchScope')}
+        </div>
+        <div style={{ fontSize: 12, color: "var(--muted-fg)", marginBottom: 8 }}>{t('searchAllHint')}</div>
+        {collections.length === 0 ? (
+          <div style={{ fontSize: 12, color: "var(--muted-fg)" }}>...</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {collections.map((kb) => (
+              <label
+                key={kb.id}
+                style={{
+                  display: "flex", alignItems: "center", gap: 8,
+                  padding: "6px 8px", borderRadius: 4, cursor: "pointer",
+                  background: "var(--thinking-bg)",
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={selectedKbIds.includes(kb.id)}
+                  onChange={() => toggleKbSelection(kb.id)}
+                />
+                <span style={{ fontSize: 13 }}>{kb.name}</span>
+                {kb.is_builtin && (
+                  <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 3, background: "var(--primary)", color: "white" }}>
+                    {t('builtinKb')}
+                  </span>
+                )}
+                <span style={{ fontSize: 11, color: "var(--muted-fg)" }}>
+                  {t('chunks')}: {kb.chunk_count ?? 0}
+                </span>
+                {!kb.enabled && (
+                  <span style={{ fontSize: 10, color: "var(--muted-fg)" }}>({t('enabled')}: ✗)</span>
+                )}
+              </label>
+            ))}
+          </div>
+        )}
+      </div>
+
       {/* ─── Embedding Config ─── */}
       <div style={{ marginBottom: 20 }}>
         <div className="field-label" style={{ fontWeight: 600, fontSize: 13, color: "var(--fg)", marginBottom: 10 }}>
@@ -245,7 +296,7 @@ export function RagSettingsPanel() {
           min={4096}
           max={1000000}
           step={4096}
-          onChange={(e) => updateSetting("defaultContextWindow", Math.max(0, parseInt(e.target.value) || 0))}
+          onChange={(e) => updateSetting("defaultContextWindow", Math.max(4096, parseInt(e.target.value) || 4096))}
           placeholder="256000"
         />
       </div>

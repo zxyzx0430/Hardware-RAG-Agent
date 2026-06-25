@@ -13,7 +13,7 @@ export function KnowledgePanel() {
   const { t } = useI18n();
   const {
     items, isUploading, setIsUploading, addItem, toggleItem, deleteItemWithAPI, fetchItems,
-    collections, activeKbId, fetchCollections, setActiveKb,
+    collections, activeKbId, fetchCollections, setActiveKb, fetchDocChunks,
   } = useKnowledgeStore();
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -140,6 +140,8 @@ export function KnowledgePanel() {
     useAppStore.getState().setRightPanelOpen(true);
     useAppStore.getState().setRightMode('content');
     useAppStore.getState().setFileViewerSource(itemId);
+    // Pre-fetch chunks so the right-panel ChunkViewer has data ready immediately
+    fetchDocChunks(itemId);
   };
 
   const handleRefresh = () => {

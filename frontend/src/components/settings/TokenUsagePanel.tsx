@@ -7,7 +7,7 @@
  * - Per-model token breakdown
  * - Animated SVG with CSS transitions
  */
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { apiGet } from "../../api/client";
 import { useI18n } from "../../i18n";
 
@@ -53,30 +53,39 @@ export function TokenUsagePanel() {
   const { t } = useI18n();
   const [stats, setStats] = useState<TokenStats | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [chartType, setChartType] = useState<ChartType>("line");
   const [days, setDays] = useState(30);
   const [animated, setAnimated] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [pathLength, setPathLength] = useState(2000);
+  const abortRef = useRef<AbortController | null>(null);
+  const inputPathRef = useRef<SVGPathElement | null>(null);
 
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
+    abortRef.current = controller;
     setLoading(true);
+    setError(null);
     apiGet<TokenStats>(`token-usage/stats?days=${days}`)
       .then((data) => {
-        if (!cancelled) {
-          setStats(data);
-          setAnimated(false);
-          // Trigger animation after render
-          requestAnimationFrame(() => requestAnimationFrame(() => setAnimated(true)));
-        }
+        if (abortRef.current !== controller) return;
+        setStats(data);
+        setAnimated(false);
+        // Trigger animation after render
+        requestAnimationFrame(() => requestAnimationFrame(() => setAnimated(true)));
       })
-      .catch(() => {
-        if (!cancelled) setStats(null);
+      .catch((e) => {
+        if (abortRef.current !== controller) return;
+        setStats(null);
+        setError(e instanceof Error ? e.message : String(e));
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (abortRef.current !== controller) return;
+        setLoading(false);
       });
-    return () => { cancelled = true; };
-  }, [days]);
+    return () => { controller.abort(); abortRef.current = null; };
+  }, [days, reloadKey]);
 
   const daily = stats?.daily ?? [];
   const byModel = stats?.by_model ?? [];
@@ -90,6 +99,9 @@ export function TokenUsagePanel() {
     if (daily.length === 0) return 100;
     return Math.max(...daily.map((d) => Math.max(d.input, d.output)), 100);
   }, [daily]);
+
+  // Compute per-model max once (avoid O(n²) recomputation inside map)
+  const maxModelTokens = useMemo(() => Math.max(...byModel.map((m) => m.total), 1), [byModel]);
 
   // Generate x positions for each day
   const xStep = daily.length > 1 ? chartW / (daily.length - 1) : chartW;
@@ -106,6 +118,14 @@ export function TokenUsagePanel() {
     if (daily.length === 0) return "";
     return daily.map((d, i) => `${i === 0 ? "M" : "L"} ${xPos(i)} ${yPos(d.output)}`).join(" ");
   }, [daily, maxTokens]);
+
+  // Measure actual SVG path length for accurate stroke-dasharray animation
+  useEffect(() => {
+    const len = inputPathRef.current?.getTotalLength?.();
+    if (len && len > 0) {
+      setPathLength(len);
+    }
+  }, [inputPath, outputPath, chartType]);
 
   // Y axis ticks
   const yTicks = useMemo(() => {
@@ -130,6 +150,20 @@ export function TokenUsagePanel() {
       <div className="settings-section">
         <h3>{t('tokenUsage')}</h3>
         <div style={{ textAlign: "center", padding: 40, color: "var(--muted-fg)" }}>...</div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="settings-section">
+        <h3>{t('tokenUsage')}</h3>
+        <div style={{ textAlign: "center", padding: 40, color: "#e74c3c", fontSize: 13 }}>
+          {error}
+          <div style={{ marginTop: 12 }}>
+            <button className="verify-btn" onClick={() => setReloadKey((k) => k + 1)}>{t('retry')}</button>
+          </div>
+        </div>
       </div>
     );
   }
@@ -189,9 +223,9 @@ export function TokenUsagePanel() {
           onChange={(e) => setDays(parseInt(e.target.value))}
           style={{ width: "auto", fontSize: 12 }}
         >
-          <option value={7}>7 {t('last30Days').replace('30 ', '')}</option>
-          <option value={14}>14 {t('last30Days').replace('30 ', '')}</option>
-          <option value={30}>{t('last30Days')}</option>
+          <option value={7}>7 {t('daysUnit')}</option>
+          <option value={14}>14 {t('daysUnit')}</option>
+          <option value={30}>30 {t('daysUnit')}</option>
         </select>
       </div>
 
@@ -234,12 +268,13 @@ export function TokenUsagePanel() {
             <>
               {/* Input line */}
               <path
+                ref={inputPathRef}
                 d={inputPath}
                 fill="none" stroke={inputColor} strokeWidth={2}
                 strokeLinejoin="round" strokeLinecap="round"
                 style={{
-                  strokeDasharray: 2000,
-                  strokeDashoffset: animated ? 0 : 2000,
+                  strokeDasharray: pathLength,
+                  strokeDashoffset: animated ? 0 : pathLength,
                   transition: "stroke-dashoffset 1.2s ease-in-out",
                 }}
               />
@@ -322,7 +357,6 @@ export function TokenUsagePanel() {
         <div className="chart-card" style={{ marginTop: 16, padding: 16 }}>
           <div className="chart-title" style={{ marginBottom: 12 }}>{t('modelDistribution')}</div>
           {byModel.map((row) => {
-            const maxModelTokens = Math.max(...byModel.map((m) => m.total), 1);
             const pct = (row.total / maxModelTokens) * 100;
             return (
               <div className="model-bar-row" key={row.model}>

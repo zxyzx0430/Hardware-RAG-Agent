@@ -1,13 +1,13 @@
 """沙箱执行 API 端点"""
 import asyncio
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from src.sandbox import execute_code, check_docker_available
 from app.api.dependencies import current_user
 
 router = APIRouter(prefix="/api/sandbox", tags=["sandbox"])
 
-# Limit concurrent container executions to prevent resource exhaustion
+# Limit concurrent container execution to prevent resource exhaustion
 _sandbox_semaphore = asyncio.Semaphore(4)
 
 # 允许在沙箱中执行的语言白名单
@@ -20,23 +20,44 @@ class ExecuteRequest(BaseModel):
 @router.post("/execute")
 async def execute(req: ExecuteRequest, user: dict = Depends(current_user)):
     """在沙箱中执行代码"""
+    # 契约 5.21: 错误响应使用标准 {success: False, error: {code, message}} 格式
     if not req.code.strip():
-        raise HTTPException(400, detail="代码不能为空")
+        return {
+            "success": False,
+            "error": {"code": "EMPTY_CODE", "message": "代码不能为空"},
+        }
     if len(req.code) > 50000:
-        raise HTTPException(400, detail="代码长度超过限制（50000 字符）")
+        return {
+            "success": False,
+            "error": {"code": "CODE_TOO_LONG", "message": "代码长度超过限制（50000 字符）"},
+        }
 
     # 语言白名单校验：防止传入 bash/sh 等执行任意命令
     if req.language.lower() not in ALLOWED_LANGUAGES:
         return {
             "success": False,
             "error": {
-                "code": "INVALID_LANGUAGE",
+                "code": "UNSUPPORTED_LANGUAGE",
                 "message": f"不支持的语言: {req.language}，支持: {', '.join(sorted(ALLOWED_LANGUAGES))}",
             },
         }
 
     async with _sandbox_semaphore:
         result = await execute_code(req.code, req.language)
+
+    # 契约 5.21: 沙箱不可用/超时/内部错误返回标准错误格式
+    if result.timed_out:
+        return {
+            "success": False,
+            "error": {"code": "EXECUTION_TIMEOUT", "message": f"执行超时（{result.duration_ms}ms）"},
+        }
+
+    if result.exit_code < 0 and "Docker" in result.stderr:
+        return {
+            "success": False,
+            "error": {"code": "SANDBOX_UNAVAILABLE", "message": result.stderr},
+        }
+
     return {
         "success": True,
         "data": {

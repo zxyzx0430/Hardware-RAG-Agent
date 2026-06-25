@@ -35,11 +35,6 @@ function UserMessageContent({ content }: { content: string | ContentPart[] }) {
   // ContentPart[]: 分别渲染文本和图片
   const textParts = content.filter((p) => p.type === "text").map((p) => p.type === "text" ? p.text : "").join("\n\n");
   const imageParts = content.filter((p) => p.type === "image_url");
-  // Debug log: trace image count to find duplication root cause
-  if (imageParts.length > 0) {
-    // eslint-disable-next-line no-console
-    console.log("[UserMessageContent] imageParts=", imageParts.length, "content parts=", content.length);
-  }
   return (
     <>
       {textParts.trim() && <MarkdownRenderer content={textParts} streaming={false} />}
@@ -293,7 +288,16 @@ export function ChatArea() {
                 <div className="source-refs">
                   <span className="source-ref-label">{t('sources')}</span>
                   <div className="source-refs-row">
-                    {msg.sources.map((src) => (
+                    {(() => {
+                      const maxScore = Math.max(...msg.sources.map(s => s.score || 0), 0.001);
+                      return msg.sources.map((src) => {
+                        const normalizedScore = Math.round((src.score / maxScore) * 100);
+                        const pageLabel = src.page_start != null
+                          ? (src.page_end != null && src.page_end !== src.page_start
+                              ? `p.${src.page_start}-${src.page_end}`
+                              : `p.${src.page_start}`)
+                          : null;
+                        return (
                       <button
                         className={`source-chip${highlightSourceId === src.id ? ' highlight' : ''}`}
                         key={src.id}
@@ -307,9 +311,13 @@ export function ChatArea() {
                         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color:'var(--primary)' }}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
                         {src.kb_name ? <span className="source-chip-kb">{src.kb_name}</span> : null}
                         <span>{src.title}</span>
-                        <span className="source-chip-score">{(src.score * 100).toFixed(0)}%</span>
+                        {src.section_title ? <span className="source-chip-section">· {src.section_title}</span> : null}
+                        {pageLabel ? <span className="source-chip-page">{pageLabel}</span> : null}
+                        <span className="source-chip-score">{normalizedScore}%</span>
                       </button>
-                    ))}
+                        );
+                      });
+                    })()}
                   </div>
                 </div>
               ) : null}
@@ -390,13 +398,19 @@ export function ChatArea() {
               )}
               {(() => {
                 const contentStr = renderContent(msg.content);
-                const match = contentStr.match(/```([a-zA-Z0-9+#-]*)\n([\s\S]*?)```/);
-                if (!match) return null;
-                const language = match[1].trim().toLowerCase() || 'cpp';
-                const code = match[2];
+                const matches = [...contentStr.matchAll(/```([a-zA-Z0-9+#-]*)\n([\s\S]*?)```/g)];
+                if (matches.length === 0) return null;
                 return (
-                  <div className="tool-output-actions" style={{ marginTop: 10 }}>
-                    <button className="tool-output-btn" onClick={() => pushCodeToPreview(code, `assistant-code-${language}`, language)}>{t('pushToPreviewShort')}</button>
+                  <div className="tool-output-actions" style={{ marginTop: 10, display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {matches.map((match, idx) => {
+                      const language = match[1].trim().toLowerCase() || 'cpp';
+                      const code = match[2];
+                      return (
+                        <button key={idx} className="tool-output-btn" onClick={() => pushCodeToPreview(code, `assistant-code-${language}-${idx}`, language)}>
+                          {t('pushToPreviewShort')}{matches.length > 1 ? ` (${idx + 1})` : ''}
+                        </button>
+                      );
+                    })}
                   </div>
                 );
               })()}

@@ -62,7 +62,7 @@ class LLMClient:
     model: str = field(default_factory=lambda: settings.llm_model)
     temperature: float = field(default_factory=lambda: settings.llm_temperature)
     max_tokens: int = field(default_factory=lambda: settings.llm_max_tokens)
-    max_retries: int = 2
+    max_retries: int = 3
     retry_backoff: float = 0.5
 
     def __post_init__(self):
@@ -74,6 +74,7 @@ class LLMClient:
             self._client = AsyncOpenAI(
                 api_key=self.api_key,
                 base_url=self.base_url,
+                timeout=120.0,
             )
         return self._client
 
@@ -165,20 +166,18 @@ class LLMClient:
             history_budget = context_window - system_tokens - user_tokens - reply_budget
 
             # 从最新消息开始倒序累加，直到超出预算
+            # Use index-based tracking to avoid value-equality bugs with duplicate messages
             history_messages: List[Dict[str, str]] = []
             used_tokens = 0
-            for msg in reversed(history):
+            included_indices: set[int] = set()
+            for i in range(len(history) - 1, -1, -1):
+                msg = history[i]
                 msg_tokens = self._estimate_tokens(msg.content) + 4  # +4 for role overhead
                 if used_tokens + msg_tokens > history_budget:
-                    # 收集被截断的早期消息（用于摘要生成）
-                    # 此时 msg 及之前遍历到的都是被截断的
-                    remaining = [m for m in history if m not in [
-                        ChatMessage(role=hm["role"], content=hm["content"])
-                        for hm in history_messages
-                    ]]
+                    # Collect truncated early messages by index (not value equality)
                     truncated_raw = [
-                        {"role": m.role, "content": m.content}
-                        for m in remaining
+                        {"role": history[j].role, "content": history[j].content}
+                        for j in range(len(history)) if j not in included_indices
                     ]
                     # 插入截断提示占位，后续由摘要替换
                     history_messages.insert(0, {
@@ -187,6 +186,7 @@ class LLMClient:
                     })
                     break
                 history_messages.insert(0, {"role": msg.role, "content": msg.content})
+                included_indices.add(i)
                 used_tokens += msg_tokens
 
             messages.extend(history_messages)
@@ -222,12 +222,16 @@ class LLMClient:
                 await asyncio.sleep(wait)
             except APIError as error:
                 last_error = error
-                error_str = str(error)
-                # 仅重试 5xx 错误
-                is_5xx = any(c.isdigit() and int(c) >= 5 for c in error_str[:4] if c.isdigit()) and error_str[:1] == '5'
-                if not is_5xx:
+                # Use status_code attribute instead of parsing error string
+                status_code = getattr(error, 'status_code', None) or getattr(error, 'code', None)
+                is_5xx = isinstance(status_code, int) and 500 <= status_code < 600
+                is_timeout = isinstance(status_code, int) and status_code == 408
+                # Also check error message for timeout keywords (some providers return 400/500 with timeout message)
+                err_msg_lower = (getattr(error, 'message', '') or str(error)).lower()
+                has_timeout_msg = 'timeout' in err_msg_lower or 'timed out' in err_msg_lower
+                if not (is_5xx or is_timeout or has_timeout_msg):
                     raise LLMError(f"API 错误：{error.message}") from error
-                logger.warning(f"APIError 5xx (attempt {attempt + 1}): {error.message}")
+                logger.warning(f"APIError {status_code} (attempt {attempt + 1}): {error.message}")
                 if attempt >= self.max_retries:
                     raise LLMError(f"API 错误：{error.message}") from error
                 wait = min(2 ** attempt, 8)
@@ -295,6 +299,7 @@ class LLMClient:
         runtime_client = self.client if not (api_key or base_url) else AsyncOpenAI(
             api_key=api_key or self.api_key,
             base_url=base_url or self.base_url,
+            timeout=120.0,
         )
 
         async def _call() -> LLMResponse:
@@ -332,7 +337,7 @@ class LLMClient:
         user_message: str | list[dict],
         system_prompt: Optional[str] = None,
         history: Optional[List[ChatMessage]] = None,
-        timeout: float = 60.0,
+        timeout: float = 300.0,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         model: Optional[str] = None,
@@ -361,6 +366,7 @@ class LLMClient:
         runtime_client = self.client if not (api_key or base_url) else AsyncOpenAI(
             api_key=api_key or self.api_key,
             base_url=base_url or self.base_url,
+            timeout=120.0,
         )
 
         async def _stream():
@@ -384,6 +390,7 @@ class LLMClient:
                     return await runtime_client.chat.completions.create(**create_kwargs)
 
                 stream = await self._with_retries(_create_stream, stream=True)
+                logger.info(f"Stream created successfully, consuming chunks...")
                 async for chunk in stream:
                     # 先处理 usage（可能和 choices 同时存在，不要直接跳过）
                     if chunk.usage:
@@ -427,12 +434,16 @@ class LLMClient:
 
         async def _timeout_wrapper():
             gen = _stream()
-            while True:
-                try:
-                    val = await asyncio.wait_for(gen.__anext__(), timeout=timeout)
-                    yield val
-                except StopAsyncIteration:
-                    break
+            try:
+                while True:
+                    try:
+                        val = await asyncio.wait_for(gen.__anext__(), timeout=timeout)
+                        yield val
+                    except StopAsyncIteration:
+                        break
+            finally:
+                # Ensure the inner generator is properly closed to release HTTP resources
+                await gen.aclose()
 
         async for chunk in _timeout_wrapper():
             yield chunk

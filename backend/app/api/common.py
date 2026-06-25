@@ -52,14 +52,19 @@ def get_db_ctx():
 
 
 # ─── Vector Store 单例 ─────────────────────────
+import threading as _threading
 _vector_store = None
+_vector_store_lock = _threading.Lock()
 
 def get_vector_store():
-    """获取 HardwareVectorStore 全局单例。"""
+    """获取 HardwareVectorStore 全局单例（线程安全）。"""
     global _vector_store
     if _vector_store is None:
-        from src.rag.vector_store import HardwareVectorStore
-        _vector_store = HardwareVectorStore()
+        with _vector_store_lock:
+            # Double-check after acquiring lock
+            if _vector_store is None:
+                from src.rag.vector_store import HardwareVectorStore
+                _vector_store = HardwareVectorStore()
     return _vector_store
 
 
@@ -72,22 +77,25 @@ def sse_event(event_type: str, data: dict) -> str:
 
 # ─── 错误脱敏 ───────────────────────────────────
 def sanitize_error(msg: str) -> str:
-    """脱敏错误信息：替换 sk-xxx 和 URL 中的 API key 参数。"""
-    msg = re.sub(r"sk-[a-zA-Z0-9]{8,}", "sk-***", msg)
-    msg = re.sub(r"([?&](?:api[_-]?key|key|secret|token)=)[^&\s]+", r"\1***", msg, flags=re.IGNORECASE)
+    """脱敏错误信息：替换各种 API key 前缀和 URL 中的敏感参数。"""
+    # Cover OpenAI (sk-), Anthropic (sk-ant-), and other common key formats
+    msg = re.sub(r"sk-(?:ant-)?[a-zA-Z0-9_-]{8,}", "sk-***", msg)
+    msg = re.sub(r"([?&](?:api[_-]?key|key|secret|token|authorization)=)[^&\s]+", r"\1***", msg, flags=re.IGNORECASE)
+    # Strip Bearer tokens
+    msg = re.sub(r"(Bearer\s+)[a-zA-Z0-9_.\-]{8,}", r"\1***", msg, flags=re.IGNORECASE)
     return msg
 
 
 # ─── LLM 客户端工厂 ────────────────────────────
 def make_client(api_key: str = None, base_url: str = None, model: str = None,
                 temperature: float = None, max_tokens: int = None):
-    """统一的 LLMClient 工厂。"""
+    """统一的 LLMClient 工厂。使用 is not None 检查避免吞掉 temperature=0 等合法 falsy 值。"""
     return LLMClient(
-        api_key=api_key or settings.llm_api_key,
-        base_url=base_url or settings.llm_base_url,
-        model=model or settings.llm_model,
-        temperature=temperature or settings.llm_temperature,
-        max_tokens=max_tokens or settings.llm_max_tokens,
+        api_key=api_key if api_key is not None else settings.llm_api_key,
+        base_url=base_url if base_url is not None else settings.llm_base_url,
+        model=model if model is not None else settings.llm_model,
+        temperature=temperature if temperature is not None else settings.llm_temperature,
+        max_tokens=max_tokens if max_tokens is not None else settings.llm_max_tokens,
     )
 
 

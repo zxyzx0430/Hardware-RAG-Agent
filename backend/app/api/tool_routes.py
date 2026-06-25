@@ -29,7 +29,7 @@ class ToolRequest(BaseModel):
 # ═══════════════════════════════════════════
 
 @router.post("/tool")
-async def call_tool(payload: ToolRequest):
+async def call_tool(payload: ToolRequest, user: dict = Depends(current_user)):
     """调用工具。"""
     try:
         result = await dispatch(payload.tool, payload.args)
@@ -52,11 +52,18 @@ async def call_tool(payload: ToolRequest):
 # ═══════════════════════════════════════════
 
 @router.get("/tools")
-async def list_tools():
+async def list_tools(user: dict = Depends(current_user)):
     """返回当前已注册的工具列表。"""
     tools = []
-    for name, func in TOOL_REGISTRY.items():
-        doc = (func.__doc__ or "").strip()
+    for name, entry in TOOL_REGISTRY.items():
+        # TOOL_REGISTRY value 是 dict {"fn": handler, "param_schema": ..., "timeout_ms": ...}
+        # 需要从 entry["fn"] 读取 handler 的 __doc__，而非 dict 本身的 __doc__
+        handler = entry.get("fn") if isinstance(entry, dict) else entry
+        doc = ""
+        if handler is not None:
+            doc = (getattr(handler, "__doc__", "") or "").strip()
+            if not doc:
+                doc = (getattr(handler, "description", "") or "").strip()
         tools.append({"name": name, "description": doc})
     return {"success": True, "data": {"tools": tools}}
 

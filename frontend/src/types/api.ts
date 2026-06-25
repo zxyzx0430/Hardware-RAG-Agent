@@ -67,7 +67,14 @@ export interface SourceSSEEvent {
   id: string;
   title: string;
   doc?: string;
-  page?: number;
+  page?: number; // chunk_index (backward compat)
+  chunk_index?: number;
+  page_start?: number | null; // real PDF page start
+  page_end?: number | null; // real PDF page end
+  section_title?: string;
+  source_url?: string;
+  category?: string;
+  chunk_method?: string;
   score?: number;
   excerpt?: string;
   kb_id?: string;

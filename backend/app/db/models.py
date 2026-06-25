@@ -31,8 +31,8 @@ class Session(Base):
     msg_count = Column(Integer, default=0)
     branch_from_session_id = Column(Text, nullable=True)
     branch_from_message_id = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.datetime.now(datetime.timezone.utc))
+    updated_at = Column(DateTime, default=datetime.datetime.now(datetime.timezone.utc), onupdate=datetime.datetime.now(datetime.timezone.utc))
 
     messages = relationship("Message", back_populates="session", order_by="Message.created_at", cascade="all, delete-orphan")
 
@@ -48,7 +48,7 @@ class Message(Base):
     content = Column(Text, nullable=False)
     sources = Column(JSON, nullable=True)  # 来源引用列表
     tool_calls = Column(JSON, nullable=True)  # 工具调用记录
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.datetime.now(datetime.timezone.utc))
 
     session = relationship("Session", back_populates="messages")
 
@@ -73,8 +73,8 @@ class KnowledgeBase(Base):
     enabled = Column(Boolean, default=True)
     is_builtin = Column(Boolean, default=False)
     builtin_path = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.datetime.now(datetime.timezone.utc))
+    updated_at = Column(DateTime, default=datetime.datetime.now(datetime.timezone.utc), onupdate=datetime.datetime.now(datetime.timezone.utc))
 
     docs = relationship("KnowledgeDoc", back_populates="kb")
 
@@ -85,8 +85,8 @@ class KnowledgeDoc(Base):
     __tablename__ = "knowledge_docs"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    doc_id = Column(String, unique=True, index=True)  # 文档唯一标识（文件名）
-    kb_id = Column(String, ForeignKey("knowledge_bases.id"), default="builtin-001", index=True)
+    doc_id = Column(String, unique=True, index=True, nullable=False)
+    kb_id = Column(String, ForeignKey("knowledge_bases.id"), default="builtin-001", nullable=False, index=True)
     title = Column(String, default="")
     category = Column(String, default="user_upload")
     file_type = Column(String, default="")  # pdf / md / txt
@@ -95,7 +95,8 @@ class KnowledgeDoc(Base):
     chunk_method_used = Column(String, default="hybrid")
     status = Column(String, default="indexed")  # indexing / indexed / error
     error_message = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    coverage_json = Column(Text, nullable=True)  # JSON string of page coverage stats
+    created_at = Column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone.utc))
 
     kb = relationship("KnowledgeBase", back_populates="docs")
 
@@ -109,9 +110,11 @@ class BookmarkFolder(Base):
     name = Column(String, nullable=False)
     icon = Column(String, default="📁")
     sort_order = Column(Integer, default=0)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.datetime.now(datetime.timezone.utc))
 
-    bookmarks = relationship("Bookmark", back_populates="folder", cascade="all, delete-orphan")
+    # Use save-update, merge (not delete-orphan) to align with FK ondelete="SET NULL"
+    # When a folder is deleted, bookmarks are preserved with folder_id=NULL
+    bookmarks = relationship("Bookmark", back_populates="folder", cascade="save-update, merge")
 
 
 class Bookmark(Base):
@@ -127,7 +130,7 @@ class Bookmark(Base):
     source_message_id = Column(String, nullable=True)
     source_session_id = Column(String, nullable=True)
     tags = Column(JSON, default=list)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.datetime.now(datetime.timezone.utc))
 
     folder = relationship("BookmarkFolder", back_populates="bookmarks")
 
@@ -139,7 +142,7 @@ class Settings(Base):
 
     key = Column(String, primary_key=True)
     value = Column(Text, nullable=True)
-    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.now(datetime.timezone.utc), onupdate=datetime.datetime.now(datetime.timezone.utc))
 
 
 class Feedback(Base):
@@ -151,7 +154,7 @@ class Feedback(Base):
     message_id = Column(String, nullable=False, index=True)
     session_id = Column(String, nullable=False, index=True)
     rating = Column(Integer, nullable=False)  # 1=👍, -1=👎
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.datetime.now(datetime.timezone.utc))
 
 
 class TokenUsage(Base):
@@ -170,4 +173,4 @@ class TokenUsage(Base):
     prompt_tokens = Column(Integer, default=0)
     completion_tokens = Column(Integer, default=0)
     total_tokens = Column(Integer, default=0)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.datetime.now(datetime.timezone.utc))

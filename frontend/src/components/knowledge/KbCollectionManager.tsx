@@ -18,6 +18,7 @@ export function KbCollectionManager({ open, onClose }: Props) {
     collections, isLoadingCollections, activeKbId,
     fetchCollections, setActiveKb, createCollection, deleteCollection,
     toggleCollection, getCollectionDetail, exportCollection, importCollection,
+    renameCollection, updateKbConfig, fetchEmbeddingModels,
   } = useKnowledgeStore();
 
   const {
@@ -28,12 +29,32 @@ export function KbCollectionManager({ open, onClose }: Props) {
 
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [expandedKbId, setExpandedKbId] = useState<string | null>(null);
+  // Ref mirror of expandedKbId to guard against async race conditions in handleExpand
+  const expandedKbIdRef = useRef<string | null>(null);
   const [kbDetail, setKbDetail] = useState<KBCollectionDetail | null>(null);
   const [detailError, setDetailError] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [editingKbId, setEditingKbId] = useState<string | null>(null);
+  const [editingName, setEditingName] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
   const [importingKbId, setImportingKbId] = useState<string | null>(null);
   const importFileRef = useRef<HTMLInputElement>(null);
+
+  // Edit KB config state
+  const [editingConfigKbId, setEditingConfigKbId] = useState<string | null>(null);
+  const [configForm, setConfigForm] = useState<Partial<CreateKBRequest>>({
+    embedding_model: "",
+    embedding_base_url: "",
+    embedding_api_key: "",
+    chunk_method: "hybrid",
+    agent_chunker_model: "",
+    agent_chunker_base_url: "",
+    agent_chunker_api_key: "",
+    context_window: 0,
+  });
+  const [configSaving, setConfigSaving] = useState(false);
+  const [configMsg, setConfigMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const [testingEmbedding, setTestingEmbedding] = useState(false);
 
   // Create form state — starts empty, pre-fills from settings when opened
   const [form, setForm] = useState<CreateKBRequest>({
@@ -99,22 +120,30 @@ export function KbCollectionManager({ open, onClose }: Props) {
     }
     setDeleteConfirmId(null);
     if (expandedKbId === kbId) {
+      expandedKbIdRef.current = null;
       setExpandedKbId(null);
       setKbDetail(null);
     }
   };
 
   const handleExpand = async (kbId: string) => {
-    if (expandedKbId === kbId) {
+    // Close config editor if open (mutual exclusion)
+    setEditingConfigKbId(null);
+    setConfigMsg(null);
+    if (expandedKbIdRef.current === kbId) {
+      expandedKbIdRef.current = null;
       setExpandedKbId(null);
       setKbDetail(null);
       setDetailError(false);
       return;
     }
+    expandedKbIdRef.current = kbId;
     setExpandedKbId(kbId);
     setKbDetail(null); // Clear immediately to avoid showing stale data
     setDetailError(false);
     const detail = await getCollectionDetail(kbId);
+    // Race condition guard: only apply detail if still expanded on this kbId
+    if (expandedKbIdRef.current !== kbId) return;
     if (detail) {
       setKbDetail(detail);
     } else {
@@ -143,7 +172,7 @@ export function KbCollectionManager({ open, onClose }: Props) {
     try {
       const imported = await importCollection(importingKbId, file);
       if (imported === 0) {
-        setErrorMsg(t('noModelsFound'));
+        setErrorMsg(t('noChunksImported'));
       }
       // Refresh expanded detail if open
       if (expandedKbId === importingKbId) {
@@ -157,6 +186,134 @@ export function KbCollectionManager({ open, onClose }: Props) {
     setImportingKbId(null);
     // Reset input so same file can be selected again
     if (importFileRef.current) importFileRef.current.value = "";
+  };
+
+  const startRename = (kbId: string, currentName: string) => {
+    setEditingKbId(kbId);
+    setEditingName(currentName);
+    setErrorMsg("");
+  };
+
+  const commitRename = async (kbId: string) => {
+    const newName = editingName.trim();
+    if (!newName) {
+      // Show error and keep the editor open so the user can type a valid name
+      setErrorMsg(t('enterNewName'));
+      return;
+    }
+    setErrorMsg("");
+    setEditingKbId(null);
+    setEditingName("");
+    try {
+      await renameCollection(kbId, newName);
+    } catch {
+      // error already logged in store
+    }
+  };
+
+  const cancelRename = () => {
+    setEditingKbId(null);
+    setEditingName("");
+    setErrorMsg("");
+  };
+
+  // ─── Edit KB config ───
+  const startEditConfig = (kb: typeof collections[number]) => {
+    // Close detail panel if open, switch to config mode
+    expandedKbIdRef.current = null;
+    setExpandedKbId(null);
+    setKbDetail(null);
+    setDetailError(false);
+    setEditingConfigKbId(kb.id);
+    setConfigMsg(null);
+    // Prefill: use KB's own config first, then fall back to global defaults
+    // so user only needs to click Save to sync global config into the KB.
+    const kbUnconfigured = !kb.embedding_base_url;
+    setConfigForm({
+      embedding_model: kb.embedding_model || embeddingDefaultModel || "",
+      embedding_base_url: kb.embedding_base_url || embeddingDefaultBaseUrl || "",
+      // Prefill API key from global defaults only if KB appears unconfigured
+      embedding_api_key: kbUnconfigured ? (embeddingDefaultApiKey || "") : "",
+      chunk_method: kb.chunk_method || "hybrid",
+      agent_chunker_model: kb.agent_chunker_model || agentChunkerDefaultModel || "",
+      agent_chunker_base_url: kb.agent_chunker_base_url || agentChunkerDefaultBaseUrl || "",
+      agent_chunker_api_key: kbUnconfigured ? (agentChunkerDefaultApiKey || "") : "",
+      context_window: kb.context_window || defaultContextWindow || 0,
+    });
+    // Show hint if KB has no embedding base_url (likely unconfigured)
+    if (kbUnconfigured) {
+      setConfigMsg({ kind: "ok", text: t('configPrefillHint') });
+    }
+  };
+
+  const cancelEditConfig = () => {
+    setEditingConfigKbId(null);
+    setConfigMsg(null);
+  };
+
+  const handleSaveConfig = async (kbId: string) => {
+    setConfigSaving(true);
+    setConfigMsg(null);
+    try {
+      // For api_key fields: omit (undefined) means "keep existing" on backend.
+      const payload: Partial<CreateKBRequest> = {
+        embedding_model: configForm.embedding_model,
+        embedding_base_url: configForm.embedding_base_url,
+        chunk_method: configForm.chunk_method as "hybrid" | "agent",
+      };
+      if (configForm.embedding_api_key) {
+        payload.embedding_api_key = configForm.embedding_api_key;
+      }
+      if (configForm.chunk_method === "agent") {
+        payload.agent_chunker_model = configForm.agent_chunker_model;
+        payload.agent_chunker_base_url = configForm.agent_chunker_base_url;
+        if (configForm.agent_chunker_api_key) {
+          payload.agent_chunker_api_key = configForm.agent_chunker_api_key;
+        }
+        if (configForm.context_window) {
+          payload.context_window = configForm.context_window;
+        }
+      }
+      await updateKbConfig(kbId, payload);
+      setConfigMsg({ kind: "ok", text: t('configUpdated') });
+      // Auto-close after short delay so user sees the success message
+      setTimeout(() => {
+        setEditingConfigKbId(null);
+        setConfigMsg(null);
+      }, 1200);
+    } catch (e) {
+      setConfigMsg({ kind: "err", text: e instanceof Error ? e.message : t('fetchFailed') });
+    } finally {
+      setConfigSaving(false);
+    }
+  };
+
+  const handleTestEmbedding = async () => {
+    if (!configForm.embedding_base_url || !configForm.embedding_api_key) {
+      setConfigMsg({ kind: "err", text: t('enterBaseUrlAndKey') });
+      return;
+    }
+    setTestingEmbedding(true);
+    setConfigMsg(null);
+    try {
+      const models = await fetchEmbeddingModels(
+        configForm.embedding_base_url,
+        configForm.embedding_api_key,
+      );
+      if (models.length > 0) {
+        setConfigMsg({ kind: "ok", text: t('connectionOk').replace('{n}', String(models.length)) });
+        // Auto-fill model name if empty
+        if (!configForm.embedding_model && models.includes("text-embedding-3-small")) {
+          setConfigForm((f) => ({ ...f, embedding_model: "text-embedding-3-small" }));
+        }
+      } else {
+        setConfigMsg({ kind: "err", text: t('noModelsFound') });
+      }
+    } catch (e) {
+      setConfigMsg({ kind: "err", text: e instanceof Error ? e.message : t('fetchFailed') });
+    } finally {
+      setTestingEmbedding(false);
+    }
   };
 
   return (
@@ -368,7 +525,27 @@ export function KbCollectionManager({ open, onClose }: Props) {
                   >
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                        <span style={{ fontWeight: 600, fontSize: 13 }}>{kb.name}</span>
+                        {editingKbId === kb.id ? (
+                          <input
+                            className="form-input"
+                            type="text"
+                            value={editingName}
+                            autoFocus
+                            onClick={(e) => e.stopPropagation()}
+                            onChange={(e) => {
+                              setEditingName(e.target.value);
+                              if (errorMsg) setErrorMsg("");
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") { e.preventDefault(); commitRename(kb.id); }
+                              else if (e.key === "Escape") { e.preventDefault(); cancelRename(); }
+                            }}
+                            onBlur={() => commitRename(kb.id)}
+                            style={{ flex: 1, fontSize: 13, padding: "2px 6px" }}
+                          />
+                        ) : (
+                          <span style={{ fontWeight: 600, fontSize: 13 }}>{kb.name}</span>
+                        )}
                         {kb.is_builtin && (
                           <span style={{
                             fontSize: 10, padding: "1px 6px", borderRadius: 3,
@@ -439,6 +616,32 @@ export function KbCollectionManager({ open, onClose }: Props) {
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
                     </button>
 
+                    {/* Edit config (all KBs — including builtin, since builtin also needs embedding config) */}
+                    <button
+                      className="kb-item-icon-btn"
+                      title={t('editKbConfig')}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        startEditConfig(kb);
+                      }}
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                    </button>
+
+                    {/* Rename (non-builtin only) */}
+                    {!kb.is_builtin && (
+                      <button
+                        className="kb-item-icon-btn"
+                        title={t('renameKb')}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          startRename(kb.id, kb.name);
+                        }}
+                      >
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                      </button>
+                    )}
+
                     {/* Delete (non-builtin only) */}
                     {!kb.is_builtin && (
                       <button
@@ -470,6 +673,147 @@ export function KbCollectionManager({ open, onClose }: Props) {
                           {t('deleteKb')}
                         </button>
                         <button className="kb-item-icon-btn" onClick={() => setDeleteConfirmId(null)}>
+                          {t('escClose')}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Config editor panel (mutually exclusive with detail) */}
+                  {editingConfigKbId === kb.id && (
+                    <div style={{
+                      padding: "12px", background: "var(--thinking-bg)",
+                      borderTop: "1px solid var(--border)",
+                    }}>
+                      <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 10 }}>
+                        {t('editKbConfig')} — {kb.name}
+                      </div>
+
+                      {/* Config message */}
+                      {configMsg && (
+                        <div style={{
+                          marginBottom: 10, padding: "6px 10px", borderRadius: 4, fontSize: 12,
+                          background: configMsg.kind === "ok" ? "rgba(46,204,113,0.1)" : "rgba(231,76,60,0.1)",
+                          border: `1px solid ${configMsg.kind === "ok" ? "rgba(46,204,113,0.3)" : "rgba(231,76,60,0.3)"}`,
+                          color: configMsg.kind === "ok" ? "#27ae60" : "#e74c3c",
+                        }}>
+                          {configMsg.text}
+                        </div>
+                      )}
+
+                      <div className="field-label" style={{ marginBottom: 4 }}>{t('chunkMethod')}</div>
+                      <select
+                        className="form-input"
+                        value={configForm.chunk_method as "hybrid" | "agent"}
+                        onChange={(e) => setConfigForm({ ...configForm, chunk_method: e.target.value as "hybrid" | "agent" })}
+                        style={{ width: "100%", marginBottom: 10 }}
+                      >
+                        <option value="hybrid">{t('hybrid')}</option>
+                        <option value="agent">{t('agent')}</option>
+                      </select>
+
+                      {/* Embedding config */}
+                      <div style={{ fontWeight: 600, fontSize: 12, color: "var(--muted-fg)", margin: "8px 0 6px", textTransform: "uppercase", letterSpacing: 0.5 }}>
+                        {t('embeddingConfig')}
+                      </div>
+                      <div className="field-label" style={{ marginBottom: 4 }}>{t('embeddingModel')} *</div>
+                      <input
+                        className="form-input"
+                        type="text"
+                        value={configForm.embedding_model || ""}
+                        onChange={(e) => setConfigForm({ ...configForm, embedding_model: e.target.value })}
+                        style={{ width: "100%", marginBottom: 8 }}
+                        placeholder="text-embedding-3-small"
+                      />
+                      <div className="field-label" style={{ marginBottom: 4 }}>{t('embeddingBaseUrl')}</div>
+                      <input
+                        className="form-input"
+                        type="text"
+                        value={configForm.embedding_base_url || ""}
+                        onChange={(e) => setConfigForm({ ...configForm, embedding_base_url: e.target.value })}
+                        style={{ width: "100%", marginBottom: 8 }}
+                        placeholder="https://api.openai.com/v1"
+                      />
+                      <div className="field-label" style={{ marginBottom: 4 }}>{t('embeddingApiKey')}</div>
+                      <input
+                        className="form-input"
+                        type="password"
+                        value={configForm.embedding_api_key || ""}
+                        onChange={(e) => setConfigForm({ ...configForm, embedding_api_key: e.target.value })}
+                        style={{ width: "100%", marginBottom: 8 }}
+                        placeholder={t('keepEmptyToRetain')}
+                      />
+                      <button
+                        className="kb-item-icon-btn"
+                        onClick={handleTestEmbedding}
+                        disabled={testingEmbedding || !configForm.embedding_base_url || !configForm.embedding_api_key}
+                        style={{ fontSize: 11, marginBottom: 10, opacity: (testingEmbedding || !configForm.embedding_base_url || !configForm.embedding_api_key) ? 0.5 : 1 }}
+                      >
+                        {testingEmbedding ? "..." : t('testConnection')}
+                      </button>
+
+                      {/* Agent chunker config */}
+                      {configForm.chunk_method === "agent" && (
+                        <>
+                          <div style={{ fontWeight: 600, fontSize: 12, color: "var(--muted-fg)", margin: "8px 0 6px", textTransform: "uppercase", letterSpacing: 0.5 }}>
+                            {t('agentChunkerConfig')}
+                          </div>
+                          <div className="field-label" style={{ marginBottom: 4 }}>{t('agentChunkerModel')}</div>
+                          <input
+                            className="form-input"
+                            type="text"
+                            value={configForm.agent_chunker_model || ""}
+                            onChange={(e) => setConfigForm({ ...configForm, agent_chunker_model: e.target.value })}
+                            style={{ width: "100%", marginBottom: 8 }}
+                            placeholder="gpt-4o-mini"
+                          />
+                          <div className="field-label" style={{ marginBottom: 4 }}>{t('agentChunkerBaseUrl')}</div>
+                          <input
+                            className="form-input"
+                            type="text"
+                            value={configForm.agent_chunker_base_url || ""}
+                            onChange={(e) => setConfigForm({ ...configForm, agent_chunker_base_url: e.target.value })}
+                            style={{ width: "100%", marginBottom: 8 }}
+                            placeholder="https://api.openai.com/v1"
+                          />
+                          <div className="field-label" style={{ marginBottom: 4 }}>{t('agentChunkerApiKey')}</div>
+                          <input
+                            className="form-input"
+                            type="password"
+                            value={configForm.agent_chunker_api_key || ""}
+                            onChange={(e) => setConfigForm({ ...configForm, agent_chunker_api_key: e.target.value })}
+                            style={{ width: "100%", marginBottom: 8 }}
+                            placeholder={t('keepEmptyToRetain')}
+                          />
+                          <div className="field-label" style={{ marginBottom: 4 }}>{t('contextWindow')}</div>
+                          <input
+                            className="form-input"
+                            type="number"
+                            value={configForm.context_window || ""}
+                            min={4096}
+                            max={1000000}
+                            step={4096}
+                            onChange={(e) => setConfigForm({ ...configForm, context_window: parseInt(e.target.value) || 0 })}
+                            style={{ width: "100%", marginBottom: 8 }}
+                            placeholder="256000"
+                          />
+                        </>
+                      )}
+
+                      <div style={{ fontSize: 11, color: "var(--muted-fg)", marginBottom: 10 }}>
+                        {t('configUpdateHint')}
+                      </div>
+
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button
+                          className="btn-new"
+                          onClick={() => handleSaveConfig(kb.id)}
+                          disabled={configSaving || !configForm.embedding_model?.trim()}
+                          style={{ opacity: (configSaving || !configForm.embedding_model?.trim()) ? 0.5 : 1 }}
+                        >
+                          {configSaving ? "..." : t('saveConfig')}
+                        </button>
+                        <button className="kb-item-icon-btn" onClick={cancelEditConfig}>
                           {t('escClose')}
                         </button>
                       </div>

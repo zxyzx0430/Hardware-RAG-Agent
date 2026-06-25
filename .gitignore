@@ -98,3 +98,26 @@ backend/start_backend.py
 backend/test_db.py
 backend/test_sqla.py
 tmp_scan.txt
+
+# ─── 临时调试文件 ───
+backend/_debug_*
+backend/stderr.txt
+backend/stdout.txt
+docs/RAG.md
+docs/chunk-debug.txt
+docs/chunk-test-report.json
+scripts/cleanup_kb.py
+scripts/reset_kb.py
+scripts/test_chunker.py
+
+# ─── 前端重写暂存（不进仓库） ───
+frontend-rewrite/
+
+# 额外临时脚本
+backend/_reindex.py
+backend/_test_chunker_v2.py
+
+# 保证所有运行时数据目录不被提交
+backend/data/*
+!backend/data/builtin_kb/
+!backend/data/builtin_kb/**

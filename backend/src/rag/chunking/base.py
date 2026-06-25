@@ -30,7 +30,7 @@ def verify_page_coverage(chunks: list[ChunkResult], total_pages: int) -> dict:
 
     Returns:
         {
-            "covered_pages": set[int],
+            "covered_pages": list[int],
             "missing_pages": list[int],
             "duplicate_pages": list[int],
         }
@@ -47,7 +47,7 @@ def verify_page_coverage(chunks: list[ChunkResult], total_pages: int) -> dict:
     duplicate = sorted([p for p, count in covered.items() if count > 1])
 
     return {
-        "covered_pages": covered_set,
+        "covered_pages": sorted(covered_set),
         "missing_pages": missing,
         "duplicate_pages": duplicate,
     }

@@ -155,36 +155,85 @@ async def generate_wiring(payload: WiringRequest, user: dict = Depends(current_u
 # POST /api/audit_pins — 引脚审计
 # ═══════════════════════════════════════════
 
-class PinAssignment(BaseModel):
-    signal: str
-    gpio: int
-    mode: str = ""
+class PinAssignmentInfo(BaseModel):
+    """单个引脚的分配信息（契约 5.6 pin_assignments value 结构）。"""
+    function: str
+    config: str = ""
 
 
 class AuditPinsRequest(BaseModel):
+    """契约 5.6: pin_assignments 为对象（key=引脚名，value=分配信息），非数组。"""
     chip: str = "esp32-s3"
-    assignments: list[PinAssignment]
+    pin_assignments: dict[str, PinAssignmentInfo] = {}
+
+
+class PinWarning(BaseModel):
+    """引脚警告/冲突项（契约 5.6 响应 conflicts/warnings 元素结构）。"""
+    pin: str
+    severity: Literal["critical", "warning"] = "warning"
+    message: str
+    suggestion: str = ""
 
 
 @router.post("/audit_pins")
-async def audit_pins(payload: AuditPinsRequest):
+async def audit_pins(payload: AuditPinsRequest, user: dict = Depends(current_user)):
     """审计引脚分配，检测冲突和 Strapping 引脚。"""
     try:
         chip = payload.chip.lower()
         strapping = STRAPPING_PINS.get(chip, STRAPPING_PINS["esp32-s3"])
         used_gpios: dict[int, str] = {}
-        conflicts: list[str] = []
-        warnings: list[str] = []
+        conflicts: list[PinWarning] = []
+        warnings: list[PinWarning] = []
         pin_map: dict[str, str] = {}
-        for a in payload.assignments:
-            if a.gpio in used_gpios:
-                conflicts.append(f"GPIO{a.gpio} 冲突: '{used_gpios[a.gpio]}' 和 '{a.signal}'")
+
+        for pin_name, info in payload.pin_assignments.items():
+            # Resolve pin name to GPIO number (e.g. "GPIO4" -> 4, "D2" -> 2)
+            gpio = resolve_gpio(pin_name, {})
+            if gpio is None:
+                # Try to parse pure number
+                try:
+                    gpio = int(pin_name.replace("GPIO", "").replace("gpio", ""))
+                except (ValueError, AttributeError):
+                    gpio = None
+
+            if gpio is None:
+                warnings.append(PinWarning(
+                    pin=pin_name,
+                    severity="warning",
+                    message=f"无法解析引脚 {pin_name} 的 GPIO 编号",
+                    suggestion="请使用 GPIOx 或纯数字格式",
+                ))
+                continue
+
+            if gpio in used_gpios:
+                conflicts.append(PinWarning(
+                    pin=pin_name,
+                    severity="critical",
+                    message=f"GPIO{gpio} 冲突: '{used_gpios[gpio]}' 和 '{info.function}'",
+                    suggestion=f"请将 {pin_name} 重新分配到未使用的 GPIO",
+                ))
             else:
-                used_gpios[a.gpio] = a.signal
-            if a.gpio in strapping:
-                warnings.append(f"GPIO{a.gpio}({a.signal}) 是 Strapping 引脚，启动时影响芯片模式")
-            pin_map[a.signal] = f"GPIO{a.gpio}"
-        return {"success": True, "data": {"conflicts": conflicts, "warnings": warnings, "pin_map": pin_map}}
+                used_gpios[gpio] = info.function
+
+            if gpio in strapping:
+                warnings.append(PinWarning(
+                    pin=pin_name,
+                    severity="warning",
+                    message=f"GPIO{gpio}({info.function}) 是 Strapping 引脚，启动时影响芯片模式",
+                    suggestion=f"避免使用 GPIO{gpio}，改用其他可用引脚",
+                ))
+
+            pin_map[pin_name] = f"GPIO{gpio}"
+
+        return {
+            "success": True,
+            "data": {
+                "safe": len(conflicts) == 0,
+                "conflicts": [c.model_dump() for c in conflicts],
+                "warnings": [w.model_dump() for w in warnings],
+                "pin_map": pin_map,
+            },
+        }
     except Exception as e:
         return {
             "success": False,

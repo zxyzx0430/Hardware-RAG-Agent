@@ -223,10 +223,11 @@ export async function apiSSE(
     let buffer = "";
     let currentEvent = "";
     let dataBuffer = "";
+    let doneReceived = false;
 
     // Read loop wrapped in try/catch to handle reader.read() exceptions explicitly
     try {
-      while (true) {
+      while (!doneReceived) {
         const { done, value } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
@@ -252,10 +253,11 @@ export async function apiSSE(
 
                 getLog()("debug", "sse", `SSE ${path} event: ${event.type}`);
                 callbacks.onEvent(event);
-                // error 事件后通常跟着 done，不提前 return
+                // done 事件后立即触发 onDone 并退出循环，不依赖流关闭
                 if (event.type === "done") {
                   getLog()("ok", "sse", `SSE ${path} completed`);
-                // onDone 在 stream 结束后统一触发
+                  doneReceived = true;
+                  break;
                 }
               } catch {
                 consecutiveFailures++;
@@ -275,7 +277,7 @@ export async function apiSSE(
       }
 
       // Process any trailing event that didn't end with an empty line (defensive)
-      if (dataBuffer) {
+      if (!doneReceived && dataBuffer) {
         try {
           const parsed = JSON.parse(dataBuffer);
           consecutiveFailures = 0;
@@ -285,6 +287,7 @@ export async function apiSSE(
           callbacks.onEvent(event);
           if (event.type === "done") {
             getLog()("ok", "sse", `SSE ${path} completed (trailing)`);
+            doneReceived = true;
           }
         } catch {
           consecutiveFailures++;
@@ -306,7 +309,7 @@ export async function apiSSE(
       callbacks.onError?.(new Error(`SSE 读取异常: ${errMsg}`));
       return;
     }
-    // 流式正常结束，触发 onDone
+    // 流式正常结束（收到 done 或流关闭），触发 onDone
     callbacks.onDone?.();
 
   } catch (err) {

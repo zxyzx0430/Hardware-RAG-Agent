@@ -5,9 +5,12 @@ SQLAlchemy 2.0 async + SQLite（V1），后续可切换 PostgreSQL。
 """
 
 import os
+import logging
 from pathlib import Path
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
+
+_LOGGER = logging.getLogger(__name__)
 
 _BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
 _DB_DIR = _BACKEND_DIR / "data"
@@ -17,6 +20,14 @@ DB_PATH = os.getenv("SQLITE_DB_PATH", str(_DB_DIR / "hardware_rag.db"))
 DATABASE_URL = f"sqlite:///{DB_PATH}"
 
 engine = create_engine(DATABASE_URL, echo=False, connect_args={"check_same_thread": False})
+
+# Enable SQLite foreign key constraints on every new connection
+@event.listens_for(engine, "connect")
+def _set_sqlite_pragma(dbapi_connection, connection_record):
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.close()
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
@@ -50,7 +61,7 @@ def init_db():
                 pass  # 列已存在
 
         # 为 knowledge_docs 添加 kb_id 和 chunk_method_used（幂等）
-        for col_def in ("kb_id TEXT DEFAULT 'builtin-001'", "chunk_method_used TEXT DEFAULT 'hybrid'"):
+        for col_def in ("kb_id TEXT DEFAULT 'builtin-001'", "chunk_method_used TEXT DEFAULT 'hybrid'", "coverage_json TEXT"):
             try:
                 conn.execute(
                     __import__("sqlalchemy").text(

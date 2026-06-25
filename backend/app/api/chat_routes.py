@@ -33,7 +33,7 @@ router = APIRouter(prefix="/api")
 
 class ChatMessageSchema(BaseModel):
     role: str
-    content: str | list[dict] = None  # str=纯文本, list=[{type,text|image_url},...]
+    content: Optional[str | list[dict]] = None  # str=纯文本, list=[{type,text|image_url},...]
 
 
 class ChatRequest(BaseModel):
@@ -47,6 +47,8 @@ class ChatRequest(BaseModel):
     provider: Optional[str] = None
     base_url: Optional[str] = None
     attachments: Optional[list[dict]] = None
+    session_id: Optional[str] = None
+    kb_ids: Optional[list[str]] = None  # Selected KB IDs for RAG search; None/empty = all enabled
 
 
 class ModelsRequest(BaseModel):
@@ -101,7 +103,7 @@ async def chat_sse(payload: ChatRequest, request: Request):
                             max_chars = settings.max_attachment_chars
                             if len(text) > max_chars:
                                 text = text[:max_chars] + f"\n\n[...内容已截断，共 {len(text)} 字符]"
-                        attachment_texts.append(f"[附件: {att_name}]\n{text}")
+                            attachment_texts.append(f"[附件: {att_name}]\n{text}")
                     except Exception as e:
                         logger.warning(f"附件文本提取失败 {att_name}: {e}")
         
@@ -109,6 +111,20 @@ async def chat_sse(payload: ChatRequest, request: Request):
                 if m.role == "user":
                     last_user_msg = m.content if m.content is not None else ""
                 history.append(ChatMessage(role=m.role, content=m.content if m.content is not None else ""))
+
+            # Find the last user message index to split history correctly
+            # (handles edge cases where last message isn't from user, e.g. regenerate)
+            last_user_idx = -1
+            for i, m in enumerate(msgs):
+                if m.role == "user":
+                    last_user_idx = i
+            if last_user_idx >= 0:
+                last_user_msg = msgs[last_user_idx].content if msgs[last_user_idx].content is not None else ""
+                # History = all messages before the last user message
+                history = [ChatMessage(role=m.role, content=m.content if m.content is not None else "")
+                           for m in msgs[:last_user_idx]]
+            else:
+                history = []
         
             if image_parts:
                 text_part = last_user_msg if isinstance(last_user_msg, str) else str(last_user_msg)
@@ -133,24 +149,49 @@ async def chat_sse(payload: ChatRequest, request: Request):
                         )
                     else:
                         rag_query_text = str(last_user_msg)
-                    results = kb_manager.search_all_enabled(rag_query_text, k=payload.top_k)
+                    results = kb_manager.search_all_enabled(rag_query_text, k=payload.top_k, kb_ids=payload.kb_ids)
                     if results:
                         for i, r in enumerate(results):
                             sid = f"src{i + 1}"
                             title = r.metadata.get("title", "未知来源")
                             doc = r.doc_id or r.metadata.get("doc_id", "")
-                            page = r.metadata.get("chunk_index", 0)
+                            chunk_index = r.metadata.get("chunk_index", 0)
+                            page_start = r.metadata.get("page_start")
+                            page_end = r.metadata.get("page_end")
+                            section_title = r.metadata.get("section_title", "")
+                            source_url = r.metadata.get("source", r.metadata.get("source_url", ""))
+                            category = r.metadata.get("category", "")
+                            chunk_method = r.metadata.get("chunk_method", "")
                             score = float(r.score) if r.score else 0.0
                             excerpt = r.content[:200] if r.content else ""
-                            yield sse_event("source", {
-                                "id": sid, "title": title, "doc": doc,
-                                "page": page, "score": score, "excerpt": excerpt,
-                                "kb_id": r.kb_id, "kb_name": r.kb_name,
-                            })
+                            small_chunk_id = r.metadata.get("small_chunk_id", "")
+                            source_data = {
+                                "id": sid,
+                                "title": title,
+                                "doc": doc,
+                                "page": chunk_index,  # Keep backward compat (chunk index)
+                                "chunk_index": chunk_index,
+                                "page_start": page_start,
+                                "page_end": page_end,
+                                "section_title": section_title,
+                                "source_url": source_url,
+                                "category": category,
+                                "chunk_method": chunk_method,
+                                "score": score,
+                                "excerpt": excerpt,
+                                "kb_id": r.kb_id,
+                                "kb_name": r.kb_name,
+                                "small_chunk_id": small_chunk_id,
+                            }
+                            yield sse_event("source", source_data)
                             sources.append({
                                 "id": sid, "title": title, "content": r.content[:500],
-                                "doc": doc, "page": page, "score": score,
+                                "doc": doc, "page": chunk_index, "score": score,
                                 "kb_id": r.kb_id, "kb_name": r.kb_name,
+                                "page_start": page_start, "page_end": page_end,
+                                "section_title": section_title, "source_url": source_url,
+                                "category": category,
+                                "small_chunk_id": small_chunk_id,
                             })
                         rag_query = rag_query_text[:80]
                         yield sse_event("tool", {
@@ -184,6 +225,7 @@ async def chat_sse(payload: ChatRequest, request: Request):
         
             try:
                 usage_data = None
+                full_response_text = ""  # Accumulated response for fallback token estimation
                 # 使用 queue 包装 LLM stream，支持 idle timeout
                 IDLE_TIMEOUT = 300  # 5 分钟无数据断开
         
@@ -194,7 +236,7 @@ async def chat_sse(payload: ChatRequest, request: Request):
                     try:
                         async for chunk in client.chat_stream(
                             user_message=last_user_msg, system_prompt=system_prompt,
-                            history=history[:-1] if len(history) > 1 else None,
+                            history=history if len(history) > 0 else None,
                             api_key=api_key, base_url=base_url, model=model, provider=provider,
                         ):
                             await q.put(chunk)
@@ -246,7 +288,44 @@ async def chat_sse(payload: ChatRequest, request: Request):
                                     logger.warning(f"Failed to record token usage: {db_err}")
                         else:
                             # TODO: ReAct loop
+                            full_response_text += chunk.content or ""
                             yield sse_event("text", {"content": chunk.content})
+
+                    # Fallback: if provider didn't return usage in stream, estimate it
+                    # (some providers like certain Ollama setups don't support stream_options)
+                    if not usage_data:
+                        try:
+                            from src.llm.client import LLMClient as _LLMClient
+                            # Estimate input tokens from messages
+                            input_tokens = 0
+                            for m in msgs:
+                                input_tokens += _LLMClient._estimate_tokens(m.content)
+                            if system_prompt:
+                                input_tokens += _LLMClient._estimate_tokens(system_prompt)
+                            # Estimate output tokens from accumulated response
+                            output_tokens = _LLMClient._estimate_tokens(full_response_text)
+                            usage_data = {
+                                "prompt_tokens": input_tokens,
+                                "completion_tokens": output_tokens,
+                                "total_tokens": input_tokens + output_tokens,
+                            }
+                            logger.info(f"LLM usage (estimated): {usage_data}")
+                            # Record estimated usage to database
+                            try:
+                                with get_db_ctx() as db:
+                                    record = TokenUsage(
+                                        model=model,
+                                        provider=provider or "",
+                                        session_id=payload.session_id or "",
+                                        prompt_tokens=usage_data["prompt_tokens"],
+                                        completion_tokens=usage_data["completion_tokens"],
+                                        total_tokens=usage_data["total_tokens"],
+                                    )
+                                    db.add(record)
+                            except Exception as db_err:
+                                logger.warning(f"Failed to record estimated token usage: {db_err}")
+                        except Exception as est_err:
+                            logger.warning(f"Token estimation failed: {est_err}")
 
                     # 正常结束，发送 done
                     done_payload: dict = {"success": True}
@@ -340,10 +419,11 @@ async def token_usage_stats(days: int = 30):
         by_model: 按模型分组 [{model, input, output, total, calls}]
         summary: {total_input, total_output, total_tokens, days}
     """
+    days = max(1, min(days, 365))  # Clamp to valid range
     import datetime
     from sqlalchemy import func
 
-    cutoff = datetime.datetime.utcnow() - datetime.timedelta(days=days)
+    cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
 
     try:
         with get_db_ctx() as db:

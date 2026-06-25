@@ -29,6 +29,11 @@ interface ChatState {
   bookmarkData: Record<string, { folderId: string; bookmarkedAt: number; sessionId: string; sessionTitle: string; content: string; role: string }>;
   bookmarkTargetMsgId: string | null;
   statsOpen: boolean;
+  /** 选中的知识库 ID 列表，空数组表示使用全部已启用知识库 */
+  selectedKbIds: string[];
+  setSelectedKbIds: (ids: string[]) => void;
+  /** 切换某个知识库的选中状态（在数组中增删） */
+  toggleKbSelection: (kbId: string) => void;
 
   sendMessage: (content: string, attachments?: Attachment[]) => void;
   stopStreaming: (errorMessage?: string) => void;
@@ -110,6 +115,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
   bookmarkData: loadFromStorage("bookmarkData", {}),
   bookmarkTargetMsgId: null,
   statsOpen: false,
+  selectedKbIds: [],
+
+  setSelectedKbIds: (selectedKbIds) => set({ selectedKbIds }),
+
+  toggleKbSelection: (kbId) => set((s) => ({
+    selectedKbIds: s.selectedKbIds.includes(kbId)
+      ? s.selectedKbIds.filter((id) => id !== kbId)
+      : [...s.selectedKbIds, kbId],
+  })),
 
   setMessages: (messages) => {
     const trimmed = trimMessages(messages);
@@ -228,6 +242,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // 构建请求体：历史消息 + 设置（扁平结构，对齐后端 ChatRequest）
     // 模型优先从当前会话读取（各对话独立），回退到全局设置
     const { topK, temperature, systemPrompt, longTermMemory, maxTokens } = useSettingsStore.getState();
+    const { selectedKbIds } = get();
     const currentSession = useSessionStore.getState().sessions.find((s) => s.id === activeSessionId);
     const model = currentSession?.model || useSettingsStore.getState().model;
     log("info", "chat", `model=${model} topK=${topK} maxTokens=${maxTokens} sessionId=${activeSessionId} systemPrompt="${systemPrompt?.slice(0, 50)}..."`);
@@ -241,6 +256,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       system_prompt: systemPrompt,
       long_term_memory: longTermMemory || undefined,
       model: model || undefined,
+      // 空数组表示搜索全部已启用知识库，非空时只搜选中的 KB
+      kb_ids: selectedKbIds.length > 0 ? selectedKbIds : undefined,
       // 只发送非图片附件（图片已在 messages 的 ContentPart[] 中）
       // 后端会从 attachments 提取图片再拼到消息里，导致重复
       attachments: attachments && attachments.length > 0
@@ -323,7 +340,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
               const msgs = [...currentMsgs];
               const last = msgs[msgs.length - 1];
               if (last?.role === "assistant") {
-                const newContent = (isActive ? s.streamingContent : last.content) + chunk;
+                // last.content may be ContentPart[]; coerce to string to avoid array+string corruption
+                const prevContent = isActive
+                  ? s.streamingContent
+                  : (typeof last.content === "string" ? last.content : "");
+                const newContent = prevContent + chunk;
                 msgs[msgs.length - 1] = { ...last, content: newContent };
                 const newSM = { ...s.sessionMessages, [sid]: msgs };
                 saveSessionMessages(sid, msgs);
@@ -367,10 +388,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 title: sse.title ?? "未知来源",
                 doc: sse.doc ?? "",
                 page: sse.page ?? 0,
+                chunk_index: sse.chunk_index,
+                page_start: sse.page_start,
+                page_end: sse.page_end,
+                section_title: sse.section_title,
+                source_url: sse.source_url,
+                category: sse.category,
+                chunk_method: sse.chunk_method,
                 score: sse.score ?? 0,
                 excerpt: sse.excerpt ?? "",
                 kb_id: sse.kb_id,
                 kb_name: sse.kb_name,
+                small_chunk_id: sse.small_chunk_id,
               };
               const msgs = [...currentMsgs];
               const last = msgs[msgs.length - 1];

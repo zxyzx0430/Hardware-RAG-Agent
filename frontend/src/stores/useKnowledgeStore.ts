@@ -1,8 +1,11 @@
 import { create } from "zustand";
 import type { KBDoc } from "../types/api";
-import type { KnowledgeBase, CreateKBRequest, KBCollectionDetail } from "../types/kb";
+import type { KnowledgeBase, CreateKBRequest, KBCollectionDetail, ChunkDetail, DocChunk } from "../types/kb";
 import { apiGet, apiPost, apiDelete, apiPatch } from "../api/client";
 import { useLogStore } from "./useLogStore";
+
+// Re-export DocChunk so consumers can import from the store
+export type { DocChunk };
 
 interface KnowledgeState {
   // ─── Document-level (legacy) ───
@@ -26,12 +29,39 @@ interface KnowledgeState {
   deleteCollection: (kbId: string) => Promise<boolean>;
   toggleCollection: (kbId: string, enabled: boolean) => Promise<boolean>;
   getCollectionDetail: (kbId: string) => Promise<KBCollectionDetail | null>;
+  renameCollection: (kbId: string, newName: string) => Promise<void>;
+  updateKbConfig: (kbId: string, config: Partial<CreateKBRequest>) => Promise<void>;
   fetchEmbeddingModels: (baseUrl: string, apiKey: string) => Promise<string[]>;
   exportCollection: (kbId: string) => Promise<void>;
   importCollection: (kbId: string, file: File) => Promise<number>;
+  fetchDocumentChunks: (docId: string) => Promise<ChunkDetail[]>;
+
+  // ─── Chunk viewer (right panel) ───
+  docChunks: DocChunk[];
+  chunksLoading: boolean;
+  viewingDocId: string | null;
+  fetchDocChunks: (docId: string) => Promise<void>;
+  clearChunks: () => void;
 }
 
 const DEFAULT_KB_ID = "builtin-001";
+const ACTIVE_KB_STORAGE_KEY = "kb-active-kb-id";
+
+function loadActiveKbId(): string {
+  try {
+    return localStorage.getItem(ACTIVE_KB_STORAGE_KEY) || DEFAULT_KB_ID;
+  } catch {
+    return DEFAULT_KB_ID;
+  }
+}
+
+function saveActiveKbId(id: string): void {
+  try {
+    localStorage.setItem(ACTIVE_KB_STORAGE_KEY, id);
+  } catch {
+    // ignore quota / privacy mode errors
+  }
+}
 
 function formatFileSize(bytes: number): string {
   if (!bytes || bytes <= 0) return "—";
@@ -89,19 +119,28 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
 
   deleteItemWithAPI: async (id) => {
     useLogStore.getState().log("info", "kb", `删除文档: ${id}`);
+    // 保存被删除的项以便 API 失败时回滚
+    const deletedItem = get().items.find((x) => x.id === id);
     // 先从本地移除（乐观更新）
     set((s) => ({ items: s.items.filter((x) => x.id !== id) }));
     try {
       await apiPost("kb/delete", { doc_id: id });
-    } catch {
-      // API 失败仍保留本地删除（乐观策略）
+      // 成功后重新加载列表，确保前端与后端一致
+      const kbId = get().activeKbId;
+      await get().fetchItems(kbId);
+    } catch (e) {
+      // API 失败：回滚本地状态
+      if (deletedItem) {
+        set((s) => ({ items: [deletedItem, ...s.items] }));
+      }
       useLogStore.getState().log("warn", "kb", `后端删除失败: ${id}`);
+      throw e;
     }
   },
 
   // ─── Collection-level ───
   collections: [],
-  activeKbId: DEFAULT_KB_ID,
+  activeKbId: loadActiveKbId(),
   isLoadingCollections: false,
 
   fetchCollections: async () => {
@@ -132,7 +171,9 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
         const activeExists = kbs.some((k) => k.id === get().activeKbId);
         if (!activeExists) {
           const builtin = kbs.find((k) => k.is_builtin);
-          set({ activeKbId: builtin?.id ?? kbs[0]?.id ?? DEFAULT_KB_ID });
+          const fallbackId = builtin?.id ?? kbs[0]?.id ?? DEFAULT_KB_ID;
+          set({ activeKbId: fallbackId });
+          saveActiveKbId(fallbackId);
         }
 
         useLogStore.getState().log("ok", "kb", `加载 ${kbs.length} 个知识库`);
@@ -144,7 +185,10 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
     }
   },
 
-  setActiveKb: (kbId) => set({ activeKbId: kbId }),
+  setActiveKb: (kbId) => {
+    saveActiveKbId(kbId);
+    set({ activeKbId: kbId });
+  },
 
   createCollection: async (req) => {
     try {
@@ -169,6 +213,7 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
       const newActiveId = get().activeKbId === kbId
         ? (remaining.find((k) => k.is_builtin)?.id ?? remaining[0]?.id ?? DEFAULT_KB_ID)
         : get().activeKbId;
+      saveActiveKbId(newActiveId);
       set({ collections: remaining, activeKbId: newActiveId });
       // Sync with backend to ensure consistency
       get().fetchCollections();
@@ -209,6 +254,34 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
     } catch (e) {
       useLogStore.getState().log("error", "kb", `获取知识库详情失败: ${e instanceof Error ? e.message : String(e)}`);
       return null;
+    }
+  },
+
+  renameCollection: async (kbId, newName) => {
+    try {
+      await apiPatch(`kb/collections/${kbId}/rename`, { name: newName });
+      set((s) => ({
+        collections: s.collections.map((k) =>
+          k.id === kbId ? { ...k, name: newName } : k
+        ),
+      }));
+      useLogStore.getState().log("ok", "kb", `重命名知识库: ${kbId} → ${newName}`);
+    } catch (e) {
+      useLogStore.getState().log("error", "kb", `重命名知识库失败: ${e instanceof Error ? e.message : String(e)}`);
+      throw e;
+    }
+  },
+
+  updateKbConfig: async (kbId, config) => {
+    try {
+      await apiPatch(`kb/collections/${kbId}/config`, config);
+      // Refresh collections to get updated config
+      const { fetchCollections } = get();
+      await fetchCollections();
+      useLogStore.getState().log("ok", "kb", `更新知识库配置: ${kbId}`);
+    } catch (e) {
+      useLogStore.getState().log("error", "kb", `更新知识库配置失败: ${e instanceof Error ? e.message : String(e)}`);
+      throw e;
     }
   },
 
@@ -262,4 +335,56 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
       throw e;
     }
   },
+
+  fetchDocumentChunks: async (docId) => {
+    try {
+      const data = await apiGet<{ chunks: any[] }>(`kb/documents/${docId}/chunks`);
+      const chunks: ChunkDetail[] = (data?.chunks ?? []).map((c: any) => ({
+        id: c.id ?? c.chunk_id ?? `chunk-${c.chunk_index ?? Math.random()}`,
+        chunk_index: c.chunk_index ?? 0,
+        content: c.content ?? "",
+        page_start: c.page_start ?? null,
+        page_end: c.page_end ?? null,
+        section_title: c.section_title ?? "",
+        chunk_method: c.chunk_method ?? "",
+        chunk_size: c.chunk_size ?? 0,
+      }));
+      useLogStore.getState().log("ok", "kb", `加载文档片段: ${docId} (${chunks.length} chunks)`);
+      return chunks;
+    } catch (e) {
+      useLogStore.getState().log("error", "kb", `加载文档片段失败: ${e instanceof Error ? e.message : String(e)}`);
+      return [];
+    }
+  },
+
+  // ─── Chunk viewer (right panel) ───
+  docChunks: [],
+  chunksLoading: false,
+  viewingDocId: null,
+
+  fetchDocChunks: async (docId) => {
+    set({ chunksLoading: true, viewingDocId: docId });
+    try {
+      const data = await apiGet<{ chunks: any[] }>(`kb/documents/${docId}/chunks`);
+      const chunks: DocChunk[] = (data?.chunks ?? []).map((c: any) => ({
+        id: c.id ?? c.chunk_id ?? `chunk-${c.chunk_index ?? Math.random()}`,
+        chunk_index: c.chunk_index ?? 0,
+        content: c.content ?? "",
+        content_length: c.content_length ?? (c.content?.length ?? 0),
+        page_start: c.page_start ?? null,
+        page_end: c.page_end ?? null,
+        section_title: c.section_title ?? "",
+        chunk_method: c.chunk_method ?? "",
+        chunk_size: c.chunk_size ?? 0,
+        title: c.title ?? "",
+      }));
+      set({ docChunks: chunks, chunksLoading: false });
+      useLogStore.getState().log("ok", "kb", `加载文档片段: ${docId} (${chunks.length} chunks)`);
+    } catch (e) {
+      set({ docChunks: [], chunksLoading: false });
+      useLogStore.getState().log("error", "kb", `加载文档片段失败: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  },
+
+  clearChunks: () => set({ docChunks: [], viewingDocId: null, chunksLoading: false }),
 }));

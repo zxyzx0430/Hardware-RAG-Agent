@@ -1,11 +1,60 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useAppStore } from "../../stores/useAppStore";
 import { useChatStore } from "../../stores/useChatStore";
 import { useKnowledgeStore } from "../../stores/useKnowledgeStore";
+import type { DocChunk } from "../../stores/useKnowledgeStore";
 import { WorkbenchPanel } from "../workbench/WorkbenchPanel";
 import { useI18n } from "../../i18n";
 import type { ActivityStep } from "../../types/session";
 import { copyToClipboard } from "../../utils/clipboard";
+
+// ─── BigChunkExpander: fetches and displays big_chunk_text on demand ───
+function BigChunkExpander({ smallChunkId }: { smallChunkId: string }) {
+  const { t } = useI18n();
+  const [expanded, setExpanded] = useState(false);
+  const [bigChunk, setBigChunk] = useState<string>("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string>("");
+
+  const handleToggle = useCallback(async () => {
+    if (!expanded && !bigChunk && !error) {
+      setLoading(true);
+      setError("");
+      try {
+        const res = await fetch(`/api/kb/chunks/${encodeURIComponent(smallChunkId)}`);
+        const json = await res.json();
+        if (json.success && json.data?.big_chunk_text) {
+          setBigChunk(json.data.big_chunk_text);
+        } else {
+          setError(json.error?.message || "Failed to load");
+        }
+      } catch (e) {
+        setError(String(e));
+      } finally {
+        setLoading(false);
+      }
+    }
+    setExpanded((v) => !v);
+  }, [expanded, bigChunk, error, smallChunkId]);
+
+  return (
+    <div className="bigchunk-expander">
+      <button
+        className="bigchunk-toggle-btn"
+        onClick={(e) => { e.stopPropagation(); handleToggle(); }}
+        disabled={loading}
+      >
+        {loading ? t('loadingContext') : expanded ? t('collapse') : t('viewFullContext')}
+      </button>
+      {expanded && bigChunk ? (
+        <pre className="bigchunk-content">{bigChunk}</pre>
+      ) : null}
+      {expanded && error ? (
+        <div className="bigchunk-error">{error}</div>
+      ) : null}
+    </div>
+  );
+}
 
 function formatDuration(ms: number) {
   if (ms < 1000) return `${ms}ms`;
@@ -72,6 +121,15 @@ function SourcePanel() {
   const viewedKbItem = !viewed ? kbItems.find((item) => item.id === fileViewerSource) || null : null;
 
   if (viewed) {
+    // Build page label: prefer real PDF pages, fallback to chunk index
+    const pageLabel = viewed.page_start != null
+      ? (viewed.page_end != null && viewed.page_end !== viewed.page_start
+          ? `${t('pages')} ${viewed.page_start}-${viewed.page_end}`
+          : `${t('page')} ${viewed.page_start}`)
+      : `${t('chunk')} #${viewed.page}`;
+    // Score: normalize within available sources for display
+    const maxSrcScore = Math.max(...sources.map(s => s.score || 0), 0.001);
+    const displayScore = Math.round((viewed.score / maxSrcScore) * 100);
     return (
       <div className="source-panel" id="sourcePanel">
         <div className="source-fv-header">
@@ -80,47 +138,26 @@ function SourcePanel() {
         </div>
         <div className="source-fv-scroll">
           <div className="source-fv-name">{viewed.title}</div>
-          <div className="source-fv-meta"><span>{viewed.doc}</span><span className="fv-sep">·</span><span>p.{viewed.page}</span><span className="fv-sep">·</span><span>{t('relevance')} {(viewed.score * 100).toFixed(0)}%</span></div>
+          {viewed.section_title ? <div className="source-fv-section">{viewed.section_title}</div> : null}
+          <div className="source-fv-meta">
+            {viewed.kb_name ? <span className="fv-kb-badge">{viewed.kb_name}</span> : null}
+            {viewed.source_url ? <span>{viewed.source_url}</span> : null}
+            {viewed.source_url ? <span className="fv-sep">·</span> : null}
+            <span>{pageLabel}</span>
+            <span className="fv-sep">·</span>
+            <span>{t('relevance')} {displayScore}%</span>
+            {viewed.category ? <span className="fv-sep">·</span> : null}
+            {viewed.category ? <span className="fv-category">{viewed.category}</span> : null}
+          </div>
           <div className="source-fv-content">{viewed.excerpt}</div>
+          {viewed.small_chunk_id ? <BigChunkExpander smallChunkId={viewed.small_chunk_id} /> : null}
         </div>
       </div>
     );
   }
 
   if (viewedKbItem) {
-    return (
-      <div className="source-panel" id="sourcePanel">
-        <div className="source-fv-header">
-          <button className="source-fv-back" onClick={() => setFileViewerSource(null)}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15 18 9 12 15 6"/></svg> {t('back')}</button>
-          <span className="source-fv-title">{t('kbDocPreview')}</span>
-        </div>
-        <div className="source-fv-scroll">
-          <div className="source-fv-name">{viewedKbItem.name}</div>
-          <div className="source-fv-meta" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 4 }}>
-            <span>{viewedKbItem.docType}</span>
-            <span className="fv-sep">·</span>
-            <span>{viewedKbItem.size}</span>
-            <span className="fv-sep">·</span>
-            <span>{viewedKbItem.chunks} {t('indexed')}</span>
-            <span className="fv-sep">·</span>
-            <span className={`kb-status-dot ${viewedKbItem.status}`} style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', verticalAlign: 'middle' }}></span>
-            <span>{viewedKbItem.status === 'indexed' ? t('indexed') : viewedKbItem.status === 'indexing' ? t('indexing') : t('indexFailed')}</span>
-          </div>
-          {viewedKbItem.tags.length > 0 && (
-            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 8 }}>
-              {viewedKbItem.tags.map((tag) => <span className="kb-tag" key={tag}>{tag}</span>)}
-            </div>
-          )}
-          <div style={{ marginTop: 12, fontSize: 12, color: 'var(--muted-fg)' }}>
-            <div>{t('updatedAt')}: {viewedKbItem.updatedAt}</div>
-            <div>{t('enabled')}: {viewedKbItem.enabled ? '✓' : '✗'}</div>
-          </div>
-          {viewedKbItem.errorMessage && (
-            <div style={{ marginTop: 8, color: 'var(--danger)', fontSize: 12 }}>{viewedKbItem.errorMessage}</div>
-          )}
-        </div>
-      </div>
-    );
+    return <ChunkViewer docId={viewedKbItem.id} docName={viewedKbItem.name} onBack={() => setFileViewerSource(null)} />;
   }
 
   return (
@@ -162,6 +199,7 @@ function SourcePanel() {
                     </div>
                     <button className="source-open-btn" onClick={(event) => { event.stopPropagation(); setHighlightSourceId(src.id); setFileViewerSource(src.id); }}>{t('open')}</button>
                   </div>
+                  {src.small_chunk_id ? <BigChunkExpander smallChunkId={src.small_chunk_id} /> : null}
                 </div>
               </div>
             );
@@ -200,6 +238,90 @@ function SourcePanel() {
             );
           }) : <div className="source-empty">{t('noToolCalls')}</div>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Chunk Viewer: shows all chunks of a KB document ───
+function ChunkViewer({ docId, docName, onBack }: { docId: string; docName: string; onBack: () => void }) {
+  const { t } = useI18n();
+  const { docChunks, chunksLoading, viewingDocId, fetchDocChunks, clearChunks } = useKnowledgeStore();
+
+  // Load chunks when this document becomes the viewed one (covers direct right-panel entry
+  // where KnowledgePanel didn't pre-fetch, and ensures data is fresh).
+  useEffect(() => {
+    if (viewingDocId !== docId) {
+      fetchDocChunks(docId);
+    }
+    return () => {
+      // Clear when leaving the viewer
+      clearChunks();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [docId]);
+
+  const totalLabel = t('chunksTotal').replace('{n}', String(docChunks.length));
+
+  return (
+    <div className="chunk-viewer" id="chunkViewer">
+      <div className="chunk-viewer-header">
+        <button className="source-fv-back" onClick={onBack}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15 18 9 12 15 6"/></svg> {t('back')}
+        </button>
+        <div className="chunk-viewer-title-wrap">
+          <div className="chunk-viewer-doc-name" title={docName}>{docName}</div>
+          <div className="chunk-viewer-count">{totalLabel}</div>
+        </div>
+      </div>
+      <div className="chunk-viewer-body">
+        {chunksLoading ? (
+          <div className="chunk-viewer-loading">{t('loadingChunks')}</div>
+        ) : docChunks.length === 0 ? (
+          <div className="chunk-viewer-empty">{t('noChunks')}</div>
+        ) : (
+          docChunks.map((chunk) => <ChunkItem key={chunk.id} chunk={chunk} />)
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Single chunk card with local expand/collapse state ───
+function ChunkItem({ chunk }: { chunk: DocChunk }) {
+  const { t } = useI18n();
+  const [expanded, setExpanded] = useState(false);
+
+  const TRUNCATE_LEN = 200;
+  const isLong = chunk.content.length > TRUNCATE_LEN;
+  const pageLabel = chunk.page_start != null
+    ? (chunk.page_end != null && chunk.page_end !== chunk.page_start
+        ? `p.${chunk.page_start}-${chunk.page_end}`
+        : `p.${chunk.page_start}`)
+    : '';
+
+  const displayedContent = expanded || !isLong
+    ? chunk.content
+    : chunk.content.slice(0, TRUNCATE_LEN) + '…';
+
+  return (
+    <div className="chunk-item">
+      <div className="chunk-item-header">
+        <span className="chunk-item-index">#{chunk.chunk_index}</span>
+        {chunk.section_title ? <span className="chunk-item-section">{chunk.section_title}</span> : null}
+        {pageLabel ? <span className="chunk-item-page">{pageLabel}</span> : null}
+      </div>
+      <div className={`chunk-item-content${expanded ? '' : ' collapsed'}`}>
+        {displayedContent}
+      </div>
+      {isLong && (
+        <button className="chunk-expand-btn" onClick={() => setExpanded((v) => !v)}>
+          {expanded ? t('collapseChunk') : t('expandChunk')}
+        </button>
+      )}
+      <div className="chunk-item-footer">
+        {chunk.chunk_method ? <span className="chunk-method-badge">{chunk.chunk_method}</span> : null}
+        <span className="chunk-size-label">{chunk.content_length} chars</span>
       </div>
     </div>
   );
