@@ -47,6 +47,8 @@ const zh: Record<string, string> = {
   topKDesc: '每次检索返回的文档片段数',
   maxTokens: '最大 Token 数',
   maxTokensDesc: '单次回答的最大生成长度',
+  relevanceThreshold: '相关度阈值',
+  relevanceThresholdDesc: '检索结果相关度低于此值时将被过滤（0=不过滤，推荐 60）',
   currentConfig: '当前配置',
 
   // Settings - Memory
@@ -462,7 +464,9 @@ const zh: Record<string, string> = {
   chunkMethod: '分块方式',
   hybrid: '混合分块',
   agent: 'Agent 分块',
+  multimodal: '多模态分块',
   agentChunkHint: 'AI 分块耗时较长，可能需要几轮 LLM 调用',
+  multimodalHint: '多模态分块需要 Vision 模型（如 GPT-4o），通过页面图像识别章节边界，精度最高',
   embeddingModel: 'Embedding 模型',
   embeddingBaseUrl: 'Embedding Base URL',
   embeddingApiKey: 'Embedding API Key',

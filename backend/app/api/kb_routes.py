@@ -61,18 +61,9 @@ def _validate_file_magic(ext: str, content_bytes: bytes) -> None:
 def _parse_file(ext: str, content_bytes: bytes, save_path: Path) -> tuple[str, int]:
     """根据文件扩展名解析文件，返回 (纯文本, 总页数)。"""
     if ext == ".pdf":
-        from src.rag.document_processor import DoclingParser
-        parser = DoclingParser()
-        text = parser.parse(save_path)
-        # Try to get page count via PyMuPDF
-        total_pages = 0
-        try:
-            import fitz  # PyMuPDF
-            doc = fitz.open(str(save_path))
-            total_pages = doc.page_count
-            doc.close()
-        except Exception:
-            pass
+        from src.rag.document_processor import UnifiedPdfParser
+        parser = UnifiedPdfParser()
+        text, total_pages = parser.parse(save_path)
         return text, total_pages
     elif ext in (".xlsx", ".xls"):
         from src.rag.file_parsers import ExcelParser
@@ -97,14 +88,14 @@ def _get_kb_manager():
     return get_kb_manager()
 
 
-def _get_kb_chunker(kb: KnowledgeBase, chunk_method_override: Optional[str] = None, chunk_size: Optional[int] = None):
+def _get_kb_chunker(kb: KnowledgeBase, chunk_method_override: Optional[str] = None, chunk_size: Optional[int] = None, chunk_overlap: Optional[int] = None, small_chunk_size: Optional[int] = None):
     """Get a chunker configured for a specific KB."""
     from src.rag.chunking import get_chunker
 
     method = chunk_method_override or kb.chunk_method or "hybrid"
 
-    if method == "agent":
-        # Decrypt agent chunker API key
+    if method in ("agent", "multimodal"):
+        # Decrypt agent chunker API key (shared between agent and multimodal)
         agent_key = ""
         if kb.agent_chunker_api_key_encrypted:
             try:
@@ -112,23 +103,33 @@ def _get_kb_chunker(kb: KnowledgeBase, chunk_method_override: Optional[str] = No
             except Exception:
                 logger.warning(f"Failed to decrypt agent chunker key for KB {kb.id}")
 
+        if method == "multimodal":
+            # Multimodal chunker uses vision LLM to analyze page images
+            return get_chunker(
+                "multimodal",
+                model=kb.agent_chunker_model or "gpt-4o",
+                base_url=kb.agent_chunker_base_url or "https://api.openai.com/v1",
+                api_key=agent_key,
+            )
+
         return get_chunker(
             "agent",
             model=kb.agent_chunker_model or "gpt-4o-mini",
             base_url=kb.agent_chunker_base_url or "https://api.openai.com/v1",
             api_key=agent_key,
             context_window=kb.context_window or 256000,
-            # The following parameters use AgentChunker defaults but are
-            # wired here so future KB-level config (e.g. a chunk_config JSON
-            # column) can override them without touching this function.
-            # num_rounds=getattr(kb, "agent_num_rounds", 3),
-            # max_batch_chars=getattr(kb, "agent_max_batch_chars", 80000),
-            # sub_chunk_size=getattr(kb, "agent_sub_chunk_size", 1000),
+            # P0: Increase retries for flaky proxy APIs. Default max_retries=3
+            # (4 attempts) is too few for unstable gateways that return 504
+            # or Connection error intermittently. 5 retries (6 attempts) with
+            # exponential backoff gives the API time to recover.
+            max_retries=5,
         )
     else:
         kwargs = {}
         if chunk_size:
             kwargs["chunk_size"] = chunk_size
+        if small_chunk_size:
+            kwargs["small_chunk_size"] = small_chunk_size
         return get_chunker("hybrid", **kwargs)
 
 
@@ -142,14 +143,16 @@ async def kb_upload(
     kb_id: str = Form(DEFAULT_KB_ID),
     chunk_method: Optional[str] = Form(None),
     chunk_size: Optional[int] = Form(None),
+    small_chunk_size: Optional[int] = Form(None),
 ):
     """上传知识库文档，自动解析、分块、向量化入库。
 
     Args:
         file: 上传的文件 (PDF/MD/TXT/XLSX/CSV/JSON)
         kb_id: 目标知识库 ID，默认 builtin-001
-        chunk_method: 覆盖 KB 默认分块方式 (hybrid / agent)
+        chunk_method: 覆盖 KB 默认分块方式 (hybrid / agent / multimodal)
         chunk_size: 覆盖默认 chunk_size (仅 hybrid 有效)
+        small_chunk_size: 覆盖默认 small_chunk_size (仅 hybrid 有效)
     """
     if not file.filename:
         return {
@@ -194,12 +197,17 @@ async def kb_upload(
         # Extract scalar values inside the session to avoid DetachedInstanceError
         existing_doc_id = existing.doc_id if existing else None
         existing_status = existing.status if existing else None
+        existing_error_message = existing.error_message if existing else None
     if existing_doc_id:
-        # Auto-reclaim orphan records left by failed uploads (error) or crashed
-        # indexing tasks (stale "indexing" status). Only block re-upload when
-        # the previous upload genuinely succeeded ("indexed") — in that case
-        # the user must explicitly delete first.
-        if existing_status in ("error", "indexing"):
+        # Auto-reclaim orphan records left by failed uploads (error), crashed
+        # indexing tasks (stale "indexing" status), or "indexed but not vectorized"
+        # (status=indexed with error_message — e.g. embedding not configured).
+        # Only block re-upload when the previous upload genuinely succeeded
+        # (status=indexed with no error_message).
+        is_broken = existing_status in ("error", "indexing") or (
+            existing_status == "indexed" and existing_error_message
+        )
+        if is_broken:
             logger.info(f"清理孤儿记录 {existing_doc_id} (status={existing_status}) 以便重新上传 {file.filename}")
             try:
                 with get_db_ctx() as db:
@@ -207,8 +215,6 @@ async def kb_upload(
                     if rec:
                         kb_id_of_rec = rec.kb_id
                         db.delete(rec)
-                        if kb_id_of_rec:
-                            _get_kb_manager()._bm25_stale.add(kb_id_of_rec)
                 # Best-effort vector cleanup
                 try:
                     kb_existing = kb_manager.get_kb(kb_id)
@@ -218,9 +224,17 @@ async def kb_upload(
                             store.delete_document(existing_doc_id)
                 except Exception:
                     logger.warning(f"清理孤儿向量失败（不影响继续上传）: {existing_doc_id}")
+                # P2-3: Eagerly rebuild BM25 after vector cleanup so search doesn't block later
+                if kb_id:
+                    try:
+                        kb_manager._rebuild_bm25(kb_id)
+                        kb_manager._bm25_stale.discard(kb_id)
+                    except Exception:
+                        kb_manager._bm25_stale.add(kb_id)
+                        logger.warning(f"BM25 eager rebuild failed for KB {kb_id} after orphan cleanup")
                 # Best-effort file cleanup
-                for ext in ALLOWED_EXTENSIONS:
-                    orphan_path = UPLOAD_DIR / f"{existing_doc_id}{ext}"
+                for orphan_ext in ALLOWED_EXTENSIONS:
+                    orphan_path = UPLOAD_DIR / f"{existing_doc_id}{orphan_ext}"
                     if orphan_path.exists():
                         try:
                             orphan_path.unlink()
@@ -296,21 +310,61 @@ async def kb_upload(
                 _update_doc_status(doc_id, "error", error_message="知识库不存在")
                 return
 
-            chunker = _get_kb_chunker(kb_bg, chunk_method_override=effective_method, chunk_size=chunk_size)
+            chunker = _get_kb_chunker(kb_bg, chunk_method_override=effective_method, chunk_size=chunk_size, small_chunk_size=small_chunk_size)
 
-            # Run chunking
+            # Run chunking — with fallback to HybridChunker if agent/multimodal fails
             metadata = {
                 "doc_id": doc_id,
                 "title": file.filename,
                 "file_type": ext.lstrip("."),
                 "category": "user_upload",
             }
-            chunks = await chunker.chunk(
-                text=text_content,
-                metadata=metadata,
-                file_path=save_path,
-                total_pages=total_pages,
-            )
+            try:
+                chunks = await chunker.chunk(
+                    text=text_content,
+                    metadata=metadata,
+                    file_path=save_path,
+                    total_pages=total_pages,
+                )
+            except Exception as chunk_err:
+                # P1-3: Fallback to HybridChunker if agent/multimodal chunking fails
+                if effective_method in ("agent", "multimodal"):
+                    logger.warning(
+                        f"文档 {doc_id}: {effective_method} chunking failed ({chunk_err}), "
+                        f"falling back to hybrid chunking"
+                    )
+                    _update_doc_status(
+                        doc_id, "processing",
+                        error_message=f"{effective_method} 分块失败，降级为 hybrid 分块",
+                    )
+                    hybrid_chunker = _get_kb_chunker(
+                        kb_bg, chunk_method_override="hybrid", chunk_size=chunk_size, small_chunk_size=small_chunk_size
+                    )
+                    chunks = await hybrid_chunker.chunk(
+                        text=text_content,
+                        metadata=metadata,
+                        file_path=save_path,
+                        total_pages=total_pages,
+                    )
+                else:
+                    raise
+
+            # Deduplicate chunks by fingerprint (新-2)
+            seen_fps: set[str] = set()
+            deduped_chunks = []
+            for chunk in chunks:
+                if chunk.fingerprint not in seen_fps:
+                    seen_fps.add(chunk.fingerprint)
+                    deduped_chunks.append(chunk)
+            if len(deduped_chunks) < len(chunks):
+                logger.info(
+                    f"文档 {doc_id}: deduplicated {len(chunks) - len(deduped_chunks)} chunks "
+                    f"({len(chunks)} → {len(deduped_chunks)})"
+                )
+                # Renumber chunk_index after dedup
+                for i, chunk in enumerate(deduped_chunks):
+                    chunk.metadata["chunk_index"] = i
+            chunks = deduped_chunks
 
             if not chunks:
                 _update_doc_status(doc_id, "error", error_message="分块结果为空")
@@ -479,9 +533,14 @@ async def kb_delete(payload: KbDeleteRequest):
             # Step 2: Delete DB record (vectors already cleaned)
             db.delete(record)
 
-            # Mark BM25 stale
+            # P2-3: Eagerly rebuild BM25 after vector deletion so search doesn't block later
             if kb_id:
-                kb_manager._bm25_stale.add(kb_id)
+                try:
+                    kb_manager._rebuild_bm25(kb_id)
+                    kb_manager._bm25_stale.discard(kb_id)
+                except Exception:
+                    kb_manager._bm25_stale.add(kb_id)
+                    logger.warning(f"BM25 eager rebuild failed for KB {kb_id} after doc deletion")
     except Exception as e:
         logger.exception("删除知识库文档失败")
         return {
@@ -1171,6 +1230,13 @@ async def kb_import(
         return {
             "success": False,
             "error": {"code": "INVALID_FORMAT", "message": "文件不是有效的 JSON", "details": None},
+        }
+    except ValueError as e:
+        # P2-5: Embedding dimension mismatch — return specific error code
+        logger.warning(f"导入知识库失败 (维度不匹配): {kb_id}: {e}")
+        return {
+            "success": False,
+            "error": {"code": "EMBEDDING_DIM_MISMATCH", "message": sanitize_error(str(e)), "details": None},
         }
     except Exception as e:
         logger.exception(f"导入知识库失败: {kb_id}")

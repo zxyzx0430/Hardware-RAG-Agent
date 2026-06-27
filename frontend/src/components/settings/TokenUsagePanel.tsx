@@ -230,8 +230,8 @@ export function TokenUsagePanel() {
       </div>
 
       {/* ─── Chart ─── */}
-      <div className="chart-card" style={{ padding: 16, overflow: "auto" }}>
-        <svg width={CHART_W} height={CHART_H} style={{ display: "block", margin: "0 auto" }}>
+      <div className="chart-card" style={{ padding: 16, overflow: "hidden" }}>
+        <svg width="100%" height={CHART_H} viewBox={`0 0 ${CHART_W} ${CHART_H}`} preserveAspectRatio="xMidYMid meet" style={{ display: "block" }}>
           {/* Y axis grid lines + labels */}
           {yTicks.map((tick, i) => (
             <g key={i}>
@@ -317,23 +317,24 @@ export function TokenUsagePanel() {
           {chartType === "bar" && (
             <>
               {daily.map((d, i) => {
-                const barW = Math.max(2, xStep * 0.35);
+                const barW = Math.min(28, Math.max(4, xStep * 0.28));
+                const gap = 2;
                 const inputH = (d.input / maxTokens) * chartH;
                 const outputH = (d.output / maxTokens) * chartH;
                 return (
                   <g key={i}>
                     {/* Input bar */}
                     <rect
-                      x={xPos(i) - barW - 1} y={CHART_PAD.top + chartH - (animated ? inputH : 0)}
+                      x={xPos(i) - barW - gap / 2} y={CHART_PAD.top + chartH - (animated ? inputH : 0)}
                       width={barW} height={animated ? inputH : 0}
-                      fill={inputColor} rx={2}
+                      fill={inputColor} rx={3}
                       style={{ transition: `all 0.6s ease ${i * 0.02}s` }}
                     />
                     {/* Output bar */}
                     <rect
-                      x={xPos(i) + 1} y={CHART_PAD.top + chartH - (animated ? outputH : 0)}
+                      x={xPos(i) + gap / 2} y={CHART_PAD.top + chartH - (animated ? outputH : 0)}
                       width={barW} height={animated ? outputH : 0}
-                      fill={outputColor} rx={2}
+                      fill={outputColor} rx={3}
                       style={{ transition: `all 0.6s ease ${i * 0.02 + 0.1}s` }}
                     />
                   </g>

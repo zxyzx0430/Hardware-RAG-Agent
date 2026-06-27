@@ -75,6 +75,12 @@ class HardwareVectorStore:
                 check_embedding_ctx_length=False,
                 # Limit batch size: Alibaba Cloud Bailian text-embedding-v4 allows max 10 rows per request.
                 chunk_size=10,
+                # P0: Add retry on transient network errors (httpx.ConnectError,
+                # ReadTimeout, etc). Without this, a single transient failure on
+                # a 294-chunk document aborts the entire ingest and marks the
+                # doc as "error" with message "Connection error."
+                max_retries=6,
+                request_timeout=60,
             )
         else:
             self.embeddings = None
@@ -89,6 +95,12 @@ class HardwareVectorStore:
 
         # 初始化 Chroma
         self._db: Optional[Chroma] = None
+
+        # P1: Cache embedding dimension probe result to avoid repeated API
+        # calls. _dim_check_attempted tracks whether we've tried probing (so
+        # a failed probe won't be retried on every import_data call).
+        self._cached_embedding_dim: Optional[int] = None
+        self._dim_check_attempted: bool = False
 
     @property
     def db(self) -> Optional[Chroma]:
@@ -131,7 +143,13 @@ class HardwareVectorStore:
 
     def ingest(self, doc: ProcessedDocument) -> int:
         """
-        将一篇处理好的文档入库 ChromaDB。
+        [DEPRECATED] 将一篇处理好的文档入库 ChromaDB。
+
+        此方法内部用 MarkdownHeaderTextSplitter + RecursiveCharacterTextSplitter
+        (1000/200) 做切分，与新的 ingest_chunks 路径（预切分 ChunkResult）产生
+        不同的分块结果，导致检索不一致。
+
+        新代码应使用 ingest_chunks()。此方法仅保留给 pipeline.py CLI 建库使用。
 
         流程：
           1. Markdown 文件使用 MarkdownHeaderTextSplitter 先按标题切分
@@ -141,6 +159,14 @@ class HardwareVectorStore:
 
         返回入库的 chunk 数量。
         """
+        import warnings
+        warnings.warn(
+            "HardwareVectorStore.ingest() is deprecated; use ingest_chunks() instead. "
+            "The web upload path already uses ingest_chunks(). This legacy path is only "
+            "for pipeline.py CLI.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         if self.embeddings is None:
             logger.warning("未配置 embedding API，跳过入库")
             return 0
@@ -218,7 +244,7 @@ class HardwareVectorStore:
         return len(lc_docs)
 
     def ingest_batch(self, docs: list[ProcessedDocument]) -> int:
-        """批量入库。"""
+        """[DEPRECATED] 批量入库。仅 pipeline.py CLI 使用，新代码应使用 ingest_chunks。"""
         total = 0
         for doc in docs:
             total += self.ingest(doc)
@@ -281,16 +307,20 @@ class HardwareVectorStore:
         }
 
     def delete_document(self, doc_id: str) -> int:
-        """删除指定 doc_id 对应的所有向量，返回删除的 chunk 数量。"""
-        try:
-            collection = self.db.get(where={"doc_id": doc_id})
-            ids_to_delete = collection.get("ids", [])
-            if ids_to_delete:
-                self.db.delete(ids=ids_to_delete)
-            return len(ids_to_delete)
-        except Exception as e:
-            logger.exception(f"删除文档向量失败")
+        """删除指定 doc_id 对应的所有向量，返回删除的 chunk 数量。
+
+        Returns 0 if no vectors exist (e.g. embedding not configured —
+        document was chunked but never vectorized). Raises on actual
+        deletion failures so callers can detect orphan vectors.
+        """
+        if self.db is None:
+            # No ChromaDB instance (embedding not configured) — no vectors to delete.
             return 0
+        collection = self.db.get(where={"doc_id": doc_id})
+        ids_to_delete = collection.get("ids", [])
+        if ids_to_delete:
+            self.db.delete(ids=ids_to_delete)
+        return len(ids_to_delete)
 
     def get_chunks_by_doc(self, doc_id: str) -> list[dict]:
         """Retrieve all chunks for a given doc_id. Returns list of dicts with id, content, metadata."""
@@ -376,7 +406,21 @@ class HardwareVectorStore:
             lc_docs.append(LCDocument(page_content=chunk.text, metadata=metadata))
 
         if lc_docs:
-            self.db.add_documents(lc_docs)
+            # ChromaDB's Rust backend limits batch size to 5461 items per
+            # upsert. Large documents (e.g., AgentChunker on a 200KB doc can
+            # produce 8000+ chunks) hit this limit. Split into sub-batches
+            # of 5000 (safe margin below 5461) and add sequentially.
+            CHROMA_BATCH_LIMIT = 5000
+            if len(lc_docs) <= CHROMA_BATCH_LIMIT:
+                self.db.add_documents(lc_docs)
+            else:
+                total_added = 0
+                for i in range(0, len(lc_docs), CHROMA_BATCH_LIMIT):
+                    batch = lc_docs[i:i + CHROMA_BATCH_LIMIT]
+                    self.db.add_documents(batch)
+                    total_added += len(batch)
+                    logger.info(f"  ChromaDB batch {i // CHROMA_BATCH_LIMIT + 1}: "
+                                f"added {len(batch)} chunks (total: {total_added}/{len(lc_docs)})")
             logger.info(f"入库完成: {doc_id} → {len(lc_docs)} chunks")
 
         return len(lc_docs)
@@ -416,6 +460,10 @@ class HardwareVectorStore:
 
         Returns:
             Number of documents imported.
+
+        Raises:
+            ValueError: If embedding dimensions don't match the current KB's
+                       embedding model (P2-5: prevents silent corruption).
         """
         try:
             collection = self.db._collection
@@ -434,8 +482,41 @@ class HardwareVectorStore:
 
             valid_ids = [ids[i] if i < len(ids) else str(uuid.uuid4()) for i in valid_indices]
             valid_docs = [documents[i] for i in valid_indices]
+            # P0: When embeddings exist but length doesn't match documents, raise
+            # instead of silently dropping embeddings (which would cause ChromaDB
+            # to re-embed or store vectorless docs — silent corruption).
+            if embeddings and len(embeddings) > 0 and len(embeddings) != len(documents):
+                raise ValueError(
+                    f"Embeddings length mismatch: got {len(embeddings)} embeddings "
+                    f"but {len(documents)} documents. Export data may be corrupted."
+                )
             valid_embeddings = [embeddings[i] for i in valid_indices] if embeddings and len(embeddings) == len(documents) else None
             valid_metadatas = [metadatas[i] if i < len(metadatas) else {} for i in valid_indices]
+
+            # P2-5: Validate embedding dimensions match the current KB's model.
+            # If dimensions mismatch, ChromaDB would accept the data but searches
+            # would fail silently (cosine similarity on mismatched vectors = garbage).
+            if valid_embeddings and self.embeddings is not None:
+                expected_dim = self._get_embedding_dimension()
+                if expected_dim is not None:
+                    # P1: Check ALL embeddings, not just the first one — a single
+                    # None or wrong-dimension vector would corrupt the collection.
+                    for idx, emb in enumerate(valid_embeddings):
+                        actual_dim = len(emb) if emb is not None else 0
+                        if actual_dim != expected_dim:
+                            raise ValueError(
+                                f"Embedding dimension mismatch at index {idx}: got {actual_dim}d "
+                                f"but KB '{self.collection_name}' expects {expected_dim}d "
+                                f"(model: {self.embedding_model}). Use the same embedding model "
+                                f"or re-embed the documents."
+                            )
+                else:
+                    # P1: API unavailable — warn but don't block import (fail-open)
+                    logger.warning(
+                        f"[IMPORT] Embedding dimension check skipped (API unavailable) "
+                        f"for KB '{self.collection_name}'. Import may corrupt data if "
+                        f"dimensions don't match model '{self.embedding_model}'."
+                    )
 
             collection.add(
                 ids=valid_ids,
@@ -445,6 +526,41 @@ class HardwareVectorStore:
             )
             logger.info(f"导入完成: {len(valid_docs)} chunks")
             return len(valid_docs)
+        except ValueError:
+            raise  # Re-raise dimension mismatch errors for caller to handle
         except Exception:
             logger.exception("导入 ChromaDB 数据失败")
             return 0
+
+    def _get_embedding_dimension(self) -> Optional[int]:
+        """Get the embedding dimension for the current KB's embedding model.
+
+        Caches the result (including failures) to avoid repeated API calls.
+        Once a probe has been attempted, subsequent calls return the cached
+        value without re-hitting the API — important when the embedding
+        service is down, otherwise every import_data call would block on
+        a failing probe.
+        """
+        if not self.embeddings:
+            return None
+
+        # P1: Return cached result if we've already probed (success or failure).
+        # This avoids re-probing on every import_data call when the API is down.
+        if self._dim_check_attempted:
+            return self._cached_embedding_dim
+
+        try:
+            # Embed a short probe text to determine dimension
+            probe = "dimension check"
+            vec = self.embeddings.embed_query(probe)
+            dim = len(vec) if vec else None
+            self._cached_embedding_dim = dim
+            return dim
+        except Exception:
+            logger.warning(f"Failed to determine embedding dimension for model {self.embedding_model}")
+            return None
+        finally:
+            # P1: Mark probe as attempted regardless of success/failure so we
+            # don't retry on every call. Caller can reset by setting
+            # _dim_check_attempted = False if they want to re-probe.
+            self._dim_check_attempted = True

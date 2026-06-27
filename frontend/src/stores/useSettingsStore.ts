@@ -19,6 +19,7 @@ interface SettingsState {
   temperature: number;
   topK: number;
   maxTokens: number;
+  relevanceThreshold: number; // 0-100, 0=no filtering, 60=default recommended
   systemPrompt: string;
   longTermMemory: string;
   skills: Skill[];
@@ -75,7 +76,7 @@ export function baseUrlByProvider(id: string) {
 // 需要持久化的字段
 const PERSIST_KEYS: (keyof SettingsState)[] = [
   "activeProvider", "providerKeys", "model", "visionModel", "imageModel",
-  "temperature", "topK", "maxTokens", "systemPrompt", "longTermMemory",
+  "temperature", "topK", "maxTokens", "relevanceThreshold", "systemPrompt", "longTermMemory",
   "skills", "mcpServers", "toolKeys", "chatFontSize", "themeMode", "lang", "baseUrls",
   "embeddingDefaultModel", "embeddingDefaultBaseUrl", "embeddingDefaultApiKey",
   "agentChunkerDefaultModel", "agentChunkerDefaultBaseUrl", "agentChunkerDefaultApiKey",
@@ -96,6 +97,7 @@ const DEFAULTS = {
   temperature: 0.2,
   topK: 5,
   maxTokens: 8192,
+  relevanceThreshold: 0,
   systemPrompt: "",
   longTermMemory: "",
   skills: [

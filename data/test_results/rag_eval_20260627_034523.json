@@ -1,0 +1,1842 @@
+{
+  "timestamp": "20260627_034523",
+  "model": "oc/deepseek-v4-flash",
+  "total_questions": 10,
+  "weights": {
+    "recall": 30,
+    "answer_coverage": 25,
+    "chunk_completeness": 25,
+    "chunk_boundary": 10,
+    "cross_section": 10
+  },
+  "strategies": [
+    {
+      "name": "hybrid-500",
+      "description": "HybridChunker, small_chunk_size=500 (old default, prone to truncation)",
+      "chunk_method": "hybrid",
+      "kb_id": "kb-3860e650",
+      "total_score": 892.8571428571429,
+      "max_score": 1000,
+      "dimension_scores": {
+        "recall": 300.0,
+        "answer_coverage": 242.85714285714286,
+        "chunk_completeness": 250.0,
+        "chunk_boundary": 0,
+        "cross_section": 100.0
+      },
+      "question_results": [
+        {
+          "question_id": "Q1",
+          "question": "STM32 的 GPIO 引脚可以配置为哪四种工作模式？每种模式对应的寄存器值是什么？",
+          "target_doc": "01-stm32-gpio.md",
+          "difficulty": "简单",
+          "scores": {
+            "recall": {
+              "score": 30.0,
+              "max": 30,
+              "detail": "Hit target doc: 01-stm32-gpio.md"
+            },
+            "answer_coverage": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "Covered 9/9 keyword groups"
+            },
+            "chunk_completeness": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "✓ Group ['输入模式', '输出模式', '复用功能', '模拟模式'] found in same chunk"
+            },
+            "chunk_boundary": {
+              "score": 0,
+              "max": 10,
+              "detail": "144 boundary issues: chunk#10: table starts but line 2 is not separator; chunk#24: ends mid-sentence (last char='辑'); chunk#30: ends mid-sentence (last char='射')"
+            },
+            "cross_section": {
+              "score": 10.0,
+              "max": 10,
+              "detail": "✓ 输入模式+MODER in same chunk#13"
+            }
+          },
+          "total_score": 90.0,
+          "max_score": 100,
+          "answer_preview": "根据知识库文档《STM32 GPIO 详解：从寄存器到工程实践》第2节，STM32 GPIO 的四种主要工作模式由 **MODER** 寄存器的 2 位字段决定。具体编码与对应模式如下：\n\n| 模式（大类） | MODER[1:0] | 细分模式说明 |\n|-------------|------------|--------------|\n| 输入模式    | `00`       | 浮空输入、上拉输入、下拉输入 |\n| 输出模式    | `01`       | 推挽输出、开漏输出 |\n| 复用功能    | `10`       | 推挽复用、开漏复用 |\n| 模拟模式    | `11`       | 模拟输入（ADC）/ 模拟输出（DAC） |\n\n实际配置时，只需将 MODER 对应引脚的两位置为上述值即可。复位后所有 GPIO 默认为 `00`（输入模式，无上下拉）。其他细节（如输出速度、上下拉电阻、输出类型）由 OSPEEDR、PUPDR、OTYPER 等寄存器进一步配置。\n\n（参考来源：知识库 `01-stm32-gpio.md`，章节“2. GPIO 工作模式",
+          "sources_count": 5,
+          "source_titles": [
+            "01-stm32-gpio.md",
+            "01-stm32-gpio.md",
+            "01-stm32-gpio.md",
+            "01-stm32-gpio.md",
+            "01-stm32-gpio.md"
+          ]
+        },
+        {
+          "question_id": "Q2",
+          "question": "STM32 GPIO 的输出速度有哪几个等级？在什么场景下应该选择不同的速度？",
+          "target_doc": "01-stm32-gpio.md",
+          "difficulty": "简单",
+          "scores": {
+            "recall": {
+              "score": 30.0,
+              "max": 30,
+              "detail": "Hit target doc: 01-stm32-gpio.md"
+            },
+            "answer_coverage": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "Covered 6/6 keyword groups"
+            },
+            "chunk_completeness": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "✓ Group ['OSPEEDR', '低速', '高速'] found in same chunk"
+            },
+            "chunk_boundary": {
+              "score": 0,
+              "max": 10,
+              "detail": "145 boundary issues: chunk#3: ends mid-sentence (last char='珠'); chunk#10: table starts but line 2 is not separator; chunk#24: ends mid-sentence (last char='辑')"
+            },
+            "cross_section": {
+              "score": 10.0,
+              "max": 10,
+              "detail": "No cross-section keywords defined"
+            }
+          },
+          "total_score": 90.0,
+          "max_score": 100,
+          "answer_preview": "STM32 GPIO 的输出速度由 **OSPEEDR 寄存器** 的每引脚 2 位控制，分为四个等级（以 STM32F4 系列为例）：  \n\n| OSPEEDR[1:0] | 速度等级 | 典型最大翻转频率（F4系列） |\n|--------------|----------|--------------------------|\n| 00           | 低速     | 2 MHz                    |\n| 01           | 中速     | 25 MHz                   |\n| 10           | 高速     | 50 MHz                   |\n| 11           | 极速     | 100 MHz                  |\n\n不同系列（如 H7、L4）的具体值略有差异，但等级划分模式相同[来源: 3.1 OSPEEDR 寄存器]。\n\n### 场景选择原则：**选择最低能满足时序要求的速度等级**\n\n- **低速（2 MHz）**  \n  适用：LED 指示灯、",
+          "sources_count": 5,
+          "source_titles": [
+            "01-stm32-gpio.md",
+            "01-stm32-gpio.md",
+            "01-stm32-gpio.md",
+            "01-stm32-gpio.md",
+            "01-stm32-gpio.md"
+          ]
+        },
+        {
+          "question_id": "Q3",
+          "question": "ESP32 的 Station 模式连接 Wi-Fi 超时怎么办？重连策略应该怎么设计？",
+          "target_doc": "02-esp32-wifi.md",
+          "difficulty": "中等",
+          "scores": {
+            "recall": {
+              "score": 30.0,
+              "max": 30,
+              "detail": "Hit target doc: 02-esp32-wifi.md"
+            },
+            "answer_coverage": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "Covered 6/6 keyword groups"
+            },
+            "chunk_completeness": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "✓ Group ['指数退避', '重连', '重试'] found in same chunk"
+            },
+            "chunk_boundary": {
+              "score": 0,
+              "max": 10,
+              "detail": "144 boundary issues: chunk#10: table starts but line 2 is not separator; chunk#24: ends mid-sentence (last char='辑'); chunk#30: ends mid-sentence (last char='射')"
+            },
+            "cross_section": {
+              "score": 10.0,
+              "max": 10,
+              "detail": "No cross-section keywords defined"
+            }
+          },
+          "total_score": 90.0,
+          "max_score": 100,
+          "answer_preview": "## ESP32 Station 模式连接超时与重连策略设计\n\n连接 Wi‑Fi 超时通常有两种情况：\n1. **初始连接超时**：调用 `esp_wifi_connect()` 后长时间未收到 `WIFI_EVENT_STA_CONNECTED` 事件。\n2. **运行中连接断开后重连超时**：已连接的 STA 断开，触发自动重连但反复失败。\n\n下面从**超时处理**和**重连策略**两方面给出设计方法，并引用知识库中的关键结论。\n\n---\n\n### 一、连接超时的常见原因\n\n- AP 不在范围内或信号弱\n- 密码错误（`REASON_AUTH_FAIL`）\n- Wi‑Fi 信道扫描耗时过长（尤其 5 GHz 频段）\n- AP 端 DHCP 分配延迟或 IP 获取失败\n- ESP32 处于 **MAX_MODEM** 省电模式，AP 不支持长时间的 STA 睡眠（参考 FAQ Q6）\n\n---\n\n### 二、超时检测的实现方法\n\nESP‑IDF 未内置连接超时定时器，推荐在调用 `esp_wifi_connect()` 后启动一个**软件定时器**（或使用 `vTaskDelay` ",
+          "sources_count": 5,
+          "source_titles": [
+            "02-esp32-wifi.md",
+            "02-esp32-wifi.md",
+            "02-esp32-wifi.md",
+            "02-esp32-wifi.md",
+            "02-esp32-wifi.md"
+          ]
+        },
+        {
+          "question_id": "Q4",
+          "question": "ESP32 的三种 Wi-Fi 省电模式有什么区别？如果应用需要低延迟 TCP 通信应该用哪种？",
+          "target_doc": "02-esp32-wifi.md",
+          "difficulty": "中等",
+          "scores": {
+            "recall": {
+              "score": 30.0,
+              "max": 30,
+              "detail": "Hit target doc: 02-esp32-wifi.md"
+            },
+            "answer_coverage": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "Covered 6/6 keyword groups"
+            },
+            "chunk_completeness": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "✓ Group ['WIFI_PS_NONE', 'WIFI_PS_MIN_MODEM'] found in same chunk"
+            },
+            "chunk_boundary": {
+              "score": 0,
+              "max": 10,
+              "detail": "145 boundary issues: chunk#3: ends mid-sentence (last char='信'); chunk#10: table starts but line 2 is not separator; chunk#24: ends mid-sentence (last char='辑')"
+            },
+            "cross_section": {
+              "score": 10.0,
+              "max": 10,
+              "detail": "✓ WIFI_PS_NONE+延迟 in same chunk#18"
+            }
+          },
+          "total_score": 90.0,
+          "max_score": 100,
+          "answer_preview": "### 三种 Wi-Fi 省电模式的区别\n\nESP32 提供三种 Wi-Fi 省电模式，主要区别在于 Modem（射频）的唤醒策略，直接影响功耗、通信延迟以及 TCP 连接的可靠性。以下表格总结了关键差异（[来源: eval_hybrid-500_20260627_034523 / 02-esp32-wifi.md / 3.1 三种省电模式总览]）：\n\n| 模式 | 平均功耗 | 接收延迟 | TCP 适用性 | 典型场景 |\n|------|----------|----------|------------|----------|\n| **WIFI_PS_NONE** | 80~120 mA | < 2 ms（最低） | **最佳** | 持续流媒体、低延迟控制 |\n| **WIFI_PS_MIN_MODEM** | 20~40 mA | < 50 ms（中等） | 良好 | 间歇数据上报、IoT 常规应用 |\n| **WIFI_PS_MAX_MODEM** | 5~15 mA | 100~500 ms（高） | 一般（需心跳保活） | 深度省电、低频传感器 |\n\n- **WIFI",
+          "sources_count": 5,
+          "source_titles": [
+            "02-esp32-wifi.md",
+            "02-esp32-wifi.md",
+            "03-i2c-protocol.md",
+            "02-esp32-wifi.md",
+            "02-esp32-wifi.md"
+          ]
+        },
+        {
+          "question_id": "Q5",
+          "question": "I2C 多主机通信时如何仲裁？仲裁失败的从机应该做什么？",
+          "target_doc": "03-i2c-protocol.md",
+          "difficulty": "中等",
+          "scores": {
+            "recall": {
+              "score": 30.0,
+              "max": 30,
+              "detail": "Hit target doc: 03-i2c-protocol.md"
+            },
+            "answer_coverage": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "Covered 5/5 keyword groups"
+            },
+            "chunk_completeness": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "✓ Group ['仲裁', 'SDA', '释放'] found in same chunk"
+            },
+            "chunk_boundary": {
+              "score": 0,
+              "max": 10,
+              "detail": "144 boundary issues: chunk#10: table starts but line 2 is not separator; chunk#24: ends mid-sentence (last char='辑'); chunk#30: ends mid-sentence (last char='射')"
+            },
+            "cross_section": {
+              "score": 10.0,
+              "max": 10,
+              "detail": "✓ 仲裁+释放 in same chunk#36"
+            }
+          },
+          "total_score": 90.0,
+          "max_score": 100,
+          "answer_preview": "根据 I2C 协议与知识库文档，多主机仲裁机制完全依赖硬件实现，仲裁失败的是**主机**（而非从机），失败后会自动切换为从机监听状态。以下分两部分说明：仲裁如何完成、失败后如何处理。\n\n---\n\n### 1. I2C 多主机仲裁如何工作\n\n多主机总线中，所有主机共享 SCL/SDA 开漏线，仲裁基于 **线与（Wired-AND）** 逻辑和**时钟同步**自动完成，无需软件干预。\n\n#### 时钟同步（Clock Synchronization）\nSCL 实际电平由所有主机共同决定：\n- **低电平时间** = 所有主机中`tLOW`最长的值\n- **高电平时间** = 所有主机中`tHIGH`最短的值  \n  结果总线频率自动等于最慢主机的频率，这是仲裁的前提。  \n  [来源: eval_hybrid-500_20260627_034523 / 03-i2c-protocol.md / I2C 总线协议详解与实践 > 5.2 时钟同步]\n\n#### 数据仲裁（Data Arbitration）\n仲裁在 SDA 上逐位进行：\n- 每个主机在发送数据位（包括地址位）时，都会在 SCL",
+          "sources_count": 5,
+          "source_titles": [
+            "03-i2c-protocol.md",
+            "03-i2c-protocol.md",
+            "03-i2c-protocol.md",
+            "03-i2c-protocol.md",
+            "03-i2c-protocol.md"
+          ]
+        },
+        {
+          "question_id": "Q6",
+          "question": "从机时钟拉伸导致 I2C 通信阻塞时，主机应该怎么检测和处理？超时时间一般设为多少？",
+          "target_doc": "03-i2c-protocol.md",
+          "difficulty": "难",
+          "scores": {
+            "recall": {
+              "score": 30.0,
+              "max": 30,
+              "detail": "Hit target doc: 03-i2c-protocol.md"
+            },
+            "answer_coverage": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "Covered 5/5 keyword groups"
+            },
+            "chunk_completeness": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "✓ Group ['时钟拉伸', '超时', '100'] found in same chunk"
+            },
+            "chunk_boundary": {
+              "score": 0,
+              "max": 10,
+              "detail": "144 boundary issues: chunk#10: table starts but line 2 is not separator; chunk#24: ends mid-sentence (last char='辑'); chunk#30: ends mid-sentence (last char='射')"
+            },
+            "cross_section": {
+              "score": 10.0,
+              "max": 10,
+              "detail": "✓ 时钟拉伸+超时 in same chunk#47"
+            }
+          },
+          "total_score": 90.0,
+          "max_score": 100,
+          "answer_preview": "针对 I2C 从机时钟拉伸导致主机阻塞的问题，主机需要实现**超时检测机制**，在 SCL 被异常拉低超过合理时间后主动恢复总线。以下是具体方案和参数建议。\n\n---\n\n## 1. 检测方法：超时监测 SCL 电平\n\n主机在每次传输位（尤其是 ACK/NACK 位后）会释放 SCL，此时检测 SCL 是否被从机拉低（时钟拉伸）。  \n若 SCL 低电平持续时间超过设定的超时阈值，则判定为超时异常。\n\n**实现方式**（以 STM32 HAL 库为例）：\n- 使用 `HAL_I2C_Master_Transmit()` 等函数的最后一个参数 `Timeout`，传入固定超时值（如 100ms）。\n- 底层硬件 I2C 外设通常会检测 SCL 被拉低并等待，若超时则返回 `HAL_TIMEOUT`。\n- 也可用定时器配合 GPIO 中断轮询 SCL 状态，但一般不推荐（增加复杂度）。\n\n**参考资料**：  \n（来源：6.3 超时检测的必要性。主机必须实现超时检测，在 SCL 被拉伸超过合理时间后主动恢复总线。）\n\n---\n\n## 2. 超时后处理步骤\n\n超时发生后，仅仅返回错误码不够，必",
+          "sources_count": 5,
+          "source_titles": [
+            "03-i2c-protocol.md",
+            "03-i2c-protocol.md",
+            "03-i2c-protocol.md",
+            "03-i2c-protocol.md",
+            "03-i2c-protocol.md"
+          ]
+        },
+        {
+          "question_id": "Q7",
+          "question": "Cortex-M3 的 NVIC 优先级分组如何配置？如果 USART1 抢占优先级为 1、TIM2 抢占优先级为 2，当中断同时到达时谁先执行？",
+          "target_doc": "04-cortexm-interrupt.md",
+          "difficulty": "难",
+          "scores": {
+            "recall": {
+              "score": 30.0,
+              "max": 30,
+              "detail": "Hit target doc: 04-cortexm-interrupt.md"
+            },
+            "answer_coverage": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "Covered 8/8 keyword groups"
+            },
+            "chunk_completeness": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "✓ Group ['PRIGROUP', '抢占优先级', '子优先级'] found in same chunk"
+            },
+            "chunk_boundary": {
+              "score": 0,
+              "max": 10,
+              "detail": "144 boundary issues: chunk#10: table starts but line 2 is not separator; chunk#24: ends mid-sentence (last char='辑'); chunk#30: ends mid-sentence (last char='射')"
+            },
+            "cross_section": {
+              "score": 10.0,
+              "max": 10,
+              "detail": "No cross-section keywords defined"
+            }
+          },
+          "total_score": 90.0,
+          "max_score": 100,
+          "answer_preview": "### 1. NVIC 优先级分组配置方法\n\nCortex-M3 的优先级分组通过 **SCB->AIRCR** 寄存器的 `PRIGROUP` 位（bit[10:8]）设置，将 8 位优先级（实际芯片可能只实现高几位）划分为**抢占优先级**和**子优先级**两部分。STM32 的 HAL 库已封装该操作：\n\n```c\n// 设置分组为 4 位抢占 + 0 位子优先级（即 16 级抢占，无子优先级）\nHAL_NVIC_SetPriorityGrouping(NVIC_PRIORITYGROUP_4);\n\n// 然后为每个中断分别设置抢占优先级和子优先级\nHAL_NVIC_SetPriority(USART1_IRQn, 1, 0);   // 抢占=1, 子=0\nHAL_NVIC_SetPriority(TIM2_IRQn,   2, 0);   // 抢占=2, 子=0\n```\n\n若直接操作寄存器，写入方式为：\n\n```c\nSCB->AIRCR = (0x5FA << 16) | (0x400);   // PRIGROUP=4, 即 NVIC_PRIORITYGROUP_4\n``",
+          "sources_count": 5,
+          "source_titles": [
+            "04-cortexm-interrupt.md",
+            "04-cortexm-interrupt.md",
+            "04-cortexm-interrupt.md",
+            "04-cortexm-interrupt.md",
+            "04-cortexm-interrupt.md"
+          ]
+        },
+        {
+          "question_id": "Q8",
+          "question": "Cortex-M4 的中断延迟是多少个时钟周期？尾链（Tail-Chaining）和迟来（Late-Arrival）技术分别如何降低延迟？",
+          "target_doc": "04-cortexm-interrupt.md",
+          "difficulty": "难",
+          "scores": {
+            "recall": {
+              "score": 30.0,
+              "max": 30,
+              "detail": "Hit target doc: 04-cortexm-interrupt.md"
+            },
+            "answer_coverage": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "Covered 4/4 keyword groups"
+            },
+            "chunk_completeness": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "✓ Group ['12', '尾链', '迟来'] found in same chunk"
+            },
+            "chunk_boundary": {
+              "score": 0,
+              "max": 10,
+              "detail": "144 boundary issues: chunk#10: table starts but line 2 is not separator; chunk#24: ends mid-sentence (last char='辑'); chunk#30: ends mid-sentence (last char='射')"
+            },
+            "cross_section": {
+              "score": 10.0,
+              "max": 10,
+              "detail": "No cross-section keywords defined"
+            }
+          },
+          "total_score": 90.0,
+          "max_score": 100,
+          "answer_preview": "Cortex-M4 的中断延迟典型值为 **12 个时钟周期**（未使用 FPU 时），若 FPU 启用且需自动保存浮点上下文，则延迟为 **28 个时钟周期**[来源: `3.8 中断延迟测量基准`]。\n\n以下分别说明尾链与迟来两种硬件优化如何降低延迟：\n\n---\n\n### 1. 尾链（Tail-Chaining）\n\n尾链机制在**当前 ISR 返回时**生效。若 NVIC 中已有挂起的中断，硬件会**跳过出栈和再次入栈的步骤**，直接取向量并跳转到下一个 ISR，从而省去 8 个寄存器的出栈 + 8 个寄存器的入栈（共 16 次内存访问）[来源: `3.4 尾链（Tail-Chaining）机制`]。\n\n| 流程对比 | 延迟（cycles） |\n|----------|----------------|\n| **无尾链**：ISR1 执行完 → 出栈（8 寄存器）→ 取向量 → 压栈（8 寄存器）→ ISR2 | ~18 cycles |\n| **有尾链**：ISR1 执行完 → 取向量 → ISR2（复用已压栈的栈帧） | **6 cycles** |\n\n尾链在多个中断密集发生",
+          "sources_count": 5,
+          "source_titles": [
+            "04-cortexm-interrupt.md",
+            "04-cortexm-interrupt.md",
+            "04-cortexm-interrupt.md",
+            "04-cortexm-interrupt.md",
+            "04-cortexm-interrupt.md"
+          ]
+        },
+        {
+          "question_id": "Q9",
+          "question": "STM32 UART 使用 DMA 传输时需要注意哪些问题？接收缓冲区的循环模式怎么防止数据覆盖？",
+          "target_doc": "05-uart-serial.md",
+          "difficulty": "中等",
+          "scores": {
+            "recall": {
+              "score": 30.0,
+              "max": 30,
+              "detail": "Hit target doc: 05-uart-serial.md"
+            },
+            "answer_coverage": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "Covered 6/6 keyword groups"
+            },
+            "chunk_completeness": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "✓ Group ['DMA', '循环模式', '半传输'] found in same chunk"
+            },
+            "chunk_boundary": {
+              "score": 0,
+              "max": 10,
+              "detail": "144 boundary issues: chunk#10: table starts but line 2 is not separator; chunk#24: ends mid-sentence (last char='辑'); chunk#30: ends mid-sentence (last char='射')"
+            },
+            "cross_section": {
+              "score": 10.0,
+              "max": 10,
+              "detail": "No cross-section keywords defined"
+            }
+          },
+          "total_score": 90.0,
+          "max_score": 100,
+          "answer_preview": "### STM32 UART 使用 DMA 传输的注意事项\n\n使用 UART + DMA 时，需要特别关注**启动时序**、**缓冲区设计**和**中断处理策略**，否则容易遇到首字节丢失、数据覆盖或通信不稳定等问题。\n\n---\n\n#### 1. 启动前必须清除 UART 残留数据（解决首字节丢失）\nDMA 启动时，USART_DR 中若存在上次传输的残留数据，会导致第一个有效字节被吞掉。**每次启动 DMA 接收前执行以下操作**（来源：H.1 案例）：\n```c\nvoid UART_DMA_Start_Clean(void)\n{\n    __HAL_UART_DISABLE(&huart1);       // 1. 关闭 UART\n    (void)USART1->DR;                  // 2. 读取 DR 清除残留\n    __HAL_UART_CLEAR_OREFLAG(&huart1); // 3. 清除溢出标志\n    __HAL_UART_ENABLE(&huart1);        // 4. 重新使能\n    HAL_UART_Receiv",
+          "sources_count": 5,
+          "source_titles": [
+            "05-uart-serial.md",
+            "05-uart-serial.md",
+            "03-i2c-protocol.md",
+            "05-uart-serial.md",
+            "05-uart-serial.md"
+          ]
+        },
+        {
+          "question_id": "Q10",
+          "question": "UART 通信中出现随机错误位，可能是什么原因？怎么排查和解决？",
+          "target_doc": "05-uart-serial.md",
+          "difficulty": "简单",
+          "scores": {
+            "recall": {
+              "score": 30.0,
+              "max": 30,
+              "detail": "Hit target doc: 05-uart-serial.md"
+            },
+            "answer_coverage": {
+              "score": 17.857142857142858,
+              "max": 25,
+              "detail": "Covered 5/7 keyword groups. Missed: RS-232, TTL"
+            },
+            "chunk_completeness": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "✓ Group ['噪声', '屏蔽', '波特率'] found in same chunk"
+            },
+            "chunk_boundary": {
+              "score": 0,
+              "max": 10,
+              "detail": "144 boundary issues: chunk#10: table starts but line 2 is not separator; chunk#24: ends mid-sentence (last char='辑'); chunk#30: ends mid-sentence (last char='射')"
+            },
+            "cross_section": {
+              "score": 10.0,
+              "max": 10,
+              "detail": "✓ 噪声+屏蔽 in same chunk#101"
+            }
+          },
+          "total_score": 82.85714285714286,
+          "max_score": 100,
+          "answer_preview": "### UART 通信中出现随机错误位的原因、排查与解决\n\n随机错误位（即偶发性的数据位出错）在 UART 通信中通常由**噪声干扰**引起，但也可能涉及波特率偏差、信号完整性或电源问题。根据知识库文档[来源: eval_hybrid-500_20260627_034523 / 05-uart-serial.md / UART 串行通信详解与实践指南 > 9. UART 噪声干扰排查]以及[9.5 故障排查表]，以下是系统的分析和建议。\n\n---\n\n## 一、可能原因\n\n| 原因类别 | 具体原因 | 说明 |\n|----------|----------|------|\n| **噪声干扰** | 信号线过长 / 无屏蔽 | 长线容易耦合环境噪声（如电机、开关电源） |\n| | 振铃（过冲/下冲） | 阻抗不匹配导致信号反射，产生毛刺 |\n| | 电磁干扰（EMI） | 电机启动、继电器切换等产生强干扰 |\n| **电源问题** | 电源噪声耦合到信号线 | 电源纹波大或地线压差大 |\n| | 接地环路（多板共地） | 不同设备间GND电位差引起共模干扰 |\n| **配置问题** | ",
+          "sources_count": 5,
+          "source_titles": [
+            "01-stm32-gpio.md",
+            "05-uart-serial.md",
+            "01-stm32-gpio.md",
+            "05-uart-serial.md",
+            "05-uart-serial.md"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "hybrid-800",
+      "description": "HybridChunker, small_chunk_size=800 (current default)",
+      "chunk_method": "hybrid",
+      "kb_id": "kb-b01c8b92",
+      "total_score": 859.2857142857142,
+      "max_score": 1000,
+      "dimension_scores": {
+        "recall": 300.0,
+        "answer_coverage": 209.28571428571428,
+        "chunk_completeness": 250.0,
+        "chunk_boundary": 0,
+        "cross_section": 100.0
+      },
+      "question_results": [
+        {
+          "question_id": "Q1",
+          "question": "STM32 的 GPIO 引脚可以配置为哪四种工作模式？每种模式对应的寄存器值是什么？",
+          "target_doc": "01-stm32-gpio.md",
+          "difficulty": "简单",
+          "scores": {
+            "recall": {
+              "score": 30.0,
+              "max": 30,
+              "detail": "Hit target doc: 01-stm32-gpio.md"
+            },
+            "answer_coverage": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "Covered 9/9 keyword groups"
+            },
+            "chunk_completeness": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "✓ Group ['输入模式', '输出模式', '复用功能', '模拟模式'] found in same chunk"
+            },
+            "chunk_boundary": {
+              "score": 0,
+              "max": 10,
+              "detail": "80 boundary issues: chunk#16: ends mid-sentence (last char='辑'); chunk#22: ends mid-sentence (last char='射'); chunk#24: ends mid-sentence (last char='珠')"
+            },
+            "cross_section": {
+              "score": 10.0,
+              "max": 10,
+              "detail": "✓ 输入模式+MODER in same chunk#7"
+            }
+          },
+          "total_score": 90.0,
+          "max_score": 100,
+          "answer_preview": "STM32 的 GPIO 引脚通过 **MODER** 寄存器的每 2 位来控制四种工作模式。根据知识库资料，模式与寄存器值的对应关系如下：\n\n| MODER[1:0] | 模式名称 | 典型用途 | 对应寄存器值 |\n|------------|----------|----------|--------------|\n| 00         | 输入模式 | 按键、外部信号检测 | `0x00` (GPIO_MODE_INPUT) |\n| 01         | 输出模式 | LED 驱动、GPIO 控制 | `0x01` (GPIO_MODE_OUTPUT) |\n| 10         | 复用功能 | UART/SPI/I2C 等外设引脚 | `0x02` (GPIO_MODE_AF) |\n| 11         | 模拟模式 | ADC 采集、DAC 输出 | `0x03` (GPIO_MODE_ANALOG) |\n\n*（来源：知识库「STM32 GPIO 详解：从寄存器到工程实践」中 GPIO 工作模式详解及 MODER 寄存器位域速查章节）*\n\n---\n\n### ",
+          "sources_count": 5,
+          "source_titles": [
+            "01-stm32-gpio.md",
+            "01-stm32-gpio.md",
+            "01-stm32-gpio.md",
+            "01-stm32-gpio.md",
+            "01-stm32-gpio.md"
+          ]
+        },
+        {
+          "question_id": "Q2",
+          "question": "STM32 GPIO 的输出速度有哪几个等级？在什么场景下应该选择不同的速度？",
+          "target_doc": "01-stm32-gpio.md",
+          "difficulty": "简单",
+          "scores": {
+            "recall": {
+              "score": 30.0,
+              "max": 30,
+              "detail": "Hit target doc: 01-stm32-gpio.md"
+            },
+            "answer_coverage": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "Covered 6/6 keyword groups"
+            },
+            "chunk_completeness": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "✓ Group ['OSPEEDR', '低速', '高速'] found in same chunk"
+            },
+            "chunk_boundary": {
+              "score": 0,
+              "max": 10,
+              "detail": "81 boundary issues: chunk#3: ends mid-sentence (last char='珠'); chunk#16: ends mid-sentence (last char='辑'); chunk#22: ends mid-sentence (last char='射')"
+            },
+            "cross_section": {
+              "score": 10.0,
+              "max": 10,
+              "detail": "No cross-section keywords defined"
+            }
+          },
+          "total_score": 90.0,
+          "max_score": 100,
+          "answer_preview": "STM32 GPIO 的输出速度通过 **OSPEEDR** 寄存器（Port Output Speed Register）配置，每个引脚占用 2 位，共 4 个等级。以 **STM32F4 系列** 为例（不同系列数值略有差异，但等级划分一致）[来源: eval_hybrid-800_20260627_034523 / 01-stm32-gpio.md / STM32 GPIO 详解：从寄存器到工程实践 > 3.1 OSPEEDR 寄存器]：\n\n| OSPEEDR 值 | 速度等级 | STM32F4 最大翻转频率 |\n|-----------|---------|-----------------|\n| 00        | 低速    | 2 MHz |\n| 01        | 中速    | 25 MHz |\n| 10        | 高速    | 50 MHz |\n| 11        | 极速    | 100 MHz |\n\n> 对于 STM32H7 系列，各等级对应频率更高（低速 8 MHz、中速 28 MHz、高速 70 MHz、极速 120 MHz）；ST",
+          "sources_count": 5,
+          "source_titles": [
+            "01-stm32-gpio.md",
+            "01-stm32-gpio.md",
+            "01-stm32-gpio.md",
+            "01-stm32-gpio.md",
+            "01-stm32-gpio.md"
+          ]
+        },
+        {
+          "question_id": "Q3",
+          "question": "ESP32 的 Station 模式连接 Wi-Fi 超时怎么办？重连策略应该怎么设计？",
+          "target_doc": "02-esp32-wifi.md",
+          "difficulty": "中等",
+          "scores": {
+            "recall": {
+              "score": 30.0,
+              "max": 30,
+              "detail": "Hit target doc: 02-esp32-wifi.md"
+            },
+            "answer_coverage": {
+              "score": 0.0,
+              "max": 25,
+              "detail": "Empty answer"
+            },
+            "chunk_completeness": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "✓ Group ['指数退避', '重连', '重试'] found in same chunk"
+            },
+            "chunk_boundary": {
+              "score": 0,
+              "max": 10,
+              "detail": "81 boundary issues: chunk#0: ends mid-sentence (last char='换'); chunk#16: ends mid-sentence (last char='辑'); chunk#22: ends mid-sentence (last char='射')"
+            },
+            "cross_section": {
+              "score": 10.0,
+              "max": 10,
+              "detail": "No cross-section keywords defined"
+            }
+          },
+          "total_score": 65.0,
+          "max_score": 100,
+          "answer_preview": "(empty)",
+          "sources_count": 5,
+          "source_titles": [
+            "02-esp32-wifi.md",
+            "02-esp32-wifi.md",
+            "02-esp32-wifi.md",
+            "02-esp32-wifi.md",
+            "02-esp32-wifi.md"
+          ]
+        },
+        {
+          "question_id": "Q4",
+          "question": "ESP32 的三种 Wi-Fi 省电模式有什么区别？如果应用需要低延迟 TCP 通信应该用哪种？",
+          "target_doc": "02-esp32-wifi.md",
+          "difficulty": "中等",
+          "scores": {
+            "recall": {
+              "score": 30.0,
+              "max": 30,
+              "detail": "Hit target doc: 02-esp32-wifi.md"
+            },
+            "answer_coverage": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "Covered 6/6 keyword groups"
+            },
+            "chunk_completeness": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "✓ Group ['WIFI_PS_NONE', 'WIFI_PS_MIN_MODEM'] found in same chunk"
+            },
+            "chunk_boundary": {
+              "score": 0,
+              "max": 10,
+              "detail": "80 boundary issues: chunk#16: ends mid-sentence (last char='辑'); chunk#22: ends mid-sentence (last char='射'); chunk#24: ends mid-sentence (last char='珠')"
+            },
+            "cross_section": {
+              "score": 10.0,
+              "max": 10,
+              "detail": "✓ WIFI_PS_NONE+延迟 in same chunk#16"
+            }
+          },
+          "total_score": 90.0,
+          "max_score": 100,
+          "answer_preview": "根据 ESP32 WiFi 开发指南（见文末参考文档），ESP32 的三种 Wi‑Fi 省电模式在功耗、延迟和 TCP 适用性上有明确区别，以下是核心对比：\n\n| 模式 | 平均功耗 | 接收延迟 | TCP 适用性 | 典型场景 |\n|------|----------|----------|------------|----------|\n| WIFI_PS_NONE | 80~120 mA | < 2 ms | 最佳 | 持续数据流、低延迟控制 |\n| WIFI_PS_MIN_MODEM | 20~40 mA | < 50 ms | 良好 | 间歇数据、IoT 上报 |\n| WIFI_PS_MAX_MODEM | 5~15 mA | 100~500 ms | 一般（需保活） | 电池供电、低频率上报 |\n\n表格内容来源于知识库 **[来源: 3.1 三种省电模式总览]**。\n\n---\n\n### 低延迟 TCP 通信的推荐模式\n\n对于需要低延迟的 TCP 通信，**应使用 WIFI_PS_NONE（无省电模式）**。\n\n- 该模式下 Modem 始终保持唤醒，接收延迟最低（<2 m",
+          "sources_count": 5,
+          "source_titles": [
+            "02-esp32-wifi.md",
+            "02-esp32-wifi.md",
+            "03-i2c-protocol.md",
+            "02-esp32-wifi.md",
+            "02-esp32-wifi.md"
+          ]
+        },
+        {
+          "question_id": "Q5",
+          "question": "I2C 多主机通信时如何仲裁？仲裁失败的从机应该做什么？",
+          "target_doc": "03-i2c-protocol.md",
+          "difficulty": "中等",
+          "scores": {
+            "recall": {
+              "score": 30.0,
+              "max": 30,
+              "detail": "Hit target doc: 03-i2c-protocol.md"
+            },
+            "answer_coverage": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "Covered 5/5 keyword groups"
+            },
+            "chunk_completeness": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "✓ Group ['仲裁', 'SDA', '释放'] found in same chunk"
+            },
+            "chunk_boundary": {
+              "score": 0,
+              "max": 10,
+              "detail": "80 boundary issues: chunk#16: ends mid-sentence (last char='辑'); chunk#22: ends mid-sentence (last char='射'); chunk#24: ends mid-sentence (last char='珠')"
+            },
+            "cross_section": {
+              "score": 10.0,
+              "max": 10,
+              "detail": "✓ 仲裁+释放 in same chunk#26"
+            }
+          },
+          "total_score": 90.0,
+          "max_score": 100,
+          "answer_preview": "### I2C 多主机通信仲裁机制\n\nI2C 总线通过**线与（Wired-AND）**特性实现多主机仲裁，无需中央仲裁器。仲裁在时钟同步基础上，于 SDA 线上逐位进行比较，完全由硬件自动完成。\n\n**1. 时钟同步**  \n多个主机同时驱动 SCL 时，SCL 实际低电平时间为最长的 tLOW，高电平时间为最短的 tHIGH，最终总线频率由最慢主机决定 (来源: 03-i2c-protocol.md / 5.2 时钟同步)。\n\n**2. 数据位仲裁**  \n- 每个主机在 SCL 高电平期间采样 SDA 电平。若某主机输出高电平但检测到 SDA 为低（另一主机拉低），则判定**仲裁丢失**，立即停止驱动 SDA 并释放总线。  \n- 仲裁可以在地址位或数据位进行，但仅适用于主机**发送（写）**方向，读操作时主机不驱动 SDA 数据位，无法仲裁 (来源: 03-i2c-protocol.md / 5.6 仲裁的局限与边界情况)。  \n- 若两个主机发送完全相同的地址和数据，仲裁会持续到整个传输结束，双方都不会感知冲突（实际应避免，可能导致双主机同时接收从机 ACK）。\n\n### 仲",
+          "sources_count": 5,
+          "source_titles": [
+            "03-i2c-protocol.md",
+            "03-i2c-protocol.md",
+            "03-i2c-protocol.md",
+            "03-i2c-protocol.md",
+            "03-i2c-protocol.md"
+          ]
+        },
+        {
+          "question_id": "Q6",
+          "question": "从机时钟拉伸导致 I2C 通信阻塞时，主机应该怎么检测和处理？超时时间一般设为多少？",
+          "target_doc": "03-i2c-protocol.md",
+          "difficulty": "难",
+          "scores": {
+            "recall": {
+              "score": 30.0,
+              "max": 30,
+              "detail": "Hit target doc: 03-i2c-protocol.md"
+            },
+            "answer_coverage": {
+              "score": 20.0,
+              "max": 25,
+              "detail": "Covered 4/5 keyword groups. Missed: HAL_I2C_Master_Transmit"
+            },
+            "chunk_completeness": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "✓ Group ['时钟拉伸', '超时', '100'] found in same chunk"
+            },
+            "chunk_boundary": {
+              "score": 0,
+              "max": 10,
+              "detail": "80 boundary issues: chunk#16: ends mid-sentence (last char='辑'); chunk#22: ends mid-sentence (last char='射'); chunk#24: ends mid-sentence (last char='珠')"
+            },
+            "cross_section": {
+              "score": 10.0,
+              "max": 10,
+              "detail": "✓ 时钟拉伸+超时 in same chunk#37"
+            }
+          },
+          "total_score": 85.0,
+          "max_score": 100,
+          "answer_preview": "在 I2C 协议中，时钟拉伸（Clock Stretching）是从机合法的流控机制：从机在处理数据（如 EEPROM 页写、ADC 转换）期间将 SCL 拉低，强制主机等待。正常拉伸时间通常在 1–10 ms（以 EEPROM 写周期最长 5 ms 为典型）。但如果从机因故障、ESD 损伤或软件 Bug 永久拉低 SCL，主机若不处理将无限阻塞，导致系统挂死。因此主机必须实现**超时检测与总线恢复**机制。\n\n下面结合文档说明检测方法和处理流程。\n\n### 1. 超时检测方法\n主机在等待从机释放 SCL 时，应启动一个超时定时器（硬件或软件）。检测点位于每个 SCL 高电平采样阶段：\n\n- **硬件方式**：使用 MCU 内置的 I2C 超时检测功能。例如 STM32 的 `I2C_TIMEOUT` 寄存器可配置超时计数值，当 SCL 低电平时间超过阈值时自动触发超时中断。\n- **软件方式**：在轮询或中断里记录等待开始时间，循环检查 SCL 电平，若持续为低且超过设定的毫秒数，则判定超时。所有阻塞式调用（如 `HAL_I2C_*`）都应传入超时参数，避免无限等待。\n\n📚 *[来源",
+          "sources_count": 5,
+          "source_titles": [
+            "03-i2c-protocol.md",
+            "03-i2c-protocol.md",
+            "03-i2c-protocol.md",
+            "03-i2c-protocol.md",
+            "03-i2c-protocol.md"
+          ]
+        },
+        {
+          "question_id": "Q7",
+          "question": "Cortex-M3 的 NVIC 优先级分组如何配置？如果 USART1 抢占优先级为 1、TIM2 抢占优先级为 2，当中断同时到达时谁先执行？",
+          "target_doc": "04-cortexm-interrupt.md",
+          "difficulty": "难",
+          "scores": {
+            "recall": {
+              "score": 30.0,
+              "max": 30,
+              "detail": "Hit target doc: 04-cortexm-interrupt.md"
+            },
+            "answer_coverage": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "Covered 8/8 keyword groups"
+            },
+            "chunk_completeness": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "✓ Group ['PRIGROUP', '抢占优先级', '子优先级'] found in same chunk"
+            },
+            "chunk_boundary": {
+              "score": 0,
+              "max": 10,
+              "detail": "80 boundary issues: chunk#16: ends mid-sentence (last char='辑'); chunk#22: ends mid-sentence (last char='射'); chunk#24: ends mid-sentence (last char='珠')"
+            },
+            "cross_section": {
+              "score": 10.0,
+              "max": 10,
+              "detail": "No cross-section keywords defined"
+            }
+          },
+          "total_score": 90.0,
+          "max_score": 100,
+          "answer_preview": "## Cortex-M3 NVIC 优先级分组配置方法\n\nCortex-M3 的优先级分组通过 **SCB->AIRCR** 寄存器的 `PRIGROUP` 位段（bit[10:8]）设置，将优先级寄存器（8 位，但 STM32 通常只使用高 4 位）分为**抢占优先级**和**子优先级**两部分。下面给出两种常见配置方式：\n\n### 1. 使用 STM32 HAL 库（推荐）\n\n```c\n// 使用全部 4 位作为抢占优先级，0 位子优先级（16 级抢占，最常用）\nHAL_NVIC_SetPriorityGrouping(NVIC_PRIORITYGROUP_4);\n\n// 其他分组选项（HAL 宏定义）：\n// NVIC_PRIORITYGROUP_0  → 0 位抢占，4 位子优先级（无抢占）\n// NVIC_PRIORITYGROUP_1  → 1 位抢占，3 位子优先级（2 级抢占）\n// NVIC_PRIORITYGROUP_2  → 2 位抢占，2 位子优先级（4 级抢占）\n// NVIC_PRIORITYGROUP_3  → 3 位抢占，1 位子优先级（8 级抢占）\n/",
+          "sources_count": 5,
+          "source_titles": [
+            "04-cortexm-interrupt.md",
+            "04-cortexm-interrupt.md",
+            "04-cortexm-interrupt.md",
+            "04-cortexm-interrupt.md",
+            "04-cortexm-interrupt.md"
+          ]
+        },
+        {
+          "question_id": "Q8",
+          "question": "Cortex-M4 的中断延迟是多少个时钟周期？尾链（Tail-Chaining）和迟来（Late-Arrival）技术分别如何降低延迟？",
+          "target_doc": "04-cortexm-interrupt.md",
+          "difficulty": "难",
+          "scores": {
+            "recall": {
+              "score": 30.0,
+              "max": 30,
+              "detail": "Hit target doc: 04-cortexm-interrupt.md"
+            },
+            "answer_coverage": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "Covered 4/4 keyword groups"
+            },
+            "chunk_completeness": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "✓ Group ['12', '尾链', '迟来'] found in same chunk"
+            },
+            "chunk_boundary": {
+              "score": 0,
+              "max": 10,
+              "detail": "80 boundary issues: chunk#16: ends mid-sentence (last char='辑'); chunk#22: ends mid-sentence (last char='射'); chunk#24: ends mid-sentence (last char='珠')"
+            },
+            "cross_section": {
+              "score": 10.0,
+              "max": 10,
+              "detail": "No cross-section keywords defined"
+            }
+          },
+          "total_score": 90.0,
+          "max_score": 100,
+          "answer_preview": "根据 **《ARM Cortex‑M 中断与异常处理详解》** 文档：\n\n1. **Cortex‑M4 的中断延迟**  \n   [来源: eval_hybrid-800_20260627_034523 / 04-cortexm-interrupt.md / ARM Cortex-M 中断与异常处理详解 > 3.8 中断延迟测量基准]  \n   在零等待内存的典型条件下：\n   - 最小延迟 **12 个时钟周期**（无 FPU 自动压栈）\n   - 若启用 FPU 并需要自动保存浮点寄存器，延迟为 **28 个时钟周期**\n\n2. **尾链（Tail‑Chaining）如何降低延迟**  \n   [来源: eval_hybrid-800_20260627_034523 / 04-cortexm-interrupt.md / ARM Cortex-M 中断与异常处理详解 > 3.4 尾链（Tail-Chaining）机制]  \n   当一个 ISR 执行完毕时，若 NVIC 中仍有挂起的中断，硬件**不会执行“出栈 → 取向量 → 压栈”**的完整序列，而是直接读取下一个挂起中断的向量",
+          "sources_count": 5,
+          "source_titles": [
+            "04-cortexm-interrupt.md",
+            "04-cortexm-interrupt.md",
+            "04-cortexm-interrupt.md",
+            "04-cortexm-interrupt.md",
+            "04-cortexm-interrupt.md"
+          ]
+        },
+        {
+          "question_id": "Q9",
+          "question": "STM32 UART 使用 DMA 传输时需要注意哪些问题？接收缓冲区的循环模式怎么防止数据覆盖？",
+          "target_doc": "05-uart-serial.md",
+          "difficulty": "中等",
+          "scores": {
+            "recall": {
+              "score": 30.0,
+              "max": 30,
+              "detail": "Hit target doc: 05-uart-serial.md"
+            },
+            "answer_coverage": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "Covered 6/6 keyword groups"
+            },
+            "chunk_completeness": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "✓ Group ['DMA', '循环模式', '半传输'] found in same chunk"
+            },
+            "chunk_boundary": {
+              "score": 0,
+              "max": 10,
+              "detail": "80 boundary issues: chunk#16: ends mid-sentence (last char='辑'); chunk#22: ends mid-sentence (last char='射'); chunk#24: ends mid-sentence (last char='珠')"
+            },
+            "cross_section": {
+              "score": 10.0,
+              "max": 10,
+              "detail": "No cross-section keywords defined"
+            }
+          },
+          "total_score": 90.0,
+          "max_score": 100,
+          "answer_preview": "### STM32 UART DMA 传输注意事项与循环模式防覆盖原理\n\n根据知识库文档，以下是在 STM32 上使用 UART DMA 时需要关注的关键问题及循环模式（Circular Mode）防止数据覆盖的详细机制。\n\n---\n\n#### 一、DMA 传输主要注意事项\n\n| 注意事项 | 说明 | 参考来源 |\n|----------|------|----------|\n| **模式选择** | 连续数据流（如 UART 接收）**必须使用循环模式**；已知长度的批量传输可使用单次模式。循环模式传输完成后自动重置计数器，无需软件重启。 | [来源: 6.3 DMA 传输模式] |\n| **启动前清空残留数据** | DMA 启动前，若 USART_DR 仍有上次未读取的数据，会导致首字节丢失。建议先禁用 UART → 读取 DR → 清除标志 → 重新使能 → 再启动 DMA。 | [来源: H.1 首字节丢失案例] |\n| **启用半传输中断** | 循环模式下必须同时启用**半传输中断（HT）** 和**传输完成中断（TC）**，否则后半段数据可能被覆盖。中断处理函数中只设",
+          "sources_count": 5,
+          "source_titles": [
+            "05-uart-serial.md",
+            "05-uart-serial.md",
+            "05-uart-serial.md",
+            "05-uart-serial.md",
+            "05-uart-serial.md"
+          ]
+        },
+        {
+          "question_id": "Q10",
+          "question": "UART 通信中出现随机错误位，可能是什么原因？怎么排查和解决？",
+          "target_doc": "05-uart-serial.md",
+          "difficulty": "简单",
+          "scores": {
+            "recall": {
+              "score": 30.0,
+              "max": 30,
+              "detail": "Hit target doc: 05-uart-serial.md"
+            },
+            "answer_coverage": {
+              "score": 14.285714285714285,
+              "max": 25,
+              "detail": "Covered 4/7 keyword groups. Missed: 屏蔽线, RS-232, TTL"
+            },
+            "chunk_completeness": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "✓ Group ['噪声', '屏蔽', '波特率'] found in same chunk"
+            },
+            "chunk_boundary": {
+              "score": 0,
+              "max": 10,
+              "detail": "80 boundary issues: chunk#16: ends mid-sentence (last char='辑'); chunk#22: ends mid-sentence (last char='射'); chunk#24: ends mid-sentence (last char='珠')"
+            },
+            "cross_section": {
+              "score": 10.0,
+              "max": 10,
+              "detail": "✓ 噪声+屏蔽 in same chunk#73"
+            }
+          },
+          "total_score": 79.28571428571428,
+          "max_score": 100,
+          "answer_preview": "UART 通信中出现随机错误位，最常见的原因是**噪声干扰**（导致单比特翻转或采样点不一致）以及**波特率/时钟精度问题**（导致采样时序偏移）。以下是基于知识库文档的详细原因分析、排查和解决方案。\n\n---\n\n## 一、可能原因\n\n| 原因 | 典型表现 | 对应标志/机制 | 来源引用 |\n|------|----------|---------------|----------|\n| **噪声干扰** | 单比特翻转，偶尔出现错误字符 | `SR.NE`（噪声错误）：采样点三次表决不一致 | [来源: 05-uart-serial.md / 8.1 错误类型总览] |\n| **波特率不匹配** | 连续错位，通常出现帧错误 + 随机位错误 | `SR.FE`（帧错误）：停止位采样为低 | [来源: 05-uart-serial.md / 8.4 帧错误] |\n| **时钟源精度不足** | 高温或电压波动下偶发错位 | 波特率误差超出 ±3% 容限 | 通用知识（参考 STM32 AN4013） |\n| **溢出错误（未及时读取）** | 连续接收时丢失字节，后续字节错位 | ",
+          "sources_count": 5,
+          "source_titles": [
+            "01-stm32-gpio.md",
+            "05-uart-serial.md",
+            "03-i2c-protocol.md",
+            "05-uart-serial.md",
+            "05-uart-serial.md"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "hybrid-1200",
+      "description": "HybridChunker, small_chunk_size=1200 (larger chunks, better completeness)",
+      "chunk_method": "hybrid",
+      "kb_id": "kb-4101f211",
+      "total_score": 896.4285714285714,
+      "max_score": 1000,
+      "dimension_scores": {
+        "recall": 300.0,
+        "answer_coverage": 246.42857142857142,
+        "chunk_completeness": 250.0,
+        "chunk_boundary": 0,
+        "cross_section": 100.0
+      },
+      "question_results": [
+        {
+          "question_id": "Q1",
+          "question": "STM32 的 GPIO 引脚可以配置为哪四种工作模式？每种模式对应的寄存器值是什么？",
+          "target_doc": "01-stm32-gpio.md",
+          "difficulty": "简单",
+          "scores": {
+            "recall": {
+              "score": 30.0,
+              "max": 30,
+              "detail": "Hit target doc: 01-stm32-gpio.md"
+            },
+            "answer_coverage": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "Covered 9/9 keyword groups"
+            },
+            "chunk_completeness": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "✓ Group ['输入模式', '输出模式', '复用功能', '模拟模式'] found in same chunk"
+            },
+            "chunk_boundary": {
+              "score": 0,
+              "max": 10,
+              "detail": "55 boundary issues: chunk#14: ends mid-sentence (last char='辑'); chunk#19: ends mid-sentence (last char='珠'); chunk#45: table starts but line 2 is not separator"
+            },
+            "cross_section": {
+              "score": 10.0,
+              "max": 10,
+              "detail": "✓ 输入模式+MODER in same chunk#7"
+            }
+          },
+          "total_score": 90.0,
+          "max_score": 100,
+          "answer_preview": "STM32 的 GPIO 端口引脚可通过 **MODER 寄存器**配置为以下四种基本工作模式（大类），每种模式由 2 位 MODER 字段决定：\n\n| 模式名称        | MODER[1:0] 值 | 细分模式（由 PUPDR、OTYPER 等控制）          |\n|----------------|---------------|---------------------------------------------|\n| **输入模式**    | `00`          | 浮空输入、上拉输入、下拉输入                |\n| **输出模式**    | `01`          | 推挽输出、开漏输出                          |\n| **复用功能模式**| `10`          | 推挽复用、开漏复用（由外设控制输出）        |\n| **模拟模式**    | `11`          | 模拟输入（如 ADC）、模拟输出（如 DAC）      |\n\n> **文档依据**  \n> 参考《STM3",
+          "sources_count": 5,
+          "source_titles": [
+            "01-stm32-gpio.md",
+            "01-stm32-gpio.md",
+            "01-stm32-gpio.md",
+            "01-stm32-gpio.md",
+            "01-stm32-gpio.md"
+          ]
+        },
+        {
+          "question_id": "Q2",
+          "question": "STM32 GPIO 的输出速度有哪几个等级？在什么场景下应该选择不同的速度？",
+          "target_doc": "01-stm32-gpio.md",
+          "difficulty": "简单",
+          "scores": {
+            "recall": {
+              "score": 30.0,
+              "max": 30,
+              "detail": "Hit target doc: 01-stm32-gpio.md"
+            },
+            "answer_coverage": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "Covered 6/6 keyword groups"
+            },
+            "chunk_completeness": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "✓ Group ['OSPEEDR', '低速', '高速'] found in same chunk"
+            },
+            "chunk_boundary": {
+              "score": 0,
+              "max": 10,
+              "detail": "56 boundary issues: chunk#4: ends mid-sentence (last char='珠'); chunk#14: ends mid-sentence (last char='辑'); chunk#19: ends mid-sentence (last char='珠')"
+            },
+            "cross_section": {
+              "score": 10.0,
+              "max": 10,
+              "detail": "No cross-section keywords defined"
+            }
+          },
+          "total_score": 90.0,
+          "max_score": 100,
+          "answer_preview": "根据知识库文档《STM32 GPIO 详解：从寄存器到工程实践》，STM32 GPIO 的输出速度通过 **OSPEEDR（Port Output Speed Register）** 寄存器配置，每个引脚占用 2 位，共 4 个等级。以 STM32F4 系列为例（不同系列的最大频率略有差异，但等级划分一致）：\n\n| OSPEEDR[1:0] | 速度等级 | STM32F4 最大翻转频率 |\n|--------------|----------|----------------------|\n| 00           | 低速     | 2 MHz                |\n| 01           | 中速     | 25 MHz               |\n| 10           | 高速     | 50 MHz               |\n| 11           | 极速     | 100 MHz              |\n\n（来源：知识库章节 3.1 OSPEEDR 寄存器）\n\n---\n\n### 不同场景下的速度选择原则\n\n速度等",
+          "sources_count": 5,
+          "source_titles": [
+            "01-stm32-gpio.md",
+            "01-stm32-gpio.md",
+            "01-stm32-gpio.md",
+            "01-stm32-gpio.md",
+            "01-stm32-gpio.md"
+          ]
+        },
+        {
+          "question_id": "Q3",
+          "question": "ESP32 的 Station 模式连接 Wi-Fi 超时怎么办？重连策略应该怎么设计？",
+          "target_doc": "02-esp32-wifi.md",
+          "difficulty": "中等",
+          "scores": {
+            "recall": {
+              "score": 30.0,
+              "max": 30,
+              "detail": "Hit target doc: 02-esp32-wifi.md"
+            },
+            "answer_coverage": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "Covered 6/6 keyword groups"
+            },
+            "chunk_completeness": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "✓ Group ['指数退避', '重连', '重试'] found in same chunk"
+            },
+            "chunk_boundary": {
+              "score": 0,
+              "max": 10,
+              "detail": "55 boundary issues: chunk#14: ends mid-sentence (last char='辑'); chunk#19: ends mid-sentence (last char='珠'); chunk#45: table starts but line 2 is not separator"
+            },
+            "cross_section": {
+              "score": 10.0,
+              "max": 10,
+              "detail": "No cross-section keywords defined"
+            }
+          },
+          "total_score": 90.0,
+          "max_score": 100,
+          "answer_preview": "当 ESP32 Station 模式连接 Wi-Fi 超时，通常表现为 `esp_wifi_connect()` 返回错误、长时间未收到 `WIFI_EVENT_STA_CONNECTED` 事件、或连接后立即断开。以下是排查要点和重连策略设计方法，优先参考知识库中 [来源: 02-esp32-wifi.md] 的相关内容。\n\n---\n\n## 一、连接超时常见原因与排查\n\n| 现象 | 可能原因 | 排查/解决 |\n|------|----------|----------|\n| `esp_wifi_connect()` 返回 `ESP_ERR_WIFI_CONN` | 未调用 `esp_wifi_start()` 或模式设置顺序错误 | 检查调用顺序：`esp_wifi_set_mode(WIFI_MODE_STA)` → `esp_wifi_start()` → `esp_wifi_connect()` |\n| 连接成功但立即断开，reason=200 (`NO_AP_FOUND`) | AP 隐藏 SSID、信号太弱（RSSI < -90dBm）、路由器仅 5GHz | 设置 `",
+          "sources_count": 5,
+          "source_titles": [
+            "02-esp32-wifi.md",
+            "02-esp32-wifi.md",
+            "02-esp32-wifi.md",
+            "02-esp32-wifi.md",
+            "02-esp32-wifi.md"
+          ]
+        },
+        {
+          "question_id": "Q4",
+          "question": "ESP32 的三种 Wi-Fi 省电模式有什么区别？如果应用需要低延迟 TCP 通信应该用哪种？",
+          "target_doc": "02-esp32-wifi.md",
+          "difficulty": "中等",
+          "scores": {
+            "recall": {
+              "score": 30.0,
+              "max": 30,
+              "detail": "Hit target doc: 02-esp32-wifi.md"
+            },
+            "answer_coverage": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "Covered 6/6 keyword groups"
+            },
+            "chunk_completeness": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "✓ Group ['WIFI_PS_NONE', 'WIFI_PS_MIN_MODEM'] found in same chunk"
+            },
+            "chunk_boundary": {
+              "score": 0,
+              "max": 10,
+              "detail": "55 boundary issues: chunk#14: ends mid-sentence (last char='辑'); chunk#19: ends mid-sentence (last char='珠'); chunk#45: table starts but line 2 is not separator"
+            },
+            "cross_section": {
+              "score": 10.0,
+              "max": 10,
+              "detail": "✓ WIFI_PS_NONE+延迟 in same chunk#16"
+            }
+          },
+          "total_score": 90.0,
+          "max_score": 100,
+          "answer_preview": "根据知识库文档（[ESP32 WiFi 开发完全指南 > 第 3 章 WiFi 省电模式详解]），ESP32 的三种 WiFi 省电模式其主要区别在于功耗、延迟和 TCP 适用性。具体对比如下：\n\n| 省电模式 | 关键词 | 平均功耗 | 延迟 | TCP 适用性 | 典型应用 |\n|----------|--------|----------|------|------------|----------|\n| WIFI_PS_NONE | 无省电 | 80~120 mA | 最低（< 2 ms） | **最佳** | 持续数据流、低延迟控制 |\n| WIFI_PS_MIN_MODEM | 中等省电 | 20~40 mA | 中（< 50 ms） | 良好 | 间歇 IoT 上报 |\n| WIFI_PS_MAX_MODEM | 最大省电 | 5~15 mA | 高（100~500 ms） | 一般（需保活） | 电池供电、低频通信 |\n\n三种模式的核心区别：\n- **WIFI_PS_NONE**：Modem 始终保持全速唤醒，TCP 吞吐量最高、延迟最低，但功耗最大（约 95 mA ",
+          "sources_count": 5,
+          "source_titles": [
+            "02-esp32-wifi.md",
+            "03-i2c-protocol.md",
+            "02-esp32-wifi.md",
+            "02-esp32-wifi.md",
+            "02-esp32-wifi.md"
+          ]
+        },
+        {
+          "question_id": "Q5",
+          "question": "I2C 多主机通信时如何仲裁？仲裁失败的从机应该做什么？",
+          "target_doc": "03-i2c-protocol.md",
+          "difficulty": "中等",
+          "scores": {
+            "recall": {
+              "score": 30.0,
+              "max": 30,
+              "detail": "Hit target doc: 03-i2c-protocol.md"
+            },
+            "answer_coverage": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "Covered 5/5 keyword groups"
+            },
+            "chunk_completeness": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "✓ Group ['仲裁', 'SDA', '释放'] found in same chunk"
+            },
+            "chunk_boundary": {
+              "score": 0,
+              "max": 10,
+              "detail": "55 boundary issues: chunk#14: ends mid-sentence (last char='辑'); chunk#19: ends mid-sentence (last char='珠'); chunk#45: table starts but line 2 is not separator"
+            },
+            "cross_section": {
+              "score": 10.0,
+              "max": 10,
+              "detail": "✓ 仲裁+释放 in same chunk#23"
+            }
+          },
+          "total_score": 90.0,
+          "max_score": 100,
+          "answer_preview": "根据知识库文档，I2C多主机通信的仲裁机制完全由硬件自动完成，但理解其原理对调试多主机系统至关重要。以下是仲裁过程的具体原理和仲裁失败后主机（您问题中的\"从机\"应为\"主机\"，因为只有主机参与仲裁）应遵循的处理流程。\n\n---\n\n### 一、I2C多主机仲裁机制\n\nI2C是真正意义上的多主机总线，允许多个主机共享同一组SCL/SDA线而无需中央仲裁器。其仲裁核心基于**线与（Wired-AND）逻辑**和**逐位比较**：\n\n1. **原理**：每个主机在发送数据位时，会同时监测SDA总线的实际电平。根据\"低电平优先\"原则，如果一个主机发送高电平（释放SDA），但检测到SDA为低（被另一个主机拉低），则该主机判定**仲裁失败**。\n\n2. **仲裁阶段**：\n   - **地址阶段仲裁**：多个主机发送相同地址时，仲裁持续到数据阶段；若地址不同，在差异位立即分出胜负。\n   - **数据阶段仲裁**：若地址完全相同且数据不同，仲裁会在数据位的差异处继续。\n   - **读方向不支持仲裁**：仅在主机发送（写）方向有效，因为读操作时从机驱动SDA，主机无法比较电平。\n\n3. **检测时机*",
+          "sources_count": 5,
+          "source_titles": [
+            "03-i2c-protocol.md",
+            "03-i2c-protocol.md",
+            "03-i2c-protocol.md",
+            "03-i2c-protocol.md",
+            "03-i2c-protocol.md"
+          ]
+        },
+        {
+          "question_id": "Q6",
+          "question": "从机时钟拉伸导致 I2C 通信阻塞时，主机应该怎么检测和处理？超时时间一般设为多少？",
+          "target_doc": "03-i2c-protocol.md",
+          "difficulty": "难",
+          "scores": {
+            "recall": {
+              "score": 30.0,
+              "max": 30,
+              "detail": "Hit target doc: 03-i2c-protocol.md"
+            },
+            "answer_coverage": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "Covered 5/5 keyword groups"
+            },
+            "chunk_completeness": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "✓ Group ['时钟拉伸', '超时', '100'] found in same chunk"
+            },
+            "chunk_boundary": {
+              "score": 0,
+              "max": 10,
+              "detail": "55 boundary issues: chunk#14: ends mid-sentence (last char='辑'); chunk#19: ends mid-sentence (last char='珠'); chunk#45: table starts but line 2 is not separator"
+            },
+            "cross_section": {
+              "score": 10.0,
+              "max": 10,
+              "detail": "✓ 时钟拉伸+超时 in same chunk#33"
+            }
+          },
+          "total_score": 90.0,
+          "max_score": 100,
+          "answer_preview": "### 从机时钟拉伸导致 I2C 通信阻塞的检测与处理\n\n#### 1. 主机检测时钟拉伸阻塞的方法\n\n- **硬件层面**：主机在每一 bit 的 SCL 高电平期间检测 SCL 是否真正被上拉为高。若 SCL 持续为低（被从机拉低），则主机自动等待，不会继续输出时钟。大部分 I2C 主机（包括 STM32 硬件 I2C）默认支持时钟拉伸，无需额外配置，但需注意不能启用 `NoStretchMode`（若设为 ENABLE 会禁止拉伸能力，导致数据丢失）。\n- **软件层面**：所有阻塞式 I2C 操作（如 `HAL_I2C_Master_Transmit`、`HAL_I2C_Master_Receive` 等）都应带有超时参数。当 SCL 被拉伸超过设定的超时时间时，函数返回超时错误（如 `HAL_TIMEOUT`）。\n\n#### 2. 处理步骤（超时后恢复流程）\n\n当检测到超时（即 SCL 被从机拉伸超过阈值），主机必须主动恢复总线，否则后续通信会持续失败。推荐的处理流程：\n\n1. **返回错误并记录日志**：记录超时事件、从机地址、寄存器编号等信息，便于后续分析根因。\n2. *",
+          "sources_count": 5,
+          "source_titles": [
+            "03-i2c-protocol.md",
+            "03-i2c-protocol.md",
+            "03-i2c-protocol.md",
+            "03-i2c-protocol.md",
+            "03-i2c-protocol.md"
+          ]
+        },
+        {
+          "question_id": "Q7",
+          "question": "Cortex-M3 的 NVIC 优先级分组如何配置？如果 USART1 抢占优先级为 1、TIM2 抢占优先级为 2，当中断同时到达时谁先执行？",
+          "target_doc": "04-cortexm-interrupt.md",
+          "difficulty": "难",
+          "scores": {
+            "recall": {
+              "score": 30.0,
+              "max": 30,
+              "detail": "Hit target doc: 04-cortexm-interrupt.md"
+            },
+            "answer_coverage": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "Covered 8/8 keyword groups"
+            },
+            "chunk_completeness": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "✓ Group ['PRIGROUP', '抢占优先级', '子优先级'] found in same chunk"
+            },
+            "chunk_boundary": {
+              "score": 0,
+              "max": 10,
+              "detail": "55 boundary issues: chunk#14: ends mid-sentence (last char='辑'); chunk#19: ends mid-sentence (last char='珠'); chunk#45: table starts but line 2 is not separator"
+            },
+            "cross_section": {
+              "score": 10.0,
+              "max": 10,
+              "detail": "No cross-section keywords defined"
+            }
+          },
+          "total_score": 90.0,
+          "max_score": 100,
+          "answer_preview": "## NVIC 优先级分组配置方法\n\nCortex-M3 的优先级分组由 **SCB->AIRCR** 寄存器的 **bit[10:8] (PRIGROUP)** 控制，将优先级寄存器的位划分为**抢占优先级**和**子优先级**两部分。配置方法如下：\n\n### 1. 使用 HAL 库（推荐，STM32 平台）\n```c\n// 最常用：4 位抢占优先级（16 级），0 位子优先级\nHAL_NVIC_SetPriorityGrouping(NVIC_PRIORITYGROUP_4);\n\n// 其他分组选项（参考 HAL 定义）：\n// NVIC_PRIORITYGROUP_0 -> 0 位抢占，4 位子优先级（无嵌套）\n// NVIC_PRIORITYGROUP_1 -> 1 位抢占，3 位子优先级（2 级抢占）\n// NVIC_PRIORITYGROUP_2 -> 2 位抢占，2 位子优先级（4 级抢占）\n// NVIC_PRIORITYGROUP_3 -> 3 位抢占，1 位子优先级（8 级抢占）\n// NVIC_PRIORITYGROUP_4 -> 4 位抢占，0 位子优先级（16",
+          "sources_count": 5,
+          "source_titles": [
+            "04-cortexm-interrupt.md",
+            "04-cortexm-interrupt.md",
+            "04-cortexm-interrupt.md",
+            "04-cortexm-interrupt.md",
+            "04-cortexm-interrupt.md"
+          ]
+        },
+        {
+          "question_id": "Q8",
+          "question": "Cortex-M4 的中断延迟是多少个时钟周期？尾链（Tail-Chaining）和迟来（Late-Arrival）技术分别如何降低延迟？",
+          "target_doc": "04-cortexm-interrupt.md",
+          "difficulty": "难",
+          "scores": {
+            "recall": {
+              "score": 30.0,
+              "max": 30,
+              "detail": "Hit target doc: 04-cortexm-interrupt.md"
+            },
+            "answer_coverage": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "Covered 4/4 keyword groups"
+            },
+            "chunk_completeness": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "✓ Group ['12', '尾链', '迟来'] found in same chunk"
+            },
+            "chunk_boundary": {
+              "score": 0,
+              "max": 10,
+              "detail": "55 boundary issues: chunk#14: ends mid-sentence (last char='辑'); chunk#19: ends mid-sentence (last char='珠'); chunk#45: table starts but line 2 is not separator"
+            },
+            "cross_section": {
+              "score": 10.0,
+              "max": 10,
+              "detail": "No cross-section keywords defined"
+            }
+          },
+          "total_score": 90.0,
+          "max_score": 100,
+          "answer_preview": "## Cortex-M4 中断延迟与尾链、迟来机制\n\n### 1. Cortex-M4 最小中断延迟\n\n根据知识库文档 [来源: 3.8 中断延迟测量基准]，Cortex-M4 的最小中断延迟为：\n\n| 条件 | 延迟（时钟周期） |\n|------|------------------|\n| 无浮点寄存器保存 | **12 cycles** |\n| 含 FPU 自动保存（Lazy Stacking） | **28 cycles** |\n\n该延迟计量的是从中断请求到达 NVIC 到执行 ISR 第一条指令的全部硬件压栈、向量取址时间。实际应用中 Flash 等待周期、缓存命中率、总线负载会带来额外开销，硬实时系统设计应留 2× 余量。\n\n### 2. 尾链（Tail-Chaining）如何降低延迟\n\n尾链是 Cortex-M3/M4 针对连续中断切换的硬件优化。当一个 ISR 执行完毕，NVIC 检测到仍有其他中断挂起时，**不再执行出栈（Pop）接着入栈（Push）**，而是复用当前栈帧，直接取下一个中断向量并跳转。\n\n- **无尾链流程**：ISR1 结束 → 出栈（8 寄存器）→",
+          "sources_count": 5,
+          "source_titles": [
+            "04-cortexm-interrupt.md",
+            "04-cortexm-interrupt.md",
+            "04-cortexm-interrupt.md",
+            "04-cortexm-interrupt.md",
+            "04-cortexm-interrupt.md"
+          ]
+        },
+        {
+          "question_id": "Q9",
+          "question": "STM32 UART 使用 DMA 传输时需要注意哪些问题？接收缓冲区的循环模式怎么防止数据覆盖？",
+          "target_doc": "05-uart-serial.md",
+          "difficulty": "中等",
+          "scores": {
+            "recall": {
+              "score": 30.0,
+              "max": 30,
+              "detail": "Hit target doc: 05-uart-serial.md"
+            },
+            "answer_coverage": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "Covered 6/6 keyword groups"
+            },
+            "chunk_completeness": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "✓ Group ['DMA', '循环模式', '半传输'] found in same chunk"
+            },
+            "chunk_boundary": {
+              "score": 0,
+              "max": 10,
+              "detail": "55 boundary issues: chunk#14: ends mid-sentence (last char='辑'); chunk#19: ends mid-sentence (last char='珠'); chunk#45: table starts but line 2 is not separator"
+            },
+            "cross_section": {
+              "score": 10.0,
+              "max": 10,
+              "detail": "No cross-section keywords defined"
+            }
+          },
+          "total_score": 90.0,
+          "max_score": 100,
+          "answer_preview": "以下针对 STM32 UART 使用 DMA 时的关键注意事项和循环模式防覆盖机制进行说明，内容均来自知识库相关文档。\n\n---\n\n## STM32 UART 使用 DMA 传输的注意事项\n\n### 1️⃣ 首字节丢失问题\n启动 DMA 接收前，USART_DR 中可能残留上次接收的未读数据，直接调用 `HAL_UART_Receive_DMA()` 会导致残留数据被覆盖，第一个字节丢失。  \n**解决方法**：启动前先关闭 UART、清空 DR 和溢出标志，再重新使能。  \n[来源: 05-uart-serial.md / 附录 H.1 案例：STM32 DMA 接收首字节丢失]\n```c\nvoid UART_DMA_Start_Clean(void)\n{\n    __HAL_UART_DISABLE(&huart1);\n    (void)USART1->DR;                     // 清除残留数据\n    __HAL_UART_CLEAR_OREFLAG(&huart1);    // 清除溢出标志\n    __HAL_UART_ENABLE(&huart1",
+          "sources_count": 5,
+          "source_titles": [
+            "05-uart-serial.md",
+            "05-uart-serial.md",
+            "05-uart-serial.md",
+            "05-uart-serial.md",
+            "05-uart-serial.md"
+          ]
+        },
+        {
+          "question_id": "Q10",
+          "question": "UART 通信中出现随机错误位，可能是什么原因？怎么排查和解决？",
+          "target_doc": "05-uart-serial.md",
+          "difficulty": "简单",
+          "scores": {
+            "recall": {
+              "score": 30.0,
+              "max": 30,
+              "detail": "Hit target doc: 05-uart-serial.md"
+            },
+            "answer_coverage": {
+              "score": 21.428571428571427,
+              "max": 25,
+              "detail": "Covered 6/7 keyword groups. Missed: 屏蔽线"
+            },
+            "chunk_completeness": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "✓ Group ['噪声', '屏蔽', '波特率'] found in same chunk"
+            },
+            "chunk_boundary": {
+              "score": 0,
+              "max": 10,
+              "detail": "55 boundary issues: chunk#14: ends mid-sentence (last char='辑'); chunk#19: ends mid-sentence (last char='珠'); chunk#45: table starts but line 2 is not separator"
+            },
+            "cross_section": {
+              "score": 10.0,
+              "max": 10,
+              "detail": "✓ 噪声+屏蔽 in same chunk#71"
+            }
+          },
+          "total_score": 86.42857142857143,
+          "max_score": 100,
+          "answer_preview": "## 随机错误位的原因与排查解决方法\n\nUART 通信中出现**偶尔跳变、随机错位**的典型原因是**噪声干扰**导致接收端采样出错。此外也需要排查波特率偏差、接线质量和电平兼容等问题。以下根据知识库文档和相关经验进行说明。\n\n### 一、常见原因\n\n| 原因类别 | 具体因素 | 说明 |\n|----------|----------|------|\n| **噪声干扰** | 电磁辐射（电机、开关电源）、串扰（平行信号线）、地线噪声、电源纹波 | 使采样点电压抖动，超过判别阈值 [来源: 05-uart-serial.md §9 噪声干扰排查] |\n| **接线与接地** | TX/RX 接反、未共 GND、线缆过长（>2m TTL）、屏蔽层未接地 | 信号衰减或参考地不统一，产生错误电平 |\n| **波特率偏差** | 两端晶振误差过大（>2%）、分频计算错误 | 采样位置偏移，尤其是多字节连续传输 |\n| **电平不匹配** | 3.3V 与 5V 混合、开漏无上拉、RS-232 电平未转换 | 高电平不足导致误判 |\n| **CPU 响应不及时** | 中断响应慢、FIFO 溢",
+          "sources_count": 5,
+          "source_titles": [
+            "05-uart-serial.md",
+            "01-stm32-gpio.md",
+            "03-i2c-protocol.md",
+            "05-uart-serial.md",
+            "05-uart-serial.md"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "hybrid-2000",
+      "description": "HybridChunker, small_chunk_size=2000 (very large chunks, max completeness)",
+      "chunk_method": "hybrid",
+      "kb_id": "kb-534d07e0",
+      "total_score": 895.8333333333334,
+      "max_score": 1000,
+      "dimension_scores": {
+        "recall": 300.0,
+        "answer_coverage": 245.83333333333334,
+        "chunk_completeness": 250.0,
+        "chunk_boundary": 0,
+        "cross_section": 100.0
+      },
+      "question_results": [
+        {
+          "question_id": "Q1",
+          "question": "STM32 的 GPIO 引脚可以配置为哪四种工作模式？每种模式对应的寄存器值是什么？",
+          "target_doc": "01-stm32-gpio.md",
+          "difficulty": "简单",
+          "scores": {
+            "recall": {
+              "score": 30.0,
+              "max": 30,
+              "detail": "Hit target doc: 01-stm32-gpio.md"
+            },
+            "answer_coverage": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "Covered 9/9 keyword groups"
+            },
+            "chunk_completeness": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "✓ Group ['输入模式', '输出模式', '复用功能', '模拟模式'] found in same chunk"
+            },
+            "chunk_boundary": {
+              "score": 0,
+              "max": 10,
+              "detail": "45 boundary issues: chunk#14: ends mid-sentence (last char='辑'); chunk#19: ends mid-sentence (last char='珠'); chunk#48: ends mid-sentence (last char='出')"
+            },
+            "cross_section": {
+              "score": 10.0,
+              "max": 10,
+              "detail": "✓ 输入模式+MODER in same chunk#7"
+            }
+          },
+          "total_score": 90.0,
+          "max_score": 100,
+          "answer_preview": "根据 STM32 参考手册及知识库内容，GPIO 引脚的四种工作模式由 **MODER 寄存器**（每 2 位控制一个引脚）配置，具体如下：\n\n| 工作模式 | MODER[1:0] 值（二进制） | 典型用途 | 关键词 |\n|----------|--------------------------|----------|--------|\n| **输入模式** | `00` | 按键、外部信号检测、KEY 扫描 | 输入模式 |\n| **输出模式** | `01` | LED 驱动、SPI 软件模拟、GPIO 控制 | 输出模式 |\n| **复用功能模式** | `10` | UART/SPI/I2C/USB/SDIO 等外设引脚 | 复用功能 |\n| **模拟模式** | `11` | ADC 采集、DAC 输出、RTC 备份域 | 模拟模式 |\n\n- **输入模式 (00)**：引脚为浮空、上拉或下拉输入（由 PUPDR 决定）。\n- **输出模式 (01)**：引脚为推挽或开漏输出（由 OTYPER 决定）。\n- **复用功能模式 (10)**：引脚由内部外设（如 USAR",
+          "sources_count": 5,
+          "source_titles": [
+            "01-stm32-gpio.md",
+            "01-stm32-gpio.md",
+            "03-i2c-protocol.md",
+            "01-stm32-gpio.md",
+            "01-stm32-gpio.md"
+          ]
+        },
+        {
+          "question_id": "Q2",
+          "question": "STM32 GPIO 的输出速度有哪几个等级？在什么场景下应该选择不同的速度？",
+          "target_doc": "01-stm32-gpio.md",
+          "difficulty": "简单",
+          "scores": {
+            "recall": {
+              "score": 30.0,
+              "max": 30,
+              "detail": "Hit target doc: 01-stm32-gpio.md"
+            },
+            "answer_coverage": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "Covered 6/6 keyword groups"
+            },
+            "chunk_completeness": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "✓ Group ['OSPEEDR', '低速', '高速'] found in same chunk"
+            },
+            "chunk_boundary": {
+              "score": 0,
+              "max": 10,
+              "detail": "46 boundary issues: chunk#4: ends mid-sentence (last char='珠'); chunk#14: ends mid-sentence (last char='辑'); chunk#19: ends mid-sentence (last char='珠')"
+            },
+            "cross_section": {
+              "score": 10.0,
+              "max": 10,
+              "detail": "No cross-section keywords defined"
+            }
+          },
+          "total_score": 90.0,
+          "max_score": 100,
+          "answer_preview": "根据 STM32 参考手册（如 RM0090/RM0402）和知识库文档，GPIO 输出速度由 **OSPEEDR（端口输出速度寄存器）** 控制，每个引脚占 2 位。以 STM32F4 系列为例，共有 **4 个等级**（其他系列数值不同，但等级划分方式一致）：\n\n| OSPEEDR[1:0] | 速度等级 | STM32F4 最大翻转频率 | STM32H7 | STM32L4 |\n|--------------|----------|---------------------|---------|---------|\n| 00           | 低速     | 2 MHz               | 8 MHz   | 6 MHz   |\n| 01           | 中速     | 25 MHz              | 28 MHz  | 10 MHz  |\n| 10           | 高速     | 50 MHz              | 70 MHz  | 28 MHz  |\n| 11           | 极速     | 100 M",
+          "sources_count": 5,
+          "source_titles": [
+            "01-stm32-gpio.md",
+            "01-stm32-gpio.md",
+            "01-stm32-gpio.md",
+            "01-stm32-gpio.md",
+            "01-stm32-gpio.md"
+          ]
+        },
+        {
+          "question_id": "Q3",
+          "question": "ESP32 的 Station 模式连接 Wi-Fi 超时怎么办？重连策略应该怎么设计？",
+          "target_doc": "02-esp32-wifi.md",
+          "difficulty": "中等",
+          "scores": {
+            "recall": {
+              "score": 30.0,
+              "max": 30,
+              "detail": "Hit target doc: 02-esp32-wifi.md"
+            },
+            "answer_coverage": {
+              "score": 20.833333333333336,
+              "max": 25,
+              "detail": "Covered 5/6 keyword groups. Missed: 重试次数"
+            },
+            "chunk_completeness": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "✓ Group ['指数退避', '重连', '重试'] found in same chunk"
+            },
+            "chunk_boundary": {
+              "score": 0,
+              "max": 10,
+              "detail": "45 boundary issues: chunk#14: ends mid-sentence (last char='辑'); chunk#19: ends mid-sentence (last char='珠'); chunk#48: ends mid-sentence (last char='出')"
+            },
+            "cross_section": {
+              "score": 10.0,
+              "max": 10,
+              "detail": "No cross-section keywords defined"
+            }
+          },
+          "total_score": 85.83333333333334,
+          "max_score": 100,
+          "answer_preview": "针对 ESP32 Station 模式连接 Wi-Fi 超时的问题，需要先定位超时发生的阶段（扫描/认证/关联/DHCP），再根据断开原因码设计差异化的重连策略。以下基于 ESP-IDF 框架和知识库文档给出排查步骤与重连方案。\n\n## 1. 连接超时的排查步骤\n\n根据知识库中的排查流程图，请依次检查以下事件和原因码：\n\n[来源: eval_hybrid-2000_20260627_034523 / 02-esp32-wifi.md / ESP32 WiFi 开发完全指南 > 第 13 章 常见问题与故障排查 > 13.1 连接失败排查流程]\n\n```\n检查事件顺序：\n1. WIFI_EVENT_STA_START 是否触发？\n   否 → 检查 esp_wifi_start() 调用、NVS 初始化\n\n2. 如果触发，检查 WIFI_EVENT_STA_DISCONNECTED 的 reason 值\n   根据 reason 分类处理（见下表）\n\n3. 若 WIFI_EVENT_STA_CONNECTED 触发但 IP_EVENT_STA_GOT_IP 不触发\n   → 检查 DHC",
+          "sources_count": 5,
+          "source_titles": [
+            "02-esp32-wifi.md",
+            "02-esp32-wifi.md",
+            "02-esp32-wifi.md",
+            "02-esp32-wifi.md",
+            "02-esp32-wifi.md"
+          ]
+        },
+        {
+          "question_id": "Q4",
+          "question": "ESP32 的三种 Wi-Fi 省电模式有什么区别？如果应用需要低延迟 TCP 通信应该用哪种？",
+          "target_doc": "02-esp32-wifi.md",
+          "difficulty": "中等",
+          "scores": {
+            "recall": {
+              "score": 30.0,
+              "max": 30,
+              "detail": "Hit target doc: 02-esp32-wifi.md"
+            },
+            "answer_coverage": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "Covered 6/6 keyword groups"
+            },
+            "chunk_completeness": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "✓ Group ['WIFI_PS_NONE', 'WIFI_PS_MIN_MODEM'] found in same chunk"
+            },
+            "chunk_boundary": {
+              "score": 0,
+              "max": 10,
+              "detail": "45 boundary issues: chunk#14: ends mid-sentence (last char='辑'); chunk#19: ends mid-sentence (last char='珠'); chunk#48: ends mid-sentence (last char='出')"
+            },
+            "cross_section": {
+              "score": 10.0,
+              "max": 10,
+              "detail": "✓ WIFI_PS_NONE+延迟 in same chunk#14"
+            }
+          },
+          "total_score": 90.0,
+          "max_score": 100,
+          "answer_preview": "## ESP32 WiFi 省电模式对比与低延迟 TCP 推荐\n\n### 三种省电模式区别\n\n根据 [来源: 02-esp32-wifi.md / ESP32 WiFi 开发完全指南 > 第 3 章 WiFi 省电模式详解 > 3.1 三种省电模式总览]，三种模式的核心区别如下：\n\n| 省电模式 | 关键词 | 平均功耗 (典型) | 延迟 | TCP 适用性 | 典型应用场景 |\n|----------|--------|----------------|------|------------|--------------|\n| `WIFI_PS_NONE` | 无省电 | 80~120 mA | 最低（< 2 ms） | **最佳** | 持续数据流、低延迟控制、WiFi+BT 共存 |\n| `WIFI_PS_MIN_MODEM` | 轻省电 | 20~40 mA | 中（< 50 ms） | 良好 | 间歇上报、IoT 数据采集 |\n| `WIFI_PS_MAX_MODEM` | 深度省电 | 5~15 mA | 高（100~500 ms） | 一般（需保活） | 电池供电、低频",
+          "sources_count": 5,
+          "source_titles": [
+            "02-esp32-wifi.md",
+            "03-i2c-protocol.md",
+            "02-esp32-wifi.md",
+            "02-esp32-wifi.md",
+            "02-esp32-wifi.md"
+          ]
+        },
+        {
+          "question_id": "Q5",
+          "question": "I2C 多主机通信时如何仲裁？仲裁失败的从机应该做什么？",
+          "target_doc": "03-i2c-protocol.md",
+          "difficulty": "中等",
+          "scores": {
+            "recall": {
+              "score": 30.0,
+              "max": 30,
+              "detail": "Hit target doc: 03-i2c-protocol.md"
+            },
+            "answer_coverage": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "Covered 5/5 keyword groups"
+            },
+            "chunk_completeness": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "✓ Group ['仲裁', 'SDA', '释放'] found in same chunk"
+            },
+            "chunk_boundary": {
+              "score": 0,
+              "max": 10,
+              "detail": "45 boundary issues: chunk#14: ends mid-sentence (last char='辑'); chunk#19: ends mid-sentence (last char='珠'); chunk#48: ends mid-sentence (last char='出')"
+            },
+            "cross_section": {
+              "score": 10.0,
+              "max": 10,
+              "detail": "✓ 仲裁+释放 in same chunk#23"
+            }
+          },
+          "total_score": 90.0,
+          "max_score": 100,
+          "answer_preview": "## I2C 多主机通信的仲裁机制与仲裁失败处理\n\n### 1. 仲裁原理\n\nI2C 是多主机总线，允许多个主机共享 SCL/SDA 线路。仲裁完全由硬件在 SDA 线上逐位比较完成，无需软件干预，但理解机制有助于调试。\n\n**仲裁基础——时钟同步（线与同步）**  \n多个主机同时驱动 SCL 时，由于开漏结构，SCL 低电平时间等于所有主机中最长的 `tLOW`，高电平时间等于最短的 `tHIGH`，最终时钟频率由最慢的主机决定。  \n[来源: eval_hybrid-2000_20260627_034523 / 03-i2c-protocol.md / 5.2 时钟同步]\n\n**数据仲裁过程**  \n- 每个主机在发送每一位数据时，通过 SDA 线输出自身电平，同时检测 SDA 实际电平。\n- 若某主机输出高电平（释放 SDA），但检测到 SDA 为低（被其他主机拉低），则判定**仲裁丢失**（Arbitration Lost）。\n- 仲裁只在主机发送方向有效（写操作）；读操作时从机驱动 SDA，不参与仲裁。\n- 仲裁可以持续整个帧（包括地址和数据位），直到某主机获胜。  \n[来源",
+          "sources_count": 5,
+          "source_titles": [
+            "03-i2c-protocol.md",
+            "03-i2c-protocol.md",
+            "03-i2c-protocol.md",
+            "03-i2c-protocol.md",
+            "03-i2c-protocol.md"
+          ]
+        },
+        {
+          "question_id": "Q6",
+          "question": "从机时钟拉伸导致 I2C 通信阻塞时，主机应该怎么检测和处理？超时时间一般设为多少？",
+          "target_doc": "03-i2c-protocol.md",
+          "difficulty": "难",
+          "scores": {
+            "recall": {
+              "score": 30.0,
+              "max": 30,
+              "detail": "Hit target doc: 03-i2c-protocol.md"
+            },
+            "answer_coverage": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "Covered 5/5 keyword groups"
+            },
+            "chunk_completeness": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "✓ Group ['时钟拉伸', '超时', '100'] found in same chunk"
+            },
+            "chunk_boundary": {
+              "score": 0,
+              "max": 10,
+              "detail": "45 boundary issues: chunk#14: ends mid-sentence (last char='辑'); chunk#19: ends mid-sentence (last char='珠'); chunk#48: ends mid-sentence (last char='出')"
+            },
+            "cross_section": {
+              "score": 10.0,
+              "max": 10,
+              "detail": "✓ 时钟拉伸+超时 in same chunk#33"
+            }
+          },
+          "total_score": 90.0,
+          "max_score": 100,
+          "answer_preview": "## 从机时钟拉伸导致主机阻塞的检测与处理\n\n当 I2C 从机因无法及时处理数据（如 EEPROM 内部写周期、ADC 转换中、MCU 中断响应慢）而主动将 SCL 拉低时，主机高电平检测到 SCL 未被释放，会一直等待。若从机因故障、ESD 或软件 BUG **永久拉低 SCL**，主机将无限阻塞，导致系统挂起。因此主机**必须实现超时检测与恢复机制**。\n\n### 1. 超时检测方法\n\n| 主机类型 | 检测方案 | 适用平台 |\n|----------|----------|----------|\n| **硬件 I2C 外设** | 使能 SCL 低电平超时寄存器（如 STM32 的 **I2C_TIMEOUT**，可设置 `TIMEOUTA` / `TIMEOUTB` 检测 SCL 低电平超过 T_IDLE）；或利用 HAL 函数自带的 `Timeout` 参数（如 `HAL_I2C_Master_Transmit(&hi2c, ... , HAL_MAX_DELAY)` 替换为具体毫秒值） | STM32、NXP LPC、新唐等 |\n| **软件模拟 I2C** | 在每个 ",
+          "sources_count": 5,
+          "source_titles": [
+            "03-i2c-protocol.md",
+            "03-i2c-protocol.md",
+            "03-i2c-protocol.md",
+            "03-i2c-protocol.md",
+            "03-i2c-protocol.md"
+          ]
+        },
+        {
+          "question_id": "Q7",
+          "question": "Cortex-M3 的 NVIC 优先级分组如何配置？如果 USART1 抢占优先级为 1、TIM2 抢占优先级为 2，当中断同时到达时谁先执行？",
+          "target_doc": "04-cortexm-interrupt.md",
+          "difficulty": "难",
+          "scores": {
+            "recall": {
+              "score": 30.0,
+              "max": 30,
+              "detail": "Hit target doc: 04-cortexm-interrupt.md"
+            },
+            "answer_coverage": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "Covered 8/8 keyword groups"
+            },
+            "chunk_completeness": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "✓ Group ['PRIGROUP', '抢占优先级', '子优先级'] found in same chunk"
+            },
+            "chunk_boundary": {
+              "score": 0,
+              "max": 10,
+              "detail": "45 boundary issues: chunk#14: ends mid-sentence (last char='辑'); chunk#19: ends mid-sentence (last char='珠'); chunk#48: ends mid-sentence (last char='出')"
+            },
+            "cross_section": {
+              "score": 10.0,
+              "max": 10,
+              "detail": "No cross-section keywords defined"
+            }
+          },
+          "total_score": 90.0,
+          "max_score": 100,
+          "answer_preview": "## 1. Cortex-M3 NVIC 优先级分组配置\n\nNVIC 的优先级分组由 **SCB→AIRCR** 寄存器的 `PRIGROUP[10:8]` 位控制。该 3 位值决定了优先级寄存器的高几位用作**抢占优先级**，低几位用作**子优先级**。\n\n### 配置方式一：使用 HAL（推荐）\n\n```c\n// 在系统初始化时调用，推荐 NVIC_PRIORITYGROUP_4（4位抢占，无子优先级）\nHAL_NVIC_SetPriorityGrouping(NVIC_PRIORITYGROUP_4);\n```\n\nHAL 已预定义了所有分组模式：\n\n| 宏定义 | 抢占位数 | 子优先级位数 | 抢占等级数 | 用途场景 |\n|--------|----------|--------------|------------|----------|\n| `NVIC_PRIORITYGROUP_0` | 0 | 4 | 1（无抢占） | 无嵌套需求 |\n| `NVIC_PRIORITYGROUP_1` | 1 | 3 | 2 | 极简嵌套 |\n| `NVIC_PRIORITYGROUP",
+          "sources_count": 5,
+          "source_titles": [
+            "04-cortexm-interrupt.md",
+            "04-cortexm-interrupt.md",
+            "04-cortexm-interrupt.md",
+            "04-cortexm-interrupt.md",
+            "04-cortexm-interrupt.md"
+          ]
+        },
+        {
+          "question_id": "Q8",
+          "question": "Cortex-M4 的中断延迟是多少个时钟周期？尾链（Tail-Chaining）和迟来（Late-Arrival）技术分别如何降低延迟？",
+          "target_doc": "04-cortexm-interrupt.md",
+          "difficulty": "难",
+          "scores": {
+            "recall": {
+              "score": 30.0,
+              "max": 30,
+              "detail": "Hit target doc: 04-cortexm-interrupt.md"
+            },
+            "answer_coverage": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "Covered 4/4 keyword groups"
+            },
+            "chunk_completeness": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "✓ Group ['12', '尾链', '迟来'] found in same chunk"
+            },
+            "chunk_boundary": {
+              "score": 0,
+              "max": 10,
+              "detail": "45 boundary issues: chunk#14: ends mid-sentence (last char='辑'); chunk#19: ends mid-sentence (last char='珠'); chunk#48: ends mid-sentence (last char='出')"
+            },
+            "cross_section": {
+              "score": 10.0,
+              "max": 10,
+              "detail": "No cross-section keywords defined"
+            }
+          },
+          "total_score": 90.0,
+          "max_score": 100,
+          "answer_preview": "### Cortex-M4 中断延迟\n\n根据知识库中 **3.8 中断延迟测量基准** 的说明，Cortex-M4 在零等待内存、无 FPU 状态保存时的典型最小中断延迟为 **12 个时钟周期**；若涉及 FPU 自动保存（浮点上下文压栈），则延迟增加至 **28 个时钟周期**。[来源: 04-cortexm-interrupt.md > 3.8 中断延迟测量基准]\n\n---\n\n### 尾链（Tail-Chaining）与迟来（Late-Arrival）降低延迟的机制\n\n#### 1. 尾链（Tail-Chaining）\n\n**机制**：当一个中断处理程序（ISR）执行完毕时，如果 NVIC 中还有另一个挂起的中断，硬件**不会执行出栈+入栈**（即不恢复当前栈帧再重新压入新栈帧），而是直接取下一个中断的向量地址并跳转，复用电已经压好的栈帧。\n\n**节省的周期**：\n- 无尾链：ISR1 结束 → 出栈（8 寄存器，~8 cycles）→ 取向量（~2 cycles）→ 压栈（8 寄存器，~8 cycles）→ ISR2 开始，总计约 **18 cycles** 开销。\n- 有尾链",
+          "sources_count": 5,
+          "source_titles": [
+            "04-cortexm-interrupt.md",
+            "04-cortexm-interrupt.md",
+            "04-cortexm-interrupt.md",
+            "04-cortexm-interrupt.md",
+            "04-cortexm-interrupt.md"
+          ]
+        },
+        {
+          "question_id": "Q9",
+          "question": "STM32 UART 使用 DMA 传输时需要注意哪些问题？接收缓冲区的循环模式怎么防止数据覆盖？",
+          "target_doc": "05-uart-serial.md",
+          "difficulty": "中等",
+          "scores": {
+            "recall": {
+              "score": 30.0,
+              "max": 30,
+              "detail": "Hit target doc: 05-uart-serial.md"
+            },
+            "answer_coverage": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "Covered 6/6 keyword groups"
+            },
+            "chunk_completeness": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "✓ Group ['DMA', '循环模式', '半传输'] found in same chunk"
+            },
+            "chunk_boundary": {
+              "score": 0,
+              "max": 10,
+              "detail": "45 boundary issues: chunk#14: ends mid-sentence (last char='辑'); chunk#19: ends mid-sentence (last char='珠'); chunk#48: ends mid-sentence (last char='出')"
+            },
+            "cross_section": {
+              "score": 10.0,
+              "max": 10,
+              "detail": "No cross-section keywords defined"
+            }
+          },
+          "total_score": 90.0,
+          "max_score": 100,
+          "answer_preview": "### STM32 UART 使用 DMA 的注意事项\n\n1. **选择合适的 DMA 模式**  \n   UART 接收应优先使用 **循环模式（Circular Mode）**。单次模式在传输完成后会停止，需要软件重新启动，重启间隙可能导致数据丢失；循环模式则在缓冲区填满后自动回绕，实现连续的环形接收，适合不定长或连续数据流【来源: eval_hybrid-2000_20260627_034523 / 05-uart-serial.md / UART 串行通信详解与实践指南 > 6.3 DMA 传输模式】。\n\n2. **中断配置与半传输处理**  \n   循环模式下必须启用 **半传输中断（Half Transfer, HT）** 和 **传输完成中断（Transfer Complete, TC）**。DMA 写入缓冲区前半段时触发 HT，提示 CPU 处理前半段数据；写入后半段完成时触发 TC，通知 CPU 处理后半段。这样 CPU 与 DMA 交替访问不同区域，避免数据覆盖【来源: eval_hybrid-2000_20260627_034523 / 05-uart-seria",
+          "sources_count": 5,
+          "source_titles": [
+            "05-uart-serial.md",
+            "05-uart-serial.md",
+            "05-uart-serial.md",
+            "05-uart-serial.md",
+            "05-uart-serial.md"
+          ]
+        },
+        {
+          "question_id": "Q10",
+          "question": "UART 通信中出现随机错误位，可能是什么原因？怎么排查和解决？",
+          "target_doc": "05-uart-serial.md",
+          "difficulty": "简单",
+          "scores": {
+            "recall": {
+              "score": 30.0,
+              "max": 30,
+              "detail": "Hit target doc: 05-uart-serial.md"
+            },
+            "answer_coverage": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "Covered 7/7 keyword groups"
+            },
+            "chunk_completeness": {
+              "score": 25.0,
+              "max": 25,
+              "detail": "✓ Group ['噪声', '屏蔽', '波特率'] found in same chunk"
+            },
+            "chunk_boundary": {
+              "score": 0,
+              "max": 10,
+              "detail": "45 boundary issues: chunk#14: ends mid-sentence (last char='辑'); chunk#19: ends mid-sentence (last char='珠'); chunk#48: ends mid-sentence (last char='出')"
+            },
+            "cross_section": {
+              "score": 10.0,
+              "max": 10,
+              "detail": "✓ 噪声+屏蔽 in same chunk#70"
+            }
+          },
+          "total_score": 90.0,
+          "max_score": 100,
+          "answer_preview": "UART 通信中出现随机错误位，通常由**噪声干扰**、**波特率偏差**、**信号完整性问题**或**软件处理不及时**引起。以下从原因分析、排查步骤到解决方案逐层说明，具体策略可参考知识库中 UART 噪声干扰排查章节 [来源: 05-uart-serial.md / UART 串行通信详解与实践指南 > 9. UART 噪声干扰排查] 及 FAQ 速查表 [来源: 05-uart-serial.md > 15.1]。\n\n---\n\n### 一、常见原因（按可能性排序）\n\n| 原因 | 典型表现 | 相关来源 |\n|------|----------|----------|\n| **噪声干扰**（电磁/电源/长线耦合） | 偶发比特翻转，尤其在高速或恶劣环境 | [来源: 05-uart-serial.md > 9] |\n| **波特率不匹配或时钟误差** | 帧错误频繁，错误位集中在数据后半段 | [来源: 05-uart-serial.md > 15.1 FAQ#3/#9] |\n| **接地回路或共模噪声** | 随机错误，线与地之间有较大噪声 | [来源: 05-uart-se",
+          "sources_count": 5,
+          "source_titles": [
+            "01-stm32-gpio.md",
+            "05-uart-serial.md",
+            "03-i2c-protocol.md",
+            "05-uart-serial.md",
+            "05-uart-serial.md"
+          ]
+        }
+      ]
+    }
+  ]
+}

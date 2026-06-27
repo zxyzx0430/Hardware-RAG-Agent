@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { useAppStore } from "../../stores/useAppStore";
 import { useChatStore } from "../../stores/useChatStore";
 import { useKnowledgeStore } from "../../stores/useKnowledgeStore";
@@ -7,54 +7,6 @@ import { WorkbenchPanel } from "../workbench/WorkbenchPanel";
 import { useI18n } from "../../i18n";
 import type { ActivityStep } from "../../types/session";
 import { copyToClipboard } from "../../utils/clipboard";
-
-// ─── BigChunkExpander: fetches and displays big_chunk_text on demand ───
-function BigChunkExpander({ smallChunkId }: { smallChunkId: string }) {
-  const { t } = useI18n();
-  const [expanded, setExpanded] = useState(false);
-  const [bigChunk, setBigChunk] = useState<string>("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string>("");
-
-  const handleToggle = useCallback(async () => {
-    if (!expanded && !bigChunk && !error) {
-      setLoading(true);
-      setError("");
-      try {
-        const res = await fetch(`/api/kb/chunks/${encodeURIComponent(smallChunkId)}`);
-        const json = await res.json();
-        if (json.success && json.data?.big_chunk_text) {
-          setBigChunk(json.data.big_chunk_text);
-        } else {
-          setError(json.error?.message || "Failed to load");
-        }
-      } catch (e) {
-        setError(String(e));
-      } finally {
-        setLoading(false);
-      }
-    }
-    setExpanded((v) => !v);
-  }, [expanded, bigChunk, error, smallChunkId]);
-
-  return (
-    <div className="bigchunk-expander">
-      <button
-        className="bigchunk-toggle-btn"
-        onClick={(e) => { e.stopPropagation(); handleToggle(); }}
-        disabled={loading}
-      >
-        {loading ? t('loadingContext') : expanded ? t('collapse') : t('viewFullContext')}
-      </button>
-      {expanded && bigChunk ? (
-        <pre className="bigchunk-content">{bigChunk}</pre>
-      ) : null}
-      {expanded && error ? (
-        <div className="bigchunk-error">{error}</div>
-      ) : null}
-    </div>
-  );
-}
 
 function formatDuration(ms: number) {
   if (ms < 1000) return `${ms}ms`;
@@ -127,9 +79,8 @@ function SourcePanel() {
           ? `${t('pages')} ${viewed.page_start}-${viewed.page_end}`
           : `${t('page')} ${viewed.page_start}`)
       : `${t('chunk')} #${viewed.page}`;
-    // Score: normalize within available sources for display
-    const maxSrcScore = Math.max(...sources.map(s => s.score || 0), 0.001);
-    const displayScore = Math.round((viewed.score / maxSrcScore) * 100);
+    // Score: show actual relevance percentage (0-100)
+    const displayScore = Math.round((viewed.score || 0) * 100);
     return (
       <div className="source-panel" id="sourcePanel">
         <div className="source-fv-header">
@@ -150,7 +101,6 @@ function SourcePanel() {
             {viewed.category ? <span className="fv-category">{viewed.category}</span> : null}
           </div>
           <div className="source-fv-content">{viewed.excerpt}</div>
-          {viewed.small_chunk_id ? <BigChunkExpander smallChunkId={viewed.small_chunk_id} /> : null}
         </div>
       </div>
     );
@@ -176,31 +126,19 @@ function SourcePanel() {
       </div>
       <div className="source-scroll" id="sourceScroll">
         {tab === 'sources' ? (
-          sources.length ? sources.map((src) => {
+          sources.length ? sources.map((src, index) => {
             const scoreClass = src.score >= 0.9 ? 'high' : src.score >= 0.8 ? 'med' : 'low';
             return (
               <div
-                className={`source-card ${highlightSourceId === src.id ? 'highlight' : 'default'}`}
+                className={`source-list-item ${scoreClass} ${highlightSourceId === src.id ? 'highlight' : ''}`}
                 key={src.id}
-                onClick={() => setHighlightSourceId(src.id)}
+                onClick={() => { setHighlightSourceId(src.id); setFileViewerSource(src.id); }}
+                title={src.section_title ? `${src.title} · ${src.section_title}` : src.title}
               >
-                <div className="source-card-body">
-                  <div className="source-card-row">
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color:'var(--primary)', flexShrink:0, marginTop:2 }}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-                    <div style={{ flex:1, minWidth:0 }}>
-                      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:4 }}>
-                        <span className="source-card-title">
-                          {src.kb_name ? <span className="source-kb-tag">{src.kb_name}</span> : null}
-                          {src.title}
-                        </span>
-                        <span className={`source-card-score ${scoreClass}`}>{(src.score * 100).toFixed(0)}%</span>
-                      </div>
-                      <div className="source-card-meta"><span>{src.doc}</span><span className="sep">·</span><span>p.{src.page}</span></div>
-                    </div>
-                    <button className="source-open-btn" onClick={(event) => { event.stopPropagation(); setHighlightSourceId(src.id); setFileViewerSource(src.id); }}>{t('open')}</button>
-                  </div>
-                  {src.small_chunk_id ? <BigChunkExpander smallChunkId={src.small_chunk_id} /> : null}
-                </div>
+                <span className="source-list-num">{index + 1}</span>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color:'var(--primary)', flexShrink:0 }}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                <span className="source-list-title">{src.title}</span>
+                <span className={`source-list-score ${scoreClass}`}>{(src.score * 100).toFixed(0)}%</span>
               </div>
             );
           }) : <div className="source-empty">{t('noSourceData')}</div>
@@ -287,22 +225,16 @@ function ChunkViewer({ docId, docName, onBack }: { docId: string; docName: strin
   );
 }
 
-// ─── Single chunk card with local expand/collapse state ───
+// ─── Single chunk card — default fully expanded, no truncation ───
 function ChunkItem({ chunk }: { chunk: DocChunk }) {
   const { t } = useI18n();
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(true);
 
-  const TRUNCATE_LEN = 200;
-  const isLong = chunk.content.length > TRUNCATE_LEN;
   const pageLabel = chunk.page_start != null
     ? (chunk.page_end != null && chunk.page_end !== chunk.page_start
         ? `p.${chunk.page_start}-${chunk.page_end}`
         : `p.${chunk.page_start}`)
     : '';
-
-  const displayedContent = expanded || !isLong
-    ? chunk.content
-    : chunk.content.slice(0, TRUNCATE_LEN) + '…';
 
   return (
     <div className="chunk-item">
@@ -310,14 +242,12 @@ function ChunkItem({ chunk }: { chunk: DocChunk }) {
         <span className="chunk-item-index">#{chunk.chunk_index}</span>
         {chunk.section_title ? <span className="chunk-item-section">{chunk.section_title}</span> : null}
         {pageLabel ? <span className="chunk-item-page">{pageLabel}</span> : null}
-      </div>
-      <div className={`chunk-item-content${expanded ? '' : ' collapsed'}`}>
-        {displayedContent}
-      </div>
-      {isLong && (
-        <button className="chunk-expand-btn" onClick={() => setExpanded((v) => !v)}>
+        <button className="chunk-expand-btn" onClick={() => setExpanded((v) => !v)} style={{ marginLeft: 'auto' }}>
           {expanded ? t('collapseChunk') : t('expandChunk')}
         </button>
+      </div>
+      {expanded && (
+        <div className="chunk-item-content">{chunk.content}</div>
       )}
       <div className="chunk-item-footer">
         {chunk.chunk_method ? <span className="chunk-method-badge">{chunk.chunk_method}</span> : null}

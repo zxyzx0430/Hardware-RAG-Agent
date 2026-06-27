@@ -20,7 +20,7 @@ export interface KnowledgeBase {
   name: string;
   description: string;
   collection_name: string;
-  chunk_method: "hybrid" | "agent";
+  chunk_method: "hybrid" | "agent" | "multimodal";
   embedding_model: string;
   embedding_base_url?: string;
   agent_chunker_model: string;
@@ -36,7 +36,7 @@ export interface KnowledgeBase {
 export interface CreateKBRequest {
   name: string;
   description?: string;
-  chunk_method: "hybrid" | "agent";
+  chunk_method: "hybrid" | "agent" | "multimodal";
   embedding_model: string;
   embedding_base_url?: string;
   embedding_api_key?: string;

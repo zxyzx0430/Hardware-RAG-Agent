@@ -47,6 +47,8 @@ const en: Record<string, string> = {
   topKDesc: 'Number of document chunks per query',
   maxTokens: 'Max Tokens',
   maxTokensDesc: 'Maximum generation length per response',
+  relevanceThreshold: 'Relevance Threshold',
+  relevanceThresholdDesc: 'Filter out RAG results below this score (0=no filter, recommended 60)',
   currentConfig: 'Current config',
 
   // Settings - Memory
@@ -462,7 +464,9 @@ const en: Record<string, string> = {
   chunkMethod: 'Chunk Method',
   hybrid: 'Hybrid',
   agent: 'Agent',
+  multimodal: 'Multimodal',
   agentChunkHint: 'AI chunking takes longer and may require multiple LLM calls',
+  multimodalHint: 'Multimodal chunking requires a Vision model (e.g. GPT-4o), uses page images for highest precision',
   embeddingModel: 'Embedding Model',
   embeddingBaseUrl: 'Embedding Base URL',
   embeddingApiKey: 'Embedding API Key',

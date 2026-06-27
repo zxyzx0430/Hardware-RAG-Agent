@@ -106,6 +106,156 @@ class DoclingParser:
         return md_content
 
 
+class UnifiedPdfParser:
+    """Unified PDF parser — PyMuPDF per-page extraction with page markers.
+
+    This replaces both DoclingParser (KB upload) and PdfParser (chat attachments)
+    to ensure consistent behavior and accurate page tracking.
+
+    Output format: text with ``<!-- PAGE:N -->`` markers before each page's
+    content, enabling all chunkers to extract accurate page ranges without
+    relying on chars_per_page estimation.
+
+    Fallback chain:
+      1. PyMuPDF per-page (primary — accurate page numbers)
+      2. Docling full-document (fallback — preserves tables but no page markers)
+      3. PyMuPDF whole-document (last resort)
+    """
+
+    def __init__(self, prefer_docling: bool = False):
+        """Initialize the unified parser.
+
+        Args:
+            prefer_docling: If True, try Docling first (preserves table structure
+                as Markdown) then fall back to PyMuPDF. Note: Docling output
+                has no page markers, so page tracking will be less accurate.
+                If False (default), use PyMuPDF per-page with markers.
+        """
+        self.prefer_docling = prefer_docling
+
+    def parse(self, pdf_path: Path) -> tuple[str, int]:
+        """Parse PDF and return (text_with_page_markers, total_pages).
+
+        Args:
+            pdf_path: Path to the PDF file.
+
+        Returns:
+            Tuple of (text, total_pages). Text contains <!-- PAGE:N --> markers
+            when PyMuPDF per-page extraction is used.
+
+        Raises:
+            RuntimeError: If all parsing methods fail.
+        """
+        if self.prefer_docling:
+            # Try Docling first for table structure
+            try:
+                docling_text = DoclingParser().parse(pdf_path)
+                total_pages = self._get_page_count(pdf_path)
+                logger.info(
+                    "UnifiedPdfParser: Docling success (%d chars, %d pages, no page markers)",
+                    len(docling_text), total_pages,
+                )
+                return docling_text, total_pages
+            except Exception as e:
+                logger.warning("UnifiedPdfParser: Docling failed (%s), falling back to PyMuPDF", e)
+
+        # Primary: PyMuPDF per-page with markers
+        try:
+            text, total_pages = self._parse_pymupdf_per_page(pdf_path)
+            logger.info(
+                "UnifiedPdfParser: PyMuPDF per-page success (%d chars, %d pages, with markers)",
+                len(text), total_pages,
+            )
+            return text, total_pages
+        except Exception as e:
+            logger.warning(
+                "UnifiedPdfParser: PyMuPDF per-page failed (%s), trying Docling", e
+            )
+
+        # Fallback 1: Docling
+        try:
+            docling_text = DoclingParser().parse(pdf_path)
+            total_pages = self._get_page_count(pdf_path)
+            logger.info(
+                "UnifiedPdfParser: Docling fallback success (%d chars, %d pages)",
+                len(docling_text), total_pages,
+            )
+            return docling_text, total_pages
+        except Exception as e:
+            logger.warning(
+                "UnifiedPdfParser: Docling also failed (%s), trying PyMuPDF whole-doc", e
+            )
+
+        # Fallback 2: PyMuPDF whole-document (no per-page markers)
+        try:
+            import fitz
+            doc = fitz.open(str(pdf_path))
+            parts = [doc[i].get_text("text") for i in range(doc.page_count)]
+            total_pages = doc.page_count
+            doc.close()
+            text = "\n\n".join(parts)
+            logger.info(
+                "UnifiedPdfParser: PyMuPDF whole-doc fallback (%d chars, %d pages)",
+                len(text), total_pages,
+            )
+            return text, total_pages
+        except Exception as e:
+            raise RuntimeError(f"所有 PDF 解析方式均失败: {e}") from e
+
+    def parse_from_bytes(self, data: bytes) -> str:
+        """Parse PDF from bytes (for chat attachments). Returns text only.
+
+        Inserts page markers when possible.
+        """
+        import fitz
+        try:
+            doc = fitz.open(stream=data, filetype="pdf")
+            page_texts = []
+            for i in range(doc.page_count):
+                page_texts.append(doc[i].get_text("text"))
+            total_pages = doc.page_count
+            doc.close()
+
+            from src.rag.chunking.base import build_text_with_page_markers
+            text = build_text_with_page_markers(page_texts)
+            logger.info(
+                "UnifiedPdfParser: bytes parse success (%d chars, %d pages, with markers)",
+                len(text), total_pages,
+            )
+            return text
+        except Exception as e:
+            logger.warning("UnifiedPdfParser: bytes parse failed (%s), returning empty", e)
+            return ""
+
+    def _parse_pymupdf_per_page(self, pdf_path: Path) -> tuple[str, int]:
+        """Extract text per page with PyMuPDF and insert page markers."""
+        import fitz
+        doc = fitz.open(str(pdf_path))
+        page_texts: list[str] = []
+        for i in range(doc.page_count):
+            page_texts.append(doc[i].get_text("text"))
+        total_pages = doc.page_count
+        doc.close()
+
+        if not any(t.strip() for t in page_texts):
+            raise RuntimeError("PyMuPDF extracted empty text (possibly scanned PDF)")
+
+        from src.rag.chunking.base import build_text_with_page_markers
+        text = build_text_with_page_markers(page_texts)
+        return text, total_pages
+
+    def _get_page_count(self, pdf_path: Path) -> int:
+        """Get PDF page count using PyMuPDF."""
+        try:
+            import fitz
+            doc = fitz.open(str(pdf_path))
+            count = doc.page_count
+            doc.close()
+            return count
+        except Exception:
+            return 0
+
+
 class TranslationPipeline:
     """LLM 翻译管线，带错误重试。"""
 

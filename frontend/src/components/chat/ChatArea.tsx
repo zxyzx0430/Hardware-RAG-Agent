@@ -131,15 +131,9 @@ export function ChatArea() {
     }
   }, [messages.length]);
 
-  // 流式结束时滚到底部（如果用户没有手动滚动过）
+  // 流式开始时重置 userScrolledRef，允许新的一轮自动滚动
+  // 流式结束后不自动滚动——用户可自由查看历史
   useEffect(() => {
-    if (!isStreaming && scrollRef.current && !userScrolledRef.current) {
-      scrollRef.current.scrollTo({
-        top: scrollRef.current.scrollHeight,
-        behavior: "smooth",
-      });
-    }
-    // 流式开始时重置 userScrolledRef，允许新的一轮自动滚动
     if (isStreaming) {
       userScrolledRef.current = false;
     }
@@ -288,19 +282,11 @@ export function ChatArea() {
                 <div className="source-refs">
                   <span className="source-ref-label">{t('sources')}</span>
                   <div className="source-refs-row">
-                    {(() => {
-                      const maxScore = Math.max(...msg.sources.map(s => s.score || 0), 0.001);
-                      return msg.sources.map((src) => {
-                        const normalizedScore = Math.round((src.score / maxScore) * 100);
-                        const pageLabel = src.page_start != null
-                          ? (src.page_end != null && src.page_end !== src.page_start
-                              ? `p.${src.page_start}-${src.page_end}`
-                              : `p.${src.page_start}`)
-                          : null;
-                        return (
+                    {msg.sources.map((src, idx) => (
                       <button
                         className={`source-chip${highlightSourceId === src.id ? ' highlight' : ''}`}
                         key={src.id}
+                        title={src.section_title ? `${src.title} · ${src.section_title}` : src.title}
                         onClick={() => {
                           setHighlightSourceId(src.id);
                           setRightPanelOpen(true);
@@ -308,16 +294,10 @@ export function ChatArea() {
                           setFileViewerSource(src.id);
                         }}
                       >
-                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color:'var(--primary)' }}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-                        {src.kb_name ? <span className="source-chip-kb">{src.kb_name}</span> : null}
-                        <span>{src.title}</span>
-                        {src.section_title ? <span className="source-chip-section">· {src.section_title}</span> : null}
-                        {pageLabel ? <span className="source-chip-page">{pageLabel}</span> : null}
-                        <span className="source-chip-score">{normalizedScore}%</span>
+                        <span className="source-chip-num">{idx + 1}</span>
+                        <span className="source-chip-title">{src.title}</span>
                       </button>
-                        );
-                      });
-                    })()}
+                    ))}
                   </div>
                 </div>
               ) : null}
@@ -475,9 +455,8 @@ function ActivityBlock({ activity, msgId, startTime }: { activity: ActivityBlock
       {!collapsed ? (
         <div className="activity-steps" id={`act-body-${msgId}`}>
           <div className="activity-chain">
-            {activity.steps.map((step, idx) => {
-              const isLast = idx === activity.steps.length - 1;
-              // Stable key: source/type + index avoids remount when step.id regenerates
+            {activity.steps.filter((s) => !(s.type === 'thinking' && s.source === 'rag')).map((step, idx, arr) => {
+              const isLast = idx === arr.length - 1;
               const stepKey = `${step.source ?? step.type}-${idx}`;
               if (step.type === 'thinking') {
                 return (

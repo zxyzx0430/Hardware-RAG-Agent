@@ -133,29 +133,28 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   setActiveSession: (id) => {
     const { activeSessionId, messages, sessionMessages, isStreaming,
-            streamingSessionId, currentSseRequest } = get();
+            streamingSessionId, currentSseRequest, streamingContent,
+            streamingSteps, streamingStartTime } = get();
     if (id === activeSessionId) return;
     log("info", "chat", `切换会话: ${activeSessionId} → ${id}`);
 
-    // 流式中切换会话：保存部分内容并中止 SSE（符合项目约束）
-    // 不中止会导致切回时空的 streamingContent 覆盖已有内容
+    // 流式中切换会话：保存部分内容到 sessionMessages，但不中止 SSE。
+    // 后台 SSE 继续运行，onEvent 回调中 isActive=false 时会写入 sessionMessages[sid]。
     let finalMessages = messages;
-    if (isStreaming && streamingSessionId) {
-      const { streamingContent, streamingSteps } = get();
+    if (isStreaming && streamingSessionId === activeSessionId) {
+      // 当前活跃会话在流式中：把 streamingContent 同步到最后一条 assistant 消息
       finalMessages = messages.map((m, i) =>
         i === messages.length - 1 && m.role === "assistant"
           ? {
               ...m,
               content: streamingContent || m.content,
               ...(streamingSteps.length > 0
-                ? { activity: { durationMs: 0, steps: streamingSteps, status: "done" as const } }
+                ? { activity: { durationMs: 0, steps: streamingSteps, status: "running" as const } }
                 : {}),
             }
           : m
       );
-      // 中止后台 SSE（apiSSE 的 catch 块会识别为用户中止，不触发 onError）
-      if (currentSseRequest) currentSseRequest.abort();
-      log("info", "chat", `会话 ${streamingSessionId} 流式输出已中止并保存部分内容`);
+      log("info", "chat", `会话 ${streamingSessionId} 流式输出在后台继续（未中止）`);
     }
 
     // 保存当前会话的消息
@@ -166,17 +165,33 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     // 加载目标会话的消息
     const loadedMessages = updatedSessionMessages[id] || [];
+
+    // 如果目标会话正处于流式中（streamingSessionId === id），从 sessionMessages
+    // 恢复 streamingContent，避免切回后空字符串覆盖已有内容。
+    const isTargetStreaming = streamingSessionId === id && !!currentSseRequest;
+    let restoredContent = "";
+    let restoredSteps: ActivityStep[] = [];
+    if (isTargetStreaming) {
+      const lastMsg = loadedMessages[loadedMessages.length - 1];
+      if (lastMsg?.role === "assistant") {
+        restoredContent = typeof lastMsg.content === "string" ? lastMsg.content : "";
+        restoredSteps = lastMsg.activity?.steps || [];
+      }
+      log("info", "chat", `切回流式会话 ${id}，恢复 content (${restoredContent.length} chars)`);
+    }
+
     set({
       activeSessionId: id,
       messages: loadedMessages,
       sessionMessages: updatedSessionMessages,
-      isStreaming: false,
-      streamingContent: "",
-      streamingSteps: [],
+      isStreaming: isTargetStreaming,
+      streamingContent: restoredContent,
+      streamingSteps: restoredSteps,
       streamingSources: [],
-      streamingSessionId: null,
-      streamingStartTime: null,
-      currentSseRequest: null,
+      // 保留 streamingSessionId 和 currentSseRequest — 后台 SSE 继续运行
+      streamingSessionId: isTargetStreaming ? streamingSessionId : streamingSessionId,
+      streamingStartTime: isTargetStreaming ? streamingStartTime : null,
+      currentSseRequest: isTargetStreaming ? currentSseRequest : currentSseRequest,
     });
 
     saveSessionMessages(activeSessionId, finalMessages);
@@ -241,16 +256,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     // 构建请求体：历史消息 + 设置（扁平结构，对齐后端 ChatRequest）
     // 模型优先从当前会话读取（各对话独立），回退到全局设置
-    const { topK, temperature, systemPrompt, longTermMemory, maxTokens } = useSettingsStore.getState();
+    const { topK, temperature, systemPrompt, longTermMemory, maxTokens, relevanceThreshold } = useSettingsStore.getState();
     const { selectedKbIds } = get();
     const currentSession = useSessionStore.getState().sessions.find((s) => s.id === activeSessionId);
     const model = currentSession?.model || useSettingsStore.getState().model;
-    log("info", "chat", `model=${model} topK=${topK} maxTokens=${maxTokens} sessionId=${activeSessionId} systemPrompt="${systemPrompt?.slice(0, 50)}..."`);
+    log("info", "chat", `model=${model} topK=${topK} maxTokens=${maxTokens} threshold=${relevanceThreshold} sessionId=${activeSessionId} systemPrompt="${systemPrompt?.slice(0, 50)}..."`);
     const history = messages.map((m) => ({ role: m.role, content: m.content }));
     const newMsg = { role: "user" as const, content: apiContent };
     const requestBody = {
       messages: [...history, newMsg],
       top_k: topK,
+      relevance_threshold: relevanceThreshold > 0 ? relevanceThreshold / 100 : 0,
       temperature,
       max_tokens: maxTokens,
       system_prompt: systemPrompt,
@@ -345,11 +361,35 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   ? s.streamingContent
                   : (typeof last.content === "string" ? last.content : "");
                 const newContent = prevContent + chunk;
-                msgs[msgs.length - 1] = { ...last, content: newContent };
-                const newSM = { ...s.sessionMessages, [sid]: msgs };
-                saveSessionMessages(sid, msgs);
+
+                // Close any open reasoning/llm thinking step when answer text begins.
+                // Without this, the thinking card stays expanded while text streams below it.
+                let updatedSteps = s.streamingSteps;
                 if (isActive) {
-                  return { streamingContent: newContent, messages: msgs, sessionMessages: newSM };
+                  const steps = [...s.streamingSteps];
+                  const lastStep = steps[steps.length - 1];
+                  if (lastStep && lastStep.type === "thinking" && lastStep.status !== "done") {
+                    steps[steps.length - 1] = { ...lastStep, status: "done" };
+                    updatedSteps = steps;
+                  }
+                  msgs[msgs.length - 1] = { ...last, content: newContent };
+                } else if (last.activity?.steps?.length) {
+                  const steps = [...last.activity.steps];
+                  const lastStep = steps[steps.length - 1];
+                  if (lastStep && lastStep.type === "thinking" && lastStep.status !== "done") {
+                    steps[steps.length - 1] = { ...lastStep, status: "done" };
+                  }
+                  msgs[msgs.length - 1] = { ...last, content: newContent, activity: { ...last.activity, steps } };
+                } else {
+                  msgs[msgs.length - 1] = { ...last, content: newContent };
+                }
+
+                const newSM = { ...s.sessionMessages, [sid]: msgs };
+                // NOTE: saveSessionMessages is intentionally NOT called here.
+                // The store subscribe (line ~927) handles persistence via 500ms debounce
+                // during streaming. Calling it per-token caused main-thread blocking.
+                if (isActive) {
+                  return { streamingContent: newContent, messages: msgs, sessionMessages: newSM, streamingSteps: updatedSteps };
                 } else {
                   return { sessionMessages: newSM };
                 }
@@ -497,15 +537,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
               messages: finalMessages,
             };
           } else {
+            // 后台会话完成：只更新 sessionMessages，不清空全局流式状态
+            // （streamingContent/streamingSessionId/currentSseRequest 属于活跃会话）
             return {
-              isStreaming: false,
-              streamingContent: "",
-              streamingSteps: [],
-              streamingSources: [],
-              streamingSessionId: null,
-              streamingStartTime: null,
-              currentSseRequest: null,
-              _pendingUsage: null,
               sessionMessages: updatedSM,
             };
           }

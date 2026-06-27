@@ -97,7 +97,7 @@ export const useAppStore = create<AppState>((set) => ({
   leftPanelOpen: true,
   rightPanelOpen: true,
   leftPanelWidth: 280,
-  rightPanelWidth: 280,
+  rightPanelWidth: 25,
   rightMode: "workbench",
   wbTab: "serial",
   flashCode: "",

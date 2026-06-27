@@ -238,7 +238,7 @@ async def chat_sse(payload: ChatRequest, request: Request):
                         title = r.metadata.get("title", "未知来源")
                         doc = r.metadata.get("doc_id", "")
                         page = r.metadata.get("chunk_index", 0)
-                        excerpt = r.content[:300]
+                        excerpt = r.content
                         sources.append(sid)
                         yield sse_event("source", {
                             "id": sid,
@@ -257,7 +257,7 @@ async def chat_sse(payload: ChatRequest, request: Request):
 
                     # 把 RAG 上下文注入 system_prompt
                     rag_context = "\n\n".join(
-                        f"[来源: {r.metadata.get('title', '未知')}]\n{r.content[:500]}"
+                        f"[来源: {r.metadata.get('title', '未知')}]\n{r.content}"
                         for r in results[:5]
                     )
                 else:

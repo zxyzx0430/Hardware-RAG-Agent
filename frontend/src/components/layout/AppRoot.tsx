@@ -31,7 +31,9 @@ export function AppRoot() {
   } = useAppStore();
 
   const left = usePanelResize(leftPanelWidth, "left", 180, 500, setLeftPanelWidth);
-  const right = usePanelResize(rightPanelWidth, "right", 200, 600, setRightPanelWidth);
+  // Clamp rightPanelWidth to 15-50% to guard against stale px values (e.g. 280) from hot-reload
+  const safeRightPanelWidth = Math.min(50, Math.max(15, rightPanelWidth));
+  const right = usePanelResize(safeRightPanelWidth, "right", 15, 50, setRightPanelWidth, "pct");
 
   const showKnowledgePage = activeNav === "knowledge";
   const showBookmarkPage = activeNav === "bookmarks";
@@ -48,10 +50,12 @@ export function AppRoot() {
         onMouseDown={left.onMouseDown}
         style={{ cursor: 'col-resize' }}
       />
-      <div className={`panel-btn-strip left${showLeftRail ? '' : ' hidden'}`} id="leftStrip">
+      <div className={`panel-btn-strip left${showChatShell ? '' : ' hidden'}`} id="leftStrip">
         <button className="panel-toggle left" id="leftToggleBtn" onClick={() => setLeftPanelOpen(!leftPanelOpen)}>
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <polyline points="15 18 9 12 15 6" />
+            {leftPanelOpen
+              ? <polyline points="15 18 9 12 15 6" />
+              : <polyline points="9 18 15 12 9 6" />}
           </svg>
         </button>
       </div>
@@ -77,7 +81,7 @@ export function AppRoot() {
               onMouseDown={right.onMouseDown}
               style={{ cursor: 'col-resize' }}
             />
-            <div style={{ width: rightPanelOpen ? rightPanelWidth : 0, overflow: 'hidden', display: 'flex', transition: rightPanelOpen ? 'none' : 'width 0.2s' }}>
+            <div style={{ width: rightPanelOpen ? `${safeRightPanelWidth}%` : 0, overflow: 'hidden', display: 'flex', transition: rightPanelOpen ? 'none' : 'width 0.2s' }}>
               {rightPanelOpen ? <RightPanel /> : null}
             </div>
           </div>

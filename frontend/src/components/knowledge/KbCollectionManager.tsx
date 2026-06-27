@@ -12,6 +12,63 @@ interface Props {
   onClose: () => void;
 }
 
+// ─── Chunk method info (module-level to avoid re-creation on every render) ───
+const CHUNK_METHOD_INFO: Record<string, {
+  principle: string;
+  pros: string[];
+  cons: string[];
+  useCase: string;
+}> = {
+  hybrid: {
+    principle: "基于 RecursiveCharacterTextSplitter 的字符级切分，结合 markdown 标题层级识别。先按 # 标题分段，再按字符数（默认 800-1200）切分子段，内联代码块用占位符保护。",
+    pros: [
+      "速度快（无需 LLM 调用），本地即可完成",
+      "稳定可预测，相同文档每次结果一致",
+      "代码块边界完整（占位符保护机制）",
+      "支持自定义 chunk_size 精调（500-2000）",
+    ],
+    cons: [
+      "无法理解语义，仅按字符位置切分",
+      "跨章节关联弱（相关内容可能分散在不同 chunk）",
+      "对无标题文档退化为纯字符切分",
+      "chunk 数量较多（比 Agent 多 2-3 倍）",
+    ],
+    useCase: "结构良好的技术文档（有 # 标题的 Markdown）、API 手册、教程文档、快速原型验证",
+  },
+  agent: {
+    principle: "用 LLM 分析文档结构，识别语义章节边界，生成 section 摘要和关键词。支持多轮投票提高一致性。对无标题文档自动 fallback 到代码块感知切分（保持代码块完整）。",
+    pros: [
+      "语义完整性高（相关关键词在同一 chunk 共现）",
+      "跨章节关联强（LLM 识别 section 关系）",
+      "chunk 数量少 55%（更高效的 embedding）",
+      "每个 chunk 带 section_title + summary 元数据",
+      "无标题文档自动 fallback，不会完全失效",
+    ],
+    cons: [
+      "需要 LLM API（耗时 2-5 分钟/文档 + API 成本）",
+      "代码块边界偶尔截断（LLM 不总是尊重代码块边界）",
+      "依赖 LLM 质量（模型差时 section 识别不准）",
+      "无标题文档 fallback 后效果接近 HybridChunker",
+    ],
+    useCase: "结构复杂的芯片手册、跨主题技术文档、需要高质量检索的生产环境、对 embedding 成本敏感的场景",
+  },
+  multimodal: {
+    principle: "用 Vision 模型（如 GPT-4o）分析 PDF 页面图像，识别视觉章节边界（表格、图表、代码块布局、分栏），精度最高。",
+    pros: [
+      "精度最高，能识别视觉结构（表格/图表布局）",
+      "适合扫描文档和复杂排版的 PDF",
+      "能理解页面级语义（不仅文字）",
+    ],
+    cons: [
+      "需要 Vision 模型（成本最高）",
+      "速度最慢（每页一次 Vision 调用）",
+      "仅支持 PDF（不支持纯文本/Markdown）",
+      "API 依赖最强，网络波动影响大",
+    ],
+    useCase: "扫描版芯片手册、含大量表格/图表的 PDF、对精度要求极高的生产环境",
+  },
+};
+
 export function KbCollectionManager({ open, onClose }: Props) {
   const { t } = useI18n();
   const {
@@ -259,12 +316,12 @@ export function KbCollectionManager({ open, onClose }: Props) {
       const payload: Partial<CreateKBRequest> = {
         embedding_model: configForm.embedding_model,
         embedding_base_url: configForm.embedding_base_url,
-        chunk_method: configForm.chunk_method as "hybrid" | "agent",
+        chunk_method: configForm.chunk_method as "hybrid" | "agent" | "multimodal",
       };
       if (configForm.embedding_api_key) {
         payload.embedding_api_key = configForm.embedding_api_key;
       }
-      if (configForm.chunk_method === "agent") {
+      if (configForm.chunk_method === "agent" || configForm.chunk_method === "multimodal") {
         payload.agent_chunker_model = configForm.agent_chunker_model;
         payload.agent_chunker_base_url = configForm.agent_chunker_base_url;
         if (configForm.agent_chunker_api_key) {
@@ -316,6 +373,60 @@ export function KbCollectionManager({ open, onClose }: Props) {
     }
   };
 
+  // ─── Chunk method info panel ────────────────────────────────
+  // Shows principle, pros, cons, and use case for each chunk method.
+  // Uses <details> for native collapsible behavior without extra state.
+  const renderChunkMethodInfo = (method: string) => {
+    const data = CHUNK_METHOD_INFO[method];
+    if (!data) return null;
+
+    return (
+      <details
+        style={{
+          marginTop: 6, marginBottom: 10,
+          border: "1px solid var(--border-color, #e0e0e0)",
+          borderRadius: 6, overflow: "hidden",
+          fontSize: 12,
+        }}
+      >
+        <summary style={{
+          cursor: "pointer", padding: "6px 10px",
+          background: "var(--hover-bg, #f5f5f5)",
+          fontWeight: 600, color: "var(--muted-fg, #666)",
+          userSelect: "none",
+        }}>
+          ℹ️ 分块方式说明（原理 / 优缺点 / 适用场景）
+        </summary>
+        <div style={{ padding: "8px 12px", lineHeight: 1.6 }}>
+          {/* Principle */}
+          <div style={{ marginBottom: 8 }}>
+            <span style={{ fontWeight: 600, color: "var(--accent-fg, #0066cc)" }}>原理：</span>
+            <span style={{ color: "var(--fg, #333)" }}>{data.principle}</span>
+          </div>
+          {/* Pros */}
+          <div style={{ marginBottom: 8 }}>
+            <div style={{ fontWeight: 600, color: "#16a34a" }}>✓ 优点</div>
+            <ul style={{ margin: "4px 0 0", paddingLeft: 20, color: "var(--fg, #333)" }}>
+              {data.pros.map((p, i) => <li key={i}>{p}</li>)}
+            </ul>
+          </div>
+          {/* Cons */}
+          <div style={{ marginBottom: 8 }}>
+            <div style={{ fontWeight: 600, color: "#ea580c" }}>✗ 缺点</div>
+            <ul style={{ margin: "4px 0 0", paddingLeft: 20, color: "var(--fg, #333)" }}>
+              {data.cons.map((c, i) => <li key={i}>{c}</li>)}
+            </ul>
+          </div>
+          {/* Use case */}
+          <div>
+            <span style={{ fontWeight: 600, color: "#7c3aed" }}>适用场景：</span>
+            <span style={{ color: "var(--fg, #333)" }}>{data.useCase}</span>
+          </div>
+        </div>
+      </details>
+    );
+  };
+
   return (
     <div className="modal-overlay" onClick={onClose} style={{
       position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
@@ -342,7 +453,18 @@ export function KbCollectionManager({ open, onClose }: Props) {
           position: "sticky", top: 0, background: "var(--bg)", zIndex: 1,
         }}>
           <h2 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>{t('kbCollections')}</h2>
-          <button className="kb-item-icon-btn" onClick={onClose} style={{ fontSize: 16 }}>✕</button>
+          <button
+            onClick={onClose}
+            style={{
+              fontSize: 18, color: "var(--fg)", cursor: "pointer",
+              width: 32, height: 32, flexShrink: 0,
+              display: "inline-flex", alignItems: "center", justifyContent: "center",
+              borderRadius: 6, border: "1px solid var(--border)", background: "var(--card)",
+              transition: "0.15s",
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = "var(--muted)"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = "var(--card)"; }}
+          >✕</button>
         </div>
 
         <div style={{ padding: "16px 20px" }}>
@@ -396,17 +518,14 @@ export function KbCollectionManager({ open, onClose }: Props) {
               <select
                 className="form-input"
                 value={form.chunk_method}
-                onChange={(e) => setForm({ ...form, chunk_method: e.target.value as "hybrid" | "agent" })}
+                onChange={(e) => setForm({ ...form, chunk_method: e.target.value as "hybrid" | "agent" | "multimodal" })}
                 style={{ width: "100%", marginBottom: 4 }}
               >
                 <option value="hybrid">{t('hybrid')}</option>
                 <option value="agent">{t('agent')}</option>
+                <option value="multimodal">{t('multimodal')}</option>
               </select>
-              {form.chunk_method === "agent" && (
-                <p style={{ fontSize: 11, color: "var(--muted-fg)", margin: "4px 0 10px" }}>
-                  {t('agentChunkHint')}
-                </p>
-              )}
+              {renderChunkMethodInfo(form.chunk_method)}
 
               {/* Embedding config */}
               <div style={{ fontWeight: 600, fontSize: 12, color: "var(--muted-fg)", margin: "12px 0 6px", textTransform: "uppercase", letterSpacing: 0.5 }}>
@@ -560,7 +679,7 @@ export function KbCollectionManager({ open, onClose }: Props) {
                         )}
                       </div>
                       <div style={{ fontSize: 11, color: "var(--muted-fg)", marginTop: 2 }}>
-                        {kb.chunk_method === "agent" ? t('agent') : t('hybrid')}
+                        {kb.chunk_method === "agent" ? t('agent') : kb.chunk_method === "multimodal" ? t('multimodal') : t('hybrid')}
                         {kb.embedding_model ? ` · ${kb.embedding_model}` : ""}
                         {` · ${t('docCount')}: ${kb.doc_count}`}
                         {` · ${t('chunkCount')}: ${kb.chunk_count}`}
@@ -704,13 +823,15 @@ export function KbCollectionManager({ open, onClose }: Props) {
                       <div className="field-label" style={{ marginBottom: 4 }}>{t('chunkMethod')}</div>
                       <select
                         className="form-input"
-                        value={configForm.chunk_method as "hybrid" | "agent"}
-                        onChange={(e) => setConfigForm({ ...configForm, chunk_method: e.target.value as "hybrid" | "agent" })}
+                        value={configForm.chunk_method as "hybrid" | "agent" | "multimodal"}
+                        onChange={(e) => setConfigForm({ ...configForm, chunk_method: e.target.value as "hybrid" | "agent" | "multimodal" })}
                         style={{ width: "100%", marginBottom: 10 }}
                       >
                         <option value="hybrid">{t('hybrid')}</option>
                         <option value="agent">{t('agent')}</option>
+                        <option value="multimodal">{t('multimodal')}</option>
                       </select>
+                      {renderChunkMethodInfo(configForm.chunk_method)}
 
                       {/* Embedding config */}
                       <div style={{ fontWeight: 600, fontSize: 12, color: "var(--muted-fg)", margin: "8px 0 6px", textTransform: "uppercase", letterSpacing: 0.5 }}>

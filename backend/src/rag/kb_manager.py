@@ -53,11 +53,47 @@ class FusedResult:
 class BM25Index:
     """BM25 index using jieba tokenization (lazy-loaded)."""
 
+    # Hardware terms that jieba would otherwise split into fragments.
+    # Adding them to jieba's dictionary ensures exact-match for BM25.
+    _HARDWARE_TERMS = [
+        # Chip families
+        "STM32", "STM32F1", "STM32F4", "STM32H7", "STM32G4", "STM32L4",
+        "ESP32", "ESP32-S3", "ESP32-C3", "ESP32-C6", "ESP8266",
+        "Arduino", "Raspberry", "RP2040", "GD32", "CH32", "N32",
+        # Protocols
+        "I2C", "IIC", "SPI", "UART", "USART", "CAN", "USB", "DMA",
+        "PWM", "ADC", "DAC", "GPIO", "JTAG", "SWD", "QSPI",
+        # Packages
+        "LQFP", "QFN", "BGA", "SOP", "TSSOP", "MSOP",
+        # Units
+        "MHz", "GHz", "kHz", "kbyte", "Mbyte",
+        # Common modules
+        "MPU6050", "BME280", "DHT22", "DHT11", "OLED", "SSD1306",
+        "WS2812", "NEOPIXEL", "HC-SR04", "INA219", "MAX7219",
+        # Concepts
+        "Strapping", "Bootloader", "Flash", "EEPROM", "Watchdog",
+        "Interrupt", "Timer", "Counter", "Oscillator", "Crystal",
+        "Pull-up", "Pull-down", "Open-drain", "Push-pull",
+        "HAL", "LL", "CMSIS", "FreeRTOS", "Arduino",
+    ]
+
+    _dict_loaded = False
+
     def __init__(self, corpus: list[str], metadatas: list[dict] | None = None):
         self.corpus = corpus
         self.metadatas = metadatas or [{} for _ in corpus]
         self._bm25 = None
         self._tokenized = None
+
+    @classmethod
+    def _load_hardware_dict(cls):
+        """Load hardware terms into jieba dictionary (once per process)."""
+        if cls._dict_loaded:
+            return
+        import jieba
+        for term in cls._HARDWARE_TERMS:
+            jieba.add_word(term, freq=1000)
+        cls._dict_loaded = True
 
     def _ensure_index(self):
         if self._bm25 is not None:
@@ -65,6 +101,7 @@ class BM25Index:
         import jieba  # Lazy load (~2s first time)
         from rank_bm25 import BM25Okapi
 
+        self._load_hardware_dict()
         self._tokenized = [jieba.lcut(doc) for doc in self.corpus]
         self._bm25 = BM25Okapi(self._tokenized)
 
@@ -72,6 +109,7 @@ class BM25Index:
         """Return top-k (doc_index, score)."""
         self._ensure_index()
         import jieba
+        self._load_hardware_dict()
 
         tokenized_query = jieba.lcut(query)
         scores = self._bm25.get_scores(tokenized_query)
@@ -99,55 +137,146 @@ class BM25Index:
         return idx
 
 
+def _make_rrf_key(r: SearchResult, fallback_idx: int) -> str:
+    """Build a dedup key for RRF fusion: 'doc_id#chunk_index'.
+
+    Handles chunk_index being None (explicitly set) by falling back to
+    fallback_idx. Without this, dict.get('chunk_index', i) returns None
+    (not i) when the key exists with value None, causing the same chunk
+    to be split into separate entries across vector/BM25 lists.
+    """
+    ci = r.metadata.get("chunk_index")
+    if ci is None:
+        ci = fallback_idx
+    return f"{r.doc_id}#{ci}"
+
+
 def rrf_fusion(
     vector_results: list[SearchResult],
     bm25_results: list[SearchResult],
     constant_k: int = 60,
 ) -> list[SearchResult]:
     """
-    Reciprocal Rank Fusion: score = sum(1/(k + rank_v)) + sum(1/(k + rank_b))
+    Reciprocal Rank Fusion: uses RRF for *ranking*, but preserves the original
+    0-1 similarity scores for *display* and *threshold filtering*.
+
+    RRF score = sum(1/(k + rank_v + 1)) + sum(1/(k + rank_b + 1))
+    Display score = max(vector_cosine, bm25_normalized) — both are 0-1.
 
     Args:
-        vector_results: Results from vector search, already sorted by score.
-        bm25_results: Results from BM25 search, already sorted by score.
-        constant_k: RRF constant (default 60).
+        vector_results: Results from vector search (cosine 0-1), sorted by score.
+        bm25_results: Results from BM25 search (normalized 0-1), sorted by score.
+        constant_k: RRF constant (default 60, must be >= 1).
 
     Returns:
-        Fused results sorted by RRF score descending.
+        Fused results sorted by RRF score, with original 0-1 scores restored.
     """
-    # Build rank maps by doc_id + chunk_index
+    # P1: Validate constant_k to prevent division by zero or negative RRF scores
+    if constant_k < 1:
+        logger.warning(f"[RRF] constant_k={constant_k} is too small, clamping to 1")
+        constant_k = 1
+
+    # ── Diagnostic logging: input summary ──
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            f"[RRF] Input: vector={len(vector_results)} results, "
+            f"bm25={len(bm25_results)} results, k={constant_k}"
+        )
+        for i, r in enumerate(vector_results[:5]):
+            logger.debug(
+                f"[RRF]   v[{i}] doc={r.doc_id} chunk={r.metadata.get('chunk_index', '?')} "
+                f"score={r.score:.4f}"
+            )
+        for i, r in enumerate(bm25_results[:5]):
+            logger.debug(
+                f"[RRF]   b[{i}] doc={r.doc_id} chunk={r.metadata.get('chunk_index', '?')} "
+                f"score={r.score:.4f}"
+            )
+
+    # Build rank maps + original score maps by doc_id + chunk_index
     v_rank: dict[str, int] = {}
+    v_orig: dict[str, float] = {}
     for i, r in enumerate(vector_results):
-        key = f"{r.doc_id}#{r.metadata.get('chunk_index', i)}"
+        key = _make_rrf_key(r, i)
         v_rank[key] = i
+        v_orig[key] = r.score
 
     b_rank: dict[str, int] = {}
+    b_orig: dict[str, float] = {}
     for i, r in enumerate(bm25_results):
-        key = f"{r.doc_id}#{r.metadata.get('chunk_index', i)}"
+        key = _make_rrf_key(r, i)
         b_rank[key] = i
+        b_orig[key] = r.score
 
     # Collect all unique results (use same key logic as rank maps)
     all_results: dict[str, SearchResult] = {}
     for i, r in enumerate(vector_results):
-        key = f"{r.doc_id}#{r.metadata.get('chunk_index', i)}"
+        key = _make_rrf_key(r, i)
         all_results[key] = r
     for i, r in enumerate(bm25_results):
-        key = f"{r.doc_id}#{r.metadata.get('chunk_index', i)}"
+        key = _make_rrf_key(r, i)
         if key not in all_results:
             all_results[key] = r
 
-    # Compute RRF scores
-    scored: list[tuple[float, SearchResult]] = []
+    # Compute RRF scores for ranking; preserve original 0-1 scores for display
+    scored: list[tuple[float, float, SearchResult]] = []
     for key, result in all_results.items():
-        score = 0.0
-        if key in v_rank:
-            score += 1.0 / (constant_k + v_rank[key] + 1)
-        if key in b_rank:
-            score += 1.0 / (constant_k + b_rank[key] + 1)
-        scored.append((score, result))
+        rrf_score = 0.0
+        orig_score = 0.0
+        source_parts: list[str] = []
 
+        if key in v_rank:
+            v_contrib = 1.0 / (constant_k + v_rank[key] + 1)
+            rrf_score += v_contrib
+            orig_score = v_orig[key]
+            source_parts.append(f"v(rank={v_rank[key]},contrib={v_contrib:.5f},score={v_orig[key]:.4f})")
+
+        if key in b_rank:
+            b_contrib = 1.0 / (constant_k + b_rank[key] + 1)
+            rrf_score += b_contrib
+            prev_orig = orig_score
+            orig_score = max(orig_score, b_orig[key])
+            source_parts.append(
+                f"b(rank={b_rank[key]},contrib={b_contrib:.5f},score={b_orig[key]:.4f}"
+                f"{'[max]' if b_orig[key] > prev_orig else '[skip]'})"
+            )
+
+        # P1: Clamp orig_score to 0-1 to defend against negative BM25 scores
+        # (rank_bm25 can return negatives for very short docs) or negative cosine.
+        orig_score = max(0.0, min(1.0, orig_score))
+
+        scored.append((rrf_score, orig_score, result))
+
+        # ── Diagnostic logging: per-result RRF computation ──
+        if logger.isEnabledFor(logging.DEBUG):
+            content_preview = result.content[:50].replace("\n", " ")
+            logger.debug(
+                f"[RRF] key={key} | rrf={rrf_score:.5f} | orig={orig_score:.4f} | "
+                f"{' + '.join(source_parts)} | {content_preview}"
+            )
+
+    # Sort by RRF score for ranking
     scored.sort(key=lambda x: x[0], reverse=True)
-    return [r for _, r in scored]
+
+    # ── Diagnostic logging: final ranking ──
+    if logger.isEnabledFor(logging.DEBUG) and scored:
+        logger.debug(f"[RRF] Output: {len(scored)} fused results (sorted by RRF score)")
+        for rank, (rrf_s, orig_s, r) in enumerate(scored[:10]):
+            logger.debug(
+                f"[RRF]   #{rank} doc={r.doc_id} chunk={r.metadata.get('chunk_index', '?')} "
+                f"rrf={rrf_s:.5f} display_score={orig_s:.4f}"
+            )
+
+    # Return with original 0-1 scores restored (not RRF scores)
+    return [
+        SearchResult(
+            content=r.content,
+            metadata=r.metadata,
+            score=orig_score,
+            doc_id=r.doc_id,
+        )
+        for _, orig_score, r in scored
+    ]
 
 
 class KnowledgeBaseManager:
@@ -257,8 +386,8 @@ class KnowledgeBaseManager:
 
             # Invalidate store cache — next _get_store will create fresh store with new config
             self._stores.pop(kb_id, None)
-            # Also mark BM25 stale since embedding change might affect search
-            self._bm25_stale.add(kb_id)
+            # Note: BM25 index is not invalidated here because BM25 only depends
+            # on the text corpus (not embedding config), which hasn't changed.
 
             logger.info(f"Updated KB config: {kb_id} (cache invalidated)")
             return kb
@@ -367,10 +496,14 @@ class KnowledgeBaseManager:
     # ═══════════════════════════════════════
 
     def ingest_chunks(self, kb_id: str, chunks: list, doc_id: str) -> int:
-        """Ingest pre-chunked data into KB's ChromaDB + mark BM25 stale.
+        """Ingest pre-chunked data into KB's ChromaDB + rebuild BM25 eagerly.
 
         Delegates to HardwareVectorStore.ingest_chunks() which handles
         embedding checks and metadata enrichment.
+
+        P2-3: BM25 is rebuilt eagerly here (ingest runs in a background task,
+        so this doesn't block user requests). This avoids blocking the next
+        search with a synchronous BM25 rebuild.
         """
         kb = self.get_kb(kb_id)
         if not kb:
@@ -389,8 +522,17 @@ class KnowledgeBaseManager:
         # Delegate to store's ingest_chunks (handles embeddings check + metadata)
         ingested = store.ingest_chunks(chunks, doc_id)
 
-        # Mark BM25 as stale
-        self._bm25_stale.add(kb_id)
+        # P2-3: Eagerly rebuild BM25 so search doesn't block on rebuild later.
+        # Only rebuild if chunks were actually vectorized (ingested > 0). If
+        # embedding is not configured, BM25 would be empty anyway.
+        if ingested > 0:
+            try:
+                self._rebuild_bm25(kb_id)
+                self._bm25_stale.discard(kb_id)
+            except Exception:
+                # Fallback: mark stale so search rebuilds lazily
+                self._bm25_stale.add(kb_id)
+                logger.warning(f"BM25 eager rebuild failed for KB {kb_id}, will rebuild on next search")
 
         logger.info(f"Ingested {ingested} chunks into KB {kb_id}")
         return ingested
@@ -464,11 +606,16 @@ class KnowledgeBaseManager:
         data = export_data.get("data", {})
         imported = store.import_data(data)
 
-        # Mark BM25 as stale so it gets rebuilt on next search
+        # P2-3: Eagerly rebuild BM25 instead of marking stale.
         if imported > 0:
-            self._bm25_stale.add(kb_id)
             # Invalidate store cache to force reload
             self._stores.pop(kb_id, None)
+            try:
+                self._rebuild_bm25(kb_id)
+                self._bm25_stale.discard(kb_id)
+            except Exception:
+                self._bm25_stale.add(kb_id)
+                logger.warning(f"BM25 eager rebuild failed for KB {kb_id}, will rebuild on next search")
 
         logger.info(f"Imported {imported} chunks into KB {kb_id}")
         return imported
@@ -477,8 +624,14 @@ class KnowledgeBaseManager:
     # Search
     # ═══════════════════════════════════════
 
-    def search(self, kb_id: str, query: str, k: int = 5) -> list[FusedResult]:
-        """Search a single KB: BM25 + Vector → RRF fusion."""
+    def search(self, kb_id: str, query: str, k: int = 5, score_threshold: float = 0.0) -> list[FusedResult]:
+        """Search a single KB: BM25 + Vector → RRF fusion.
+
+        Args:
+            score_threshold: Minimum cosine similarity (0.0-1.0) for vector results.
+                             Results below this score are filtered out by ChromaDB.
+                             BM25-only matches are not affected by this threshold.
+        """
         kb = self.get_kb(kb_id)
         if not kb or not kb.enabled:
             return []
@@ -487,14 +640,35 @@ class KnowledgeBaseManager:
         if not store:
             return []
 
-        # Vector search
-        vector_results = store.search(query, k=k)
+        # Vector search (with optional score threshold filtering)
+        vector_results = store.search(query, k=k, score_threshold=score_threshold)
 
         # BM25 search
         bm25_results = self._bm25_search(kb_id, query, k)
 
         # RRF fusion
         fused = rrf_fusion(vector_results, bm25_results)
+
+        # Apply unified threshold filtering on fused results. rrf_fusion
+        # preserves original 0-1 scores (max of vector cosine and BM25
+        # normalized), so a single threshold filters both paths consistently.
+        pre_filter_count = len(fused)
+        if score_threshold > 0.0:
+            fused = [r for r in fused if r.score >= score_threshold]
+
+        # ── Diagnostic logging: final search summary ──
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                f"[SEARCH] KB={kb_id} query='{query[:60]}' | "
+                f"vector={len(vector_results)} bm25={len(bm25_results)} "
+                f"fused={pre_filter_count} threshold={score_threshold:.2f} → "
+                f"{len(fused)} passed"
+            )
+            for i, r in enumerate(fused[:5]):
+                logger.debug(
+                    f"[SEARCH]   #{i} doc={r.doc_id} chunk={r.metadata.get('chunk_index', '?')} "
+                    f"score={r.score:.4f} | {r.content[:50]}"
+                )
 
         return [
             FusedResult(
@@ -508,13 +682,17 @@ class KnowledgeBaseManager:
             for r in fused[:k]
         ]
 
-    def search_all_enabled(self, query: str, k: int = 3, kb_ids: Optional[list[str]] = None) -> list[FusedResult]:
+    def search_all_enabled(
+        self, query: str, k: int = 3, kb_ids: Optional[list[str]] = None,
+        score_threshold: float = 0.0,
+    ) -> list[FusedResult]:
         """Search all enabled KBs (or selected KBs if kb_ids provided), merge results.
 
         Args:
             query: Search query text
             k: Top-k results to return
             kb_ids: If provided, only search these KBs; if None/empty, search all enabled KBs
+            score_threshold: Minimum cosine similarity (0.0-1.0) for vector results.
         """
         db = self._db_factory()
         try:
@@ -528,7 +706,7 @@ class KnowledgeBaseManager:
         all_results: list[FusedResult] = []
         for kb in kbs:
             try:
-                results = self.search(kb.id, query, k=k)
+                results = self.search(kb.id, query, k=k, score_threshold=score_threshold)
                 all_results.extend(results)
             except Exception:
                 logger.exception(f"Search failed for KB {kb.id}")
@@ -612,7 +790,8 @@ class KnowledgeBaseManager:
 
     def _bm25_search(self, kb_id: str, query: str, k: int) -> list[SearchResult]:
         """BM25 search for a KB."""
-        # Rebuild if stale
+        # P2-3: Stale rebuild is a fallback. Normally BM25 is rebuilt eagerly
+        # in ingest_chunks/import_kb/delete_doc, so this path rarely triggers.
         if kb_id in self._bm25_stale:
             self._rebuild_bm25(kb_id)
             self._bm25_stale.discard(kb_id)
@@ -634,15 +813,45 @@ class KnowledgeBaseManager:
         bm25 = self._bm25_indices[kb_id]
         results = bm25.search(query, k)
 
+        # Normalize BM25 scores to 0-1 range so they're comparable with
+        # cosine similarity from vector search. Without this, raw BM25
+        # scores (which can be thousands) leak into FusedResult.score and
+        # show up as "2000%" relevance in the UI.
+        # P1: rank_bm25.BM25Okapi can return NEGATIVE scores for very short
+        # documents (IDF goes negative when a term appears in most docs).
+        # We clamp both max_score fallback and per-doc normalized score to
+        # avoid leaking negatives into RRF fusion / display.
+        max_score = results[0][1] if results and results[0][1] > 0 else 1.0
+
+        # ── Diagnostic logging: BM25 raw + normalized scores ──
+        if logger.isEnabledFor(logging.DEBUG) and results:
+            logger.debug(
+                f"[BM25] KB={kb_id} query='{query[:60]}' k={k} | "
+                f"{len(results)} results, max_raw={max_score:.4f}"
+            )
+            for rank, (doc_idx, raw_score) in enumerate(results[:5]):
+                # P1: Clamp negative raw scores to 0 for display
+                norm = max(0.0, raw_score / max_score) if max_score > 0 else 0.0
+                meta = bm25.metadatas[doc_idx] if doc_idx < len(bm25.metadatas) else {}
+                doc_id = meta.get("doc_id", "?")
+                content_preview = bm25.corpus[doc_idx][:40].replace("\n", " ") if doc_idx < len(bm25.corpus) else ""
+                logger.debug(
+                    f"[BM25]   #{rank} doc_idx={doc_idx} doc_id={doc_id} "
+                    f"raw={raw_score:.4f} norm={norm:.4f} | {content_preview}"
+                )
+
         # Convert to SearchResult with metadata from BM25 index
         search_results = []
         for doc_idx, score in results:
             if doc_idx < len(bm25.corpus):
                 meta = bm25.metadatas[doc_idx] if doc_idx < len(bm25.metadatas) else {}
+                # P1: Clamp negative BM25 scores to 0 — BM25Okapi can return
+                # negatives for very short docs (IDF < 0 when term is common).
+                normalized = max(0.0, score / max_score) if max_score > 0 else 0.0
                 search_results.append(SearchResult(
                     content=bm25.corpus[doc_idx],
-                    metadata={**meta, "bm25_score": score, "doc_idx": doc_idx},
-                    score=score,
+                    metadata={**meta, "bm25_score": score, "bm25_score_normalized": normalized, "doc_idx": doc_idx},
+                    score=normalized,
                     doc_id=meta.get("doc_id", ""),
                 ))
 
@@ -663,7 +872,18 @@ class KnowledgeBaseManager:
             collection = store.db.get()
             texts = collection.get("documents", [])
             metadatas = collection.get("metadatas", [])
+
+            # Empty corpus (e.g. last doc deleted): clear stale index + pkl
+            # file so subsequent searches don't return deleted documents.
             if not texts:
+                self._bm25_indices.pop(kb_id, None)
+                bm25_path = BM25_DIR / f"{kb.collection_name}.pkl"
+                if bm25_path.exists():
+                    try:
+                        bm25_path.unlink()
+                    except Exception:
+                        logger.warning(f"Failed to remove BM25 pkl for KB {kb_id}")
+                logger.info(f"BM25 index cleared for KB {kb_id} (empty corpus)")
                 return
 
             if not metadatas:
@@ -676,6 +896,8 @@ class KnowledgeBaseManager:
             logger.info(f"Rebuilt BM25 index for KB {kb_id}: {len(texts)} docs")
         except Exception:
             logger.exception(f"Failed to rebuild BM25 for KB {kb_id}")
+            # Clear stale in-memory index so we don't return deleted docs.
+            self._bm25_indices.pop(kb_id, None)
 
 
 # ─── Singleton ───

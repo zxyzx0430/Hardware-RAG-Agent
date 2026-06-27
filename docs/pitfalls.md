@@ -2,6 +2,52 @@
 
 这个文件记录项目推进中已经踩过、已经定位或修复的问题。每条记录尽量短，重点写清楚：错误现象、为什么错、怎么改、下次注意什么。
 
+## 2026-06-27 - HybridChunker 表格/列表被切分（所有 chunk_size 都有）
+
+- 错误现象：用户反馈 `### 1.3 UART 与 SPI、I2C 的对比` 只有 48 chars，表格被切到下一个 chunk；`### 1.4 UART 应用场景` 只有 43 chars，列表被切到下一个 chunk；`### 2.2 RS-232 电平` 385 chars，芯片对比表被切走。扫描所有 KB 发现 **所有 hybrid chunk_size (500/800/1200/2000) 都有此问题**，chunk_size 越小越严重（500: 18% tiny, 2000: 6% tiny），agent chunker 无此问题。
+- 错误原因：`_DEFAULT_SEPARATORS` 中 `\n\n` 优先级太高，splitter 会在标题和表格之间的 `\n\n` 处切分，产生 "标题+引言" (40-80 chars) + "表格" 两个 chunk。`_merge_tiny_chunks` 只支持向后合并（tiny → previous），当 tiny chunk 是 section 的第一个 chunk 时，前一个 chunk 是不同 section，`same_section=false` 不合并。
+- 修复方式（3 处改动，[hybrid_chunker.py](file:///E:/Desktop/agent/backend/src/rag/chunking/hybrid_chunker.py)）：
+  1. separators 加入 `\n\n|`（表格边界），放在 `\n\n` 之前，让 splitter 优先在表格行之间切分而不是标题后
+  2. `_merge_tiny_chunks` 增加 Pass 2 向前合并：tiny chunk 合并到下一个同 section chunk（包括代码块），解决"section 第一个 chunk 太小"问题
+  3. 预过滤纯符号 chunk（`---`、`===`、`|---|`），这些是 markdown 分隔线无检索价值
+- 效果：tiny chunks 从 58 降到 11（-81%），symbol-only 从 1 降到 0，用户提到的三个截断点全部修复（标题+表格/列表完整在同一 chunk）
+- 下次注意：
+  1. **separators 顺序很重要**——表格边界 `\n\n|` 必须在 `\n\n` 之前，否则 splitter 会在标题后切分
+  2. **merge 逻辑要双向**——只向后合并会遗漏 section 第一个 chunk 太小的情况
+  3. **不同 chunk_size 都可能有同一问题**——排查时不要只看一个 chunk_size，要全量扫描所有 KB
+  4. 剩余 11 个 tiny chunks 是章节标题+引言（如 "## 4. STM32 USART 寄存器详解"），短是因为子章节被切成独立 section，有检索价值，不应合并
+
+## 2026-06-27 - AgentChunker 504 Gateway Time-out（非流式调用触发 nginx 60s 超时）
+
+- 错误现象：AgentChunker 对 150K 字符文档分 2 个 80K batch 调用 `oc/deepseek-v4-flash`，每个 batch 的 LLM 响应需要 ~200 秒（生成 6779 completion tokens），但代理 `https://9router.zxyzx.bbroot.com/v1` 的 nginx 有 60 秒超时，导致绝大多数请求返回 `504 Gateway Time-out`。SDK 默认 `max_retries=2` 偶尔能撞上快速响应成功，但失败率极高（batch 1 成功、batch 2 连续 6 次 504）。
+- 错误原因：使用**非流式** `chat.completions.create(stream=False)` 调用——LLM 必须生成完整个 JSON 响应（6779 tokens）才开始返回任何字节，nginx 在 60 秒内没收到响应就关闭连接返回 504。**不是配置问题**：API key、URL、模型名都正确（已通过 `/v1/models` 列表和 `_probe_api.py` 验证 80K prompt 在 40 秒内能返回）。**也不是 batch 大小问题**：80K 是合理默认值，真正的瓶颈在 completion 生成时间。
+- 修复方式：改为**流式调用** `stream=True, stream_options={"include_usage": True}`，LLM 边生成边发送 token，nginx 看到持续数据流就不会超时。即使总生成时间 200+ 秒，连接也能保持活跃。代码位于 [agent_chunker.py](file:///E:/Desktop/agent/backend/src/rag/chunking/agent_chunker.py#L605-L642)。
+- 下次注意：
+  1. **代理 API + 长生成任务必须用流式**——任何 completion >2K tokens 的调用都可能超过 nginx 60s 超时
+  2. 504 不一定是配置错误，先用 `GET /v1/models` 验证模型名存在，再用渐进式 prompt 大小（5K→20K→40K→80K）测试基线延迟
+  3. 不要盲目添加 `max_retries=0` 或 `timeout=120`——这会**禁用** SDK 内置的指数退避重试，反而更糟
+  4. SDK 默认 `max_retries=2`（3 次尝试）对瞬时 504 有效，但对系统性超时无效——流式才是根治方案
+
+## 2026-06-27 - ChromaDB 批量插入限制（8839 chunks 超过 max batch size 5461）
+
+- 错误现象：AgentChunker 对 207KB 的 `04-cortexm-interrupt.md` 产生 8839 chunks，调用 `kb_manager.ingest_chunks()` 时 ChromaDB 抛出 `ValueError: Batch size of 8839 is greater than max batch size of 5461`，整个测试在 doc 4 处崩溃退出。
+- 错误原因：`vector_store.py` 的 `ingest_chunks()` 方法直接调用 `self.db.add_documents(lc_docs)` 一次性插入所有文档，但 ChromaDB 的 Rust 后端限制单次 upsert 最多 5461 条。当 AgentChunker 产生过多小 chunk 时（207KB 文档产生 8839 chunks = 平均 23 字符/chunk），就会超限。
+- 修复方式：在 [vector_store.py](file:///E:/Desktop/agent/backend/src/rag/vector_store.py#L408-L424) 的 `add_documents` 调用前加分批逻辑，每 5000 条一批（安全余量低于 5461），循环插入。
+- 下次注意：
+  1. ChromaDB 批量插入上限是 5461，任何 `add_documents` 调用都要考虑分批
+  2. AgentChunker 的 `max_chunks=500` 参数目前只警告不强制——如果 LLM 识别过多 section，chunk 数会爆炸增长（实测 207KB 文档产生 8839 chunks）
+  3. 这两个问题是关联的：流式修复让 LLM 调用不再 504，导致更多文档能跑到分块阶段，从而暴露了 chunk 数过多 + ChromaDB 批量限制的下游问题
+
+## 2026-06-27 - AgentChunker chunk 数量爆炸（非 PDF 文档页码去重缺失）
+
+- 错误现象：AgentChunker 对 150K 字符的文档产生 6831 chunks（目标 300-2000），207K 文档产生 8445 chunks。每个 chunk 平均仅 23 字符，远低于 sub_chunk_size=1000 的目标。embedding 阶段每个 chunk 需要单独调 DashScope API（~1s），8445 chunks 需要 2.3 小时，测试无法在合理时间内完成。
+- 错误原因：非 PDF 文档使用合成页码标记（每 80K 字符一个 `<!-- PAGE:N -->`），LLM 识别的 section 都用 `start_page=1, end_page=1`。但 `get_text_for_page_range(full_text, 1, 1)` 对每个 section 返回**整页 80K 文本**——同一页上 92 个 section 都获得相同的 80K 文本，每个被 sub-splitter 切成 80 个 1000 字符 chunks，最终 92 × 80 = 7360 个**重复** chunks。
+- 修复方式：在 [agent_chunker.py](file:///E:/Desktop/agent/backend/src/rag/chunking/agent_chunker.py#L1061-L1096) 的 `_build_chunks` 末尾加两步：1) 指纹去重（`compute_fingerprint` 比较，移除完全相同的 chunks），2) 强制 `max_chunks=500` 上限（之前只警告不强制）。
+- 下次注意：
+  1. 非 PDF 文档的合成页码只是 batch 分割的辅助手段，**不能**当作真正的页码用于 section 文本提取——同一页上的所有 section 会获得相同文本
+  2. 任何 chunk 生产流程都要加去重步骤——`compute_fingerprint` 已有，但在 `_build_chunks` 里没被用来去重
+  3. `max_chunks` 参数必须强制执行，不能只警告——否则上游 bug 会导致 chunk 数爆炸，拖垮下游 embedding 和 ChromaDB
+
 ## 记录格式
 
 ```md
@@ -906,5 +952,125 @@ branchThread 会话 ID 不一致 + 后端 CRUD 不返回分支字段
   3. **ChunkTrace 透明度**：新增 `ChunkTrace` 和 `RoundResult` dataclass，记录 model/num_rounds/temperature/toc_entries/num_batches/每轮 sections_found/elapsed_seconds/error/voted_sections/disputed_sections/final_chunks/total_elapsed/config，嵌入每个 chunk 的 `metadata["agent_trace"]`；`chunk()` 方法每步都有 `logger.info` 日志（TOC/batches/每轮 LLM 调用/vote/build）
   4. **API 暴露新字段**：`get_doc_chunks` 端点新增 `is_code_block`/`has_code_block`/`boundary_disputed`/`section_summary`/`section_keywords`/`section_confidence`/`agent_trace`（trace 做了摘要避免响应过大）；`_get_kb_chunker` 预留了 `num_rounds`/`max_batch_chars`/`sub_chunk_size` 的 KB 级配置接口
 - **下次注意**：1) LLM 驱动的处理流程必须有完整的 trace 数据结构记录每步决策，不能只靠日志——日志是给人看的，trace 是给 API/前端看的；2) Agent chunker 的子分块逻辑必须复用 HybridChunker 的代码块保护技术，不能用裸 RecursiveCharacterTextSplitter；3) prompt 模板要双语（中文项目用中文为主）、要有具体规则和示例、要可通过构造参数覆盖；4) API 返回的 chunk 元数据要尽可能丰富，让用户能判断分块质量——`is_code_block`/`boundary_disputed`/`section_summary`/`agent_trace` 都是关键透明度字段。
+
+## 2026-06-26 - PowerShell 内联 python -c 引号转义失败
+
+- **错误现象**：在 PowerShell 中用 `python -c "..."` 传递含 f-string 双引号的测试脚本（如 `print(f"  {s[\"title\"]}")`），报 `SyntaxError: '[' was never closed`。
+- **错误原因**：PowerShell 对 `\"` 的转义处理与 Python 字符串语义冲突，嵌套双引号在 `python -c "..."` 的外层双引号中被 PowerShell 提前截断，导致 Python 收到的源码残缺。
+- **修复方式**：放弃内联 `python -c`，改用 Write 工具写临时 `.py` 测试文件再 `python _tmp_test_mm.py` 执行，验证后删除。
+- **下次注意**：PowerShell 下运行含嵌套引号/花括号的 Python 代码，优先用临时文件；内联 `python -c` 仅适合无引号冲突的极简脚本。
+
+## 2026-06-26 - MultimodalChunker 批次边界切断跨页 section
+
+- **错误现象**：多模态分块器按 `batch_size=5` 切批，若某逻辑章节横跨第 4-7 页（批次 1=1-5，批次 2=6-10），批次 1 的 LLM 只看到第 5 页会把 section 截断到第 5 页，批次 2 的 LLM 又把它当新 section 从第 6 页开始——一个逻辑章节被切成两个 chunk，破坏语义完整性。
+- **错误原因**：原实现 `page_data[i:i+batch_size]` 无重叠，相邻批次无共享上下文，LLM 无法识别跨边界 section 的连续性。
+- **修复方式**：1) 新增 `_create_batches_with_overlap`，批次间保留 1 页重叠（batch_size=5 → 步长 4，批次 1=1-5，批次 2=5-9，批次 3=9-12）；2) 新增 `_merge_cross_batch_sections` 后处理，按 start_page 排序后，若相邻 section 页码重叠（`curr_start <= prev_end`）且标题相似（`_titles_similar` 归一化比较），合并为一个 section 取并集页码范围/flags/keywords；3) 新增 `_titles_similar` 标题归一化（去除编号/标点/空格，支持包含匹配）；4) 补 `max_chunks=500` 上限警告。
+- **下次注意**：基于批次（文本或图像）的 LLM 分块器，批次边界都会切断跨边界 section，必须加重叠 + 后处理合并；标题相似度比较要先归一化（去编号/标点），再用包含匹配兜底"Overview" vs "Overview of GPIO"这类变体。
+
+## 2026-06-26 - BM25 原始分数泄漏 + 阈值只过滤向量不过滤 BM25
+
+- **错误现象**：用户设置相关度阈值 70%，但低于 70% 的结果仍被召回；部分来源显示相关度 2000%（BM25 原始分），另一些明明相关的结果只有 1%（因归一化时除以 maxScore=2000）。
+- **错误原因**：1) `_bm25_search` 直接用 BM25 原始分（可达数千）作为 `SearchResult.score`；2) `rrf_fusion` 返回 `[r for _, r in scored]`，丢弃 RRF 融合分，保留原始 `SearchResult.score`——向量结果保留 cosine 0-1，BM25-only 结果保留原始分 2000+；3) `score_threshold` 只传给 ChromaDB 的向量搜索，BM25 路径完全绕过阈值。
+- **修复方式**：1) `_bm25_search` 中将 BM25 分数归一化到 0-1（`score / max_score`）；2) `search()` 在 RRF 融合后统一过滤 `fused = [r for r in fused if r.score >= score_threshold]`；3) 前端 `ChatArea.tsx` 改用 `src.score * 100` 显示实际百分比，不再除以 `maxScore` 归一化。
+- **下次注意**：混合检索（向量 + BM25）的两路分数必须在融合前归一化到同一量纲；阈值过滤必须在融合后统一应用，不能只作用于某一路径；`rrf_fusion` 返回时应保留 RRF 分数而非原始分数。
+
+## 2026-06-26 - 删除文档后仍可引用：vector_store 静默吞异常 + BM25 缓存未清
+
+- **错误现象**：用户删除文档后在对话中仍能引用到该文档的数据。
+- **错误原因**：1) `vector_store.delete_document` 用 try/except 吞掉所有异常返回 0，导致 DB 记录删除成功但向量残留（孤儿向量）；2) `_rebuild_bm25` 在 corpus 为空（最后一个文档删除）或重建失败时未清理内存中的 `_bm25_indices` 缓存，后续搜索仍返回已删除文档。
+- **修复方式**：1) `delete_document` 移除 try/except，失败时 raise，让调用方 `kb_routes` 的错误处理生效（返回 `VECTOR_DELETE_FAILED` 阻止 DB 记录删除）；2) `_rebuild_bm25` 在 corpus 为空时删除 pkl 文件 + pop 内存索引，在重建失败时也 pop 内存索引。
+- **下次注意**：删除操作必须保证 DB 记录和向量/BM25 索引的原子性——任一失败都要阻止另一侧提交；缓存清理要覆盖空数据路径和异常路径，否则会产生脏读。
+
+## 2026-06-26 - BigChunkExpander 组件删除后引用残留导致 TS 编译失败
+
+- **错误现象**：移除 BigChunkExpander 组件定义后，RightPanel.tsx 第 153 行仍引用 `<BigChunkExpander>`，TypeScript 编译报错。
+- **错误原因**：删除组件时只删了函数定义，漏了 JSX 使用处。
+- **修复方式**：删除 `{src.small_chunk_id ? <BigChunkExpander smallChunkId={src.small_chunk_id} /> : null}` 这行；同时清理 globals.css 中的 `.bigchunk-*` 样式块。
+- **下次注意**：删除 React 组件时用 `Grep` 全局搜索组件名，确保引用处和定义处一起清理；CSS 中对应的样式类也要一并删除避免死代码。
+
+## 2026-06-26 - HybridChunker small_chunk_size=500 导致中文语义截断
+
+- **错误现象**：用户反馈"完整语义的东西被截断了"——测试文档 01-stm32-gpio.md 的 Section 2.3（复用功能模式，约 1000 字符，含 AF 编号表 + 代码示例）在 500 字符处被切断，表格和代码示例分到不同 chunk。
+- **错误原因**：`small_chunk_size=500` 对中文文档偏小（中文字符紧凑，500 字符约等于 250-300 个英文单词），多数逻辑章节超过此阈值被切断。
+- **修复方式**：`small_chunk_size` 从 500 调到 800——测试验证 Section 2.3（709 字符）现在完整保留在一个 chunk 内，Section 6 寄存器参考表（754 字符）也完整。
+- **下次注意**：中文文档的 chunk_size 应比英文大 30-50%（中文字符信息密度高）；调整后需用实际文档验证关键章节是否完整，不能只看 chunk 数量。
+
+
+## 2026-06-26 - 测试脚本 embedding 配置不匹配 + list_docs 端点错误
+
+- **错误现象**：RAG 评估脚本跑起来后，5 个文档全部 `status=error`，错误信息 `No credentials for provider: openai`；同时等待索引的循环永远检测不到完成，每个文档等 60s 超时后继续上传下一个。
+- **错误原因**：
+  1. 测试 KB 用 LLM 代理 `9router.zxyzx.bbroot.com` 做 embedding，但该代理只支持 chat completions，不支持 `/v1/embeddings` 端点（返回 400 "No credentials for provider: openai"）。所有 embedding 模型名（`text-embedding-3-small`、`oc/text-embedding-3-small`、`text-embedding-v4`）都失败。
+  2. `list_docs` 方法调 `/kb/list`（返回 `data.documents` 扁平结构），却按 `data.collections` 分组结构解析，永远返回空列表，导致等待循环检测不到索引完成。
+- **修复方式**：
+  1. 新增 `_fetch_builtin_embedding_config()` 从数据库读取 builtin-001 的 embedding 配置（Aliyun DashScope `text-embedding-v4` + 解密 API key），测试 KB 复用此配置做向量化。
+  2. `list_docs` 改用 `/kb/collections/{kb_id}` 端点（返回 `data.documents`）；等待超时从 60s 提到 180s，轮询间隔 3s。
+- **下次注意**：LLM 代理不一定支持 embedding 端点——创建测试 KB 前先验证 embedding API 可达；端点返回格式要与代码解析逻辑对应（`/kb/list` vs `/kb/collections/{id}` 返回结构不同）。
+
+
+## 2026-06-26 - AgentChunker RoundResult 缺 to_dict 方法导致静默降级
+
+- **错误现象**：所有文档上传到 agent 策略的 KB 时，状态显示 `indexed` 但 `error_message` 为 `"agent 分块失败，降级为 hybrid 分块"`；chunk 数量与 hybrid 完全一致（13/10/12/14/12），chunk_completeness 得分模式也完全相同——AgentChunker 实际从未成功执行。
+- **错误原因**：`RoundResult` dataclass 没有 `to_dict()` 方法，但 `agent_chunker.py` 第 273 行和第 287 行调用了 `round_result.to_dict()`。LLM 调用本身成功（sections 已返回），但在记录 trace 时抛出 `AttributeError: 'RoundResult' object has no attribute 'to_dict'`，被外层 `except Exception` 捕获后触发 hybrid 降级 fallback。由于 `status=indexed` 且文档可检索，这个 bug 非常隐蔽——只有检查 `error_message` 字段才能发现。
+- **修复方式**：给 `RoundResult` 添加 `to_dict(self) -> dict: return asdict(self)` 方法（`asdict` 已在文件顶部从 `dataclasses` 导入）。
+- **下次注意**：dataclass 如果需要序列化，务必添加 `to_dict` 方法或直接使用 `asdict()`；降级 fallback 的 error_message 一定要检查，`status=indexed` 不代表 chunker 方法真正生效。
+
+
+## 2026-06-26 - AgentChunker agent_trace dict 导致 ChromaDB upsert 失败
+
+- **错误现象**：修复 RoundResult.to_dict() 后重新测试 agent-deepseek，01-stm32-gpio.md 在 156s 后 status=error，`error_message` 为空（API 层）；直接查数据库发现完整错误：`Expected metadata value to be a str, int, float, bool, SparseVector, list, or None, got {'method': 'agent', ...} which is a dict in upsert`。Agent chunking 的 LLM 调用成功了（6 个 voted_sections），但 `ingest_chunks` 向 ChromaDB 写入时崩溃。
+- **错误原因**：`agent_chunker.py` 第 838 行把 `trace_summary`（一个 dict）直接放进 chunk metadata 的 `"agent_trace"` 字段。ChromaDB 的 metadata 只支持扁平标量值（str/int/float/bool/None/list），不支持嵌套 dict。`kb_routes.py` 的外层 `except Exception` 捕获后调用 `_update_doc_status(doc_id, "error", error_message=sanitize_error(str(e)))`，但 API 响应里 error_message 显示为空（可能是 sanitize_error 截断或 collections API 返回格式问题）。
+- **修复方式**：把 `trace_summary` 序列化为 JSON 字符串：`trace_summary_json = json.dumps(trace_summary, ensure_ascii=False)`，两处 `"agent_trace": trace_summary` 改为 `"agent_trace": trace_summary_json`。
+- **下次注意**：ChromaDB metadata 只支持扁平标量，任何 dict/list 嵌套结构必须先 `json.dumps`；ingest_chunks 失败时的 error_message 应该确保非空，便于排查。
+
+
+## 2026-06-26 - RRF 融合分数语义错误导致阈值/百分比/relevance_level 全部失效 (P0)
+
+- **错误现象**：RAG 检索结果的相关度百分比显示为 1.6%-3.3%，阈值过滤（如 0.7）过滤掉所有结果，relevance_level 永远是 "low"。用户看到的相关度极低，但实际上检索结果是正确的。
+- **错误原因**：`rrf_fusion` 函数用 RRF rank-based 分数（`1/(k+rank+1)`，范围 0.016-0.033）替换了原始的 0-1 相似度分数。但下游代码（`chat_routes.py` 的阈值过滤、`score_pct = round(score * 100, 1)` 百分比显示、`if score >= 0.8: "high"` relevance_level 判断）全部按 0-1 范围处理。
+- **修复方式**：修改 `rrf_fusion` 保留原始 0-1 分数（取 vector cosine 和 BM25 normalized 的 max），RRF 分数仅用于排序。这样阈值过滤、百分比显示、relevance_level 判断全部恢复正常。
+- **下次注意**：当融合多种检索算法时，排序用的融合分数和显示/过滤用的原始分数必须分开。RRF 是 rank-based 方法，其分数范围与相似度分数完全不同，不能混用。
+
+
+## 2026-06-26 - BM25 搜索时同步重建索引导致首次检索卡顿 (P2-3)
+
+- **错误现象**：文档入库后首次搜索会卡顿 1-3 秒，因为 `_bm25_search` 检测到 `_bm25_stale` 标记时同步调用 `_rebuild_bm25`，阻塞搜索请求。
+- **错误原因**：`ingest_chunks` / `import_kb` / 文档删除只标记 `_bm25_stale`，不重建 BM25。重建推迟到下次搜索时同步执行，导致用户可感知的延迟。
+- **修复方式**：在 `ingest_chunks` / `import_kb` / 文档删除完成后立即预构建 BM25（这些操作本身在后台任务中执行，不会阻塞用户）。`_bm25_search` 中的 stale 重建保留为 fallback。同时移除 `update_kb_config` 中不必要的 BM25 stale 标记（BM25 只依赖文本，不依赖 embedding 配置）。
+- **下次注意**：耗时操作（如索引重建）应在数据变更时后台预执行，不要推迟到查询时同步执行。区分"数据变更触发的重建"和"查询时的 fallback 重建"。
+
+
+## 2026-06-26 - jieba 分词未配置硬件术语词典导致 BM25 匹配失败 (P2-6)
+
+- **错误现象**：BM25 搜索 "STM32F4" 时无法精确匹配，因为 jieba 把 "STM32F4" 切成 "STM32"、"F"、"4" 等碎片，导致与文档中的 "STM32F4" 不匹配。
+- **错误原因**：`BM25Index` 使用 `jieba.lcut` 进行中文分词，但未添加硬件术语词典。jieba 默认词典不包含 "STM32F4"、"I2C"、"DMA" 等硬件术语，会将其切分成无意义碎片。
+- **修复方式**：在 `BM25Index` 添加 `_HARDWARE_TERMS` 列表（80+ 硬件术语），通过 `jieba.add_word(term, freq=1000)` 加载到词典。在 `_ensure_index` 和 `search` 中调用 `_load_hardware_dict`（进程级单例，只加载一次）。
+- **下次注意**：使用通用分词器处理专业领域文本时，必须配置领域词典。否则专业术语会被切碎，导致 BM25/倒排索引无法精确匹配。
+
+
+## 2026-06-27 - RAG 边缘情况审查发现 4 个 P0 + 6 个 P1 防御性问题
+
+- **错误现象**：对 `kb_manager.rrf_fusion` / `vector_store.import_data` / `chat_routes._rewrite_query_for_rag` 做边缘情况审查后，发现 4 个会导致静默数据损坏的 P0 bug 和 6 个防御性缺失。
+- **错误原因 + 修复方式**（逐条）：
+  1. **P0-1 `_make_rrf_key` chunk_index=None**：`dict.get('chunk_index', i)` 在 key 存在但值为 None 时返回 None（不是 fallback i），导致同一 chunk 在向量/BM25 两个列表中产生不同 key，无法融合去重。修复：新增 `_make_rrf_key(r, fallback_idx)` 辅助函数，显式处理 None。
+  2. **P0-2 import_data embeddings 长度不匹配静默丢弃**：`embeddings` 长度 ≠ `documents` 长度时，`valid_embeddings` 被置为 None，ChromaDB 会重新向量化或存入无向量文档——静默损坏。修复：长度不匹配时 `raise ValueError`。
+  3. **P0-3 查询改写 LLM 返回换行**：LLM 可能返回多行输出（如 "STM32F4\nDMA\n配置"），直接传给 BM25/embedding 会破坏分词。修复：`rewritten = " ".join(content.split())` 折叠所有空白。
+  4. **P0-4 多模态历史内容被丢弃**：`history` 中 content 为 `list[dict]`（图片+文本）时，`isinstance(content, str)` 为 False，整条历史被跳过，代词消解失效。修复：检测 list 类型后提取 `type=="text"` 的部分。
+  5. **P1-5 constant_k<1 除零**：`1/(constant_k + rank + 1)` 当 constant_k=0 且 rank=0 时为 1/1=1（不崩），但 constant_k 为负数时 RRF 分数可能为负。修复：constant_k<1 时钳到 1。
+  6. **P1-6 orig_score 未钳到 0-1**：BM25Okapi 对短文档可能返回负分（IDF<0），负分会泄漏到 FusedResult.score。修复：`orig_score = max(0.0, min(1.0, orig_score))`。
+  7. **P1-7 import_data 只检查首条 embedding 维度**：只查 `valid_embeddings[0]` 的维度，后续维度不一致的向量会静默写入，污染 collection。修复：遍历所有 embeddings 检查维度。
+  8. **P1-8 API 不可用时静默跳过维度检查**：`_get_embedding_dimension` 探测失败返回 None，import_data 直接跳过检查无任何提示。修复：添加 warning 日志（fail-open，不阻断导入）。
+  9. **P1-A `_bm25_search` 归一化未钳负分**：`normalized = score / max_score` 当 score 为负时产生负的归一化分数。修复：`normalized = max(0.0, score / max_score)`。
+  10. **P1-B `_get_embedding_dimension` 无负缓存**：API 探测失败后不缓存失败结果，每次 import_data 都会重新探测（阻塞 + 浪费配额）。修复：`__init__` 初始化 `_dim_check_attempted` 标志，finally 中置 True，已探测过直接返回缓存值。
+- **下次注意**：
+  1) `dict.get(key, default)` 在 key 存在但值为 None 时返回 None 而非 default——遇到可能为 None 的 metadata 字段必须显式判断 `is None`。
+  2) 跨数据源融合（向量+BM25）的 dedup key 必须用辅助函数统一生成，不能在每个循环里内联 `f"{r.doc_id}#{r.metadata.get(...)}"`。
+  3) LLM 输出永远不可信——可能包含换行、多余空格、空字符串、None content，必须做清洗和 fallback。
+  4) 多模态消息（content 为 list[dict]）在所有处理历史/消息的代码路径中都必须单独处理，不能假设 content 永远是 str。
+  5) rank_bm25.BM25Okapi 在小语料 + 高频词场景下会返回负分（IDF 计算结果），所有使用 BM25 分数的地方都要钳到 0-1。
+  6) 探测类 API 调用（如 embedding 维度探测）必须缓存失败结果，否则每次调用都会重试，在 API 宕机时会放大故障。
+  7) 修改后用 `python -m py_compile` 验证语法，用 pytest 覆盖所有边缘情况——本次写了 48 个测试全部通过。
+
+
 
 

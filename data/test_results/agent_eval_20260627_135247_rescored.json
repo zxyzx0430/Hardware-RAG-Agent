@@ -1,0 +1,1159 @@
+{
+  "timestamp": "20260627_135247",
+  "kb_id": "kb-567e2118",
+  "strategy": "agent-deepseek",
+  "description": "AgentChunker with oc/deepseek-v4-flash (streaming + dedup fix)",
+  "model": "oc/deepseek-v4-flash",
+  "base_url": "https://9router.zxyzx.bbroot.com/v1",
+  "questions": [
+    {
+      "question_id": "Q1",
+      "question": "STM32 的 GPIO 引脚可以配置为哪四种工作模式？每种模式对应的寄存器值是什么？",
+      "target_doc": "01-stm32-gpio.md",
+      "difficulty": "简单",
+      "scores": {
+        "recall": {
+          "score": 30.0,
+          "max": 30,
+          "detail": "Hit target doc: 01-stm32-gpio.md"
+        },
+        "answer_coverage": {
+          "score": 25.0,
+          "max": 25,
+          "detail": "Covered 9/9 keyword groups"
+        },
+        "chunk_completeness": {
+          "score": 25.0,
+          "max": 25,
+          "detail": "✓ Group ['输入模式', '输出模式', '复用功能', '模拟模式'] found in same chunk"
+        },
+        "chunk_boundary": {
+          "score": 10.0,
+          "max": 10,
+          "detail": "All 5 src chunks clean"
+        },
+        "cross_section": {
+          "score": 10.0,
+          "max": 10,
+          "detail": "✓ 输入模式+MODER in same chunk#5"
+        }
+      },
+      "total_score": 100.0,
+      "max_score": 100,
+      "answer_preview": "STM32 的 GPIO 引脚通过 **MODER 寄存器（端口模式寄存器）** 的 2 位字段配置为四种大类型工作模式，这是所有细分模式的基础分类。各模式及对应寄存器编码如下：\n\n| 模式 | MODER[1:0] 编码 | 说明 |\n|------|----------------|------|\n| **输入模式** | `00` | 引脚用于接收外部信号，输出驱动关闭，可配合上拉/下拉电阻。 |\n| **输出模式** | `01` | 引脚作为通用输出（推挽或开漏），由 ODR/BSRR 控制电平。 |\n| **复用功能模式** | `10` | 引脚连接到片上外设（如 UART、SPI、I2C），由外设控制信号驱动。 |\n| **模拟模式** | `11` | 引脚用于 ADC/DAC 等模拟信号，关闭数字部分（输入施密特触发器禁用）。 |\n\n对应寄存器层面，以 PA0 为例，配置为输出模式的寄存器操作如下：\n```c\n// 将 MODER0 位域 [1:0] 设置为 01（输出模式）\nGPIOA->MODER &= ~GPIO_MODER_MODER0;       // ",
+      "sources_count": 5,
+      "source_titles": [
+        "01-stm32-gpio.md",
+        "01-stm32-gpio.md",
+        "01-stm32-gpio.md",
+        "01-stm32-gpio.md",
+        "01-stm32-gpio.md"
+      ],
+      "sources_full": [
+        {
+          "title": "01-stm32-gpio.md",
+          "excerpt": "**Q4: 为什么 GPIO 输出电压不对（不是 3.3V）？**\n\n可能原因：\n1. 引脚输出电流过大，导致电压跌落。解决：检查负载电流，增加驱动电路。\n2. 引脚配置为开漏输出但未接上拉电阻。解决：外接上拉电阻或改用推挽输出。\n3. 引脚处于复用模式，被外设控制。解决：检查 MODER 配置。\n4. VDD 电压不足。解决：检查电源电压。\n\n**Q5: 为什么 I2C 通信不成功？**\n\n可能原因：\n1. SDA/SCL 引脚未配置为开漏输出。解决：使用 `GPIO_MODE_AF_OD`。\n2. 缺少外部上拉电阻。解决：在 SDA/SCL 上各接一个 4.7kΩ 上拉到 VDD。\n3. I2C 地址错误。解决：确认设备地址（7位 vs 8位）。\n4. 引脚复用功能配置错误。解决：检查 AFRL/AFRH 中的 AF 编号。\n\n**Q6: 复位后引脚状态是什么？**\n\n复位后，所有 GPIO 的 MODER=00（输入模式），OTYPER=0（推挽），OSPEEDR=00（低速），PUPDR=00（无上下拉）。即所有引脚为浮空输入。例外：调试引脚 PA13（SWDIO）和 PA14（SWCLK）为复用功能模式。\n\n**Q7: 为什么程序运行后无法调试？**\n\n可能原因：\n1. 误将 PA13/PA14（SWD 引脚）配置为普通 GPIO。解决：在初始化代码中跳过这两个引脚，或使用复位按钮 + 断点调试。\n2. 启用了 LCKR 锁定。解决：只能通过复位解锁。\n3. 进入低功耗模式后 SWD 时钟停止。解决：在进入低功耗模式前配置 DBGMCU 寄存器。\n\n```c\n// Allow debugging in low-power modes\nDBGMCU->CR |= DBGMCU_CR_DBG_SLEEP | DBGMCU_CR_DBG_STOP | DBGMCU_CR_DBG_STANDBY;\n```\n\n**Q8: 如何降低 GPIO 功耗？**\n\n1. 将未使用的引脚配置为模拟模式（MODER=11）\n2. 避免引脚悬空（悬空输入会因噪声翻转，消耗动态功耗）\n3. 选择最低的输出速度\n4. 关闭不需要的上下拉电阻\n5. 在低功耗模式下，断开外部上拉/下拉（如果可能）\n\n**Q9: BSRR 和 ODR 的区别是什么？**\n\n- BSRR 是原子操作（只写），不会被中断打断。适用于中断中或 RTOS 中修改 GPIO。\n- ODR 是读-改-写操作，非原子。如果在读和写之间发生中断，可能导致数据丢失。\n- BSRR 只能设置或复位，不能读取。ODR 可以读写。",
+          "doc_id": "",
+          "chunk_id": "src1"
+        },
+        {
+          "title": "01-stm32-gpio.md",
+          "excerpt": "### 12.1 FAQ 列表\n\n**Q1: 为什么 GPIO 引脚没有输出？**\n\n可能原因：\n1. GPIO 时钟未使能（最常见原因）。解决：在使用 GPIO 前调用 `__HAL_RCC_GPIOx_CLK_ENABLE()`。\n2. MODER 寄存器配置错误，引脚仍为输入模式。解决：检查 MODER 寄存器值。\n3. 引脚被复用功能占用。解决：检查 AFRL/AFRH 配置，确保 MODER=01。\n4. 引脚被 LCKR 锁定。解决：检查 LCKR 寄存器，锁定后只能复位解锁。\n5. 引脚是 JTAG/SWD 调试引脚（PA13/PA14/PA15/PB3/PB4）。解决：使用 `__HAL_AFIO_REMAP_SWJ_NOJTAG()` 释放 JTAG 引脚。\n\n**Q2: 为什么进入中断后 HardFault？**\n\n可能原因：\n1. 中断服务函数名拼写错误，导致 NVIC 找不到 handler。解决：检查 startup 文件中的中断向量表，确保函数名匹配。\n2. 中断服务函数中访问了未初始化的外设。解决：确保在 ISR 中只访问已初始化的外设。\n3. EXTI 中断未正确清除 pending bit。解决：在 ISR 中清除 PR 寄存器。\n4. 栈溢出。解决：增加栈大小，检查 ISR 中使用的局部变量。\n\n```c\n// Common error: forgot to clear pending bit\nvoid EXTI0_IRQHandler(void) {\n    // WRONG: no clear, will loop forever\n    HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);\n\n    // CORRECT: clear pending bit first\n    EXTI->PR = EXTI_PR_PR0;\n    HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);\n}\n```\n\n**Q3: 为什么外部中断不触发？**\n\n可能原因：\n1. SYSCFG 时钟未使能，EXTICR 配置无效。解决：`__HAL_RCC_SYSCFG_CLK_ENABLE()`。\n2. EXTI IMR（中断屏蔽寄存器）未设置。解决：`EXTI->IMR |= EXTI_IMR_MR0;`。\n3. 触发方式配置错误（上升沿/下降沿）。解决：检查 RTSR/FTSR 寄存器。\n4. NVIC 中断未使能。解决：`NVIC_EnableIRQ(EXTI0_IRQn);`。\n5. 引脚配置为输出模式，EXTI 只在输入模式下工作。解决：将引脚配置为输入模式。\n6. 同一 EXTI 线上有多个引脚冲突。解决：确保同一 EXTI 线只有一个引脚使用。\n\n**Q4: 为什么 GPIO 输出电压不对（不是 3.3V）？**",
+          "doc_id": "",
+          "chunk_id": "src2"
+        },
+        {
+          "title": "01-stm32-gpio.md",
+          "excerpt": "## 2. GPIO 工作模式详解\n\nSTM32 的 GPIO 共有 8 种工作模式，由 MODER 寄存器的 2 位字段决定大类，再由 PUPDR、OTYPER 等寄存器细分。MODER 寄存器的 2 位编码如下：\n\n| MODER[1:0] | 模式大类 | 细分模式 |\n|------------|----------|----------|\n| 00 | 输入模式 | 浮空输入 / 上拉输入 / 下拉输入 |\n| 01 | 输出模式 | 推挽输出 / 开漏输出 |\n| 10 | 复用功能 | 推挽复用 / 开漏复用 |\n| 11 | 模拟模式 | 模拟输入（ADC）/ 模拟输出（DAC） |\n\n### 2.1 输入模式（MODER=00）\n\n输入模式下，引脚配置为接收外部信号。输出驱动器被关闭，引脚处于高阻态（High-Z）。输入信号经过施密特触发器后送入输入数据寄存器（IDR）。\n\n输入模式有三种细分：\n- **浮空输入**（Floating Input）：PUPDR=00，不启用上下拉电阻。引脚电平完全由外部决定。适用于已经有外部上拉/下拉的电路，例如 I2C 的 SDA/SCL（外部已有 4.7kΩ 上拉）。\n- **上拉输入**（Pull-up Input）：PUPDR=01，启用内部上拉电阻（约 30-50kΩ）。适用于按键接地、需要默认高电平的场景。\n- **下拉输入**（Pull-down Input）：PUPDR=10，启用内部下拉电阻。适用于按键接 VDD、需要默认低电平的场景。\n\n输入模式下的信号路径：外部引脚 → 保护二极管 → 上拉/下拉电阻（可选）→ 施密特触发器 → IDR 寄存器。\n\n```c\n// HAL library: configure PA0 as input with pull-up\nGPIO_InitTypeDef GPIO_InitStruct = {0};\nGPIO_InitStruct.Pin = GPIO_PIN_0;\nGPIO_InitStruct.Mode = GPIO_MODE_INPUT;\nGPIO_InitStruct.Pull = GPIO_PULLUP;\nGPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;\nHAL_GPIO_Init(GPIOA, &GPIO_InitStruct);\n\n// Register level: configure PA0 as input with pull-up\n// Step 1: Set MODER[1:0] = 00 (input mode)\nGPIOA->MODER &= ~GPIO_MODER_MODER0;\n\n// Step 2: Set PUPDR[1:0] = 01 (pull-up)\nGPIOA->PUPDR &= ~GPIO_PUPDR_PUPDR0;     // Clear bits\nGPIOA->PUPDR |= GPIO_PUPDR_PUPDR0_0;    // Set bit 0\n\n// Read input value\nuint8_t pin_state = (GPIOA->IDR & GPIO_IDR_ID0) ? 1 : 0;\n```\n\n输入模式的关键参数：\n- 施密特触发器阈值：VIH（最小高电平输入电压）≈ 0.7×VDD，VIL（最大低电平输入电压）≈ 0.3×VDD\n- 输入漏电流：±1μA（典型值）\n- 上下拉电阻阻值：30kΩ~50kΩ（典型值 40kΩ）",
+          "doc_id": "",
+          "chunk_id": "src3"
+        },
+        {
+          "title": "01-stm32-gpio.md",
+          "excerpt": "# STM32 GPIO 详解：从寄存器到工程实践\n\n> 本文档面向嵌入式开发者，系统讲解 STM32 系列 MCU 的 GPIO（通用输入输出）模块。内容覆盖寄存器架构、工作模式、电气特性、复用功能映射、外部中断、低功耗配置、不同系列差异及工程设计指南，并提供大量 HAL 库与寄存器两种方式的代码示例。\n\n---\n\n## 目录\n\n1. [GPIO 模块架构](#1-gpio-模块架构)\n2. [GPIO 工作模式详解](#2-gpio-工作模式详解)\n3. [输出速度配置](#3-输出速度配置)\n4. [上下拉电阻配置](#4-上下拉电阻配置)\n5. [寄存器详解](#5-寄存器详解)\n6. [外部中断/事件](#6-外部中断事件)\n7. [GPIO 锁定机制](#7-gpio-锁定机制)\n8. [复用功能映射表](#8-复用功能映射表)\n9. [实际应用案例](#9-实际应用案例)\n10. [低功耗模式下的 GPIO 配置](#10-低功耗模式下的-gpio-配置)\n11. [GPIO 电气特性](#11-gpio-电气特性)\n12. [常见问题与故障排查](#12-常见问题与故障排查)\n13. [不同 STM32 系列的 GPIO 差异](#13-不同-stm32-系列的-gpio-差异)\n14. [设计指南](#14-设计指南)\n\n---",
+          "doc_id": "",
+          "chunk_id": "src4"
+        },
+        {
+          "title": "01-stm32-gpio.md",
+          "excerpt": "### 5.1 MODER 寄存器（端口模式寄存器）\n\nMODER 寄存器用于配置每个引脚的工作模式。32 位寄存器，每个引脚占 2 位。\n\n| 位域 | 字段名 | 说明 | 复位值 |\n|------|--------|------|--------|\n| [31:30] | MODER15 | PIN15 模式 | 0b00（大部分） |\n| [29:28] | MODER14 | PIN14 模式 | 0b00 |\n| [27:26] | MODER13 | PIN13 模式 | 0b00 |\n| [25:24] | MODER12 | PIN12 模式 | 0b00 |\n| [23:22] | MODER11 | PIN11 模式 | 0b00 |\n| [21:20] | MODER10 | PIN10 模式 | 0b00 |\n| [19:18] | MODER9 | PIN9 模式 | 0b00 |\n| [17:16] | MODER8 | PIN8 模式 | 0b00 |\n| [15:14] | MODER7 | PIN7 模式 | 0b00 |\n| [13:12] | MODER6 | PIN6 模式 | 0b00 |\n| [11:10] | MODER5 | PIN5 模式 | 0b00 |\n| [9:8] | MODER4 | PIN4 模式 | 0b00 |\n| [7:6] | MODER3 | PIN3 模式 | 0b00 |\n| [5:4] | MODER2 | PIN2 模式 | 0b00 |\n| [3:2] | MODER1 | PIN1 模式 | 0b00 |\n| [1:0] | MODER0 | PIN0 模式 | 0b00 |\n\nMODER 字段编码：\n\n| 值 | 模式 | 说明 |\n|----|------|------|\n| 00 | 输入模式 | 引脚配置为输入（复位默认值） |\n| 01 | 输出模式 | 通用输出模式 |\n| 10 | 复用功能 | 引脚连接到片上外设 |\n| 11 | 模拟模式 | 引脚用于 ADC/DAC，数字部分关闭 |",
+          "doc_id": "",
+          "chunk_id": "src5"
+        }
+      ]
+    },
+    {
+      "question_id": "Q2",
+      "question": "STM32 GPIO 的输出速度有哪几个等级？在什么场景下应该选择不同的速度？",
+      "target_doc": "01-stm32-gpio.md",
+      "difficulty": "简单",
+      "scores": {
+        "recall": {
+          "score": 30.0,
+          "max": 30,
+          "detail": "Hit target doc: 01-stm32-gpio.md"
+        },
+        "answer_coverage": {
+          "score": 25.0,
+          "max": 25,
+          "detail": "Covered 6/6 keyword groups"
+        },
+        "chunk_completeness": {
+          "score": 25.0,
+          "max": 25,
+          "detail": "✓ Group ['OSPEEDR', '低速', '高速'] found in same chunk"
+        },
+        "chunk_boundary": {
+          "score": 10.0,
+          "max": 10,
+          "detail": "All 5 src chunks clean"
+        },
+        "cross_section": {
+          "score": 10.0,
+          "max": 10,
+          "detail": "No cross-section keywords defined"
+        }
+      },
+      "total_score": 100.0,
+      "max_score": 100,
+      "answer_preview": "STM32 GPIO 的输出速度（通过 **OSPEEDR** 寄存器控制）通常分为 **4 个等级**，具体频率值因系列而异（以最常用的 F4/H7/L4 为例）：\n\n| 速度等级 | OSPEEDR[1:0] | STM32F4 | STM32H7 | STM32L4 |\n|----------|------------|---------|---------|---------|\n| **低速** | `00` | ≤ 2 MHz | ≤ 8 MHz | ≤ 6 MHz |\n| **中速** | `01` | ≤ 25 MHz | ≤ 28 MHz | ≤ 10 MHz |\n| **高速** | `10` | ≤ 50 MHz | ≤ 70 MHz | ≤ 28 MHz |\n| **极速** | `11` | ≤ 100 MHz | ≤ 120 MHz | ≤ 40 MHz |\n\n> 表格数据来源：[01-stm32-gpio.md / 3.1 OSPEEDR 寄存器]\n\n---\n\n### 不同场景的选择原则\n\n选择速度时需综合**信号频率、负载电容、EMI 要求、功耗、走线长度",
+      "sources_count": 5,
+      "source_titles": [
+        "01-stm32-gpio.md",
+        "01-stm32-gpio.md",
+        "01-stm32-gpio.md",
+        "01-stm32-gpio.md",
+        "01-stm32-gpio.md"
+      ],
+      "sources_full": [
+        {
+          "title": "01-stm32-gpio.md",
+          "excerpt": "**Q4: 为什么 GPIO 输出电压不对（不是 3.3V）？**\n\n可能原因：\n1. 引脚输出电流过大，导致电压跌落。解决：检查负载电流，增加驱动电路。\n2. 引脚配置为开漏输出但未接上拉电阻。解决：外接上拉电阻或改用推挽输出。\n3. 引脚处于复用模式，被外设控制。解决：检查 MODER 配置。\n4. VDD 电压不足。解决：检查电源电压。\n\n**Q5: 为什么 I2C 通信不成功？**\n\n可能原因：\n1. SDA/SCL 引脚未配置为开漏输出。解决：使用 `GPIO_MODE_AF_OD`。\n2. 缺少外部上拉电阻。解决：在 SDA/SCL 上各接一个 4.7kΩ 上拉到 VDD。\n3. I2C 地址错误。解决：确认设备地址（7位 vs 8位）。\n4. 引脚复用功能配置错误。解决：检查 AFRL/AFRH 中的 AF 编号。\n\n**Q6: 复位后引脚状态是什么？**\n\n复位后，所有 GPIO 的 MODER=00（输入模式），OTYPER=0（推挽），OSPEEDR=00（低速），PUPDR=00（无上下拉）。即所有引脚为浮空输入。例外：调试引脚 PA13（SWDIO）和 PA14（SWCLK）为复用功能模式。\n\n**Q7: 为什么程序运行后无法调试？**\n\n可能原因：\n1. 误将 PA13/PA14（SWD 引脚）配置为普通 GPIO。解决：在初始化代码中跳过这两个引脚，或使用复位按钮 + 断点调试。\n2. 启用了 LCKR 锁定。解决：只能通过复位解锁。\n3. 进入低功耗模式后 SWD 时钟停止。解决：在进入低功耗模式前配置 DBGMCU 寄存器。\n\n```c\n// Allow debugging in low-power modes\nDBGMCU->CR |= DBGMCU_CR_DBG_SLEEP | DBGMCU_CR_DBG_STOP | DBGMCU_CR_DBG_STANDBY;\n```\n\n**Q8: 如何降低 GPIO 功耗？**\n\n1. 将未使用的引脚配置为模拟模式（MODER=11）\n2. 避免引脚悬空（悬空输入会因噪声翻转，消耗动态功耗）\n3. 选择最低的输出速度\n4. 关闭不需要的上下拉电阻\n5. 在低功耗模式下，断开外部上拉/下拉（如果可能）\n\n**Q9: BSRR 和 ODR 的区别是什么？**\n\n- BSRR 是原子操作（只写），不会被中断打断。适用于中断中或 RTOS 中修改 GPIO。\n- ODR 是读-改-写操作，非原子。如果在读和写之间发生中断，可能导致数据丢失。\n- BSRR 只能设置或复位，不能读取。ODR 可以读写。",
+          "doc_id": "",
+          "chunk_id": "src1"
+        },
+        {
+          "title": "01-stm32-gpio.md",
+          "excerpt": "### 3.3 EMI 影响与信号完整性\n\n输出速度等级直接影响信号的边沿速率（slew rate）。边沿越陡，高频谐波分量越多，EMI 辐射越强。以下是一些设计建议：\n\n1. **低速应用的误区**：很多人认为 LED 翻转速度慢，用默认配置即可。但默认配置可能是高速，导致不必要的 EMI。应显式配置为低速。\n\n2. **SPI 信号完整性**：SPI 时钟 20MHz，走线 10cm，如果使用极速输出，信号边沿可能在 1ns 以内，会产生严重的反射和过冲。建议使用中速或高速，并配合适当的端接。\n\n3. **SDRAM/SRAM 时序**：高速存储器接口需要使用高速或极速输出，并严格控制走线长度匹配。STM32F4/F7/H7 的 FMC 接口引脚通常配置为高速。\n\n4. **EMC 测试建议**：\n   - 在 EMC 测试前，将所有非高速 GPIO 设置为低速\n   - 未使用的引脚配置为模拟模式或输入上拉\n   - 关键信号线添加 RC 滤波或磁珠\n\n### 3.4 不同速度等级下的信号波形\n\n以下是使用示波器观测到的不同速度等级下，100kHz 方波的边沿特性（STM32F407，VDD=3.3V，负载 50pF）：\n\n| 速度等级 | 上升时间 | 下降时间 | 过冲 | EMI 辐射（10cm 走线，1m 距离） |\n|----------|----------|----------|------|-------------------------------|\n| 低速（2MHz） | 25ns | 20ns | <5% | -45 dBμV/m |\n| 中速（25MHz） | 8ns | 6ns | <10% | -30 dBμV/m |\n| 高速（50MHz） | 3ns | 2.5ns | <15% | -20 dBμV/m |\n| 极速（100MHz） | 1.5ns | 1.2ns | <20% | -15 dBμV/m |\n\n从表格可以看出，低速和高速的 EMI 差异可达 25dB。在产品设计时，应根据实际需求选择最低能满足时序要求的速度等级。\n\n---",
+          "doc_id": "",
+          "chunk_id": "src2"
+        },
+        {
+          "title": "01-stm32-gpio.md",
+          "excerpt": "## 3. 输出速度配置\n\n### 3.1 OSPEEDR 寄存器\n\nOSPEEDR（Port Output Speed Register）寄存器用于配置 GPIO 输出驱动器的翻转速度。速度越高，输出信号的边沿越陡峭，但也会产生更多的 EMI（电磁干扰）和更高的功耗。\n\nOSPEEDR 寄存器每个引脚占 2 位，配置如下：\n\n| OSPEEDR[1:0] | 速度等级 | STM32F4 系列 | STM32H7 系列 | STM32L4 系列 |\n|--------------|----------|-------------|-------------|-------------|\n| 00 | 低速（Low Speed） | 2 MHz | 8 MHz | 6 MHz |\n| 01 | 中速（Medium Speed） | 25 MHz | 28 MHz | 10 MHz |\n| 10 | 高速（High Speed） | 50 MHz | 70 MHz | 28 MHz |\n| 11 | 极速（Very High Speed） | 100 MHz | 120 MHz | 40 MHz |\n\n注意：以上频率是指 GPIO 输出翻转的最大频率（toggle frequency），即每秒能完成高低电平切换的次数。实际应用中，应根据信号的实际频率需求选择合适的速度等级。\n\n### 3.2 速度等级选择原则\n\n速度等级的选择需要综合考虑以下因素：\n1. **信号频率**：SPI 时钟 10MHz 需要至少中速；50MHz SDRAM 需要高速或极速\n2. **负载电容**：负载电容越大，需要更高的速度等级来保证信号完整性\n3. **EMI 要求**：对 EMC 要求高的产品应尽量选择低速\n4. **功耗**：速度越高，动态功耗越大\n5. **走线长度**：长走线需要更陡的边沿，但也要注意反射\n\n```c\n// Configure different speed levels\nGPIO_InitTypeDef GPIO_InitStruct = {0};\nGPIO_InitStruct.Pin = GPIO_PIN_5;\n\n// Low speed: suitable for LED, slow GPIO\nGPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;        // 2 MHz\n\n// Medium speed: suitable for UART, slow SPI\nGPIO_InitStruct.Speed = GPIO_SPEED_FREQ_MEDIUM;     // 25 MHz\n\n// High speed: suitable for fast SPI, I2C\nGPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;       // 50 MHz\n\n// Very high speed: suitable for SDRAM, high-speed SPI\nGPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;  // 100 MHz\nHAL_GPIO_Init(GPIOA, &GPIO_InitStruct);\n\n// Register level\nGPIOA->OSPEEDR &= ~GPIO_OSPEEDR_OSPEEDR5;  // Clear\nGPIOA->OSPEEDR |= (0b00 << GPIO_OSPEEDR_OSPEEDR5_Pos);  // Low speed\nGPIOA->OSPEEDR |= (0b01 << GPIO_OSPEEDR_OSPEEDR5_Pos);  // Medium speed\nGPIOA->OSPEEDR |= (0b10 << GPIO_OSPEEDR_OSPEEDR5_Pos);  // High speed\nGPIOA->OSPEEDR |= (0b11 << GPIO_OSPEEDR_OSPEEDR5_Pos);  // Very high speed\n```",
+          "doc_id": "",
+          "chunk_id": "src3"
+        },
+        {
+          "title": "01-stm32-gpio.md",
+          "excerpt": "# STM32 GPIO 详解：从寄存器到工程实践\n\n> 本文档面向嵌入式开发者，系统讲解 STM32 系列 MCU 的 GPIO（通用输入输出）模块。内容覆盖寄存器架构、工作模式、电气特性、复用功能映射、外部中断、低功耗配置、不同系列差异及工程设计指南，并提供大量 HAL 库与寄存器两种方式的代码示例。\n\n---\n\n## 目录\n\n1. [GPIO 模块架构](#1-gpio-模块架构)\n2. [GPIO 工作模式详解](#2-gpio-工作模式详解)\n3. [输出速度配置](#3-输出速度配置)\n4. [上下拉电阻配置](#4-上下拉电阻配置)\n5. [寄存器详解](#5-寄存器详解)\n6. [外部中断/事件](#6-外部中断事件)\n7. [GPIO 锁定机制](#7-gpio-锁定机制)\n8. [复用功能映射表](#8-复用功能映射表)\n9. [实际应用案例](#9-实际应用案例)\n10. [低功耗模式下的 GPIO 配置](#10-低功耗模式下的-gpio-配置)\n11. [GPIO 电气特性](#11-gpio-电气特性)\n12. [常见问题与故障排查](#12-常见问题与故障排查)\n13. [不同 STM32 系列的 GPIO 差异](#13-不同-stm32-系列的-gpio-差异)\n14. [设计指南](#14-设计指南)\n\n---",
+          "doc_id": "",
+          "chunk_id": "src4"
+        },
+        {
+          "title": "01-stm32-gpio.md",
+          "excerpt": "### 2.2 输出模式（MODER=01）\n\n输出模式下，引脚配置为驱动外部负载。输出数据寄存器（ODR）的值通过输出驱动器输出到引脚。\n\n输出模式有两种细分：\n- **推挽输出**（Push-Pull Output）：OTYPER=0，P-MOS 和 N-MOS 同时工作。ODR=1 时 P-MOS 导通输出高电平，ODR=0 时 N-MOS 导通输出低电平。适用于 LED 驱动、数字信号输出等需要主动驱动高低电平的场景。\n- **开漏输出**（Open-Drain Output）：OTYPER=1，P-MOS 关闭，仅 N-MOS 工作。ODR=1 时引脚为高阻态，ODR=0 时引脚输出低电平。适用于 I2C 总线、电平转换、线与逻辑等场景。开漏输出必须外接上拉电阻才能输出高电平。\n\n```c\n// HAL library: configure PA5 as push-pull output (LED on Nucleo board)\nGPIO_InitTypeDef GPIO_InitStruct = {0};\nGPIO_InitStruct.Pin = GPIO_PIN_5;\nGPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;\nGPIO_InitStruct.Pull = GPIO_NOPULL;\nGPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;\nHAL_GPIO_Init(GPIOA, &GPIO_InitStruct);\n\n// Register level: configure PA5 as push-pull output\n// Step 1: Set MODER[11:10] = 01 (general purpose output)\nGPIOA->MODER &= ~GPIO_MODER_MODER5;     // Clear bits\nGPIOA->MODER |= GPIO_MODER_MODER5_0;    // Set bit 0\n\n// Step 2: Set OTYPER bit5 = 0 (push-pull)\nGPIOA->OTYPER &= ~GPIO_OTYPER_OT5;\n\n// Step 3: Set OSPEEDR[11:10] = 00 (low speed)\nGPIOA->OSPEEDR &= ~GPIO_OSPEEDR_OSPEEDR5;\n\n// Set output high using BSRR (atomic operation)\nGPIOA->BSRR = GPIO_BSRR_BS5;    // Set bit 5\n\n// Set output low using BSRR\nGPIOA->BSRR = GPIO_BSRR_BR5;    // Reset bit 5\n\n// Toggle using ODR\nGPIOA->ODR ^= GPIO_ODR_OD5;\n```\n\n推挽输出的驱动能力：在 STM32F4 系列中，单个引脚最大输出/吸收电流为 25mA（绝对最大值），整个端口总电流不超过 100mA。在 STM32H7 系列中，高速 IO 引脚的驱动能力更强，可达 20mA（典型工作值）。\n\n开漏输出的注意事项：\n- 必须外接上拉电阻，阻值根据所需上升时间和功耗选择，常用 4.7kΩ\n- 上拉电压可以与 VDD 不同，实现电平转换（例如 3.3V MCU 驱动 5V I2C 设备）\n- 多个开漏输出可以连接在一起，实现\"线与\"逻辑",
+          "doc_id": "",
+          "chunk_id": "src5"
+        }
+      ]
+    },
+    {
+      "question_id": "Q3",
+      "question": "ESP32 的 Station 模式连接 Wi-Fi 超时怎么办？重连策略应该怎么设计？",
+      "target_doc": "02-esp32-wifi.md",
+      "difficulty": "中等",
+      "scores": {
+        "recall": {
+          "score": 30.0,
+          "max": 30,
+          "detail": "Hit target doc: 02-esp32-wifi.md"
+        },
+        "answer_coverage": {
+          "score": 25.0,
+          "max": 25,
+          "detail": "Covered 6/6 keyword groups"
+        },
+        "chunk_completeness": {
+          "score": 25.0,
+          "max": 25,
+          "detail": "✓ Group ['指数退避', '重连', '重试'] found in same chunk"
+        },
+        "chunk_boundary": {
+          "score": 10.0,
+          "max": 10,
+          "detail": "All 5 src chunks clean"
+        },
+        "cross_section": {
+          "score": 10.0,
+          "max": 10,
+          "detail": "No cross-section keywords defined"
+        }
+      },
+      "total_score": 100.0,
+      "max_score": 100,
+      "answer_preview": "# ESP32 Station 模式连接超时处理与重连策略设计\n\n连接超时在 ESP32 Station 模式下通常表现为 **长时间卡在某一步（扫描/认证/关联/DHCP）**，最终触发 `WIFI_EVENT_STA_DISCONNECTED` 事件并带有一个 reason code。以下基于 **ESP-IDF v4.4 ~ v5.x** 和官方知识库内容给出解决方案和重连设计。\n\n---\n\n## 1. 连接超时的常见原因与定位\n\n根据知识库文档中对 `wifi_event_sta_disconnected_t` 的 reason code 说明，超时相关场景如下：\n\n| Reason | 含义 | 典型原因 | 处理建议 |\n|--------|------|----------|----------|\n| 2 (AUTH_EXPIRE) | 认证超时 | AP 无响应或密码错误 | 检查密码、AP 是否过载 |\n| 8 (ASSOC_EXPIRE) | 关联超时 | 信号弱，AP 未确认关联 | 移到信号好的位置 |\n| 15 (4WAY_HANDSHAKE_TIMEOUT)",
+      "sources_count": 5,
+      "source_titles": [
+        "02-esp32-wifi.md",
+        "03-i2c-protocol.md",
+        "02-esp32-wifi.md",
+        "02-esp32-wifi.md",
+        "02-esp32-wifi.md"
+      ],
+      "sources_full": [
+        {
+          "title": "02-esp32-wifi.md",
+          "excerpt": "# ESP32 WiFi 开发完全指南\n\n> 本文档系统介绍 ESP32 WiFi 子系统的架构、Station/AP 模式配置、省电模式、安全机制、\n> TCP/UDP 通信、HTTP/HTTPS、mDNS、Smart Config、性能优化、WiFi+BT 共存及故障排查，\n> 覆盖 ESP-IDF v4.4 ~ v5.x API，包含大量可复用的 C 代码示例。\n\n---\n\n## 目录\n\n1. WiFi 模块架构\n2. Station 模式连接流程（含指数退避重连策略）\n3. WiFi 省电模式详解（WIFI_PS_NONE / WIFI_PS_MIN_MODEM / WIFI_PS_MAX_MODEM）\n4. AP 模式配置\n5. WiFi 安全性\n6. TCP/UDP 通信\n7. HTTP/HTTPS 客户端\n8. mDNS 服务发现\n9. WiFi 事件系统\n10. Smart Config 与 SmartConfig\n11. 性能优化\n12. WiFi + BT 共存\n13. 常见问题与故障排查\n14. ESP32 系列对比\n\n---",
+          "doc_id": "",
+          "chunk_id": "src1"
+        },
+        {
+          "title": "03-i2c-protocol.md",
+          "excerpt": "**Q12: GPIO 软件模拟 I2C 和硬件 I2C 哪个更好？**\nA: 硬件 I2C 优势：不占用 CPU、支持 DMA、时序精确。软件 I2C 优势：引脚灵活、跨平台、无硬件 Errata 限制。产品环境优先用硬件 I2C，软件 I2C 作为备份或调试手段。\n\n**Q13: I2C 总线能挂载多少个器件？**\nA: 地址空间限制：7 位地址最多 112 个可用地址（0x08-0x77）。电容限制：400pF 总线电容，按每器件 10pF 计约 30-40 个。实际产品中通常 <10 个器件，超过时用 TCA9548A 多路复用器扩展。\n\n**Q14: SMBus 和 I2C 有什么区别？**\nA: SMBus 基于 I2C 但有更严格的时序规范（10kHz-100kHz）、超时检测（35ms）、PEC 校验、ARP 地址解析。SMBus 器件可与 I2C 主机通信，但 I2C 器件不一定满足 SMBus 时序要求。\n\n**Q15: I2C 通信被中断打断导致数据错乱怎么办？**\nA: I2C 硬件外设自身有状态机，中断不会打断硬件传输。但若在中断中调用 HAL_I2C_* 会破坏状态机。解决：I2C 操作放在主循环，不在 ISR 中调用 HAL I2C 函数。临界区保护共享变量。\n\n**Q16: 为什么读取传感器数据偶尔跳变到 0 或 0xFFFF？**\nA: I2C 读取多字节时，若传输中途 NACK，剩余字节未填充，缓冲区残留旧值。解决：检查 HAL 返回值，失败时不更新数据；读取前清零缓冲区；增加重试机制。\n\n**Q17: I2C 器件的 VDD 与 MCU 的 VDD 不一致怎么办？**\nA: 必须电平转换。低频（<100kHz）可用 BSS138 MOSFET 转换；高频用专用芯片（PCA9306、TXS0108E）。注意上拉电阻接在各自 VDD 侧，且 VDD 高的一侧 Rp 可稍大。",
+          "doc_id": "",
+          "chunk_id": "src2"
+        },
+        {
+          "title": "02-esp32-wifi.md",
+          "excerpt": "### 13.2 FAQ\n\n**Q1：`esp_wifi_connect()` 返回 ESP_ERR_WIFI_CONN`？**\n\nA：通常是因为未调用 `esp_wifi_start()` 或 STA 模式未正确设置。检查 `esp_wifi_set_mode(WIFI_MODE_STA)` 是否在 `esp_wifi_start()` 之前调用。\n\n**Q2：连接成功后立即断开，reason=200？**\n\nA：reason 200 是 `NO_AP_FOUND` 在新版 SDK 中的别名。可能原因：\n- AP 隐藏 SSID（需设置 `scan_method = WIFI_ALL_CHANNEL_SCAN`）\n- 信号 RSSI < -90 dBm\n- AP 不支持 ESP32 当前协议（如纯 5 GHz 路由器）\n\n**Q3：HTTPS 握手失败，错误码 0x7780？**\n\nA：错误码 0x7780 表示证书验证失败。检查：\n- 服务器证书过期\n- CA 证书未包含根证书\n- 系统时间未同步（`esp_sntp` 同步时间）\n\n**Q4：socket `send()` 长时间阻塞？**\n\nA：默认 socket 为阻塞模式，TCP 发送缓冲区满时会阻塞。解决：\n- 设置 `SO_SNDTIMEO` 超时\n- 使用非阻塞 socket + select/poll\n- 检查对端是否 ack（可能是连接已断开但未检测到）\n\n**Q5：连接不稳定，每隔几分钟断一次？**\n\nA：可能原因：\n- AP 的 DHCP 租约到期未续约\n- 路由器 STA 隔离或 MAC 过滤\n- AP 的 keep-alive 超时（需在 `listen_interval` 内主动通信）\n- 多个 AP 同名 SSID，发生漫游切换\n\n**Q6：`esp_wifi_set_ps(WIFI_PS_MAX_MODEM)` 后 TCP 连接频繁断开？**\n\nA：MAX_MODEM 模式下，如果 AP 不支持长时间睡眠的 STA，会主动断开。解决：\n- 改用 `WIFI_PS_MIN_MODEM`\n- 减小 `listen_interval`（建议 ≤ 10）\n- 应用层心跳保活（每 30 秒一次）\n\n**Q7：扫描结果为空？**",
+          "doc_id": "",
+          "chunk_id": "src3"
+        },
+        {
+          "title": "02-esp32-wifi.md",
+          "excerpt": "## 第 2 章 Station 模式连接流程（含指数退避重连策略）\n\n### 2.1 连接流程详解\n\nSTA 模式下，完整的 WiFi 连接流程涉及多次事件交互：\n\n1. `esp_wifi_start()` 触发 `WIFI_EVENT_STA_START` 事件\n2. 应用在事件处理器中调用 `esp_wifi_connect()`\n3. 驱动扫描 → 认证 → 关联 → 4 次握手（WPA2）→ DHCP\n4. 成功后触发 `IP_EVENT_STA_GOT_IP` 事件\n5. 任意阶段失败触发 `WIFI_EVENT_STA_DISCONNECTED` 事件\n\n### 2.2 WIFI_EVENT_STA_DISCONNECTED 事件详解\n\n这是最常被错误处理的事件。其 `event_data` 指向 `wifi_event_sta_disconnected_t`：\n\n```c\ntypedef struct {\n    uint8_t ssid[32];           // SSID of the AP\n    uint8_t ssid_len;           // SSID length\n    uint8_t bssid[6];           // BSSID of the AP\n    uint8_t reason;             // Disconnection reason code (802.11)\n    int8_t  rssi;               // RSSI at the moment of disconnection\n} wifi_event_sta_disconnected_t;\n```\n\n常见 reason code：\n\n| reason | 含义 | 处理建议 |\n|--------|------|----------|\n| 1 | UNSPECIFIED | 通用错误，重试连接 |\n| 2 | AUTH_EXPIRE | 认证超时 | 检查密码 |\n| 4 | DEAUTH_LEAVING | AP 主动断开 | 等待后重连 |\n| 8 | ASSOC_EXPIRE | 关联超时 | 信号弱，移动设备 |\n| 15 | 4WAY_HANDSHAKE_TIMEOUT | 4 次握手超时 | **密码错误** |\n| 201 | NO_AP_FOUND | 找不到 AP | 检查 SSID/信号 |\n| 202 | AUTH_FAIL | 认证失败 | 检查密码/认证模式 |\n| 203 | ASSOC_FAIL | 关联失败 | 检查能力位 |\n| 204 | HANDSHAKE_TIMEOUT | 握手超时 | 信号差或密码错 |\n\n**重要警告**：在 `WIFI_EVENT_STA_DISCONNECTED` 事件处理器中调用 `esp_wifi_connect()`\n时，必须避免无限重试，否则会因 CPU 占用过高导致看门狗复位。**推荐使用指数退避\n（exponential backoff）重连策略**。",
+          "doc_id": "",
+          "chunk_id": "src4"
+        },
+        {
+          "title": "02-esp32-wifi.md",
+          "excerpt": "## 结语\n\n本文档系统介绍了 ESP32 WiFi 开发的各个方面，从基础架构到高级应用，从省电模式到\n故障排查，从协议栈到安全加固。WiFi 是 IoT 设备最核心的连接能力，正确理解其工作\n原理、合理选择省电模式（WIFI_PS_NONE / WIFI_PS_MIN_MODEM / WIFI_PS_MAX_MODEM）、\n实现稳健的指数退避重连策略，是构建可靠 IoT 产品的关键。\n\n在实际开发中，建议：\n1. 使用 IDF 最新稳定版，跟进 bug 修复与性能改进\n2. 配合逻辑分析仪与 WiFi 抓包工具调试\n3. 在量产前进行 RF 校准与一致性测试\n4. 关注乐鑫官方的安全公告，及时更新固件\n5. 建立完整的 OTA 与日志系统，便于远程维护\n\nWiFi 看似简单，但涉及 RF 物理、MAC 协议、TCP/IP、安全加密等多层知识。希望本文档\n能帮助开发者系统掌握 ESP32 WiFi 开发，构建可靠的物联网产品。\n\n文档涵盖的关键技术点回顾：\n- **指数退避（exponential backoff）重连策略**：避免连接风暴，配合 retry count 与\n  reason code 差异化处理，是稳健网络连接的核心。\n- **三种省电模式**：WIFI_PS_NONE（高性能）、WIFI_PS_MIN_MODEM（平衡）、\n  WIFI_PS_MAX_MODEM（低功耗），根据应用场景选择。\n- **WIFI_EVENT_STA_DISCONNECTED 事件处理**：正确识别 reason code，避免在密码错误\n  时无限重试。\n- **MQTT 长连接**：配合 WiFi 重连协调，避免 MQTT 客户端风暴。\n- **OTA 升级**：A/B 分区 + 回滚机制，保证固件升级可靠性。\n- **安全加固**：Flash 加密 + Secure Boot + NVS 加密，全方位保护设备。\n\n希望本文档对您的 ESP32 WiFi 开发有所帮助！\n\n---\n\n*文档版本：v1.0*\n*适用 SDK：ESP-IDF v4.4 ~ v5.x*\n*适用芯片：ESP32 / ESP32-S2 / ESP32-S3 / ESP32-C3 / ESP32-C6*\n*最后更新：2026 年*",
+          "doc_id": "",
+          "chunk_id": "src5"
+        }
+      ]
+    },
+    {
+      "question_id": "Q4",
+      "question": "ESP32 的三种 Wi-Fi 省电模式有什么区别？如果应用需要低延迟 TCP 通信应该用哪种？",
+      "target_doc": "02-esp32-wifi.md",
+      "difficulty": "中等",
+      "scores": {
+        "recall": {
+          "score": 30.0,
+          "max": 30,
+          "detail": "Hit target doc: 02-esp32-wifi.md"
+        },
+        "answer_coverage": {
+          "score": 25.0,
+          "max": 25,
+          "detail": "Covered 6/6 keyword groups"
+        },
+        "chunk_completeness": {
+          "score": 25.0,
+          "max": 25,
+          "detail": "✓ Group ['WIFI_PS_NONE', 'WIFI_PS_MIN_MODEM'] found in same chunk"
+        },
+        "chunk_boundary": {
+          "score": 10.0,
+          "max": 10,
+          "detail": "All 5 src chunks clean"
+        },
+        "cross_section": {
+          "score": 10.0,
+          "max": 10,
+          "detail": "✓ WIFI_PS_NONE+延迟 in same chunk#5"
+        }
+      },
+      "total_score": 100.0,
+      "max_score": 100,
+      "answer_preview": "## ESP32 三种 Wi-Fi 省电模式的区别\n\n根据 ESP32 Wi-Fi 开发文档[来源: eval_agent-deepseek_20260627_131305 / 02-esp32-wifi.md / 文档概述与目录 (相关度: 100.0%)]，三种省电模式的核心区别在于 **Modem（射频模块）的唤醒策略**，直接影响功耗、延迟和 TCP 通信稳定性。\n\n| 省电模式 | 关键字 | 平均功耗 | 唤醒延迟 | TCP 适用性 | 典型应用 |\n|----------|--------|----------|----------|------------|----------|\n| **无省电** | `WIFI_PS_NONE` | 80~120 mA | 最低（< 2 ms） | **最佳** | 持续数据流、低延迟通信 |\n| **最小 Modem 睡眠** | `WIFI_PS_MIN_MODEM` | 20~40 mA | 中（< 50 ms） | 良好 | 间歇数据上报（IoT） |\n| **最大 Modem 睡眠** | `WIFI_PS_MAX_MO",
+      "sources_count": 5,
+      "source_titles": [
+        "02-esp32-wifi.md",
+        "04-cortexm-interrupt.md",
+        "01-stm32-gpio.md",
+        "02-esp32-wifi.md",
+        "02-esp32-wifi.md"
+      ],
+      "sources_full": [
+        {
+          "title": "02-esp32-wifi.md",
+          "excerpt": "## 第 3 章 WiFi 省电模式详解\n\nESP32 提供三种 WiFi 省电模式，权衡延迟、功耗和 TCP 通信适用性。正确选择省电模式\n对电池供电设备的续航至关重要。\n\n### 3.1 三种省电模式总览\n\n| 省电模式 | 关键词 | 平均功耗 | 延迟 | TCP 适用性 | 典型应用 |\n|----------|--------|----------|------|------------|----------|\n| WIFI_PS_NONE | WIFI_PS_NONE | 80~120 mA | 最低（< 2 ms） | 最佳 | 持续数据流、低延迟 |\n| WIFI_PS_MIN_MODEM | WIFI_PS_MIN_MODEM | 20~40 mA | 中（< 50 ms） | 良好 | 间歇数据、IoT 上报 |\n| WIFI_PS_MAX_MODEM | WIFI_PS_MAX_MODEM | 5~15 mA | 高（100~500 ms） | 一般（需保活） | 电池供电、低频率 |\n\n### 3.2 WIFI_PS_NONE（无省电）\n\n**特点**：\n- Modem 始终保持唤醒状态，不进入睡眠。\n- 接收延迟最低，吞吐量最高。\n- 功耗最高，不适合电池供电。\n- 默认模式（在某些 SDK 版本中）。\n\n**适用场景**：\n- 持续流式数据传输（如视频流、传感器高频上报）\n- 实时性要求高的应用（如遥控、低延迟控制）\n- WiFi+BT 同时工作时（避免模式切换冲突）\n\n```c\n// Set WiFi to no power saving mode\nesp_err_t ret = esp_wifi_set_ps(WIFI_PS_NONE);\nif (ret != ESP_OK) {\n    ESP_LOGE(TAG, \"Failed to set WIFI_PS_NONE: %s\", esp_err_to_name(ret));\n}\n```\n\n### 3.3 WIFI_PS_MIN_MODEM（最小 Modem 眞眠）\n\n**特点**：\n- 在 WiFi 空闲时（无收发数据）关闭 RF 接收通道，但 MAC 仍周期性唤醒监听 beacon。\n- 唤醒延迟较小（通常 < 50 ms），TCP 通信基本无影响。\n- AP 的 DTIM 间隔决定唤醒频率，DTIM=1 时功耗较高，DTIM=3 较低。\n- 适合大多数 IoT 应用，是平衡性最好的模式。\n\n**适用场景**：\n- 间歇性数据上报（如每分钟一次温湿度上传）\n- MQTT 长连接（保活间隔 > 30 秒）\n- 偶发的 HTTP 请求\n- 需要响应远程控制指令的设备\n\n```c\n// Set WiFi to minimum modem power saving\nesp_wifi_set_ps(WIFI_PS_MIN_MODEM);\n\n// Optional: Configure listen interval (in beacon periods)\n// Higher value = lower power but higher latency\nesp_wifi_set_ps(WIFI_PS_MIN_MODEM);\n// Note: listen interval is set via wifi_config.sta.listen_interval\nwifi_config_t cfg = {0};\ncfg.sta.listen_interval = 3;  // Listen every 3 beacons (~300 ms)\nesp_wifi_set_config(WIFI_IF_STA, &cfg);\n```",
+          "doc_id": "",
+          "chunk_id": "src1"
+        },
+        {
+          "title": "04-cortexm-interrupt.md",
+          "excerpt": "### Q6: 同一中断能被自己抢占吗？\n\n**A**: 默认不能。NVIC 活跃位阻止同优先级中断重入。若确需重入，需在 ISR 中手动清除挂起位并临时降低自身优先级，极其危险不推荐。\n\n### Q7: 为什么 BASEPRI 设了值后中断还是会被抢占？\n\n**A**: BASEPRI 只屏蔽优先级数值 **大于等于** BASEPRI 的中断。数值更小（更高优先级）的中断仍能响应。如果设 BASEPRI=5，优先级 0-4 的中断不被屏蔽。这是设计特性，用于\"保留高优先级中断实时性\"。\n\n### Q8: HardFault_Handler 里可以做什么？\n\n**A**: 极有限。此时系统状态可能已损坏。安全做法：读取故障寄存器存入非易失存储或全局变量，然后复位（NVIC_SystemReset）或死循环等待调试器。**不要**调用 malloc/printf 等可能进一步触发 fault 的函数。用 ITM 或简单内存写入记录最安全。\n\n### Q9: 如何让某个中断不响应但记录它的发生？\n\n**A**: 禁用 NVIC 使能但保持外设中断使能，挂起位会记录事件：\n\n```c\nNVIC_DisableIRQ(USART1_IRQn);  // NVIC won't activate\n// USART1->CR1 |= RXNEIE still set, flag goes to pending\n// Periodically check:\nif (NVIC_GetPendingIRQ(USART1_IRQn)) {\n    // A byte arrived, handle it manually\n    NVIC_ClearPendingIRQ(USART1_IRQn);\n}\n```\n\n### Q10: 多核 Cortex-M（如 M33 双核）如何处理核间中断？\n\n**A**: 用 SGIs（Software Generated Interrupts）或厂商提供的核间邮箱。STM32H7 双核用 HSEM（硬件信号量）+ C1/C2 邮箱触发对方核的中断。\n\n### Q11: WFI 和 WFE 的区别？\n\n**A**: WFI（Wait For Interrupt）等到任意中断唤醒；WFE（Wait For Event）等到事件唤醒，事件可由 SEV 指令或中断产生。WFE 有内部事件锁存，可能立即返回（如果之前有未消费事件）。低功耗建议 WFI，多核同步用 WFE+SEV。\n\n### Q12: 为什么从 STOP 模式唤醒后中断延迟很大？\n\n**A**: STOP 模式关闭 PLL，唤醒后需重新启动 PLL 锁定（几毫秒）。这段时间中断仍会响应但用 HSI 时钟（慢）。如需低延迟唤醒，用 SLEEP 模式（仅停 CPU，时钟保持）或配置 FCLK 在 STOP 时保持。\n\n---",
+          "doc_id": "",
+          "chunk_id": "src2"
+        },
+        {
+          "title": "01-stm32-gpio.md",
+          "excerpt": "**Q4: 为什么 GPIO 输出电压不对（不是 3.3V）？**\n\n可能原因：\n1. 引脚输出电流过大，导致电压跌落。解决：检查负载电流，增加驱动电路。\n2. 引脚配置为开漏输出但未接上拉电阻。解决：外接上拉电阻或改用推挽输出。\n3. 引脚处于复用模式，被外设控制。解决：检查 MODER 配置。\n4. VDD 电压不足。解决：检查电源电压。\n\n**Q5: 为什么 I2C 通信不成功？**\n\n可能原因：\n1. SDA/SCL 引脚未配置为开漏输出。解决：使用 `GPIO_MODE_AF_OD`。\n2. 缺少外部上拉电阻。解决：在 SDA/SCL 上各接一个 4.7kΩ 上拉到 VDD。\n3. I2C 地址错误。解决：确认设备地址（7位 vs 8位）。\n4. 引脚复用功能配置错误。解决：检查 AFRL/AFRH 中的 AF 编号。\n\n**Q6: 复位后引脚状态是什么？**\n\n复位后，所有 GPIO 的 MODER=00（输入模式），OTYPER=0（推挽），OSPEEDR=00（低速），PUPDR=00（无上下拉）。即所有引脚为浮空输入。例外：调试引脚 PA13（SWDIO）和 PA14（SWCLK）为复用功能模式。\n\n**Q7: 为什么程序运行后无法调试？**\n\n可能原因：\n1. 误将 PA13/PA14（SWD 引脚）配置为普通 GPIO。解决：在初始化代码中跳过这两个引脚，或使用复位按钮 + 断点调试。\n2. 启用了 LCKR 锁定。解决：只能通过复位解锁。\n3. 进入低功耗模式后 SWD 时钟停止。解决：在进入低功耗模式前配置 DBGMCU 寄存器。\n\n```c\n// Allow debugging in low-power modes\nDBGMCU->CR |= DBGMCU_CR_DBG_SLEEP | DBGMCU_CR_DBG_STOP | DBGMCU_CR_DBG_STANDBY;\n```\n\n**Q8: 如何降低 GPIO 功耗？**\n\n1. 将未使用的引脚配置为模拟模式（MODER=11）\n2. 避免引脚悬空（悬空输入会因噪声翻转，消耗动态功耗）\n3. 选择最低的输出速度\n4. 关闭不需要的上下拉电阻\n5. 在低功耗模式下，断开外部上拉/下拉（如果可能）\n\n**Q9: BSRR 和 ODR 的区别是什么？**\n\n- BSRR 是原子操作（只写），不会被中断打断。适用于中断中或 RTOS 中修改 GPIO。\n- ODR 是读-改-写操作，非原子。如果在读和写之间发生中断，可能导致数据丢失。\n- BSRR 只能设置或复位，不能读取。ODR 可以读写。",
+          "doc_id": "",
+          "chunk_id": "src3"
+        },
+        {
+          "title": "02-esp32-wifi.md",
+          "excerpt": "### 3.6 省电模式切换与电源管理\n\nESP-IDF 的 Power Management 单元可以动态调整 CPU 频率与睡眠状态：\n\n```c\n// Full power management setup\n#include \"esp_pm.h\"\n\nvoid setup_power_management(void) {\n#if CONFIG_PM_ENABLE\n    esp_pm_config_esp32_t pm_config = {\n        .max_freq_mhz = 240,         // Max CPU frequency\n        .min_freq_mhz = 80,          // Min CPU frequency (when idle)\n        .light_sleep_enable = true,  // Enable automatic light sleep\n    };\n    ESP_ERROR_CHECK(esp_pm_configure(&pm_config));\n    \n    // Combined with WIFI_PS_MAX_MODEM, this gives best power efficiency\n    esp_wifi_set_ps(WIFI_PS_MAX_MODEM);\n#endif\n}\n```\n\n### 3.7 省电模式选择决策树\n\n```\n是否电池供电？\n├── 否 → WIFI_PS_NONE（追求性能）\n└── 是\n    ├── 数据频率 > 1 Hz → WIFI_PS_MIN_MODEM\n    ├── 数据频率 1 分钟 ~ 1 秒 → WIFI_PS_MIN_MODEM + listen_interval=3\n    ├── 数据频率 < 1 分钟 → WIFI_PS_MAX_MODEM + Light Sleep\n    └── 需要响应远程命令 → WIFI_PS_MIN_MODEM + 心跳保活\n```\n\n### 3.8 功耗实测对比\n\n下表为 ESP32-WROOM-32 在 3.3V 供电、不同省电模式下的实测平均功耗（仅供参考）：\n\n| 模式 | WiFi 状态 | 平均功耗 | 峰值功耗 | 唤醒延迟 |\n|------|-----------|----------|----------|----------|\n| WIFI_PS_NONE | 持续连接 | 95 mA | 510 mA | < 2 ms |\n| WIFI_PS_MIN_MODEM | DTIM=1 | 65 mA | 510 mA | ~10 ms |\n| WIFI_PS_MIN_MODEM | DTIM=3 | 35 mA | 510 mA | ~30 ms |\n| WIFI_PS_MAX_MODEM | DTIM=10 | 12 mA | 510 mA | ~100 ms |\n| WIFI_PS_MAX_MODEM + Light Sleep | DTIM=10 | 1.5 mA | 510 mA | ~200 ms |\n| Modem Sleep + Deep Sleep | 关闭 WiFi | 0.8 mA | 510 mA | > 1 s |\n\n---",
+          "doc_id": "",
+          "chunk_id": "src4"
+        },
+        {
+          "title": "02-esp32-wifi.md",
+          "excerpt": "# ESP32 WiFi 开发完全指南\n\n> 本文档系统介绍 ESP32 WiFi 子系统的架构、Station/AP 模式配置、省电模式、安全机制、\n> TCP/UDP 通信、HTTP/HTTPS、mDNS、Smart Config、性能优化、WiFi+BT 共存及故障排查，\n> 覆盖 ESP-IDF v4.4 ~ v5.x API，包含大量可复用的 C 代码示例。\n\n---\n\n## 目录\n\n1. WiFi 模块架构\n2. Station 模式连接流程（含指数退避重连策略）\n3. WiFi 省电模式详解（WIFI_PS_NONE / WIFI_PS_MIN_MODEM / WIFI_PS_MAX_MODEM）\n4. AP 模式配置\n5. WiFi 安全性\n6. TCP/UDP 通信\n7. HTTP/HTTPS 客户端\n8. mDNS 服务发现\n9. WiFi 事件系统\n10. Smart Config 与 SmartConfig\n11. 性能优化\n12. WiFi + BT 共存\n13. 常见问题与故障排查\n14. ESP32 系列对比\n\n---",
+          "doc_id": "",
+          "chunk_id": "src5"
+        }
+      ]
+    },
+    {
+      "question_id": "Q5",
+      "question": "I2C 多主机通信时如何仲裁？仲裁失败的从机应该做什么？",
+      "target_doc": "03-i2c-protocol.md",
+      "difficulty": "中等",
+      "scores": {
+        "recall": {
+          "score": 30.0,
+          "max": 30,
+          "detail": "Hit target doc: 03-i2c-protocol.md"
+        },
+        "answer_coverage": {
+          "score": 25.0,
+          "max": 25,
+          "detail": "Covered 5/5 keyword groups"
+        },
+        "chunk_completeness": {
+          "score": 25.0,
+          "max": 25,
+          "detail": "✓ Group ['仲裁', 'SDA', '释放'] found in same chunk"
+        },
+        "chunk_boundary": {
+          "score": 10.0,
+          "max": 10,
+          "detail": "All 5 src chunks clean"
+        },
+        "cross_section": {
+          "score": 10.0,
+          "max": 10,
+          "detail": "✓ 仲裁+释放 in same chunk#5"
+        }
+      },
+      "total_score": 100.0,
+      "max_score": 100,
+      "answer_preview": "## I2C 多主机仲裁机制与失败处理\n\nI2C 多主机通信依赖 **线与（Wired-AND）逻辑** 在 SDA 线上逐位比较来实现仲裁。整个过程由硬件自动完成，但理解其原理对调试和软件处理至关重要。\n\n### 1. 仲裁过程\n\n- **时钟同步**：多主机通过 SCL 线与实现时钟同步——SCL 低电平时间为所有主机中最长的 t<sub>LOW</sub>，高电平时间为最短的 t<sub>HIGH</sub>（来源：知识库 5.2 节）。\n- **数据仲裁**：在 SCL 高电平期间，每个主机输出自己的数据位并同时读取 SDA 实际电平。若某主机输出 1 却读到 0，说明有其他主机输出 0，该主机仲裁失败（Arbitration Lost）。  \n  由于 0 会“覆盖”1，**地址值较小（含更多前导 0）的主机赢得仲裁**。仲裁可持续到地址位或数据位，但仅限主机发送方向（写操作）。（来源：知识库 5.3、5.5 节）\n\n示例：主机 A 发 0x50（0101 0000）、主机 B 发 0x48（0100 1000），在 bit 4 处 B 输出 0、A 输出 1，A 读到 0 ",
+      "sources_count": 5,
+      "source_titles": [
+        "03-i2c-protocol.md",
+        "03-i2c-protocol.md",
+        "03-i2c-protocol.md",
+        "03-i2c-protocol.md",
+        "03-i2c-protocol.md"
+      ],
+      "sources_full": [
+        {
+          "title": "03-i2c-protocol.md",
+          "excerpt": "## 5. 多主机通信与仲裁机制\n\n### 5.1 多主机总线概述\n\nI2C 是真正意义上的多主机总线（Multi-Master Bus），允许多个主机共享同一组 SCL/SDA 线而无需中央仲裁器。这是 I2C 相对 SPI 的重要优势——SPI 必须有且仅有一个主机，且每个从机需独立片选线。\n\n多主机总线的核心挑战是：当两个或更多主机同时尝试发起传输时，如何确定谁获得总线控制权而不损坏数据？答案就是**仲裁（Arbitration）机制**。仲裁完全由硬件在 SDA 线上自动完成，软件无需干预，但理解其原理对调试多主机系统至关重要。\n\n多主机系统正常工作的前提：\n1. 所有主机使用相同的 SCL 时钟同步机制（线与同步）。\n2. 所有主机在发送每个 bit 时检测 SDA 实际电平，判断是否仲裁丢失。\n3. 仲裁丢失的主机必须立即停止输出并释放总线，切换为从机监听模式。\n4. 总线空闲时间 tBUF 必须被遵守，确保所有主机都能检测到空闲状态。\n\n### 5.2 时钟同步（Clock Synchronization）\n\n在仲裁之前，必须先理解 I2C 的时钟同步机制。多个主机同时产生 SCL 时，由于开漏线与逻辑，SCL 实际电平由所有主机共同决定：\n\n- SCL 被拉低：只要任一主机输出低电平，SCL 即为低。\n- SCL 被拉高：所有主机都释放（输出高阻）后，SCL 才被上拉电阻拉高。\n\n这形成**线与同步**：SCL 低电平时间为所有主机中最长的 tLOW；SCL 高电平时间为所有主机中最短的 tHIGH。最终 SCL 频率为最慢主机的频率。\n\n```\n主机A SCL: ‾‾‾‾_______‾‾‾‾‾‾‾‾_______‾‾\n主机B SCL: ‾‾‾‾‾‾‾‾__________‾‾‾‾‾‾‾‾\n总线 SCL:  ‾‾‾‾__________‾‾‾‾‾‾_______‾‾\n            \\_最长tLOW_/ \\_最短tHIGH/\n```\n\n时钟同步使不同速率的主机能共存于同一总线，也是仲裁的基础。",
+          "doc_id": "",
+          "chunk_id": "src1"
+        },
+        {
+          "title": "03-i2c-protocol.md",
+          "excerpt": "**Q12: GPIO 软件模拟 I2C 和硬件 I2C 哪个更好？**\nA: 硬件 I2C 优势：不占用 CPU、支持 DMA、时序精确。软件 I2C 优势：引脚灵活、跨平台、无硬件 Errata 限制。产品环境优先用硬件 I2C，软件 I2C 作为备份或调试手段。\n\n**Q13: I2C 总线能挂载多少个器件？**\nA: 地址空间限制：7 位地址最多 112 个可用地址（0x08-0x77）。电容限制：400pF 总线电容，按每器件 10pF 计约 30-40 个。实际产品中通常 <10 个器件，超过时用 TCA9548A 多路复用器扩展。\n\n**Q14: SMBus 和 I2C 有什么区别？**\nA: SMBus 基于 I2C 但有更严格的时序规范（10kHz-100kHz）、超时检测（35ms）、PEC 校验、ARP 地址解析。SMBus 器件可与 I2C 主机通信，但 I2C 器件不一定满足 SMBus 时序要求。\n\n**Q15: I2C 通信被中断打断导致数据错乱怎么办？**\nA: I2C 硬件外设自身有状态机，中断不会打断硬件传输。但若在中断中调用 HAL_I2C_* 会破坏状态机。解决：I2C 操作放在主循环，不在 ISR 中调用 HAL I2C 函数。临界区保护共享变量。\n\n**Q16: 为什么读取传感器数据偶尔跳变到 0 或 0xFFFF？**\nA: I2C 读取多字节时，若传输中途 NACK，剩余字节未填充，缓冲区残留旧值。解决：检查 HAL 返回值，失败时不更新数据；读取前清零缓冲区；增加重试机制。\n\n**Q17: I2C 器件的 VDD 与 MCU 的 VDD 不一致怎么办？**\nA: 必须电平转换。低频（<100kHz）可用 BSS138 MOSFET 转换；高频用专用芯片（PCA9306、TXS0108E）。注意上拉电阻接在各自 VDD 侧，且 VDD 高的一侧 Rp 可稍大。",
+          "doc_id": "",
+          "chunk_id": "src2"
+        },
+        {
+          "title": "03-i2c-protocol.md",
+          "excerpt": "### 5.5 仲裁示例分析\n\n考虑两个主机同时发起通信，主机 A 发送地址 0x50（0101 0000），主机 B 发送地址 0x48（0100 1000）：\n\n```\nbit序:    7    6    5    4    3    2    1    0\n主机A:    0    1    0    1    0    0    0    0   (0x50)\n主机B:    0    1    0    0    1    0    0    0   (0x48)\nSDA总线:  0    1    0    0    ...                 (跟随较低者)\n仲裁:     OK   OK   OK   B赢  A输\n```\n\n逐位分析：\n- Bit 7：A=0, B=0，总线=0，两者一致，继续。\n- Bit 6：A=1, B=1，总线=1，两者一致，继续。\n- Bit 5：A=0, B=0，总线=0，两者一致，继续。\n- Bit 4：A=1, B=0，总线=0（B 拉低）。A 输出 1 但读到 0 → A 检测到仲裁丢失，立即释放 SDA 并切换从机模式。B 输出 0 与总线一致，继续。\n- 后续位：只有 B 驱动总线，A 已退出，B 完成传输。\n\n**结论**：地址较小的主机（含更多前导 0）赢得仲裁。这是因为 0 会\"覆盖\"1（线与逻辑），输出 0 的主机永远不会与总线冲突。\n\n### 5.6 仲裁的局限与边界情况\n\n1. **相同地址仲裁**：若两主机发送相同地址，仲裁会持续到数据阶段，直到数据位出现差异。若数据完全相同，则两主机都\"获胜\"且不会感知冲突——这在理论上可接受，但实际中应避免（可能导致两主机同时收到从机 ACK）。\n2. **地址阶段后的仲裁**：仲裁可持续到数据阶段的任意位，但一旦某主机在地址阶段获胜，后续只有它驱动总线，不会再有仲裁。\n3. **不能在读取方向仲裁**：仲裁只在主机发送（写）方向有效。读操作时主机不驱动 SDA 数据位，无法比较。\n4. **高速模式不支持仲裁**：Hs-mode 仅支持单主机，无仲裁机制。\n5. **软件仲裁**：对于 GPIO 软件模拟 I2C，软件需自行实现仲裁逻辑（每个 bit 输出后读回比较）。\n\n### 5.7 STM32 仲裁丢失标志处理\n\nSTM32 I2C 在仲裁丢失时会置位特定标志，软件需正确处理：\n\n```c\n// STM32 I2C arbitration lost flag handling (register level)\nvoid I2C1_ER_IRQHandler(void) {\n    // Check arbitration lost flag\n    if (I2C1->SR1 & I2C_SR1_BERR) {\n        // Bus error: misplaced START/STOP\n        I2C1->SR1 = 0;  // Clear flag by writing 0 (read SR1 then write 0)\n        // Software recovery: reset peripheral\n        i2c_recover_from_error();\n    }\n\n    if (I2C1->SR1 & I2C_SR1_ARLO) {\n        // Arbitration lost: another master won\n        // Hardware automatically switches to slave mode and releases bus\n        I2C1->SR1 &= ~I2C_SR1_ARLO;  // Clear ARLO flag\n        // Schedule retry in main loop, do NOT immediately re-transmit\n        g_i2c_arbitration_lost = 1;\n    }\n\n    if (I2C1->SR1 & I2C_SR1_AF) {\n        // Acknowledge failure: slave did not respond\n        I2C1->SR1 &= ~I2C_SR1_AF;\n        g_i2c_ack_failure = 1;\n    }\n\n    if (I2C1->SR1 & I2C_SR1_OVR) {\n        // Overrun/Underrun: data register not read/written in time\n        I2C1",
+          "doc_id": "",
+          "chunk_id": "src3"
+        },
+        {
+          "title": "03-i2c-protocol.md",
+          "excerpt": "### 5.3 仲裁过程详解\n\n仲裁（Arbitration）在 SDA 线上进行，原理是**线与比较**：每个主机在 SCL 高电平期间输出自己的数据位，同时读取 SDA 实际电平，若与自己输出不符则仲裁丢失。\n\n仲裁过程步骤：\n1. 多个主机同时检测到总线空闲（SCL/SDA 均高），各自发出 START 条件并开始发送地址。\n2. 主机在 SCL 低电平期间将数据位写入 SDA，在 SCL 高电平期间读取 SDA 实际电平。\n3. 若主机输出 1（释放 SDA）但读到 0（被其他主机拉低），说明有其他主机输出 0，本主机仲裁丢失（Arbitration Lost）。\n4. 仲裁丢失的主机立即停止驱动 SDA，切换为从机模式监听总线，等待总线空闲后重试。\n5. 由于地址高位先发，地址值较小的主机（更多前导 0）会在仲裁中获胜。\n\n**关键点**：仲裁只发生在 SDA 上，且仅在主机输出高电平而总线为低时才判定丢失。输出低电平的主机永远不会\"输\"，因为总线电平与自己一致。这就保证了仲裁过程中不会产生数据冲突或损坏——获胜主机的数据完整无误地留在总线上。\n\n### 5.4 仲裁丢失（Arbitration Lost）处理\n\n当主机检测到仲裁丢失时，硬件会：\n1. 置位状态寄存器中的仲裁丢失标志（如 STM32 的 SR1 寄存器 BERR 位或 I2C_FLAG_AF）。\n2. 自动断开主机输出（SCL/SDA 切换为输入/高阻），即**释放总线**。\n3. 产生中断（若使能），通知软件仲裁失败。\n4. 主机保持从机模式监听，直到检测到 STOP 条件（总线空闲）。\n\n软件处理仲裁丢失的标准流程：\n```c\n// I2C arbitration lost handling example (STM32 HAL)\nHAL_StatusTypeDef i2c_master_tx_with_arbitration_retry(\n    I2C_HandleTypeDef *hi2c, uint16_t addr,\n    uint8_t *data, uint16_t len, uint8_t max_retry) {\n\n    uint8_t retry = 0;\n    HAL_StatusTypeDef status;\n\n    while (retry < max_retry) {\n        status = HAL_I2C_Master_Transmit(hi2c, addr, data, len, 100);\n\n        if (status == HAL_OK) {\n            return HAL_OK;  // Transmission succeeded\n        }\n\n        if (status == HAL_ERROR && __HAL_I2C_GET_FLAG(hi2c, I2C_FLAG_AF)) {\n            // Arbitration lost: another master won the bus\n            // Hardware has already released the bus, wait for STOP\n            retry++;\n            // Wait for bus free (STOP detected)\n            uint32_t timeout = HAL_GetTick() + I2C_TIMEOUT_MS;\n            while (!__HAL_I2C_GET_FLAG(hi2c, I2C_FLAG_BUSY)) {\n                if (HAL_GetTick() >= timeout) {\n                    return HAL_TIMEOUT;\n                }\n            }\n            HAL_Delay(1);  // Small backoff to reduce re-collision\n            continue;\n        }\n        return status;  // Other errors, do not retry\n    }\n    return HAL_ERROR;  // Max retries exceeded\n}\n```",
+          "doc_id": "",
+          "chunk_id": "src4"
+        },
+        {
+          "title": "03-i2c-protocol.md",
+          "excerpt": "## 附录 M：I2C 错误场景代码示例集\n\n### M.1 总线锁死（SDA 被从机拉低）恢复\n\n从机在 ACK 阶段复位导致 SDA 持续低，主机的 START/STOP 无法生效：\n\n```c\n// Recover locked I2C bus by clocking 9 SCL pulses then STOP\nHAL_StatusTypeDef i2c_bus_recover(I2C_HandleTypeDef *hi2c) {\n    GPIO_InitTypeDef gi = {0};\n    // Reconfigure SCL/SDA as open-drain GPIO\n    HAL_I2C_DeInit(hi2c);\n    gi.Pin = I2C_SCL_PIN | I2C_SDA_PIN;\n    gi.Mode = GPIO_MODE_OUTPUT_OD;\n    gi.Pull = GPIO_PULLUP;\n    gi.Speed = GPIO_SPEED_FREQ_LOW;\n    HAL_GPIO_Init(I2C_SCL_PORT, &gi);\n    // Release SDA\n    HAL_GPIO_WritePin(I2C_SDA_PORT, I2C_SDA_PIN, GPIO_PIN_SET);\n    // Clock 9 SCL pulses to release stuck slave\n    for (int i = 0; i < 9; i++) {\n        HAL_GPIO_WritePin(I2C_SCL_PORT, I2C_SCL_PIN, GPIO_PIN_RESET);\n        HAL_DelayUs(5);\n        HAL_GPIO_WritePin(I2C_SCL_PORT, I2C_SCL_PIN, GPIO_PIN_SET);\n        HAL_DelayUs(5);\n        // If SDA released, stop early\n        if (HAL_GPIO_ReadPin(I2C_SDA_PORT, I2C_SDA_PIN) == GPIO_PIN_SET) break;\n    }\n    // Generate STOP: SDA low->high while SCL high\n    HAL_GPIO_WritePin(I2C_SCL_PORT, I2C_SCL_PIN, GPIO_PIN_SET);\n    HAL_DelayUs(5);\n    HAL_GPIO_WritePin(I2C_SDA_PORT, I2C_SDA_PIN, GPIO_PIN_RESET);\n    HAL_DelayUs(5);\n    HAL_GPIO_WritePin(I2C_SDA_PORT, I2C_SDA_PIN, GPIO_PIN_SET);\n    HAL_DelayUs(5);\n    // Re-init I2C peripheral\n    return MX_I2C1_Init();\n}\n```\n\n### M.2 ARLO（仲裁丢失）处理\n\n多主机环境下丢失仲裁应停止当前传输并重试：\n\n```c\ntypedef struct {\n    uint32_t arlo_count;\n    uint32_t retry_count;\n} i2c_stats_t;\n\nstatic i2c_stats_t i2c_stats;\n\nHAL_StatusTypeDef i2c_master_tx_with_retry(I2C_HandleTypeDef *hi2c,\n                                           uint16_t addr, uint8_t *data,\n                                           uint16_t size) {\n    for (int attempt = 0; attempt < 3; attempt++) {\n        HAL_StatusTypeDef st = HAL_I2C_Master_Transmit(hi2c, addr, data, size, I2C_TIMEOUT_MS);\n        if (st == HAL_OK) return HAL_OK;\n        // Check arbitration lost\n        if (__HAL_I2C_GET_FLAG(hi2c, I2C_FLAG_ARLO)) {\n         ",
+          "doc_id": "",
+          "chunk_id": "src5"
+        }
+      ]
+    },
+    {
+      "question_id": "Q6",
+      "question": "从机时钟拉伸导致 I2C 通信阻塞时，主机应该怎么检测和处理？超时时间一般设为多少？",
+      "target_doc": "03-i2c-protocol.md",
+      "difficulty": "难",
+      "scores": {
+        "recall": {
+          "score": 30.0,
+          "max": 30,
+          "detail": "Hit target doc: 03-i2c-protocol.md"
+        },
+        "answer_coverage": {
+          "score": 25.0,
+          "max": 25,
+          "detail": "Covered 5/5 keyword groups"
+        },
+        "chunk_completeness": {
+          "score": 25.0,
+          "max": 25,
+          "detail": "✓ Group ['时钟拉伸', '超时', '100'] found in same chunk"
+        },
+        "chunk_boundary": {
+          "score": 10.0,
+          "max": 10,
+          "detail": "All 5 src chunks clean"
+        },
+        "cross_section": {
+          "score": 10.0,
+          "max": 10,
+          "detail": "✓ 时钟拉伸+超时 in same chunk#21"
+        }
+      },
+      "total_score": 100.0,
+      "max_score": 100,
+      "answer_preview": "## 从机时钟拉伸导致 I2C 阻塞的检测与处理方法\n\n### 🔍 阻塞机制\n时钟拉伸是 I2C 从机通过拉低 **SCL** 强制主机等待的流控方式。正常场景下拉伸时间有限（如 EEPROM 页写最长 **5ms**），**但从机因故障、ESD 损伤或软件 bug 永久拉低 SCL 时，主机会无限等待，导致系统挂死**。  \n*（来源：`03-i2c-protocol.md` / 6.1 时钟拉伸机制，6.3 超时检测的必要性）*\n\n### 🛡️ 检测方法\n1. **硬件自动检测**  \n   - I2C 主机在每个 **SCL 高电平**采样时，检测 SCL 是否实际为高。若从机拉伸，SCL 保持低电平，主机自动暂停下一位传输。  \n   - STM32 硬件 I2C 默认支持此检测（`NoStretchMode` 必须为 `DISABLE`）。  \n\n2. **软件超时保护（必需）**  \n   硬件不会自动超时，必须由软件配合实现超时机制，防止无限等待。  \n   - **实现方式**：在每次 SCL 等待或每次 I2C 操作前记录起始时间，超时后主动恢复总线。  \n   - ",
+      "sources_count": 5,
+      "source_titles": [
+        "03-i2c-protocol.md",
+        "03-i2c-protocol.md",
+        "03-i2c-protocol.md",
+        "03-i2c-protocol.md",
+        "03-i2c-protocol.md"
+      ],
+      "sources_full": [
+        {
+          "title": "03-i2c-protocol.md",
+          "excerpt": "## 6. 时钟拉伸与超时处理\n\n### 6.1 时钟拉伸机制\n\n时钟拉伸（Clock Stretching）是 I2C 从机的一种流控机制：从机在无法及时处理数据时，主动将 SCL 拉低，强制主机等待。主机在每个 SCL 高电平期间检测 SCL 是否真正为高，若被从机拉低则保持等待。\n\n时钟拉伸的典型应用场景：\n1. **EEPROM 页写**：EEPROM 接收数据后需要内部写周期（最长 5ms），期间拉低 SCL 让主机等待。\n2. **ADC 转换**：从机 ADC 在转换期间拉低 SCL，转换完成后释放并返回数据。\n3. **从机 MCU 处理中断**：从机 MCU 的 I2C 中断服务程序处理较慢时，拉低 SCL 等待软件读取数据寄存器。\n4. **流控**：从机缓冲区满时拉低 SCL 暂停主机发送。\n\n时钟拉伸的工作流程：\n```\n1. 主机发送一个字节后释放 SCL（输出高阻）\n2. 从机在 ACK 时隙将 SCL 拉低（开始拉伸）\n3. 主机检测到 SCL 未被上拉为高，进入等待状态\n4. 从机处理完毕后释放 SCL\n5. 主机检测到 SCL 变高，继续下一位传输\n```\n\n> **重要**：标准模式与快速模式必须支持时钟拉伸（从机侧）。主机侧应允许从机拉伸，不能强制 SCL。STM32 的 NoStretchMode 配置项若设为 ENABLE 则禁用从机拉伸能力，可能导致数据丢失。\n\n### 6.2 STM32 时钟拉伸配置\n\n```c\n// STM32 I2C clock stretching configuration\n// Enable clock stretching (default, recommended for slave mode)\nhi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;  // Allow stretching\n\n// Disable clock stretching (only for slave mode, NOT recommended)\n// hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_ENABLE;\n\n// For STM32H7/G4, stretching timeout can be configured\n// hi2c1.Init.timeoutA = 0x0F;  // SCL low timeout\n// hi2c1.Init.timeoutB = 0x0F;  // idle timeout\n```\n\n### 6.3 超时检测的必要性\n\n时钟拉伸虽然有用，但也会带来风险：如果从机因故障、ESD 损伤或软件 bug 永久拉低 SCL，主机会无限等待，导致系统挂死。因此**主机必须实现超时检测机制**，在 SCL 被拉伸超过合理时间后主动恢复总线。\n\n超时阈值设定原则：\n- 正常从机拉伸通常在 1-10ms 内（EEPROM 写周期 5ms 是典型上限）。\n- 超时阈值应远大于正常拉伸时间，避免误触发：通常设为 100ms。\n- 超时后执行总线恢复序列（9 个 SCL 脉冲 + STOP），再重新初始化外设。\n\n### 6.4 超时检测实现\n\n超时检测使用 HAL_GetTick() 进行毫秒级时间比较，定义超时宏 `#define I2C_TIMEOUT_MS 100`（注意是 100ms，不是 10ms，因为 EEPROM 写周期可达 5ms，10ms 过短易误判）：\n\n```c\n// I2C timeout definition: 100ms for clock stretching timeout\n#define I2C_TIMEOUT_MS 100\n\n// Wait for SCL to go high with timeout (clock stretch detection)\n// Returns HAL_OK if SCL released in time, HAL_TIMEOUT if stuck\nHAL_StatusTypeDef i2c_wait_scl_high(I2C_HandleTypeDef *hi2c) {\n    uint32_t start_tick = HAL_GetTick();\n    uint32_t timeout = start_tick + I2C_TIMEOUT_MS;\n\n    // Wait until SCL is high (released by slave)\n    while (HAL_GPIO_ReadPin(I2C_SCL_PORT, I2C_SCL_PIN) == GPIO_PIN_RESET) {",
+          "doc_id": "",
+          "chunk_id": "src1"
+        },
+        {
+          "title": "03-i2c-protocol.md",
+          "excerpt": "### 10.3 时钟拉伸超时\n\n**现象**：通信间歇性失败，逻辑分析仪显示 SCL 被从机拉低超过预期时间，主机超时返回错误。\n\n**根因**：\n1. 从机软件处理慢（中断响应不及时），拉伸时间过长。\n2. 从机被噪声干扰，误触发拉伸。\n3. 主机不支持时钟拉伸，从机拉伸时主机继续输出时钟，导致数据错位。\n\n**解决**：\n1. 确认主机支持时钟拉伸（STM32 硬件 I2C 默认支持）。\n2. 优化从机中断处理，缩短拉伸时间。\n3. 设置合理的超时阈值（I2C_TIMEOUT_MS = 100ms），超时后恢复总线。\n4. 若从机拉伸不可控，改用轮询模式代替中断模式。\n\n### 10.4 信号完整性问题\n\n**现象**：通信偶发错误，示波器观察 SCL/SDA 波形上升沿过缓、有过冲、振铃或串扰。\n\n**根因与解决**：\n\n| 现象 | 根因 | 解决方案 |\n|------|------|---------|\n| 上升沿过缓（>300ns） | 上拉电阻过大或总线电容过大 | 减小 Rp，或使用总线缓冲器 |\n| 上升沿过冲/振铃 | 上拉电阻过小，反射 | 增大 Rp，加串联电阻（22-100Ω） |\n| 下降沿过缓 | 器件驱动能力不足 | 检查器件 IO 驱动能力 |\n| 串扰 | SCL/SDA 走线过近 | 增加走线间距，中间加地线 |\n| 地弹 | 多器件同时翻转 | 增加去耦电容，优化地平面 |",
+          "doc_id": "",
+          "chunk_id": "src2"
+        },
+        {
+          "title": "03-i2c-protocol.md",
+          "excerpt": "**Q12: GPIO 软件模拟 I2C 和硬件 I2C 哪个更好？**\nA: 硬件 I2C 优势：不占用 CPU、支持 DMA、时序精确。软件 I2C 优势：引脚灵活、跨平台、无硬件 Errata 限制。产品环境优先用硬件 I2C，软件 I2C 作为备份或调试手段。\n\n**Q13: I2C 总线能挂载多少个器件？**\nA: 地址空间限制：7 位地址最多 112 个可用地址（0x08-0x77）。电容限制：400pF 总线电容，按每器件 10pF 计约 30-40 个。实际产品中通常 <10 个器件，超过时用 TCA9548A 多路复用器扩展。\n\n**Q14: SMBus 和 I2C 有什么区别？**\nA: SMBus 基于 I2C 但有更严格的时序规范（10kHz-100kHz）、超时检测（35ms）、PEC 校验、ARP 地址解析。SMBus 器件可与 I2C 主机通信，但 I2C 器件不一定满足 SMBus 时序要求。\n\n**Q15: I2C 通信被中断打断导致数据错乱怎么办？**\nA: I2C 硬件外设自身有状态机，中断不会打断硬件传输。但若在中断中调用 HAL_I2C_* 会破坏状态机。解决：I2C 操作放在主循环，不在 ISR 中调用 HAL I2C 函数。临界区保护共享变量。\n\n**Q16: 为什么读取传感器数据偶尔跳变到 0 或 0xFFFF？**\nA: I2C 读取多字节时，若传输中途 NACK，剩余字节未填充，缓冲区残留旧值。解决：检查 HAL 返回值，失败时不更新数据；读取前清零缓冲区；增加重试机制。\n\n**Q17: I2C 器件的 VDD 与 MCU 的 VDD 不一致怎么办？**\nA: 必须电平转换。低频（<100kHz）可用 BSS138 MOSFET 转换；高频用专用芯片（PCA9306、TXS0108E）。注意上拉电阻接在各自 VDD 侧，且 VDD 高的一侧 Rp 可稍大。",
+          "doc_id": "",
+          "chunk_id": "src3"
+        },
+        {
+          "title": "03-i2c-protocol.md",
+          "excerpt": "## 5. 多主机通信与仲裁机制\n\n### 5.1 多主机总线概述\n\nI2C 是真正意义上的多主机总线（Multi-Master Bus），允许多个主机共享同一组 SCL/SDA 线而无需中央仲裁器。这是 I2C 相对 SPI 的重要优势——SPI 必须有且仅有一个主机，且每个从机需独立片选线。\n\n多主机总线的核心挑战是：当两个或更多主机同时尝试发起传输时，如何确定谁获得总线控制权而不损坏数据？答案就是**仲裁（Arbitration）机制**。仲裁完全由硬件在 SDA 线上自动完成，软件无需干预，但理解其原理对调试多主机系统至关重要。\n\n多主机系统正常工作的前提：\n1. 所有主机使用相同的 SCL 时钟同步机制（线与同步）。\n2. 所有主机在发送每个 bit 时检测 SDA 实际电平，判断是否仲裁丢失。\n3. 仲裁丢失的主机必须立即停止输出并释放总线，切换为从机监听模式。\n4. 总线空闲时间 tBUF 必须被遵守，确保所有主机都能检测到空闲状态。\n\n### 5.2 时钟同步（Clock Synchronization）\n\n在仲裁之前，必须先理解 I2C 的时钟同步机制。多个主机同时产生 SCL 时，由于开漏线与逻辑，SCL 实际电平由所有主机共同决定：\n\n- SCL 被拉低：只要任一主机输出低电平，SCL 即为低。\n- SCL 被拉高：所有主机都释放（输出高阻）后，SCL 才被上拉电阻拉高。\n\n这形成**线与同步**：SCL 低电平时间为所有主机中最长的 tLOW；SCL 高电平时间为所有主机中最短的 tHIGH。最终 SCL 频率为最慢主机的频率。\n\n```\n主机A SCL: ‾‾‾‾_______‾‾‾‾‾‾‾‾_______‾‾\n主机B SCL: ‾‾‾‾‾‾‾‾__________‾‾‾‾‾‾‾‾\n总线 SCL:  ‾‾‾‾__________‾‾‾‾‾‾_______‾‾\n            \\_最长tLOW_/ \\_最短tHIGH/\n```\n\n时钟同步使不同速率的主机能共存于同一总线，也是仲裁的基础。",
+          "doc_id": "",
+          "chunk_id": "src4"
+        },
+        {
+          "title": "03-i2c-protocol.md",
+          "excerpt": "### 6.4 超时检测实现\n\n超时检测使用 HAL_GetTick() 进行毫秒级时间比较，定义超时宏 `#define I2C_TIMEOUT_MS 100`（注意是 100ms，不是 10ms，因为 EEPROM 写周期可达 5ms，10ms 过短易误判）：\n\n```c\n// I2C timeout definition: 100ms for clock stretching timeout\n#define I2C_TIMEOUT_MS 100\n\n// Wait for SCL to go high with timeout (clock stretch detection)\n// Returns HAL_OK if SCL released in time, HAL_TIMEOUT if stuck\nHAL_StatusTypeDef i2c_wait_scl_high(I2C_HandleTypeDef *hi2c) {\n    uint32_t start_tick = HAL_GetTick();\n    uint32_t timeout = start_tick + I2C_TIMEOUT_MS;\n\n    // Wait until SCL is high (released by slave)\n    while (HAL_GPIO_ReadPin(I2C_SCL_PORT, I2C_SCL_PIN) == GPIO_PIN_RESET) {\n        if (HAL_GetTick() >= timeout) {\n            // Clock stretching timeout: slave held SCL low too long\n            // Perform bus recovery\n            i2c_bus_recover(hi2c);\n            return HAL_TIMEOUT;\n        }\n    }\n    return HAL_OK;\n}\n\n// Generic I2C operation timeout wrapper using HAL_GetTick()\nHAL_StatusTypeDef i2c_wait_flag_with_timeout(I2C_HandleTypeDef *hi2c,\n                                              uint32_t flag, FlagStatus status) {\n    uint32_t timeout = HAL_GetTick() + I2C_TIMEOUT_MS;\n    while (__HAL_I2C_GET_FLAG(hi2c, flag) == status) {\n        if (HAL_GetTick() >= timeout) {\n            return HAL_TIMEOUT;\n        }\n    }\n    return HAL_OK;\n}\n\n// Master transmit with comprehensive timeout protection\nHAL_StatusTypeDef i2c_master_tx_safe(I2C_HandleTypeDef *hi2c, uint16_t addr,\n                                      uint8_t *data, uint16_t len) {\n    uint32_t timeout = HAL_GetTick() + I2C_TIMEOUT_MS;\n\n    // Wait for bus free\n    while (__HAL_I2C_GET_FLAG(hi2c, I2C_FLAG_BUSY)) {\n        if (HAL_GetTick() >= timeout) {\n            i2c_bus_recover(hi2c);\n            return HAL_TIMEOUT;\n        }\n    }\n\n    // Transmit with HAL timeout (also uses I2C_TIMEOUT_MS = 100)\n    HAL_StatusTypeDef status = HAL_I2C_Master_Transmit(\n        hi2c, addr, data, len, I2C_TIMEOUT_MS);\n\n    if (status == HAL_TIMEOUT) {\n        /",
+          "doc_id": "",
+          "chunk_id": "src5"
+        }
+      ]
+    },
+    {
+      "question_id": "Q7",
+      "question": "Cortex-M3 的 NVIC 优先级分组如何配置？如果 USART1 抢占优先级为 1、TIM2 抢占优先级为 2，当中断同时到达时谁先执行？",
+      "target_doc": "04-cortexm-interrupt.md",
+      "difficulty": "难",
+      "scores": {
+        "recall": {
+          "score": 30.0,
+          "max": 30,
+          "detail": "Hit target doc: 04-cortexm-interrupt.md"
+        },
+        "answer_coverage": {
+          "score": 21.875,
+          "max": 25,
+          "detail": "Covered 7/8 keyword groups. Missed: 嵌套"
+        },
+        "chunk_completeness": {
+          "score": 25.0,
+          "max": 25,
+          "detail": "✓ Group ['PRIGROUP', '抢占优先级', '子优先级'] found in same chunk"
+        },
+        "chunk_boundary": {
+          "score": 10.0,
+          "max": 10,
+          "detail": "All 5 src chunks clean"
+        },
+        "cross_section": {
+          "score": 10.0,
+          "max": 10,
+          "detail": "No cross-section keywords defined"
+        }
+      },
+      "total_score": 96.875,
+      "max_score": 100,
+      "answer_preview": "### 1. Cortex-M3 NVIC 优先级分组配置\n\n优先级分组通过 **SCB->AIRCR** 寄存器的 `PRIGROUP` 位（bit[10:8]）设置，决定抢占优先级和子优先级的分割。具体配置方法如下：\n\n#### 直接操作 AIRCR（底层）\n```c\nvoid NVIC_SetPriorityGrouping_raw(uint32_t group) {\n    uint32_t reg_value;\n    uint32_t PriorityGroupTmp = (group & 0x07);  // 仅低3位有效\n    reg_value = SCB->AIRCR;\n    reg_value &= ~(SCB_AIRCR_VECTKEY_Msk | SCB_AIRCR_PRIGROUP_Msk);\n    reg_value = reg_value |\n                (0x5FA << SCB_AIRCR_VECTKEY_Pos) |   // 写入密钥0x5FA\n                (PriorityGroupTmp << S",
+      "sources_count": 5,
+      "source_titles": [
+        "04-cortexm-interrupt.md",
+        "04-cortexm-interrupt.md",
+        "04-cortexm-interrupt.md",
+        "04-cortexm-interrupt.md",
+        "04-cortexm-interrupt.md"
+      ],
+      "sources_full": [
+        {
+          "title": "04-cortexm-interrupt.md",
+          "excerpt": "### 3.3 实测中断延迟\n\n用 GPIO 翻转 + 示波器/逻辑分析仪实测延迟：\n\n```c\n// Configure a GPIO as output for timing probe\n// Configure an external interrupt (EXTI) on another pin\n// Measure: apply rising edge to EXTI pin, observe delay to GPIO toggle in ISR\n\nvolatile uint32_t irq_entry_tick;\n\nvoid EXTI0_IRQHandler(void) {\n    // Toggle probe GPIO immediately (first instruction ideally)\n    GPIOA->BSRR = GPIO_PIN_0;  // Set PA0 high\n    // ... actual ISR work ...\n    // Clear EXTI pending flag\n    EXTI->PR = EXTI_LINE_0;\n    GPIOA->BSRR = (GPIO_PIN_0 << 16);  // Set PA0 low\n}\n\n// On scope: measure time from EXTI trigger edge to PA0 rising edge\n// At 84MHz: 12 cycles = 12/84MHz = ~143 ns\n// Typical measured on STM32F4 (Flash w/ART): 18-25 cycles (~210-300ns)\n```\n\nDWT（Data Watchpoint and Trace）周期计数器可精确测量：\n\n```c\n// Use DWT CYCCNT for cycle-accurate latency measurement\nvoid EXTI0_IRQHandler(void) {\n    uint32_t cyc = DWT->CYCCNT;  // Read cycle counter (first thing)\n    // Compare to a timestamp captured at trigger\n    last_latency_cycles = cyc - trigger_cyc;\n    // ... handle interrupt ...\n    EXTI->PR = EXTI_LINE_0;\n}\n\n// Setup DWT\nvoid dwt_init(void) {\n    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;\n    DWT->CYCCNT = 0;\n    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;\n}\n```\n\n### 3.4 尾链（Tail-Chaining）机制\n\n**尾链** 是 Cortex-M3/M4 最重要的中断优化机制之一。当一个 ISR 执行完毕时，若 NVIC 中还有挂起的中断，硬件不会先出栈再入栈，而是直接跳转到下一个挂起中断的 ISR，省去 8 寄存器的出栈+入栈（共 16 次内存访问）。\n\n**无尾链** 的流程：\n```\nISR1 执行完 → 出栈（8 寄存器）→ 取向量 → 压栈（8 寄存器）→ ISR2 执行\n延迟：8 + 2 + 8 = ~18 cycles\n```\n\n**有尾链** 的流程：\n```\nISR1 执行完 → 取向量 → ISR2 执行（复用已压栈的栈帧）\n延迟：6 cycles\n```\n\n节省约 12 个周期。这在多个中断密集发生时（如 DMA 完成后立即 UART 发送）效果显著。\n\n```c\n// Example: DMA complete ISR triggers UART processing\nvoid DMA1_Stream0_IRQHandler(void) {\n    if (DMA1->LISR & DMA_LISR_TCIF0) {\n        DMA1->LIFCR = DMA_LIFCR_CTCIF0;  // Clear flag\n        // Signal UART to start sending (via pending UART ISR)\n        NVIC_SetPendingIRQ(USART1_IRQn);  // Tail-chained next\n    }\n}\n// USART1_IRQHandler will execute immediatel",
+          "doc_id": "",
+          "chunk_id": "src1"
+        },
+        {
+          "title": "04-cortexm-interrupt.md",
+          "excerpt": "### Q6: 同一中断能被自己抢占吗？\n\n**A**: 默认不能。NVIC 活跃位阻止同优先级中断重入。若确需重入，需在 ISR 中手动清除挂起位并临时降低自身优先级，极其危险不推荐。\n\n### Q7: 为什么 BASEPRI 设了值后中断还是会被抢占？\n\n**A**: BASEPRI 只屏蔽优先级数值 **大于等于** BASEPRI 的中断。数值更小（更高优先级）的中断仍能响应。如果设 BASEPRI=5，优先级 0-4 的中断不被屏蔽。这是设计特性，用于\"保留高优先级中断实时性\"。\n\n### Q8: HardFault_Handler 里可以做什么？\n\n**A**: 极有限。此时系统状态可能已损坏。安全做法：读取故障寄存器存入非易失存储或全局变量，然后复位（NVIC_SystemReset）或死循环等待调试器。**不要**调用 malloc/printf 等可能进一步触发 fault 的函数。用 ITM 或简单内存写入记录最安全。\n\n### Q9: 如何让某个中断不响应但记录它的发生？\n\n**A**: 禁用 NVIC 使能但保持外设中断使能，挂起位会记录事件：\n\n```c\nNVIC_DisableIRQ(USART1_IRQn);  // NVIC won't activate\n// USART1->CR1 |= RXNEIE still set, flag goes to pending\n// Periodically check:\nif (NVIC_GetPendingIRQ(USART1_IRQn)) {\n    // A byte arrived, handle it manually\n    NVIC_ClearPendingIRQ(USART1_IRQn);\n}\n```\n\n### Q10: 多核 Cortex-M（如 M33 双核）如何处理核间中断？\n\n**A**: 用 SGIs（Software Generated Interrupts）或厂商提供的核间邮箱。STM32H7 双核用 HSEM（硬件信号量）+ C1/C2 邮箱触发对方核的中断。\n\n### Q11: WFI 和 WFE 的区别？\n\n**A**: WFI（Wait For Interrupt）等到任意中断唤醒；WFE（Wait For Event）等到事件唤醒，事件可由 SEV 指令或中断产生。WFE 有内部事件锁存，可能立即返回（如果之前有未消费事件）。低功耗建议 WFI，多核同步用 WFE+SEV。\n\n### Q12: 为什么从 STOP 模式唤醒后中断延迟很大？\n\n**A**: STOP 模式关闭 PLL，唤醒后需重新启动 PLL 锁定（几毫秒）。这段时间中断仍会响应但用 HSI 时钟（慢）。如需低延迟唤醒，用 SLEEP 模式（仅停 CPU，时钟保持）或配置 FCLK 在 STOP 时保持。\n\n---",
+          "doc_id": "",
+          "chunk_id": "src2"
+        },
+        {
+          "title": "04-cortexm-interrupt.md",
+          "excerpt": "### 2.2 优先级分组：PRIGROUP、抢占优先级与子优先级\n\n这是 Cortex-M 中断系统最易混淆也最关键的概念。**PRIGROUP** 寄存器（位于 SCB->AIRCR 的 bit[10:8]）将优先级位分成**抢占优先级（Preempting Priority）** 和**子优先级（Subpriority）** 两段。\n\n- **抢占优先级**：决定一个中断能否抢占另一个正在执行的中断。数值越小抢占能力越强。\n- **子优先级**：当两个中断**同时挂起**时，决定哪个先被服务。**子优先级不影响抢占**，只影响挂起时的排队顺序。\n\n**关键规则**：\n- 仅当新中断的抢占优先级数值**严格小于**（更高）当前活跃中断的抢占优先级时，才会发生抢占。\n- 子优先级相同的两个中断不会互相抢占，按挂起顺序排队。\n\nSTM32 HAL 封装了分组设置：\n\n```c\n// Set priority group: 4 bits for preemption, 0 for subpriority\n// This is the most common choice for STM32 (NVIC_PRIORITYGROUP_4)\nHAL_NVIC_SetPriorityGrouping(NVIC_PRIORITYGROUP_4);\n\n// The HAL mapping:\n// NVIC_PRIORITYGROUP_0 -> 4 bits sub, 0 pre  (no preemption among IRQs)\n// NVIC_PRIORITYGROUP_1 -> 3 bits sub, 1 pre  (2 preempt levels)\n// NVIC_PRIORITYGROUP_2 -> 2 bits sub, 2 pre  (4 preempt levels)\n// NVIC_PRIORITYGROUP_3 -> 1 bit sub,  3 pre  (8 preempt levels)\n// NVIC_PRIORITYGROUP_4 -> 0 bits sub, 4 pre  (16 preempt levels, recommended)\n```\n\n直接操作 AIRCR 设置 PRIGROUP（CMSIS 底层）：\n\n```c\n// Direct AIRCR write to set PRIGROUP\nvoid NVIC_SetPriorityGrouping_raw(uint32_t group) {\n    uint32_t reg_value;\n    uint32_t PriorityGroupTmp = (group & 0x07);  // Only 3 bits\n    reg_value = SCB->AIRCR;\n    // Clear key and PRIGROUP bits\n    reg_value &= ~(SCB_AIRCR_VECTKEY_Msk | SCB_AIRCR_PRIGROUP_Msk);\n    // Write key 0x5FA and new PRIGROUP\n    reg_value = reg_value |\n                (0x5FA << SCB_AIRCR_VECTKEY_Pos) |\n                (PriorityGroupTmp << SCB_AIRCR_PRIGROUP_Pos);\n    SCB->AIRCR = reg_value;\n}\n```",
+          "doc_id": "",
+          "chunk_id": "src3"
+        },
+        {
+          "title": "04-cortexm-interrupt.md",
+          "excerpt": "## 6. 优先级设计与分组策略\n\n### 6.1 优先级设计原则\n\n合理的优先级分配是实时系统设计的核心。原则：\n\n1. **关键性优先**：越关键（错过会导致系统故障）的中断优先级数值越小。\n2. **频率与时长权衡**：高频短中断可设高优先级；长耗时中断设低优先级避免阻塞其他。\n3. **避免优先级反转**：共享资源时用互斥量优先级继承。\n4. **预留高优先级**：0-2 级留给系统关键（SysTick、故障、电机控制），应用中断从 3 起。\n\n### 6.2 STM32 中断优先级分配模板\n\n| 优先级 | 中断 | 理由 |\n|--------|------|------|\n| 0 | SysTick | RTOS 心跳，必须准时 |\n| 0 | HardFault 等 | 故障最高 |\n| 1 | TIM1（电机 PWM） | 电流环 10kHz，错过炸管 |\n| 2 | DMA1 Stream0 | 高速 ADC 采样 |\n| 3 | USART1（指令） | 通信协议时序 |\n| 4 | SPI1 | 显示刷新 |\n| 5 | ADC1 | 一般采集 |\n| 6 | TIM3 | 编码器 |\n| 7 | USART2 | 调试日志 |\n| 8-10 | CAN/USB | 容忍延迟 |\n| 11-15 | EXTI/按钮 | 人机交互，无实时要求 |\n\n```c\nvoid nvic_priorities_init(void) {\n    HAL_NVIC_SetPriorityGrouping(NVIC_PRIORITYGROUP_4);\n    HAL_NVIC_SetPriority(SysTick_IRQn,        0, 0);\n    HAL_NVIC_SetPriority(TIM1_UP_TIM10_IRQn,  1, 0);\n    HAL_NVIC_SetPriority(DMA1_Stream0_IRQn,   2, 0);\n    HAL_NVIC_SetPriority(USART1_IRQn,         3, 0);\n    HAL_NVIC_SetPriority(SPI1_IRQn,           4, 0);\n    HAL_NVIC_SetPriority(ADC_IRQn,            5, 0);\n    HAL_NVIC_SetPriority(TIM3_IRQn,           6, 0);\n    HAL_NVIC_SetPriority(USART2_IRQn,         7, 0);\n    HAL_NVIC_SetPriority(CAN1_TX_IRQn,        8, 0);\n    HAL_NVIC_SetPriority(USB_IRQn,           10, 0);\n    HAL_NVIC_SetPriority(EXTI0_IRQn,         12, 0);\n    HAL_NVIC_SetPriority(EXTI15_10_IRQn,     13, 0);\n}\n```\n\n### 6.3 分组策略选择指南\n\n| 场景 | 推荐分组 | 理由 |\n|------|---------|------|\n| 通用 RTOS 应用 | GROUP_4（16抢占） | 最大灵活性 |\n| 简单裸机 | GROUP_4 | 无需子优先级 |\n| 多 UART 同优先级 | GROUP_2（4抢占+4子） | 用子优先级排 UART 顺序 |\n| 极简（仅几个中断） | GROUP_4 | 充分 |\n| 需严格无嵌套 | GROUP_0（0抢占） | 但失去抢占能力 |\n\n### 6.4 优先级反转与解决方案\n\n经典优先级反转：低优先级任务持有锁，高优先级任务等待锁，中等优先级任务抢占低优先级任务，导致高优先级被间接阻塞。\n\nCortex-M 本身不解决优先级反转，需 RTOS 提供优先级继承互斥量：\n\n```c\n// FreeRTOS priority-inheritance mutex\nSemaphoreHandle_t xMutex = xSemaphoreCreateMutex();\n\nvoid high_prio_task(void *pv) {\n    xSemaphoreTake(xMutex, portMAX_DELAY);  // Blocks if low task holds it\n    // If low task holds mutex, RTOS temporarily raises low task's priority\n    // to high task's ",
+          "doc_id": "",
+          "chunk_id": "src4"
+        },
+        {
+          "title": "04-cortexm-interrupt.md",
+          "excerpt": "### 2.3 优先级分组完整对照表\n\n设实现位数为 N（如 STM32F4 的 N=4），PRIGROUP 取值 0-7 对应的分组关系：\n\n| PRIGROUP | 抢占优先级位数 | 子优先级位数 | 抢占级数 | 子优先级数 |\n|----------|--------------|-------------|---------|-----------|\n| 0 | N-0 | 0 | 2^N | 1 |\n| 1 | N-1 | 1 | 2^(N-1) | 2 |\n| 2 | N-2 | 2 | 2^(N-2) | 4 |\n| 3 | N-3 | 3 | 2^(N-3) | 8 |\n| 4 | N-4 | 4 | 2^(N-4) | 16 |\n| 5 | N-5 | 5 | 2^(N-5) | 32 |\n| 6 | N-6 | 6 | 2^(N-6) | 64 |\n| 7 | N-7 | 7 | 2^(N-7) | 128 |\n\n对 STM32F4（N=4）：\n\n| PRIGROUP | 抢占位数 | 子优先级位数 | 抢占级数 | 子级数 | HAL 宏 |\n|----------|--------|------------|---------|-------|--------|\n| 3 | 1 | 3 | 2 | 8 | GROUP_0 |\n| 4 | 2 | 2 | 4 | 4 | GROUP_1 |\n| 5 | 3 | 1 | 8 | 2 | GROUP_2 |\n| 6 | 4 | 0 | 16 | 1 | GROUP_3 |\n| 7 | 4 | 0 | 16 | 1 | GROUP_4 |\n\n注意：当 PRIGROUP >= 6 时（对 N=4），子优先级位数为 0，所有位都用于抢占优先级。这就是为什么 `NVIC_PRIORITYGROUP_4`（HAL）等价于 PRIGROUP=3（因为 HAL 宏名中的数字表示抢占位数，而非 PRIGROUP 值）。",
+          "doc_id": "",
+          "chunk_id": "src5"
+        }
+      ]
+    },
+    {
+      "question_id": "Q8",
+      "question": "Cortex-M4 的中断延迟是多少个时钟周期？尾链（Tail-Chaining）和迟来（Late-Arrival）技术分别如何降低延迟？",
+      "target_doc": "04-cortexm-interrupt.md",
+      "difficulty": "难",
+      "scores": {
+        "recall": {
+          "score": 30.0,
+          "max": 30,
+          "detail": "Hit target doc: 04-cortexm-interrupt.md"
+        },
+        "answer_coverage": {
+          "score": 25.0,
+          "max": 25,
+          "detail": "Covered 4/4 keyword groups"
+        },
+        "chunk_completeness": {
+          "score": 25.0,
+          "max": 25,
+          "detail": "✓ Group ['12', '尾链', '迟来'] found in same chunk"
+        },
+        "chunk_boundary": {
+          "score": 10.0,
+          "max": 10,
+          "detail": "All 5 src chunks clean"
+        },
+        "cross_section": {
+          "score": 10.0,
+          "max": 10,
+          "detail": "No cross-section keywords defined"
+        }
+      },
+      "total_score": 100.0,
+      "max_score": 100,
+      "answer_preview": "根据知识库文档，**Cortex-M4（与Cortex-M3相同）的中断硬件延迟为 12 个时钟周期**。这是在没有FPU状态保存、零等待内存（如紧耦合SRAM）下的最佳值。\n\n关于尾链和迟来的降低延迟机制，详细解释如下：\n\n---\n\n### 一、尾链（Tail-Chaining）\n\n**核心原理**：当一个 ISR 执行完毕时，如果 NVIC 中还有挂起的中断，硬件不会执行“先出栈再入栈”的完整过程，而是直接跳转到下一个挂起中断的 ISR，复用已经压入堆栈的栈帧。\n\n**延迟降低分析**：\n- **无尾链**的流程：`ISR1执行完 → 出栈（8寄存器，约8 cycles）→ 取向量（2 cycles）→ 压栈（8寄存器，约8 cycles）→ ISR2执行`，总延迟约 **18 cycles**。\n- **有尾链**的流程：`ISR1执行完 → 取向量（6 cycles）→ ISR2执行（复用已压栈的栈帧）`，延迟仅 **6 cycles**。\n- **节省**：每次尾链操作节省约 **12 个时钟周期**。\n\n**适用场景**：多个中断连续密集触发时，例如 DMA 传输完成后立即",
+      "sources_count": 5,
+      "source_titles": [
+        "04-cortexm-interrupt.md",
+        "04-cortexm-interrupt.md",
+        "04-cortexm-interrupt.md",
+        "04-cortexm-interrupt.md",
+        "04-cortexm-interrupt.md"
+      ],
+      "sources_full": [
+        {
+          "title": "04-cortexm-interrupt.md",
+          "excerpt": "### 3.3 实测中断延迟\n\n用 GPIO 翻转 + 示波器/逻辑分析仪实测延迟：\n\n```c\n// Configure a GPIO as output for timing probe\n// Configure an external interrupt (EXTI) on another pin\n// Measure: apply rising edge to EXTI pin, observe delay to GPIO toggle in ISR\n\nvolatile uint32_t irq_entry_tick;\n\nvoid EXTI0_IRQHandler(void) {\n    // Toggle probe GPIO immediately (first instruction ideally)\n    GPIOA->BSRR = GPIO_PIN_0;  // Set PA0 high\n    // ... actual ISR work ...\n    // Clear EXTI pending flag\n    EXTI->PR = EXTI_LINE_0;\n    GPIOA->BSRR = (GPIO_PIN_0 << 16);  // Set PA0 low\n}\n\n// On scope: measure time from EXTI trigger edge to PA0 rising edge\n// At 84MHz: 12 cycles = 12/84MHz = ~143 ns\n// Typical measured on STM32F4 (Flash w/ART): 18-25 cycles (~210-300ns)\n```\n\nDWT（Data Watchpoint and Trace）周期计数器可精确测量：\n\n```c\n// Use DWT CYCCNT for cycle-accurate latency measurement\nvoid EXTI0_IRQHandler(void) {\n    uint32_t cyc = DWT->CYCCNT;  // Read cycle counter (first thing)\n    // Compare to a timestamp captured at trigger\n    last_latency_cycles = cyc - trigger_cyc;\n    // ... handle interrupt ...\n    EXTI->PR = EXTI_LINE_0;\n}\n\n// Setup DWT\nvoid dwt_init(void) {\n    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;\n    DWT->CYCCNT = 0;\n    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;\n}\n```\n\n### 3.4 尾链（Tail-Chaining）机制\n\n**尾链** 是 Cortex-M3/M4 最重要的中断优化机制之一。当一个 ISR 执行完毕时，若 NVIC 中还有挂起的中断，硬件不会先出栈再入栈，而是直接跳转到下一个挂起中断的 ISR，省去 8 寄存器的出栈+入栈（共 16 次内存访问）。\n\n**无尾链** 的流程：\n```\nISR1 执行完 → 出栈（8 寄存器）→ 取向量 → 压栈（8 寄存器）→ ISR2 执行\n延迟：8 + 2 + 8 = ~18 cycles\n```\n\n**有尾链** 的流程：\n```\nISR1 执行完 → 取向量 → ISR2 执行（复用已压栈的栈帧）\n延迟：6 cycles\n```\n\n节省约 12 个周期。这在多个中断密集发生时（如 DMA 完成后立即 UART 发送）效果显著。\n\n```c\n// Example: DMA complete ISR triggers UART processing\nvoid DMA1_Stream0_IRQHandler(void) {\n    if (DMA1->LISR & DMA_LISR_TCIF0) {\n        DMA1->LIFCR = DMA_LIFCR_CTCIF0;  // Clear flag\n        // Signal UART to start sending (via pending UART ISR)\n        NVIC_SetPendingIRQ(USART1_IRQn);  // Tail-chained next\n    }\n}\n// USART1_IRQHandler will execute immediatel",
+          "doc_id": "",
+          "chunk_id": "src1"
+        },
+        {
+          "title": "04-cortexm-interrupt.md",
+          "excerpt": "## 文档扩展说明\n\n本文档在原 13 章 + 附录 A-P 的基础上，扩展了以下内容：\n\n- **第 14 章**：Cortex-M 调试与追踪系统详解（SWD/JTAG、ITM、DWT、ETM、MTB、OpenOCD/ST-Link/J-Link 配置）\n- **第 15 章**：RTOS 中断设计模式（BASEPRI/PRIMASK 临界区、SYSCALL_PRIORITY、FromISR API、优先级继承、UART 完整驱动）\n- **第 16 章**：低功耗中断设计（WFI/WFE、Sleep/Stop/Standby、RTC 闹钟唤醒、EXTI 唤醒、LPTIM、功耗测量优化）\n- **第 17 章**：安全关键系统中断设计（HardFault 恢复策略、IWDG/WWDG、安全状态机、故障注入测试、ISO 26262 ASIL 等级）\n- **第 18 章**：中断性能基准测试（GPIO/定时器/DWT 三种测量法、各 Cortex-M 核心延迟对比表、ISR 执行时间测量、抖动分析、Cache/ITCM 影响）\n- **第 19 章**：高级中断控制器 NVIC 扩展（TrustZone 安全扩展、ITNS 中断目标配置、SAU 配置、SG 跨世界调用、多核中断路由）\n- **第 20 章**：实战案例集（电机控制 FOC、多通道 UART DMA、CAN 消息调度、音频双缓冲、按钮消抖状态机）\n- **附录 Q-U**：异常向量表完整列表、NVIC 寄存器位域表、汇编中断处理模板（PendSV/SVC）、CMSIS API 速查、编译器中断属性对比\n\n扩展后文档覆盖了 PRIGROUP 优先级分组、12 周期中断延迟、尾链（Tail-Chaining）与迟来（Late-Arrival）优化、抢占优先级与子优先级设计等核心概念，并包含大量可直接复用的 C 代码与汇编示例，适合作为嵌入式实时系统中断开发的完整参考手册。",
+          "doc_id": "",
+          "chunk_id": "src2"
+        },
+        {
+          "title": "04-cortexm-interrupt.md",
+          "excerpt": "## 文档版本说明\n\n本文档系统覆盖 ARM Cortex-M 系列处理器的中断与异常处理，从异常模型、NVIC、PRIGROUP 优先级分组、12 周期中断延迟、尾链与迟来优化、向量表重定位、故障处理（HardFault/BusFault/UsageFault）、FreeRTOS 集成、外设中断实战（EXTI/UART/ADC/DMA/SPI/CAN）、调试技术（SystemView/ITM/DWT）、性能优化，到不同 MCU（STM32/ESP32/AVR/nRF52）中断实现对比，包含 13 个主章节与 16 个附录（A-P），可作为嵌入式实时系统中断开发的实战参考手册。\n\n---",
+          "doc_id": "",
+          "chunk_id": "src3"
+        },
+        {
+          "title": "04-cortexm-interrupt.md",
+          "excerpt": "## 3. 中断延迟与尾链、迟来机制\n\n中断延迟（Interrupt Latency）是实时系统的核心指标。Cortex-M3/M4 凭借硬件压栈和向量化机制，把延迟压缩到 **12 个时钟周期**，本章详解其构成与优化。\n\n### 3.1 中断延迟定义\n\n中断延迟有几种定义，需明确区分：\n\n- **硬件延迟**：从中断请求到 ISR 第一条指令执行所经历的周期数。Cortex-M3/M4 为 **12 cycles**（无 FPU 状态保存时）。\n- **响应延迟**：从外设事件发生到应用代码实际处理该事件的时间。包含硬件延迟 + ISR 入口开销 + 调度延迟（RTOS）。\n- **抖动（Jitter）**：同一中断多次响应延迟的变化范围。硬实时系统要求抖动有上界。\n\n本文聚焦硬件延迟，即 **12 cycles** 这一关键数字。\n\n### 3.2 12 周期延迟的构成\n\nCortex-M3/M4 的中断进入流程在硬件上分为以下阶段，合计 **12 个周期**：\n\n| 周期数 | 阶段 | 说明 |\n|--------|------|------|\n| 1 | 请求采样 | 在指令边界采样中断请求 |\n| 2-9 | 压栈（8 寄存器） | 硬件自动压入 R0-R3/R12/LR/PC/xPSR，8 个 store 操作与总线时序相关 |\n| 8-10 | 取向量 | 从向量表读取 ISR 入口地址（与压栈部分并行） |\n| 11-12 | 取 ISR 指令 | 取 ISR 第一条指令并跳转 |\n\n实际测量 12 cycles 是在零等待内存（紧耦合 SRAM）下的最佳值。影响因素：\n\n- **Flash 等待周期**：从 Flash 取向量需等待周期（如 168MHz STM32F4 需 5 wait states），增加 3-5 周期。\n- **缓存命中**：ART Accelerator 缓存命中可抵消 Flash 等待。\n- **总线竞争**：DMA 与 CPU 同时访问总线时延迟。\n- **FPU 状态保存**：若 ISR 用到 FPU 且需要保存 FP 上下文，增加约 16 周期。\n- **指令不可中断**：LDM/STM 多寄存器加载存储指令需执行完才能响应。",
+          "doc_id": "",
+          "chunk_id": "src4"
+        },
+        {
+          "title": "04-cortexm-interrupt.md",
+          "excerpt": "## 附录 L：中断相关内联函数速查\n\n```c\n__enable_irq();           // Clear PRIMASK\n__disable_irq();          // Set PRIMASK\n__get_PRIMASK();          // Read PRIMASK\n__set_PRIMASK(x);\n__get_BASEPRI(); __set_BASEPRI(x);\n__get_FAULTMASK(); __set_FAULTMASK(x);\n__get_MSP(); __set_MSP(x);\n__get_PSP(); __set_PSP(x);\n__get_CONTROL(); __set_CONTROL(x);\n__get_LR();\n__ISB();  // Instruction Synchronization Barrier\n__DSB();  // Data Synchronization Barrier\n__DMB();  // Data Memory Barrier\n__WFI();  // Wait For Interrupt\n__WFE();  // Wait For Event\n__SEV();  // Send Event\n__CLZ(x); // Count Leading Zeros\n__REV(x); // Byte reverse word\nNVIC_SystemReset();  // Soft reset\n```\n\n## 附录 M：中断延迟优化决策树\n\n```\n延迟过高？\n├─ ISR 在 Flash？ → 移到 SRAM（__RAM_FUNC）\n├─ ISR 用 FPU？ → 禁用 FPU 上下文保存或避免浮点\n├─ 有多周期指令？ → 替换 SDIV/LDM\n├─ 临界区过长？ → 缩短 BASEPRI 临界区\n├─ DMA 抢总线？ → 限制 DMA 优先级/突发长度\n├─ 嵌套过深？ → 减少抢占层级\n├─ 缓存未命中？ → M7 锁定关键 ISR 到缓存\n└─ 仍不够？ → 评估是否需要更高性能 MCU 或硬件加速\n```\n\n## 附录 N：术语对照\n\n| 英文 | 中文 |\n|------|------|\n| Exception | 异常 |\n| Interrupt | 中断 |\n| NVIC | 嵌套向量中断控制器 |\n| Preemption | 抢占 |\n| Preempting Priority | 抢占优先级 |\n| Subpriority | 子优先级 |\n| Tail-Chaining | 尾链 |\n| Late-Arrival | 迟来 |\n| Stacking | 压栈 |\n| Unstacking | 出栈 |\n| EXC_RETURN | 异常返回值 |\n| Vector Table | 向量表 |\n| Pending | 挂起 |\n| Active | 活跃 |\n| Latency | 延迟 |\n| Jitter | 抖动 |\n| Critical Section | 临界区 |\n| Priority Inversion | 优先级反转 |\n| Priority Ceiling | 优先级天花板 |\n| Context Switch | 上下文切换 |\n| Fault | 故障 |\n| HardFault | 硬故障 |\n| BusFault | 总线故障 |\n| MemManage | 内存管理故障 |\n| UsageFault | 用法故障 |\n| Privileged | 特权 |\n| Unprivileged | 非特权 |\n| Thread Mode | 线程模式 |\n| Handler Mode | 处理模式 |",
+          "doc_id": "",
+          "chunk_id": "src5"
+        }
+      ]
+    },
+    {
+      "question_id": "Q9",
+      "question": "STM32 UART 使用 DMA 传输时需要注意哪些问题？接收缓冲区的循环模式怎么防止数据覆盖？",
+      "target_doc": "05-uart-serial.md",
+      "difficulty": "中等",
+      "scores": {
+        "recall": {
+          "score": 30.0,
+          "max": 30,
+          "detail": "Hit target doc: 05-uart-serial.md"
+        },
+        "answer_coverage": {
+          "score": 25.0,
+          "max": 25,
+          "detail": "Covered 6/6 keyword groups"
+        },
+        "chunk_completeness": {
+          "score": 25.0,
+          "max": 25,
+          "detail": "✓ Group ['DMA', '循环模式', '半传输'] found in same chunk"
+        },
+        "chunk_boundary": {
+          "score": 10.0,
+          "max": 10,
+          "detail": "All 5 src chunks clean"
+        },
+        "cross_section": {
+          "score": 10.0,
+          "max": 10,
+          "detail": "No cross-section keywords defined"
+        }
+      },
+      "total_score": 100.0,
+      "max_score": 100,
+      "answer_preview": "# STM32 UART DMA 传输注意事项与循环模式防覆盖机制\n\n## 一、UART DMA 传输的注意事项\n\n以下列出常见问题与解决方案，主要基于 STM32F1/F4/H7 系列经验（参考知识库中 DMA 章节、I2C 通用经验）。\n\n### 1. DMA 通道固定映射（STM32F1 尤需注意）\nSTM32F1 的 DMA 通道是 **硬连接** 的，每个外设请求必须使用指定通道。例如：\n- **USART1_TX** → DMA1 通道 5（内存→外设）\n- **USART1_RX** → DMA1 通道 4（外设→内存）\n- **USART2_TX** → DMA1 通道 7\n- **USART2_RX** → DMA1 通道 6\n\n**同一通道不能同时给两个外设使用**，否则冲突。例如 USART1_RX 和 SPI2_RX 都占用 DMA1 Channel 4，不能同时启用。详见 [来源: 05-uart-serial.md / 6.2 STM32 DMA 通道映射]。\n\n**STM32F4/H7 采用流+通道选择器**，任意流可映射任意外设，不再有通道冲突，但需注意",
+      "sources_count": 5,
+      "source_titles": [
+        "05-uart-serial.md",
+        "03-i2c-protocol.md",
+        "05-uart-serial.md",
+        "05-uart-serial.md",
+        "05-uart-serial.md"
+      ],
+      "sources_full": [
+        {
+          "title": "05-uart-serial.md",
+          "excerpt": "### 6.2 STM32 DMA 通道映射\n\nSTM32F1 的 DMA 通道是硬连接的，每个外设请求映射到固定通道：\n\n| DMA1 通道 | 外设请求 | 方向 |\n|-----------|----------|------|\n| Channel 1 | ADC1 | 外设→内存 |\n| Channel 2 | SPI1_RX / USART3_RX | 外设→内存 |\n| Channel 3 | SPI1_TX / USART3_TX | 内存→外设 |\n| Channel 4 | SPI2_RX / USART1_RX | 外设→内存 |\n| Channel 5 | SPI2_TX / USART1_TX | 内存→外设 |\n| Channel 6 | USART2_RX | 外设→内存 |\n| Channel 7 | USART2_TX | 内存→外设 |\n\n注意：STM32F4/H7 采用流（Stream）+ 通道（Channel）选择器，任意流可映射任意外设请求，更灵活。\n\n### 6.3 DMA 传输模式\n\nSTM32 DMA 支持两种主要模式：\n\n**单次模式（Normal Mode）**：传输完指定数据量后，DMA 自动停止。需要软件重新启动下一次传输。适用于已知长度的批量传输。\n\n**循环模式（Circular Mode）**：传输完指定数据量后，DMA 自动重置计数器，从缓冲区起始位置继续传输，形成无限循环。适用于连续数据流（如 UART 接收）。循环模式是 UART 接收的首选，能有效防止数据覆盖——当 CPU 还在处理前一段数据时，DMA 会自动绕回缓冲区开头继续写入，避免丢失数据。\n\n两种模式对比：\n\n| 特性 | 单次模式 | 循环模式 |\n|------|----------|----------|\n| 传输完成行为 | 停止，需重启 | 自动重启，继续传输 |\n| 数据丢失风险 | 高（重启间隙） | 低（无缝衔接） |\n| 适用场景 | 已知长度批量传输 | 连续数据流、UART 接收 |\n| 缓冲区利用 | 一次性 | 环形复用 |\n| 数据覆盖风险 | 低 | 需配合半传输中断处理 |",
+          "doc_id": "",
+          "chunk_id": "src1"
+        },
+        {
+          "title": "03-i2c-protocol.md",
+          "excerpt": "**Q6: 多个传感器同时读数据，I2C 总线偶尔卡死？**\nA: 可能是中断模式下多个 I2C 操作冲突。确保同一 I2C 实例不并发调用 HAL 函数（HAL 状态机非线程安全）。使用状态标志或互斥锁保证串行访问。\n\n**Q7: I2C 从机模式下，主机偶尔读到错误数据？**\nA: 检查从机中断响应时间。若从机 ISR 处理过慢，数据寄存器未被及时读取会被覆盖（OVR 错误）。使用 DMA 模式或优化 ISR，确保在下一字节到达前处理完当前字节。\n\n**Q8: 为什么 STM32F4 的 I2C 经常出现 BERR 错误？**\nA: STM32F1/F4 的旧版 I2C IP 有已知的设计缺陷（Errata），在快速模式 400kHz 下偶发 BERR。解决：升级到 F7/L4/H7 等新版 IP，或在 F4 上降低速率到 200kHz。\n\n**Q9: I2C 总线能传输多远？**\nA: 标准模式 400pF 电容限制下，PCB 走线通常 <30cm。需要长距离传输时：使用差分 I2C 扩展器（如 PCA9615，可达 3m），或转为 RS-485/CAN 等差分总线。\n\n**Q10: 为什么逻辑分析仪抓到的 I2C 地址和代码中的不一致？**\nA: 逻辑分析仪可能显示 7 位地址或 8 位地址。Saleae 等默认显示 8 位（含 R/W 位）。例如代码中 `0x68 << 1 = 0xD0`，分析仪显示 0xD0（写）或 0xD1（读），对应 7 位地址 0x68。\n\n**Q11: I2C 上拉电阻用 10kΩ 可以吗？**\nA: 100kHz 标准模式下 10kΩ 通常可行（总线电容 <100pF 时）。400kHz 快速模式下 10kΩ 可能导致上升时间超标（>300ns），建议降至 2.2kΩ-4.7kΩ。\n\n**Q12: GPIO 软件模拟 I2C 和硬件 I2C 哪个更好？**\nA: 硬件 I2C 优势：不占用 CPU、支持 DMA、时序精确。软件 I2C 优势：引脚灵活、跨平台、无硬件 Errata 限制。产品环境优先用硬件 I2C，软件 I2C 作为备份或调试手段。",
+          "doc_id": "",
+          "chunk_id": "src2"
+        },
+        {
+          "title": "05-uart-serial.md",
+          "excerpt": "## 6. DMA 传输详解\n\nDMA（Direct Memory Access，直接内存访问）是 UART 高速通信的核心技术。它允许外设与内存之间直接交换数据，无需 CPU 介入，大幅降低 CPU 占用率。本章将深入讲解 DMA 在 UART 中的应用，重点讨论循环模式（circular mode）防止数据覆盖、半传输中断（half transfer interrupt）的应用以及双缓冲区设计。\n\n### 6.1 DMA 基础概念\n\nDMA 控制器是一种独立于 CPU 的数据搬运引擎。它直接访问系统总线和内存，实现外设↔内存、内存↔内存之间的高速数据传输。\n\nSTM32 DMA 主要特性：\n\n| 特性 | STM32F1 | STM32F4 | STM32H7 |\n|------|---------|---------|---------|\n| DMA 控制器数 | 2（DMA1/2） | 2（DMA1/2） | 2（DMA1/2） |\n| 通道/流数 | 7/7 通道 | 8/8 流 | 8/8 流 |\n| 传输位宽 | 8/16/32 bit | 8/16/32 bit | 8/16/32/64 bit |\n| 优先级 | 4 级 | 4 级 | 4 级 |\n| 模式 | 单次/循环 | 单次/循环/双缓冲 | 单次/循环/双缓冲 |\n| 突发传输 | 不支持 | 支持（4/8/16 节拍） | 支持 |\n| FIFO | 无 | 16 字节 | 16 字节 |\n\nDMA 传输三要素：\n1. **源地址**：外设数据寄存器（如 USART_DR）或内存缓冲区。\n2. **目标地址**：内存缓冲区或外设数据寄存器。\n3. **传输数据量**：要传输的数据项数。",
+          "doc_id": "",
+          "chunk_id": "src3"
+        },
+        {
+          "title": "05-uart-serial.md",
+          "excerpt": "### 6.4 循环模式防止数据覆盖\n\n在 UART 接收场景中，使用循环模式能有效防止数据覆盖。工作原理：\n\n1. 配置 DMA 为循环模式，缓冲区大小为 N。\n2. DMA 从 USART_DR 读取数据写入缓冲区[0]~[N-1]。\n3. 写满 N 个字节后，DMA 不会停止，而是自动回到缓冲区[0]继续写入。\n4. 同时触发\"传输完成\"中断（TC），通知 CPU 处理后半段缓冲区。\n5. 当 DMA 写到缓冲区[N/2]时，触发\"半传输\"中断（HT），通知 CPU 处理前半段。\n\n这种设计使得 CPU 有充足的时间处理数据，而 DMA 持续接收新数据，不会因为 CPU 处理慢而丢失字节。\n\n### 6.5 半传输中断的应用\n\n半传输中断（Half Transfer Interrupt，HT）是循环模式的关键特性。配合传输完成中断（TC），可实现双缓冲区无缝切换：\n\n- **HT 中断**：DMA 写完前半段（0 ~ N/2-1）时触发，CPU 处理前半段，DMA 继续写后半段。\n- **TC 中断**：DMA 写完后半段（N/2 ~ N-1）时触发，CPU 处理后半段，DMA 绕回写前半段。\n\n这样，CPU 和 DMA 永远操作不同的缓冲区段，实现真正的并行处理，避免数据竞争和覆盖。\n\n半传输中断的应用场景：\n- 高速数据采集（ADC + DMA）\n- UART 大数据流接收（GPS NMEA、传感器数据流）\n- 音频流处理\n- 协议帧解析（变长帧分段处理）\n\n### 6.6 双缓冲区设计完整示例\n\n以下是基于 DMA 循环模式 + 半传输中断 + 传输完成中断的双缓冲区 UART 接收完整实现：\n\n```c\n#include \"stm32f1xx_hal.h\"\n#include <string.h>\n\n#define UART_RX_BUF_SIZE 256                    // Must be power of 2\n#define UART_RX_HALF_SIZE (UART_RX_BUF_SIZE / 2)\n\n// Dual buffer: [0..HALF-1] = buffer A, [HALF..SIZE-1] = buffer B\nstatic uint8_t uart_rx_buf[UART_RX_BUF_SIZE] __attribute__((aligned(4)));\nstatic volatile uint16_t uart_rx_len = 0;\nstatic volatile uint8_t uart_frame_flag = 0;\n\nextern UART_HandleTypeDef huart1;\nextern DMA_HandleTypeDef hdma_usart1_rx;\n\n// Initialize DMA-based UART reception\nvoid UART_DMA_RX_Init(void)\n{\n    // Start DMA in circular mode\n    HAL_UART_Receive_DMA(&huart1, uart_rx_buf, UART_RX_BUF_SIZE);\n    // Enable IDLE interrupt for variable-length frame detection\n    __HAL_UART_ENABLE_IT(&huart1, UART_IT_IDLE);\n}\n\n// Half transfer callback: buffer A is full, process it\nvoid HAL_UART_RxHalfCpltCallback(UART_HandleTypeDef *huart)\n{\n    if (huart->Instance == USART1)\n    {\n        // Process buffer A: uart_rx_buf[0 .. UART_RX_HALF_SIZE-1]\n        // DMA is now writing to buffer B, safe to read A\n        uint16_t len = UART_RX_HALF_SIZE;\n        Process_Rx_Data(uart_rx_buf, len);\n    }\n}\n\n// Full transfer callback: buffer B is full, process it\nvoid HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)\n{\n    if (huart->Instance == US",
+          "doc_id": "",
+          "chunk_id": "src4"
+        },
+        {
+          "title": "05-uart-serial.md",
+          "excerpt": "### 6.7 双缓冲区时序图\n\n```\n时间轴 →\n\n缓冲区:  [AAAAAAA][BBBBBBB][AAAAAAA][BBBBBBB]...\nDMA写:   ↑0       ↑HALF    ↑0       ↑HALF\n         HT触发   TC触发   HT触发   TC触发\nCPU处理:  └─处理A   └─处理B  └─处理A   └─处理B\n```\n\n### 6.8 DMA 发送设计\n\nDMA 发送通常使用单次模式（Normal），因为发送数据量已知。发送完成后通过 TC 中断通知 CPU 可以填充下一批数据：\n\n```c\n#define UART_TX_BUF_SIZE 512\nstatic uint8_t uart_tx_buf[UART_TX_BUF_SIZE] __attribute__((aligned(4)));\nstatic volatile uint8_t uart_tx_busy = 0;\n\n// Start a DMA transmit (non-blocking)\nuint8_t UART_DMA_Send(const uint8_t *data, uint16_t len)\n{\n    if (uart_tx_busy) return 0;                  // Previous send ongoing\n    if (len > UART_TX_BUF_SIZE) len = UART_TX_BUF_SIZE;\n    memcpy(uart_tx_buf, data, len);\n    uart_tx_busy = 1;\n    HAL_UART_Transmit_DMA(&huart1, uart_tx_buf, len);\n    return 1;\n}\n\n// TX complete callback\nvoid HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)\n{\n    if (huart->Instance == USART1)\n    {\n        uart_tx_busy = 0;                        // Ready for next send\n    }\n}\n```\n\n### 6.9 DMA 缓冲区大小选择\n\n缓冲区大小需权衡内存占用和实时性：\n\n| 缓冲区大小 | 中断频率（1Mbps） | 内存占用 | 适用场景 |\n|-----------|-------------------|----------|----------|\n| 32 字节 | 31.25 kHz | 32B | 低速、内存紧张 |\n| 64 字节 | 15.6 kHz | 64B | 通用 |\n| 128 字节 | 7.8 kHz | 128B | 中速 |\n| 256 字节 | 3.9 kHz | 256B | 高速推荐 |\n| 512 字节 | 1.95 kHz | 512B | 大数据流 |\n| 1024 字节 | 976 Hz | 1KB | 极高速、低延迟要求低 |\n\n经验法则：缓冲区大小应至少为单次帧最大长度的 2 倍，确保 CPU 有足够处理时间。\n\n### 6.10 DMA 常见陷阱\n\n1. **缓冲区未对齐**：STM32F1 DMA1 要求 4 字节对齐，未对齐会导致数据错位或硬件错误。使用 `__attribute__((aligned(4)))`。\n2. **缓冲区位于不可缓存区域**：若启用了 D-Cache（STM32F7/H7），DMA 缓冲区需放在非缓存区或手动维护缓存一致性。\n3. **DMA 通道冲突**：STM32F1 同一通道不能同时用于多个外设。例如 USART1_RX 和 SPI2_RX 都在 DMA1 Channel 4，不能同时使用。\n4. **循环模式下计数器读取**：`__HAL_DMA_GET_COUNTER` 返回剩余传输数，已传输数 = 缓冲区大小 - 剩余数。\n5. **HAL_UART_DMAStop 副作用**：该函数会禁用 DMA 并清除状态，循环模式下慎用，可能导致丢字节。",
+          "doc_id": "",
+          "chunk_id": "src5"
+        }
+      ]
+    },
+    {
+      "question_id": "Q10",
+      "question": "UART 通信中出现随机错误位，可能是什么原因？怎么排查和解决？",
+      "target_doc": "05-uart-serial.md",
+      "difficulty": "简单",
+      "scores": {
+        "recall": {
+          "score": 30.0,
+          "max": 30,
+          "detail": "Hit target doc: 05-uart-serial.md"
+        },
+        "answer_coverage": {
+          "score": 17.857142857142858,
+          "max": 25,
+          "detail": "Covered 5/7 keyword groups. Missed: 屏蔽线, RS-232"
+        },
+        "chunk_completeness": {
+          "score": 25.0,
+          "max": 25,
+          "detail": "✓ Group ['噪声', '屏蔽', '波特率'] found in same chunk"
+        },
+        "chunk_boundary": {
+          "score": 10.0,
+          "max": 10,
+          "detail": "All 5 src chunks clean"
+        },
+        "cross_section": {
+          "score": 10.0,
+          "max": 10,
+          "detail": "✓ 噪声+屏蔽 in same chunk#33"
+        }
+      },
+      "total_score": 92.85714285714286,
+      "max_score": 100,
+      "answer_preview": "# UART 随机错误位排查指南\n\n您描述的**随机错误位**（偶发乱码、校验错、帧错误间歇出现）最典型的原因就是**噪声干扰**。它与波特率不匹配不同：噪声引起的错误是**随机、偶发**的，而波特率问题通常导致持续稳定的错误（来源: [05-uart-serial.md / 9.1 噪声的表现]）。\n\n下面从原因、排查、解决方案三个部分系统说明。\n\n---\n\n## 1. 可能原因\n\n根据知识库的整理，噪声导致随机错误的主要成因如下（来源: [05-uart-serial.md / 9.2 噪声的可能原因]）：\n\n| 原因类别 | 具体表现 | 典型检测方法 |\n|----------|----------|--------------|\n| 信号线过长 | 线长 > 50cm（TTL 电平），波形衰减 | 测量线长，示波器观察波形 |\n| 无屏蔽/屏蔽不良 | 信号线裸露，耦合空间干扰 | 检查线缆是否有屏蔽层 |\n| 共地不良 | 两端 GND 之间存在压差，共模电压 | 测量收发两端 GND 之间直流/交流压差 |\n| 电源噪声 | 开关电源纹波耦合到信号线 | 示波器观察电源纹",
+      "sources_count": 5,
+      "source_titles": [
+        "01-stm32-gpio.md",
+        "05-uart-serial.md",
+        "01-stm32-gpio.md",
+        "05-uart-serial.md",
+        "05-uart-serial.md"
+      ],
+      "sources_full": [
+        {
+          "title": "01-stm32-gpio.md",
+          "excerpt": "**Q4: 为什么 GPIO 输出电压不对（不是 3.3V）？**\n\n可能原因：\n1. 引脚输出电流过大，导致电压跌落。解决：检查负载电流，增加驱动电路。\n2. 引脚配置为开漏输出但未接上拉电阻。解决：外接上拉电阻或改用推挽输出。\n3. 引脚处于复用模式，被外设控制。解决：检查 MODER 配置。\n4. VDD 电压不足。解决：检查电源电压。\n\n**Q5: 为什么 I2C 通信不成功？**\n\n可能原因：\n1. SDA/SCL 引脚未配置为开漏输出。解决：使用 `GPIO_MODE_AF_OD`。\n2. 缺少外部上拉电阻。解决：在 SDA/SCL 上各接一个 4.7kΩ 上拉到 VDD。\n3. I2C 地址错误。解决：确认设备地址（7位 vs 8位）。\n4. 引脚复用功能配置错误。解决：检查 AFRL/AFRH 中的 AF 编号。\n\n**Q6: 复位后引脚状态是什么？**\n\n复位后，所有 GPIO 的 MODER=00（输入模式），OTYPER=0（推挽），OSPEEDR=00（低速），PUPDR=00（无上下拉）。即所有引脚为浮空输入。例外：调试引脚 PA13（SWDIO）和 PA14（SWCLK）为复用功能模式。\n\n**Q7: 为什么程序运行后无法调试？**\n\n可能原因：\n1. 误将 PA13/PA14（SWD 引脚）配置为普通 GPIO。解决：在初始化代码中跳过这两个引脚，或使用复位按钮 + 断点调试。\n2. 启用了 LCKR 锁定。解决：只能通过复位解锁。\n3. 进入低功耗模式后 SWD 时钟停止。解决：在进入低功耗模式前配置 DBGMCU 寄存器。\n\n```c\n// Allow debugging in low-power modes\nDBGMCU->CR |= DBGMCU_CR_DBG_SLEEP | DBGMCU_CR_DBG_STOP | DBGMCU_CR_DBG_STANDBY;\n```\n\n**Q8: 如何降低 GPIO 功耗？**\n\n1. 将未使用的引脚配置为模拟模式（MODER=11）\n2. 避免引脚悬空（悬空输入会因噪声翻转，消耗动态功耗）\n3. 选择最低的输出速度\n4. 关闭不需要的上下拉电阻\n5. 在低功耗模式下，断开外部上拉/下拉（如果可能）\n\n**Q9: BSRR 和 ODR 的区别是什么？**\n\n- BSRR 是原子操作（只写），不会被中断打断。适用于中断中或 RTOS 中修改 GPIO。\n- ODR 是读-改-写操作，非原子。如果在读和写之间发生中断，可能导致数据丢失。\n- BSRR 只能设置或复位，不能读取。ODR 可以读写。",
+          "doc_id": "",
+          "chunk_id": "src1"
+        },
+        {
+          "title": "05-uart-serial.md",
+          "excerpt": "## 9. UART 噪声干扰排查\n\n噪声（noise）是 UART 通信中最棘手的问题之一。本章系统讲解噪声导致随机错误位的可能原因、排查方法及解决方案。\n\n### 9.1 噪声的表现\n\nUART 噪声通常表现为：\n- **偶发校验错误（PE）**：单比特翻转，校验位不匹配。\n- **噪声标志（NE）频繁置位**：采样点不一致。\n- **帧错误（FE）间歇出现**：起始位或停止位被干扰。\n- **数据随机错乱**：部分字节变成乱码，但整体通信未中断。\n- **通信距离增加后错误率上升**：典型的信号衰减或干扰耦合。\n\n噪声与系统性的波特率不匹配不同：波特率不匹配会导致持续、稳定的错误，而噪声导致的是随机、偶发的错误。\n\n### 9.2 噪声的可能原因\n\n噪声导致随机错误位的可能原因包括：\n\n| 原因类别 | 具体表现 | 检测方法 |\n|---------|----------|----------|\n| 信号线过长 | 线长 > 50cm（TTL），衰减严重 | 测量线长，示波器观察波形 |\n| 无屏蔽 | 信号线裸露，耦合空间干扰 | 检查线缆是否有屏蔽层 |\n| 共地不良 | GND 阻抗高，产生共模电压 | 测量两端 GND 压差 |\n| 电源噪声 | 开关电源纹波耦合到信号 | 示波器观察电源和信号 |\n| 电机/继电器干扰 | 电感负载切换产生 EMI | 错误与负载动作时序相关 |\n| 串扰 | 多路信号线并行布线 | 检查 PCB 走线 |\n| 阻抗不匹配 | 长线反射，信号振铃 | 示波器观察过冲振铃 |\n| 波特率过高 | 单 bit 时间短，采样窗口窄 | 降低波特率测试 |\n| 接地环路 | 多点接地形成环路 | 检查接地拓扑 |",
+          "doc_id": "",
+          "chunk_id": "src2"
+        },
+        {
+          "title": "01-stm32-gpio.md",
+          "excerpt": "### 12.1 FAQ 列表\n\n**Q1: 为什么 GPIO 引脚没有输出？**\n\n可能原因：\n1. GPIO 时钟未使能（最常见原因）。解决：在使用 GPIO 前调用 `__HAL_RCC_GPIOx_CLK_ENABLE()`。\n2. MODER 寄存器配置错误，引脚仍为输入模式。解决：检查 MODER 寄存器值。\n3. 引脚被复用功能占用。解决：检查 AFRL/AFRH 配置，确保 MODER=01。\n4. 引脚被 LCKR 锁定。解决：检查 LCKR 寄存器，锁定后只能复位解锁。\n5. 引脚是 JTAG/SWD 调试引脚（PA13/PA14/PA15/PB3/PB4）。解决：使用 `__HAL_AFIO_REMAP_SWJ_NOJTAG()` 释放 JTAG 引脚。\n\n**Q2: 为什么进入中断后 HardFault？**\n\n可能原因：\n1. 中断服务函数名拼写错误，导致 NVIC 找不到 handler。解决：检查 startup 文件中的中断向量表，确保函数名匹配。\n2. 中断服务函数中访问了未初始化的外设。解决：确保在 ISR 中只访问已初始化的外设。\n3. EXTI 中断未正确清除 pending bit。解决：在 ISR 中清除 PR 寄存器。\n4. 栈溢出。解决：增加栈大小，检查 ISR 中使用的局部变量。\n\n```c\n// Common error: forgot to clear pending bit\nvoid EXTI0_IRQHandler(void) {\n    // WRONG: no clear, will loop forever\n    HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);\n\n    // CORRECT: clear pending bit first\n    EXTI->PR = EXTI_PR_PR0;\n    HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);\n}\n```\n\n**Q3: 为什么外部中断不触发？**\n\n可能原因：\n1. SYSCFG 时钟未使能，EXTICR 配置无效。解决：`__HAL_RCC_SYSCFG_CLK_ENABLE()`。\n2. EXTI IMR（中断屏蔽寄存器）未设置。解决：`EXTI->IMR |= EXTI_IMR_MR0;`。\n3. 触发方式配置错误（上升沿/下降沿）。解决：检查 RTSR/FTSR 寄存器。\n4. NVIC 中断未使能。解决：`NVIC_EnableIRQ(EXTI0_IRQn);`。\n5. 引脚配置为输出模式，EXTI 只在输入模式下工作。解决：将引脚配置为输入模式。\n6. 同一 EXTI 线上有多个引脚冲突。解决：确保同一 EXTI 线只有一个引脚使用。\n\n**Q4: 为什么 GPIO 输出电压不对（不是 3.3V）？**",
+          "doc_id": "",
+          "chunk_id": "src3"
+        },
+        {
+          "title": "05-uart-serial.md",
+          "excerpt": "### 9.5 故障排查表\n\n| 现象 | 可能原因 | 排查方法 | 解决方案 |\n|------|---------|----------|----------|\n| 噪声 | 信号线过长/无屏蔽 | 降低波特率，加屏蔽 | 降低波特率，加屏蔽 |\n| 乱码 | 波特率不匹配 | 检查双方波特率 | 统一波特率 |\n| 偶发字节错误 | 电源噪声耦合 | 示波器观察电源 | 加滤波电容，改善电源 |\n| FE 帧错误 | 停止位被干扰 | 示波器观察波形 | 加屏蔽，串联电阻 |\n| ORE 溢出 | 中断响应慢 | 检查中断延迟 | 改用 DMA，降低波特率 |\n| 长距离通信失败 | 信号衰减 | 测量线长 | 改用 RS-485 |\n| 电机启动时出错 | EMI 干扰 | 关联电机动作时序 | 加光耦隔离，电机加吸收电路 |\n| 多板共地出错 | 接地环路 | 测量 GND 压差 | 单点接地，加共模电感 |\n| 振铃导致错误 | 阻抗不匹配 | 示波器看过冲 | 串联 22~100Ω 电阻 |\n| 高波特率出错 | 采样窗口窄 | 降波特率测试 | 降低波特率或改用差分 |\n\n### 9.6 示波器排查步骤\n\n1. **观察空闲电平**：TX/RX 空闲应为稳定高电平，若有波动说明有干扰。\n2. **观察起始位下降沿**：边沿应陡峭，若有振铃说明阻抗不匹配。\n3. **观察数据位**：每位应平坦，若叠加高频纹波说明电源或 EMI 问题。\n4. **观察停止位**：应稳定高电平，若抖动可能被识别为下一帧起始位。\n5. **测量波特率**：用光标测量单 bit 时间，与设定值对比。\n\n### 9.7 噪声统计与自动降速\n\n生产环境可实现噪声自适应降速：\n\n```c\n// Adaptive baud rate based on noise statistics\nvoid UART_Adaptive_Speed(void)\n{\n    static uint32_t last_check = 0;\n    if (HAL_GetTick() - last_check > 5000)       // Check every 5s\n    {\n        last_check = HAL_GetTick();\n        uint32_t noise_rate = uart_stats.noise_errors * 100 / uart_stats.total_bytes;\n        if (noise_rate > 5)                       // > 5% noise\n        {\n            // Reduce baud rate\n            UART_Set_Baud(current_baud / 2);\n            Log_Event(\"Baud reduced due to noise\");\n        }\n        // Reset counters\n        memset(&uart_stats, 0, sizeof(uart_stats));\n    }\n}\n```\n\n---",
+          "doc_id": "",
+          "chunk_id": "src4"
+        },
+        {
+          "title": "05-uart-serial.md",
+          "excerpt": "| 编号 | 问题 | 原因 | 解决方案 |\n|------|------|------|----------|\n| 1 | 串口输出全是乱码 | 波特率不匹配 | 检查双方波特率，用示波器测量 |\n| 2 | 串口输出全是 0x00 或 0xFF | 接线错误或电平不匹配 | 检查 TX/RX 交叉、GND 共地、电平兼容 |\n| 3 | 接收数据偶发错误 | 噪声干扰 | 加屏蔽，降低波特率，加滤波 |\n| 4 | 高波特率下数据丢失 | CPU 响应慢 | 改用 DMA 模式 |\n| 5 | DMA 接收数据覆盖 | 循环模式未启用或缓冲区太小 | 使用循环模式 + 半传输中断 |\n| 6 | 流控制不生效 | RTS/CTS 接线错误或未启用 | 检查接线和 CR3 配置 |\n| 7 | 收不到数据 | RX 接线错误或未使能接收 | 检查 RX 引脚和 CR1.RE |\n| 8 | 只能发不能收 | TX/RX 接反 | 交叉连接 TX-RX |\n| 9 | 帧错误频繁 | 波特率偏差或帧格式不一致 | 检查波特率和 8N1 配置 |\n| 10 | 溢出错误 | 中断处理过慢 | 改用 DMA 或降低波特率 |\n| 11 | 9 位模式通信失败 | 第 9 位设置错误 | 检查 DR 写入时 0x100 设置 |\n| 12 | RS-485 通信失败 | DE 方向控制时序错误 | 等待 TC 标志再切换方向 |\n| 13 | Modbus CRC 校验失败 | CRC 算法或字节序错误 | 确认多项式 0xA001，低位在前 |\n| 14 | printf 无输出 | _write 未重定向 | 重定向 _write 到 UART |\n| 15 | 中断不触发 | NVIC 未使能或优先级错误 | 检查 HAL_NVIC_EnableIRQ |\n| 16 | 多机通信地址不识别 | 9 位模式配置错误 | 检查 CR1.M 和 CR2.ADD |\n| 17 | Linux 串口权限拒绝 | 用户不在 dialout 组 | usermod -aG dialout |\n| 18 | USB 转串口识别不到 | 驱动未安装 | 安装 CH340/CP2102 驱动 |\n| 19 | 长距离通信失败 | TTL 电平衰减 | 改用 RS-485 |",
+          "doc_id": "",
+          "chunk_id": "src5"
+        }
+      ]
+    },
+    {
+      "question_id": "Q11",
+      "question": "STM32 和 ESP32 都支持硬件 SPI，它们在 SPI 时钟极性/相位配置方式上有什么区别？如果要用 STM32 做 SPI 主机连接 ESP32 做 SPI 从机，需要注意什么？",
+      "target_doc": "06-chaotic-embedded-notes.md",
+      "difficulty": "难",
+      "scores": {
+        "recall": {
+          "score": 30.0,
+          "max": 30,
+          "detail": "Hit target doc: 06-chaotic-embedded-notes.md"
+        },
+        "answer_coverage": {
+          "score": 20.833333333333336,
+          "max": 25,
+          "detail": "Covered 5/6 keyword groups. Missed: 同步"
+        },
+        "chunk_completeness": {
+          "score": 25.0,
+          "max": 25,
+          "detail": "✓ Group ['CPOL', 'CPHA'] found in same chunk"
+        },
+        "chunk_boundary": {
+          "score": 8,
+          "max": 10,
+          "detail": "1 issues in 5 srcs: src#3: ends mid-word (tail=' card')"
+        },
+        "cross_section": {
+          "score": 10.0,
+          "max": 10,
+          "detail": "✓ STM32+ESP32 in same chunk#1"
+        }
+      },
+      "total_score": 93.83333333333334,
+      "max_score": 100,
+      "answer_preview": "好的，我们来系统地分析 STM32 和 ESP32 在 SPI 时钟配置上的区别，以及两者主从连接时的关键注意事项。\n\n首先，直接回答您的问题核心：**在 SPI 时钟极性 (CPOL) 和时钟相位 (CPHA) 的配置理念上，两者完全一致，都是遵循标准的 SPI 模式 (Mode 0-3)。** 区别仅在于具体的软件实现方式（寄存器或 API 函数）。\n\n### 1. STM32 和 ESP32 SPI 配置方式对比\n\n下表对比了两种主流平台的 SPI 时钟配置方法：\n\n| 项目 | STM32 (以 HAL/LL 库为例) | ESP32 (以 ESP-IDF 为例) |\n| :--- | :--- | :--- |\n| **底层原理** | 通过配置寄存器 `SPI_CR1` 的 `CPOL` (位1) 和 `CPHA` (位0) 位。 | 通过 `spi_device_interface_config_t` 结构体的 `.mode` 成员。 |\n| **代码表现** | **HAL库**: `SPI_InitStruct.CLKPhase`, `SPI_InitStruct.C",
+      "sources_count": 5,
+      "source_titles": [
+        "06-chaotic-embedded-notes.md",
+        "04-cortexm-interrupt.md",
+        "03-i2c-protocol.md",
+        "06-chaotic-embedded-notes.md",
+        "06-chaotic-embedded-notes.md"
+      ],
+      "sources_full": [
+        {
+          "title": "06-chaotic-embedded-notes.md",
+          "excerpt": "ESP32 的 GPIO 和 STM32 完全不是一个套路，ESP32 用的是 gpio_config_t 结构体一次配一堆 pin，而且 ESP32 的 GPIO 有 RTC GPIO 和 Digital GPIO 之分，输入输出还要看 RTC_MUX 寄存器决定走哪个域。ESP32 的引脚有几个不能用的：GPIO6-11 被 flash 占用，GPIO34-39 只能输入不能输出（没有输出使能），GPIO0 是 strapping pin 上电要为高否则进 download mode。下面这段 ESP32 代码把 GPIO18 配成输出驱动 LED，GPIO0 配成输入做按键，注意 ESP-IDF 里用 gpio_set_level 来输出电平。```c\n// esp32_gpio_example.c\n#include \"driver/gpio.h\"\n#include \"esp_log.h\"\n\nstatic const char *TAG = \"gpio_demo\";\n\nvoid esp32_gpio_init(void) {\n    // LED on GPIO18, active high\n    gpio_config_t io_conf = {};\n    io_conf.intr_type = GPIO_INTR_DISABLE;\n    io_conf.mode = GPIO_MODE_OUTPUT;\n    io_conf.pin_bit_mask = (1ULL << GPIO_NUM_18);\n    io_conf.pull_down_en = 0;\n    io_conf.pull_up_en = 0;\n    gpio_config(&io_conf);\n\n    // button on GPIO0 with pull-up, falling edge interrupt\n    io_conf.intr_type = GPIO_INTR_NEGEDGE;\n    io_conf.mode = GPIO_MODE_INPUT;\n    io_conf.pin_bit_mask = (1ULL << GPIO_NUM_0);\n    io_conf.pull_up_en = 1;\n    gpio_config(&io_conf);\n\n    // install ISR service\n    gpio_install_isr_service(ESP_INTR_FLAG_DEFAULT);\n    gpio_isr_handler_add(GPIO_NUM_0, button_isr_handler, NULL);\n\n    ESP_LOGI(TAG, \"gpio init done\");\n    gpio_set_level(GPIO_NUM_18, 1); // turn LED on\n}\n```\nGPIO 内部上拉电阻阻值问题，STM32 内部上拉典型值 40kΩ 弱上拉，ESP32 内部上拉典型值 45kΩ 也是弱上拉，做 I2C 这种要 4.7kΩ 外部上拉，内部上拉根本不够用，I2C 总线只要挂的设备多了或者线长了波形就烂掉，示波器上看到 SCL 上升沿变圆就是上拉不够。SPI 是全双工同步串行总线，比 I2C 快很多，SPI 没有 I2C 那种地址机制所以要用片选 CS 来选设备，一个 CS 对应一个从设备。SPI 调试最常见的问题是时钟极性 CPOL 和时钟相位 CPHA 配错，主从必须一致否则数据移位错位。CPOL=0 表示空闲低电平，CPOL=1 表示空闲高电平，CPHA=0 表示第一个边沿采样，CPHA=1 表示第二个边沿采样。Mode 0 是 CPOL=0 CPHA=0 最常用，Mode 3 是 CPOL=1 CPHA=1 也常见，W25Q64 flash 默认 Mode 0 和 Mode 3 都支持。下面这段 STM32 SPI1 主机初始化代码驱动 W25Q64 flash，时钟分频到 36MHz（APB2=72MHz /2）：```c\n// stm32_spi1_master.c\n#include \"stm32f1xx_ll_spi.h\"\n#include \"stm32f1xx_ll_bus.h\"\n#include \"stm32f1xx_ll_gpio.h\"\n\nvoid spi1_init_master(void) {\n    // clocks: SPI1 on APB2, GPIOA on APB2, AFIO on APB2\n    LL_APB2_GRP1_EnableClock(LL_APB2_GRP1_PERIPH_SPI1);\n    LL_APB2_G",
+          "doc_id": "",
+          "chunk_id": "src1"
+        },
+        {
+          "title": "04-cortexm-interrupt.md",
+          "excerpt": "### Q6: 同一中断能被自己抢占吗？\n\n**A**: 默认不能。NVIC 活跃位阻止同优先级中断重入。若确需重入，需在 ISR 中手动清除挂起位并临时降低自身优先级，极其危险不推荐。\n\n### Q7: 为什么 BASEPRI 设了值后中断还是会被抢占？\n\n**A**: BASEPRI 只屏蔽优先级数值 **大于等于** BASEPRI 的中断。数值更小（更高优先级）的中断仍能响应。如果设 BASEPRI=5，优先级 0-4 的中断不被屏蔽。这是设计特性，用于\"保留高优先级中断实时性\"。\n\n### Q8: HardFault_Handler 里可以做什么？\n\n**A**: 极有限。此时系统状态可能已损坏。安全做法：读取故障寄存器存入非易失存储或全局变量，然后复位（NVIC_SystemReset）或死循环等待调试器。**不要**调用 malloc/printf 等可能进一步触发 fault 的函数。用 ITM 或简单内存写入记录最安全。\n\n### Q9: 如何让某个中断不响应但记录它的发生？\n\n**A**: 禁用 NVIC 使能但保持外设中断使能，挂起位会记录事件：\n\n```c\nNVIC_DisableIRQ(USART1_IRQn);  // NVIC won't activate\n// USART1->CR1 |= RXNEIE still set, flag goes to pending\n// Periodically check:\nif (NVIC_GetPendingIRQ(USART1_IRQn)) {\n    // A byte arrived, handle it manually\n    NVIC_ClearPendingIRQ(USART1_IRQn);\n}\n```\n\n### Q10: 多核 Cortex-M（如 M33 双核）如何处理核间中断？\n\n**A**: 用 SGIs（Software Generated Interrupts）或厂商提供的核间邮箱。STM32H7 双核用 HSEM（硬件信号量）+ C1/C2 邮箱触发对方核的中断。\n\n### Q11: WFI 和 WFE 的区别？\n\n**A**: WFI（Wait For Interrupt）等到任意中断唤醒；WFE（Wait For Event）等到事件唤醒，事件可由 SEV 指令或中断产生。WFE 有内部事件锁存，可能立即返回（如果之前有未消费事件）。低功耗建议 WFI，多核同步用 WFE+SEV。\n\n### Q12: 为什么从 STOP 模式唤醒后中断延迟很大？\n\n**A**: STOP 模式关闭 PLL，唤醒后需重新启动 PLL 锁定（几毫秒）。这段时间中断仍会响应但用 HSI 时钟（慢）。如需低延迟唤醒，用 SLEEP 模式（仅停 CPU，时钟保持）或配置 FCLK 在 STOP 时保持。\n\n---",
+          "doc_id": "",
+          "chunk_id": "src2"
+        },
+        {
+          "title": "03-i2c-protocol.md",
+          "excerpt": "**Q12: GPIO 软件模拟 I2C 和硬件 I2C 哪个更好？**\nA: 硬件 I2C 优势：不占用 CPU、支持 DMA、时序精确。软件 I2C 优势：引脚灵活、跨平台、无硬件 Errata 限制。产品环境优先用硬件 I2C，软件 I2C 作为备份或调试手段。\n\n**Q13: I2C 总线能挂载多少个器件？**\nA: 地址空间限制：7 位地址最多 112 个可用地址（0x08-0x77）。电容限制：400pF 总线电容，按每器件 10pF 计约 30-40 个。实际产品中通常 <10 个器件，超过时用 TCA9548A 多路复用器扩展。\n\n**Q14: SMBus 和 I2C 有什么区别？**\nA: SMBus 基于 I2C 但有更严格的时序规范（10kHz-100kHz）、超时检测（35ms）、PEC 校验、ARP 地址解析。SMBus 器件可与 I2C 主机通信，但 I2C 器件不一定满足 SMBus 时序要求。\n\n**Q15: I2C 通信被中断打断导致数据错乱怎么办？**\nA: I2C 硬件外设自身有状态机，中断不会打断硬件传输。但若在中断中调用 HAL_I2C_* 会破坏状态机。解决：I2C 操作放在主循环，不在 ISR 中调用 HAL I2C 函数。临界区保护共享变量。\n\n**Q16: 为什么读取传感器数据偶尔跳变到 0 或 0xFFFF？**\nA: I2C 读取多字节时，若传输中途 NACK，剩余字节未填充，缓冲区残留旧值。解决：检查 HAL 返回值，失败时不更新数据；读取前清零缓冲区；增加重试机制。\n\n**Q17: I2C 器件的 VDD 与 MCU 的 VDD 不一致怎么办？**\nA: 必须电平转换。低频（<100kHz）可用 BSS138 MOSFET 转换；高频用专用芯片（PCA9306、TXS0108E）。注意上拉电阻接在各自 VDD 侧，且 VDD 高的一侧 Rp 可稍大。",
+          "doc_id": "",
+          "chunk_id": "src3"
+        },
+        {
+          "title": "06-chaotic-embedded-notes.md",
+          "excerpt": "SPI 时钟模式速查表（tab 分隔）：\nMode\tCPOL\tCPHA\t空闲电平\t采样沿\t典型设备\n0\t0\t0\t低\t第一个（上升）\tW25Q64 flash 默认\n1\t0\t1\t低\t第二个（下降）\t某些 LCD\n2\t1\t0\t高\t第一个（下降）\t少见\n3\t1\t1\t高\t第二个（上升）\tW25Q64 也支持 SD card",
+          "doc_id": "",
+          "chunk_id": "src4"
+        },
+        {
+          "title": "06-chaotic-embedded-notes.md",
+          "excerpt": "最后一段无结构混合记录，调试时要养成习惯先确认电源再确认时钟再确认引脚再确认外设配置，电源纹波大用示波器交流耦合测 VDD 和 GND 之间应该小于 50mV 峰峰值，时钟用示波器测 HSE 引脚确认起振，晶振负载电容不对会不起振或者频率偏，8MHz 晶振典型负载电容 22pF 计算公式 CL = (C1*C2)/(C1+C2) + Cstray，Cstray 约 3-5pF。复位脚 NRST 必须接 100nF 到 GND 和 10kΩ 到 VDD，否则上电复位不可靠。BOOT0 BOOT1 脚决定启动模式，BOOT0=0 从 flash 启动正常，BOOT0=1 BOOT1=1 从 RAM 启动，BOOT0=1 BOOT1=0 从系统存储器启动串口下载模式，STM32 出厂烧录 boot loader 在系统存储器里支持 USART1/USART2/USB/CAN/I2C 烧录。ESP32 启动 mode 由 strapping pin GPIO0 GPIO2 GPIO12 GPIO15 决定，下载模式 GPIO0=0 GPIO2=0 GPIO12=0 GPIO15=0，flash 启动模式 GPIO0=1 其他默认，ESP32 上电瞬间这些引脚电平被采样所以不能接强下拉否则进不了 flash 启动。烧录后用 esptool.py --port COMx --baud 921600 write_flash 0x10000 firmware.bin 把应用烧到 0x10000 偏移，bootloader 在 0x1000，分区表在 0x8000，每个分区偏移和大小由 partitions.csv 决定。OTA 升级用 esp_ota_* API 写 ota_1 分区后切 boot partition 重启。调试 ESP32 用 esptool.py --port COMx --baud 921600 --chip esp32 monitor 看串口输出，或者用 idf.py monitor 自动复位自动解 panic backtrace 地址，backtrace 解析要 addr2line 工具配合 elf 文件，命令 xtensa-esp32-elf-addr2line -pfiaC -e firmware.elf 0x400d1234\n。GPIO ESP32 12 接 flash 不能用，strapping pin 汇总表：",
+          "doc_id": "",
+          "chunk_id": "src5"
+        }
+      ]
+    },
+    {
+      "question_id": "Q12",
+      "question": "在一个嵌入式系统中，DMA 传输完成中断和 UART 接收中断同时发生，如何设计中断优先级确保不丢数据？给出 NVIC 分组方案和具体的优先级数值。",
+      "target_doc": "06-chaotic-embedded-notes.md",
+      "difficulty": "难",
+      "scores": {
+        "recall": {
+          "score": 30.0,
+          "max": 30,
+          "detail": "Hit target doc: 06-chaotic-embedded-notes.md"
+        },
+        "answer_coverage": {
+          "score": 25.0,
+          "max": 25,
+          "detail": "Covered 6/6 keyword groups"
+        },
+        "chunk_completeness": {
+          "score": 25.0,
+          "max": 25,
+          "detail": "✓ Group ['DMA', 'UART', '优先级'] found in same chunk"
+        },
+        "chunk_boundary": {
+          "score": 10.0,
+          "max": 10,
+          "detail": "All 5 src chunks clean"
+        },
+        "cross_section": {
+          "score": 10.0,
+          "max": 10,
+          "detail": "✓ DMA+NVIC in same chunk#6"
+        }
+      },
+      "total_score": 100.0,
+      "max_score": 100,
+      "answer_preview": "## 中断优先级设计方案：DMA 传输完成 & UART 接收\n\n### 1. 核心原则分析\n\nUART 接收中断与 DMA 传输完成中断特征对比如下：\n\n| 维度 | UART 接收中断 | DMA 传输完成中断 |\n|------|---------------|------------------|\n| 数据容错窗口 | 极短（硬件 RX 寄存器仅 1 字节或深度有限 FIFO） | 宽裕（数据已在内存缓冲区） |\n| 丢数据风险 | 不及时读取则覆盖，**立即丢失** | 延迟处理不会导致数据丢失 |\n| 典型处理内容 | 读取 DR 寄存器、清标志、存缓冲区 | 处理已完成数据、切换缓冲区、停止传输 |\n| 实时性要求 | **高**（与波特率相关，如 115200bps 需 86μs 内响应） | **低**（可容忍 ms 级延迟） |\n\n**结论**：UART 接收中断应具有**严格高于** DMA 传输完成中断的抢占优先级，这是确保 UART 不丢数据的第一原则。\n\n---\n\n### 2. 推荐 NVIC 分组方案\n\n选择 **NVIC_PRIORITYGROUP_4*",
+      "sources_count": 5,
+      "source_titles": [
+        "04-cortexm-interrupt.md",
+        "06-chaotic-embedded-notes.md",
+        "04-cortexm-interrupt.md",
+        "04-cortexm-interrupt.md",
+        "04-cortexm-interrupt.md"
+      ],
+      "sources_full": [
+        {
+          "title": "04-cortexm-interrupt.md",
+          "excerpt": "### Q6: 同一中断能被自己抢占吗？\n\n**A**: 默认不能。NVIC 活跃位阻止同优先级中断重入。若确需重入，需在 ISR 中手动清除挂起位并临时降低自身优先级，极其危险不推荐。\n\n### Q7: 为什么 BASEPRI 设了值后中断还是会被抢占？\n\n**A**: BASEPRI 只屏蔽优先级数值 **大于等于** BASEPRI 的中断。数值更小（更高优先级）的中断仍能响应。如果设 BASEPRI=5，优先级 0-4 的中断不被屏蔽。这是设计特性，用于\"保留高优先级中断实时性\"。\n\n### Q8: HardFault_Handler 里可以做什么？\n\n**A**: 极有限。此时系统状态可能已损坏。安全做法：读取故障寄存器存入非易失存储或全局变量，然后复位（NVIC_SystemReset）或死循环等待调试器。**不要**调用 malloc/printf 等可能进一步触发 fault 的函数。用 ITM 或简单内存写入记录最安全。\n\n### Q9: 如何让某个中断不响应但记录它的发生？\n\n**A**: 禁用 NVIC 使能但保持外设中断使能，挂起位会记录事件：\n\n```c\nNVIC_DisableIRQ(USART1_IRQn);  // NVIC won't activate\n// USART1->CR1 |= RXNEIE still set, flag goes to pending\n// Periodically check:\nif (NVIC_GetPendingIRQ(USART1_IRQn)) {\n    // A byte arrived, handle it manually\n    NVIC_ClearPendingIRQ(USART1_IRQn);\n}\n```\n\n### Q10: 多核 Cortex-M（如 M33 双核）如何处理核间中断？\n\n**A**: 用 SGIs（Software Generated Interrupts）或厂商提供的核间邮箱。STM32H7 双核用 HSEM（硬件信号量）+ C1/C2 邮箱触发对方核的中断。\n\n### Q11: WFI 和 WFE 的区别？\n\n**A**: WFI（Wait For Interrupt）等到任意中断唤醒；WFE（Wait For Event）等到事件唤醒，事件可由 SEV 指令或中断产生。WFE 有内部事件锁存，可能立即返回（如果之前有未消费事件）。低功耗建议 WFI，多核同步用 WFE+SEV。\n\n### Q12: 为什么从 STOP 模式唤醒后中断延迟很大？\n\n**A**: STOP 模式关闭 PLL，唤醒后需重新启动 PLL 锁定（几毫秒）。这段时间中断仍会响应但用 HSI 时钟（慢）。如需低延迟唤醒，用 SLEEP 模式（仅停 CPU，时钟保持）或配置 FCLK 在 STOP 时保持。\n\n---",
+          "doc_id": "",
+          "chunk_id": "src1"
+        },
+        {
+          "title": "06-chaotic-embedded-notes.md",
+          "excerpt": "DMA 调试技巧：DMA 传输完成后 TC 标志置位，必须手动清除，否则不会再触发中断，circular 模式下 TC 每次循环到末尾都置位可以用它来知道缓冲区回绕了。HT 半传输中断在传输到一半时触发，配合 TC 可以实现双缓冲 ping-pong，前半段处理时后半段接收，反之亦然。DMA 内存对齐问题：如果设了 word 传输（4 字节）内存地址必须 4 字节对齐否则会 hardfault，用 __attribute__((aligned(4))) 或者 union 强制对齐。Cache 一致性问题：STM32F7/H7 有 D-Cache，DMA 直接访问内存不经过 cache，CPU 读到的是 cache 里的旧数据，必须在 DMA 接收前 SCB_InvalidateDCache_by_Addr 接收后 SCB_CleanDCache_by_Addr，F1/F4 没有 cache 不用管。ESP32 的 DMA 叫 GDMA，配置比 STM32 简单，spi_bus_initialize 第三个参数传 SPI_DMA_CH_AUTO 让系统自动分配 DMA 通道，UART 也可以用 UART_NUM 的 uart_driver_install 配合环形缓冲，ESP32 的 UART 底层已经内置 DMA 不用用户配寄存器。中断和 NVIC 调试是嵌入式进阶必须掌握的，NVIC 是 Nested Vectored Interrupt Controller 嵌套向量中断控制器，Cortex-M 内核自带。NVIC 优先级分抢占优先级 preemption 和子优先级 subpriority，抢占优先级高的可以打断低的正在执行的中断，子优先级只在两个同抢占优先级的中断同时 pending 时决定谁先执行。优先级分组由 SCB->AIRCR 的 PRIGROUP 位决定，STM32 默认 NVIC_PRIORITYGROUP_4 是 4 位全给抢占 0 位给子优先级，共 16 个抢占等级 0-15，0 最高 15 最低。下面这段 STM32 外部中断 EXTI 配置把 PA0 配成下降沿触发按键中断，优先级 6：\n```c\n// stm32_exti_pa0.c\n#include \"stm32f1xx_ll_exti.h\"\n#include \"stm32f1xx_ll_bus.h\"\n#include \"stm32f1xx_ll_gpio.h\"\n#include \"stm32f1xx_ll_system.h\"\n#include \"stm32f1xx_ll_utils.h\"\n\nvolatile uint32_t exti0_count = 0;\n\nvoid exti0_init(void) {\n    LL_APB2_GRP1_EnableClock(LL_APB2_GRP1_PERIPH_GPIOA);\n    LL_APB2_GRP1_EnableClock(LL_APB2_GRP1_PERIPH_AFIO);\n\n    // PA0 input pull-up\n    LL_GPIO_SetPinMode(GPIOA, LL_GPIO_PIN_0, LL_GPIO_MODE_INPUT);\n    LL_GPIO_SetPinPull(GPIOA, LL_GPIO_PIN_0, LL_GPIO_PULL_UP);\n\n    // route PA0 to EXTI line 0\n    LL_GPIO_AF_SetEXTISource(LL_GPIO_AF_EXTI_PORTA, LL_GPIO_AF_EXTI_LINE0);\n\n    // configure EXTI line 0: falling edge, interrupt mode\n    LL_EXTI_InitTypeDef exti_init = {0};\n    exti_init.Line_0_31 = LL_EXTI_LINE_0;\n    exti_init.LineCommand = ENABLE;\n    exti_init.Mode = LL_EXTI_MODE_INTERRUPT;\n    exti_init.Trigger = LL_EXTI_TRIGGER_FALLING;\n    LL_EXTI_Init(&exti_init);\n\n    // NVIC: preemption 6, subpriority 0\n    NVIC_SetPriority(EXTI0_IRQn, NVIC_EncodePriority(NVIC_GetPriorityGrouping(), 6, 0));\n    NVIC_EnableIRQ(EXT",
+          "doc_id": "",
+          "chunk_id": "src2"
+        },
+        {
+          "title": "04-cortexm-interrupt.md",
+          "excerpt": "### 2.2 优先级分组：PRIGROUP、抢占优先级与子优先级\n\n这是 Cortex-M 中断系统最易混淆也最关键的概念。**PRIGROUP** 寄存器（位于 SCB->AIRCR 的 bit[10:8]）将优先级位分成**抢占优先级（Preempting Priority）** 和**子优先级（Subpriority）** 两段。\n\n- **抢占优先级**：决定一个中断能否抢占另一个正在执行的中断。数值越小抢占能力越强。\n- **子优先级**：当两个中断**同时挂起**时，决定哪个先被服务。**子优先级不影响抢占**，只影响挂起时的排队顺序。\n\n**关键规则**：\n- 仅当新中断的抢占优先级数值**严格小于**（更高）当前活跃中断的抢占优先级时，才会发生抢占。\n- 子优先级相同的两个中断不会互相抢占，按挂起顺序排队。\n\nSTM32 HAL 封装了分组设置：\n\n```c\n// Set priority group: 4 bits for preemption, 0 for subpriority\n// This is the most common choice for STM32 (NVIC_PRIORITYGROUP_4)\nHAL_NVIC_SetPriorityGrouping(NVIC_PRIORITYGROUP_4);\n\n// The HAL mapping:\n// NVIC_PRIORITYGROUP_0 -> 4 bits sub, 0 pre  (no preemption among IRQs)\n// NVIC_PRIORITYGROUP_1 -> 3 bits sub, 1 pre  (2 preempt levels)\n// NVIC_PRIORITYGROUP_2 -> 2 bits sub, 2 pre  (4 preempt levels)\n// NVIC_PRIORITYGROUP_3 -> 1 bit sub,  3 pre  (8 preempt levels)\n// NVIC_PRIORITYGROUP_4 -> 0 bits sub, 4 pre  (16 preempt levels, recommended)\n```\n\n直接操作 AIRCR 设置 PRIGROUP（CMSIS 底层）：\n\n```c\n// Direct AIRCR write to set PRIGROUP\nvoid NVIC_SetPriorityGrouping_raw(uint32_t group) {\n    uint32_t reg_value;\n    uint32_t PriorityGroupTmp = (group & 0x07);  // Only 3 bits\n    reg_value = SCB->AIRCR;\n    // Clear key and PRIGROUP bits\n    reg_value &= ~(SCB_AIRCR_VECTKEY_Msk | SCB_AIRCR_PRIGROUP_Msk);\n    // Write key 0x5FA and new PRIGROUP\n    reg_value = reg_value |\n                (0x5FA << SCB_AIRCR_VECTKEY_Pos) |\n                (PriorityGroupTmp << SCB_AIRCR_PRIGROUP_Pos);\n    SCB->AIRCR = reg_value;\n}\n```",
+          "doc_id": "",
+          "chunk_id": "src3"
+        },
+        {
+          "title": "04-cortexm-interrupt.md",
+          "excerpt": "### 2.4 抢占优先级与子优先级的实战选择\n\n**推荐方案：NVIC_PRIORITYGROUP_4（全部 16 级抢占，无子优先级）**\n\n理由：\n1. 嵌入式实时系统真正需要的是抢占能力，子优先级只是挂起队列的 tie-breaker，作用有限。\n2. 16 级抢占足以满足绝大多数应用，且语义清晰（数值小即抢占强）。\n3. 子优先级容易引起误解，调试时不直观。\n\n何时需要子优先级：\n- 多个同类外设（如 5 个 UART）的挂起顺序很重要，且不想用抢占（怕嵌套开销），可设 GROUP_2（4 抢占 + 4 子优先级）。\n\n```c\n// Recommended setup at startup\nvoid interrupt_system_init(void) {\n    // Use 16 preempt levels, no subpriority\n    HAL_NVIC_SetPriorityGrouping(NVIC_PRIORITYGROUP_4);\n    // Assign priorities by criticality\n    HAL_NVIC_SetPriority(SysTick_IRQn,    0, 0);  // Highest (kernel tick)\n    HAL_NVIC_SetPriority(DMA1_Stream0_IRQn,1, 0); // DMA for high-throughput\n    HAL_NVIC_SetPriority(USART1_IRQn,     2, 0);  // Comms\n    HAL_NVIC_SetPriority(TIM2_IRQn,       3, 0);  // Timer\n    HAL_NVIC_SetPriority(EXTI0_IRQn,      4, 0);  // Button\n    // SysTick at 0 lets RTOS tick preempt everything for accurate scheduling\n}\n```\n\n### 2.5 优先级数值\"小即高\"的陷阱\n\nCortex-M 优先级**数值越小优先级越高**，这与许多人的直觉相反（Unix nice 值也是这样，但 RTOS 任务优先级通常相反）。\n\n- 0 是最高优先级（Reset/NMI 除外，它们是负数 -3/-2/-1，固定最高）。\n- 0xFF 是最低优先级（对 4 位实现，写入 0xFF 会被截断为 0xF0，即 15）。\n\n```c\n// Common mistake: thinking higher number = higher priority\n// WRONG: assigning \"more important\" interrupt a larger number\nHAL_NVIC_SetPriority(USART1_IRQn, 15, 0);  // This is LOWEST, not highest!\n\n// Correct: assign critical interrupts smaller numbers\nHAL_NVIC_SetPriority(USART1_IRQn, 0, 0);   // Highest\nHAL_NVIC_SetPriority(TIM2_IRQn,   5, 0);   // Medium\nHAL_NVIC_SetPriority(EXTI0_IRQn,  10, 0);  // Lower\n```\n\n迁移优先级数值时（如从 8 位 MCU 迁移），务必翻转数值映射。\n\n### 2.6 中断使能与挂起的\"记忆\"特性\n\nNVIC 的挂起寄存器有\"记忆\"：即使中断被禁用（ICER 清除），挂起位仍会保留；一旦重新使能，挂起的中断会立即执行。这对去抖动设计很关键：\n\n```c\n// Disable UART interrupt during critical section\nNVIC_DisableIRQ(USART1_IRQn);\n// ... critical code ...\n// If a byte arrived during disable, it's now pending\n// Re-enable will immediately fire the ISR\nNVIC_EnableIRQ(USART1_IRQn);\n// To discard pending interrupt instead:\nNVIC_ClearPendingIRQ(USART1_IRQn);\nNVIC_EnableIRQ(USART1_IRQn);\n```\n\n挂起位是\"置位优先\"的：",
+          "doc_id": "",
+          "chunk_id": "src4"
+        },
+        {
+          "title": "04-cortexm-interrupt.md",
+          "excerpt": "## 6. 优先级设计与分组策略\n\n### 6.1 优先级设计原则\n\n合理的优先级分配是实时系统设计的核心。原则：\n\n1. **关键性优先**：越关键（错过会导致系统故障）的中断优先级数值越小。\n2. **频率与时长权衡**：高频短中断可设高优先级；长耗时中断设低优先级避免阻塞其他。\n3. **避免优先级反转**：共享资源时用互斥量优先级继承。\n4. **预留高优先级**：0-2 级留给系统关键（SysTick、故障、电机控制），应用中断从 3 起。\n\n### 6.2 STM32 中断优先级分配模板\n\n| 优先级 | 中断 | 理由 |\n|--------|------|------|\n| 0 | SysTick | RTOS 心跳，必须准时 |\n| 0 | HardFault 等 | 故障最高 |\n| 1 | TIM1（电机 PWM） | 电流环 10kHz，错过炸管 |\n| 2 | DMA1 Stream0 | 高速 ADC 采样 |\n| 3 | USART1（指令） | 通信协议时序 |\n| 4 | SPI1 | 显示刷新 |\n| 5 | ADC1 | 一般采集 |\n| 6 | TIM3 | 编码器 |\n| 7 | USART2 | 调试日志 |\n| 8-10 | CAN/USB | 容忍延迟 |\n| 11-15 | EXTI/按钮 | 人机交互，无实时要求 |\n\n```c\nvoid nvic_priorities_init(void) {\n    HAL_NVIC_SetPriorityGrouping(NVIC_PRIORITYGROUP_4);\n    HAL_NVIC_SetPriority(SysTick_IRQn,        0, 0);\n    HAL_NVIC_SetPriority(TIM1_UP_TIM10_IRQn,  1, 0);\n    HAL_NVIC_SetPriority(DMA1_Stream0_IRQn,   2, 0);\n    HAL_NVIC_SetPriority(USART1_IRQn,         3, 0);\n    HAL_NVIC_SetPriority(SPI1_IRQn,           4, 0);\n    HAL_NVIC_SetPriority(ADC_IRQn,            5, 0);\n    HAL_NVIC_SetPriority(TIM3_IRQn,           6, 0);\n    HAL_NVIC_SetPriority(USART2_IRQn,         7, 0);\n    HAL_NVIC_SetPriority(CAN1_TX_IRQn,        8, 0);\n    HAL_NVIC_SetPriority(USB_IRQn,           10, 0);\n    HAL_NVIC_SetPriority(EXTI0_IRQn,         12, 0);\n    HAL_NVIC_SetPriority(EXTI15_10_IRQn,     13, 0);\n}\n```\n\n### 6.3 分组策略选择指南\n\n| 场景 | 推荐分组 | 理由 |\n|------|---------|------|\n| 通用 RTOS 应用 | GROUP_4（16抢占） | 最大灵活性 |\n| 简单裸机 | GROUP_4 | 无需子优先级 |\n| 多 UART 同优先级 | GROUP_2（4抢占+4子） | 用子优先级排 UART 顺序 |\n| 极简（仅几个中断） | GROUP_4 | 充分 |\n| 需严格无嵌套 | GROUP_0（0抢占） | 但失去抢占能力 |\n\n### 6.4 优先级反转与解决方案\n\n经典优先级反转：低优先级任务持有锁，高优先级任务等待锁，中等优先级任务抢占低优先级任务，导致高优先级被间接阻塞。\n\nCortex-M 本身不解决优先级反转，需 RTOS 提供优先级继承互斥量：\n\n```c\n// FreeRTOS priority-inheritance mutex\nSemaphoreHandle_t xMutex = xSemaphoreCreateMutex();\n\nvoid high_prio_task(void *pv) {\n    xSemaphoreTake(xMutex, portMAX_DELAY);  // Blocks if low task holds it\n    // If low task holds mutex, RTOS temporarily raises low task's priority\n    // to high task's ",
+          "doc_id": "",
+          "chunk_id": "src5"
+        }
+      ]
+    },
+    {
+      "question_id": "Q13",
+      "question": "I2C 总线上挂了 MPU6050（地址 0x68）和 SSD1306 OLED（地址 0x3C），通信时偶尔出现数据错乱。排查步骤是什么？可能的原因有哪些？",
+      "target_doc": "06-chaotic-embedded-notes.md",
+      "difficulty": "难",
+      "scores": {
+        "recall": {
+          "score": 9.0,
+          "max": 30,
+          "detail": "Sources returned but target doc '06-chaotic-embedded-notes.md' not found. Got: ['03-i2c-protocol.md', '03-i2c-protocol.md', '03-i2c-protocol.md']"
+        },
+        "answer_coverage": {
+          "score": 25.0,
+          "max": 25,
+          "detail": "Covered 6/6 keyword groups"
+        },
+        "chunk_completeness": {
+          "score": 25.0,
+          "max": 25,
+          "detail": "✓ Group ['MPU6050', 'SSD1306', '上拉'] found in same chunk"
+        },
+        "chunk_boundary": {
+          "score": 10.0,
+          "max": 10,
+          "detail": "All 5 src chunks clean"
+        },
+        "cross_section": {
+          "score": 10.0,
+          "max": 10,
+          "detail": "✓ I2C+上拉电阻 in same chunk#1"
+        }
+      },
+      "total_score": 79.0,
+      "max_score": 100,
+      "answer_preview": "好的，我们来分析一下 STM32（根据您的上下文推测）I2C 总线上挂载 MPU6050（地址 0x68）和 SSD1306 OLED（地址 0x3C）时出现数据错乱的问题。\n\n这是一个非常典型的 I2C 多设备通信问题。数据“偶尔”错乱，通常不是硬件彻底损坏，而是时序、逻辑或配置上的非确定性故障。\n\n---\n\n### 排查步骤（由简到繁）\n\n#### 第一步：软件基础检查（最高概率，30秒可验证）\n\n1.  **确认地址格式（最常犯错误）**\n    -   **问题来源**: [来源: eval_agent-deepseek_20260627_131305 / 03-i2c-protocol.md / Q1]\n    -   **操作**: 检查代码中访问 MPU6050 和 SSD1306 的 I2C 地址是否是 **8位地址**。\n    -   **原因**: STM32 HAL 库 `HAL_I2C_Master_Transmit()` 和 `HAL_I2C_Mem_Read()` 等函数接受的地址是 **8位** 的（即 7 位地址左移一位 + R/W 位）。如果你在代码",
+      "sources_count": 5,
+      "source_titles": [
+        "03-i2c-protocol.md",
+        "03-i2c-protocol.md",
+        "03-i2c-protocol.md",
+        "03-i2c-protocol.md",
+        "03-i2c-protocol.md"
+      ],
+      "sources_full": [
+        {
+          "title": "03-i2c-protocol.md",
+          "excerpt": "### 10.5 常见 FAQ（15+）\n\n**Q1: HAL_I2C_Master_Transmit 一直返回 HAL_ERROR，但示波器看到 SCL/SDA 有波形？**\nA: 检查地址是否正确。HAL 接受 8 位地址（7位左移1 + R/W），若直接传 7 位地址会失败。例如 MPU6050 应传 `0x68 << 1 = 0xD0`，而非 `0x68`。同时检查 I2C 外设时钟是否使能（`__HAL_RCC_I2C1_CLK_ENABLE()`）。\n\n**Q2: 为什么读 MPU6050 WHO_AM_I 返回 0xFF？**\nA: 0xFF 通常表示 SDA 被上拉为高电平，即从机未响应（NACK）。原因：地址错误、接线松动、上拉电阻缺失、器件未上电。先用 I2C 扫描程序确认器件是否在线。\n\n**Q3: I2C 通信在低温（-20°C）下失败，常温正常？**\nA: 低温下器件 IO 驱动能力下降，上拉电阻需相应减小。同时检查 PCB 走线在低温下的电容变化。建议在产品温度范围两端测试 I2C 信号完整性。\n\n**Q4: 同一 I2C 总线上 400kHz 通信正常，切换到 1MHz（Fm+）就失败？**\nA: Fm+ 需要器件支持（查 datasheet 的 Fm+ 兼容性），且上拉电阻需降至 1kΩ 以下，总线电容需 <550pF。多数老器件（如 MPU6050）不支持 Fm+，最高 400kHz。\n\n**Q5: STM32 HAL_I2C_Mem_Read 读取 EEPROM 偶发返回错误？**\nA: EEPROM 页写后需 5ms 写周期，期间不响应任何请求。解决：写操作后加 `HAL_Delay(5)`，或使用 ACK 轮询（`HAL_I2C_IsDeviceReady`）等待 EEPROM 就绪。\n\n**Q6: 多个传感器同时读数据，I2C 总线偶尔卡死？**\nA: 可能是中断模式下多个 I2C 操作冲突。确保同一 I2C 实例不并发调用 HAL 函数（HAL 状态机非线程安全）。使用状态标志或互斥锁保证串行访问。",
+          "doc_id": "",
+          "chunk_id": "src1"
+        },
+        {
+          "title": "03-i2c-protocol.md",
+          "excerpt": "**Q12: GPIO 软件模拟 I2C 和硬件 I2C 哪个更好？**\nA: 硬件 I2C 优势：不占用 CPU、支持 DMA、时序精确。软件 I2C 优势：引脚灵活、跨平台、无硬件 Errata 限制。产品环境优先用硬件 I2C，软件 I2C 作为备份或调试手段。\n\n**Q13: I2C 总线能挂载多少个器件？**\nA: 地址空间限制：7 位地址最多 112 个可用地址（0x08-0x77）。电容限制：400pF 总线电容，按每器件 10pF 计约 30-40 个。实际产品中通常 <10 个器件，超过时用 TCA9548A 多路复用器扩展。\n\n**Q14: SMBus 和 I2C 有什么区别？**\nA: SMBus 基于 I2C 但有更严格的时序规范（10kHz-100kHz）、超时检测（35ms）、PEC 校验、ARP 地址解析。SMBus 器件可与 I2C 主机通信，但 I2C 器件不一定满足 SMBus 时序要求。\n\n**Q15: I2C 通信被中断打断导致数据错乱怎么办？**\nA: I2C 硬件外设自身有状态机，中断不会打断硬件传输。但若在中断中调用 HAL_I2C_* 会破坏状态机。解决：I2C 操作放在主循环，不在 ISR 中调用 HAL I2C 函数。临界区保护共享变量。\n\n**Q16: 为什么读取传感器数据偶尔跳变到 0 或 0xFFFF？**\nA: I2C 读取多字节时，若传输中途 NACK，剩余字节未填充，缓冲区残留旧值。解决：检查 HAL 返回值，失败时不更新数据；读取前清零缓冲区；增加重试机制。\n\n**Q17: I2C 器件的 VDD 与 MCU 的 VDD 不一致怎么办？**\nA: 必须电平转换。低频（<100kHz）可用 BSS138 MOSFET 转换；高频用专用芯片（PCA9306、TXS0108E）。注意上拉电阻接在各自 VDD 侧，且 VDD 高的一侧 Rp 可稍大。",
+          "doc_id": "",
+          "chunk_id": "src2"
+        },
+        {
+          "title": "03-i2c-protocol.md",
+          "excerpt": "**Q6: 多个传感器同时读数据，I2C 总线偶尔卡死？**\nA: 可能是中断模式下多个 I2C 操作冲突。确保同一 I2C 实例不并发调用 HAL 函数（HAL 状态机非线程安全）。使用状态标志或互斥锁保证串行访问。\n\n**Q7: I2C 从机模式下，主机偶尔读到错误数据？**\nA: 检查从机中断响应时间。若从机 ISR 处理过慢，数据寄存器未被及时读取会被覆盖（OVR 错误）。使用 DMA 模式或优化 ISR，确保在下一字节到达前处理完当前字节。\n\n**Q8: 为什么 STM32F4 的 I2C 经常出现 BERR 错误？**\nA: STM32F1/F4 的旧版 I2C IP 有已知的设计缺陷（Errata），在快速模式 400kHz 下偶发 BERR。解决：升级到 F7/L4/H7 等新版 IP，或在 F4 上降低速率到 200kHz。\n\n**Q9: I2C 总线能传输多远？**\nA: 标准模式 400pF 电容限制下，PCB 走线通常 <30cm。需要长距离传输时：使用差分 I2C 扩展器（如 PCA9615，可达 3m），或转为 RS-485/CAN 等差分总线。\n\n**Q10: 为什么逻辑分析仪抓到的 I2C 地址和代码中的不一致？**\nA: 逻辑分析仪可能显示 7 位地址或 8 位地址。Saleae 等默认显示 8 位（含 R/W 位）。例如代码中 `0x68 << 1 = 0xD0`，分析仪显示 0xD0（写）或 0xD1（读），对应 7 位地址 0x68。\n\n**Q11: I2C 上拉电阻用 10kΩ 可以吗？**\nA: 100kHz 标准模式下 10kΩ 通常可行（总线电容 <100pF 时）。400kHz 快速模式下 10kΩ 可能导致上升时间超标（>300ns），建议降至 2.2kΩ-4.7kΩ。\n\n**Q12: GPIO 软件模拟 I2C 和硬件 I2C 哪个更好？**\nA: 硬件 I2C 优势：不占用 CPU、支持 DMA、时序精确。软件 I2C 优势：引脚灵活、跨平台、无硬件 Errata 限制。产品环境优先用硬件 I2C，软件 I2C 作为备份或调试手段。",
+          "doc_id": "",
+          "chunk_id": "src3"
+        },
+        {
+          "title": "03-i2c-protocol.md",
+          "excerpt": "### 10.6 故障排查流程图\n\n```\nI2C 通信失败\n    │\n    ▼\n测量 SCL/SDA 静态电平 ──► 低电平？──► 总线挂死，执行恢复序列（9 SCL 脉冲 + STOP）\n    │ (正常高电平)\n    ▼\nI2C 扫描器件 ──► 找不到？──► 检查接线/上拉/电源/地址\n    │ (找到器件)\n    ▼\n示波器测波形 ──► 上升沿缓？──► 减小上拉电阻/加缓冲器\n    │ (波形正常)\n    ▼\n逻辑分析仪抓帧 ──► NACK？──► 检查地址/寄存器/时序\n    │ (有 ACK)\n    ▼\n检查代码逻辑 ──► HAL 返回值/超时/并发\n```",
+          "doc_id": "",
+          "chunk_id": "src4"
+        },
+        {
+          "title": "03-i2c-protocol.md",
+          "excerpt": "## 10. I2C 总线故障排查\n\nI2C 总线在产品环境中经常遇到各种问题，本节系统总结常见故障现象、根因分析与排查方法，并提供 15+ FAQ。\n\n### 10.1 总线挂死（Bus Stuck）\n\n**现象**：SCL 或 SDA 长时间保持低电平，所有 I2C 通信失败，HAL_I2C_Master_Transmit 返回 HAL_ERROR 或 HAL_TIMEOUT。\n\n**根因**：\n1. 从机在传输过程中被复位（如电源毛刺、看门狗复位），导致从机停留在\"拉低 SDA 等待 ACK\"的状态。\n2. 传输中途主机异常，从机误以为传输未完成，持续拉低 SDA。\n3. ESD 冲击导致器件 IO 损坏，永久拉低总线。\n4. 多主机系统中仲裁失败的主机未正确释放总线。\n\n**排查步骤**：\n1. 用万用表测量 SCL/SDA 静态电平，确认哪根线被拉低。\n2. 若 SDA 被拉低：执行 9 个 SCL 脉冲恢复序列（见 6.5 节）。\n3. 若 SCL 被拉低：通常是主机问题，复位主机 I2C 外设。\n4. 恢复后仍失败：逐个断开从机，定位是哪个器件卡死。\n\n```c\n// Detect and diagnose bus stuck condition\ntypedef enum {\n    BUS_OK,\n    BUS_SDA_STUCK_LOW,\n    BUS_SCL_STUCK_LOW,\n    BUS_BOTH_STUCK_LOW\n} i2c_bus_status_t;\n\ni2c_bus_status_t i2c_check_bus_status(void) {\n    // Switch SCL/SDA to input mode to read actual levels\n    uint8_t scl = HAL_GPIO_ReadPin(I2C_SCL_PORT, I2C_SCL_PIN);\n    uint8_t sda = HAL_GPIO_ReadPin(I2C_SDA_PORT, I2C_SDA_PIN);\n\n    if (scl == GPIO_PIN_RESET && sda == GPIO_PIN_RESET)\n        return BUS_BOTH_STUCK_LOW;\n    if (sda == GPIO_PIN_RESET)\n        return BUS_SDA_STUCK_LOW;\n    if (scl == GPIO_PIN_RESET)\n        return BUS_SCL_STUCK_LOW;\n    return BUS_OK;\n}\n\n// Comprehensive bus stuck recovery\nvoid i2c_handle_stuck_bus(I2C_HandleTypeDef *hi2c) {\n    i2c_bus_status_t status = i2c_check_bus_status();\n    switch (status) {\n        case BUS_SDA_STUCK_LOW:\n        case BUS_BOTH_STUCK_LOW:\n            // Slave holding SDA low, send SCL pulses to clear\n            i2c_bus_recover(hi2c);\n            break;\n        case BUS_SCL_STUCK_LOW:\n            // Master or slave holding SCL low (clock stretch stuck)\n            // Full peripheral reset required\n            HAL_I2C_DeInit(hi2c);\n            HAL_Delay(10);\n            HAL_I2C_Init(hi2c);\n            break;\n        case BUS_OK:\n            break;\n    }\n}\n```\n\n### 10.2 地址冲突\n\n**现象**：两个器件使用相同 I2C 地址，主机寻址时只有一个响应，或数据混乱。\n\n**常见冲突组合**：\n| 器件A | 器件B | 冲突地址 | 解决方案 |\n|-------|-------|---------|---------|\n| MPU6050 | DS3231 RTC | 0x68 | MPU6050 设 AD0=1 用 0x69 |\n| BMP280 | BME280 ",
+          "doc_id": "",
+          "chunk_id": "src5"
+        }
+      ]
+    },
+    {
+      "question_id": "Q14",
+      "question": "STM32 的 Flash 读写保护机制是什么？如果在 OTA 升级过程中突然断电，怎么设计 bootloader 确保系统可以恢复？双 Bank 切换的原理是什么？",
+      "target_doc": "06-chaotic-embedded-notes.md",
+      "difficulty": "难",
+      "scores": {
+        "recall": {
+          "score": 30.0,
+          "max": 30,
+          "detail": "Hit target doc: 06-chaotic-embedded-notes.md"
+        },
+        "answer_coverage": {
+          "score": 25.0,
+          "max": 25,
+          "detail": "Covered 6/6 keyword groups"
+        },
+        "chunk_completeness": {
+          "score": 25.0,
+          "max": 25,
+          "detail": "✓ Group ['bootloader', 'OTA', 'Flash'] found in same chunk"
+        },
+        "chunk_boundary": {
+          "score": 10.0,
+          "max": 10,
+          "detail": "All 5 src chunks clean"
+        },
+        "cross_section": {
+          "score": 1.0,
+          "max": 10,
+          "detail": "Only 1/2 keywords found: {'bootloader': [17, 19, 20], '双Bank': []}"
+        }
+      },
+      "total_score": 91.0,
+      "max_score": 100,
+      "answer_preview": "根据您的问题，我将分三部分详细说明：STM32 Flash 读写保护机制、OTA 断电恢复的 Bootloader 设计、以及双 Bank 切换的原理。其中 OTA 和双 Bank 切换部分参考了知识库中的实现思路（来源: eval_agent-deepseek_20260627_131305 / 06-chaotic-embedded-notes.md），读写保护机制基于通用知识，会在末尾声明。\n\n---\n\n## 一、STM32 Flash 读写保护机制\n\nSTM32 的 Flash 保护通过选项字节配置，由 `FLASH_CR`（控制寄存器）和 `FLASH_OPTCR`（选项控制寄存器，不同系列名称略有差异）管理。主要提供三种保护：\n\n### 1. 读保护（RDP）\n防止通过调试接口（SWD/JTAG）、从 RAM 启动或从系统存储器启动等方式读取 Flash 内容。\n\n| 级别 | 功能 | 解除方法 |\n|------|------|----------|\n| **Level 0** | 无保护 | – |\n| **Level 1** | 禁止调试访问；用户代码仍可正常读取 ",
+      "sources_count": 5,
+      "source_titles": [
+        "01-stm32-gpio.md",
+        "04-cortexm-interrupt.md",
+        "06-chaotic-embedded-notes.md",
+        "06-chaotic-embedded-notes.md",
+        "06-chaotic-embedded-notes.md"
+      ],
+      "sources_full": [
+        {
+          "title": "01-stm32-gpio.md",
+          "excerpt": "**Q4: 为什么 GPIO 输出电压不对（不是 3.3V）？**\n\n可能原因：\n1. 引脚输出电流过大，导致电压跌落。解决：检查负载电流，增加驱动电路。\n2. 引脚配置为开漏输出但未接上拉电阻。解决：外接上拉电阻或改用推挽输出。\n3. 引脚处于复用模式，被外设控制。解决：检查 MODER 配置。\n4. VDD 电压不足。解决：检查电源电压。\n\n**Q5: 为什么 I2C 通信不成功？**\n\n可能原因：\n1. SDA/SCL 引脚未配置为开漏输出。解决：使用 `GPIO_MODE_AF_OD`。\n2. 缺少外部上拉电阻。解决：在 SDA/SCL 上各接一个 4.7kΩ 上拉到 VDD。\n3. I2C 地址错误。解决：确认设备地址（7位 vs 8位）。\n4. 引脚复用功能配置错误。解决：检查 AFRL/AFRH 中的 AF 编号。\n\n**Q6: 复位后引脚状态是什么？**\n\n复位后，所有 GPIO 的 MODER=00（输入模式），OTYPER=0（推挽），OSPEEDR=00（低速），PUPDR=00（无上下拉）。即所有引脚为浮空输入。例外：调试引脚 PA13（SWDIO）和 PA14（SWCLK）为复用功能模式。\n\n**Q7: 为什么程序运行后无法调试？**\n\n可能原因：\n1. 误将 PA13/PA14（SWD 引脚）配置为普通 GPIO。解决：在初始化代码中跳过这两个引脚，或使用复位按钮 + 断点调试。\n2. 启用了 LCKR 锁定。解决：只能通过复位解锁。\n3. 进入低功耗模式后 SWD 时钟停止。解决：在进入低功耗模式前配置 DBGMCU 寄存器。\n\n```c\n// Allow debugging in low-power modes\nDBGMCU->CR |= DBGMCU_CR_DBG_SLEEP | DBGMCU_CR_DBG_STOP | DBGMCU_CR_DBG_STANDBY;\n```\n\n**Q8: 如何降低 GPIO 功耗？**\n\n1. 将未使用的引脚配置为模拟模式（MODER=11）\n2. 避免引脚悬空（悬空输入会因噪声翻转，消耗动态功耗）\n3. 选择最低的输出速度\n4. 关闭不需要的上下拉电阻\n5. 在低功耗模式下，断开外部上拉/下拉（如果可能）\n\n**Q9: BSRR 和 ODR 的区别是什么？**\n\n- BSRR 是原子操作（只写），不会被中断打断。适用于中断中或 RTOS 中修改 GPIO。\n- ODR 是读-改-写操作，非原子。如果在读和写之间发生中断，可能导致数据丢失。\n- BSRR 只能设置或复位，不能读取。ODR 可以读写。",
+          "doc_id": "",
+          "chunk_id": "src1"
+        },
+        {
+          "title": "04-cortexm-interrupt.md",
+          "excerpt": "### Q6: 同一中断能被自己抢占吗？\n\n**A**: 默认不能。NVIC 活跃位阻止同优先级中断重入。若确需重入，需在 ISR 中手动清除挂起位并临时降低自身优先级，极其危险不推荐。\n\n### Q7: 为什么 BASEPRI 设了值后中断还是会被抢占？\n\n**A**: BASEPRI 只屏蔽优先级数值 **大于等于** BASEPRI 的中断。数值更小（更高优先级）的中断仍能响应。如果设 BASEPRI=5，优先级 0-4 的中断不被屏蔽。这是设计特性，用于\"保留高优先级中断实时性\"。\n\n### Q8: HardFault_Handler 里可以做什么？\n\n**A**: 极有限。此时系统状态可能已损坏。安全做法：读取故障寄存器存入非易失存储或全局变量，然后复位（NVIC_SystemReset）或死循环等待调试器。**不要**调用 malloc/printf 等可能进一步触发 fault 的函数。用 ITM 或简单内存写入记录最安全。\n\n### Q9: 如何让某个中断不响应但记录它的发生？\n\n**A**: 禁用 NVIC 使能但保持外设中断使能，挂起位会记录事件：\n\n```c\nNVIC_DisableIRQ(USART1_IRQn);  // NVIC won't activate\n// USART1->CR1 |= RXNEIE still set, flag goes to pending\n// Periodically check:\nif (NVIC_GetPendingIRQ(USART1_IRQn)) {\n    // A byte arrived, handle it manually\n    NVIC_ClearPendingIRQ(USART1_IRQn);\n}\n```\n\n### Q10: 多核 Cortex-M（如 M33 双核）如何处理核间中断？\n\n**A**: 用 SGIs（Software Generated Interrupts）或厂商提供的核间邮箱。STM32H7 双核用 HSEM（硬件信号量）+ C1/C2 邮箱触发对方核的中断。\n\n### Q11: WFI 和 WFE 的区别？\n\n**A**: WFI（Wait For Interrupt）等到任意中断唤醒；WFE（Wait For Event）等到事件唤醒，事件可由 SEV 指令或中断产生。WFE 有内部事件锁存，可能立即返回（如果之前有未消费事件）。低功耗建议 WFI，多核同步用 WFE+SEV。\n\n### Q12: 为什么从 STOP 模式唤醒后中断延迟很大？\n\n**A**: STOP 模式关闭 PLL，唤醒后需重新启动 PLL 锁定（几毫秒）。这段时间中断仍会响应但用 HSI 时钟（慢）。如需低延迟唤醒，用 SLEEP 模式（仅停 CPU，时钟保持）或配置 FCLK 在 STOP 时保持。\n\n---",
+          "doc_id": "",
+          "chunk_id": "src2"
+        },
+        {
+          "title": "06-chaotic-embedded-notes.md",
+          "excerpt": "USB CDC 虚拟串口调试，STM32F1 的 USB 全速 12Mbps，PA11=USB_DM PA12=USB_DP，必须接 1.5kΩ 上拉到 3.3V（D+）让主机识别为全速设备，STM32 内部有这个上拉电阻软件控制 USB 控制寄存器的 D+ pull-up 位。USB 描述符配置正确才能枚举，设备描述符 18 字节包含 VID PID 版本，配置描述符 9 字节加上接口描述符 9 字节加端点描述符 7 字节，CDC 类还要加 IAD 头 8 字节和功能描述符。STM32 USB CDC 例程用 ST 的 USB Device Library，调 USBD_Init 初始化，CDC 发送数据 USBD_CDC_SetTxBuffer 和 USBD_CDC_TransmitPacket。下面这段 PC 端 Python 读 USB CDC 的代码用 pyserial：\n```python\n# pc_read_usb_cdc.py\nimport serial\nimport struct\nimport time\n\ndef open_port(port, baud=115200, timeout=1.0):\n    ser = serial.Serial(port, baud, timeout=timeout)\n    return ser\n\ndef read_stream(ser, n=256):\n    data = ser.read(n)\n    return data\n\ndef parse_frame(data):\n    if len(data) < 4:\n        return None\n    magic, length = struct.unpack(\"<HH\", data[:4])\n    if magic != 0xA55A:\n        return None\n    payload = data[4:4 + length]\n    crc = struct.unpack(\"<H\", data[4 + length:6 + length])[0]\n    calc = sum(payload) & 0xFFFF\n    if crc != calc:\n        print(f\"CRC mismatch: got {crc:#06x} calc {calc:#06x}\")\n        return None\n    return payload\n\ndef main():\n    ser = open_port(\"COM5\", 921600)\n    try:\n        while True:\n            data = read_stream(ser, 256)\n            if data:\n                frame = parse_frame(data)\n                if frame is not None:\n                    print(f\"rx frame {len(frame)} bytes: {frame.hex()}\")\n    except KeyboardInterrupt:\n        pass\n    finally:\n        ser.close()\n\nif __name__ == \"__main__\":\n    main()\n```\nOTA 升级 STM32 实现思路，bootloader 在 0x08000000 占 16KB，app1 在 0x08004000 占 220KB，app2 在 0x0803C000 占 220KB，bootloader 启动读 flash 末尾的标志位决定跳 app1 还是 app2，升级时把新固件写 app2 然后置标志位切 app2 重启，下次升级写 app1，双 bank 切换保证升级失败能回滚。bootloader 跳 app 前要关中断、关外设、复位 SysTick、设置 VTOR 指向 app 的中断向量表、设置 MSP、跳转。下面这段 bootloader 跳转代码：\n```c\n// stm32_bootloader_jump.c\n#include \"stm32f1xx.h\"\n\n#define APP1_ADDR   0x08004000UL\n#define APP2_ADDR   0x0803C000UL\n\ntypedef void (*app_entry_t)(void);\n\nvoid jump_to_app(uint32_t app_addr) {\n    uint32_t app_sp = *(volat",
+          "doc_id": "",
+          "chunk_id": "src3"
+        },
+        {
+          "title": "06-chaotic-embedded-notes.md",
+          "excerpt": "最后一段无结构混合记录，调试时要养成习惯先确认电源再确认时钟再确认引脚再确认外设配置，电源纹波大用示波器交流耦合测 VDD 和 GND 之间应该小于 50mV 峰峰值，时钟用示波器测 HSE 引脚确认起振，晶振负载电容不对会不起振或者频率偏，8MHz 晶振典型负载电容 22pF 计算公式 CL = (C1*C2)/(C1+C2) + Cstray，Cstray 约 3-5pF。复位脚 NRST 必须接 100nF 到 GND 和 10kΩ 到 VDD，否则上电复位不可靠。BOOT0 BOOT1 脚决定启动模式，BOOT0=0 从 flash 启动正常，BOOT0=1 BOOT1=1 从 RAM 启动，BOOT0=1 BOOT1=0 从系统存储器启动串口下载模式，STM32 出厂烧录 boot loader 在系统存储器里支持 USART1/USART2/USB/CAN/I2C 烧录。ESP32 启动 mode 由 strapping pin GPIO0 GPIO2 GPIO12 GPIO15 决定，下载模式 GPIO0=0 GPIO2=0 GPIO12=0 GPIO15=0，flash 启动模式 GPIO0=1 其他默认，ESP32 上电瞬间这些引脚电平被采样所以不能接强下拉否则进不了 flash 启动。烧录后用 esptool.py --port COMx --baud 921600 write_flash 0x10000 firmware.bin 把应用烧到 0x10000 偏移，bootloader 在 0x1000，分区表在 0x8000，每个分区偏移和大小由 partitions.csv 决定。OTA 升级用 esp_ota_* API 写 ota_1 分区后切 boot partition 重启。调试 ESP32 用 esptool.py --port COMx --baud 921600 --chip esp32 monitor 看串口输出，或者用 idf.py monitor 自动复位自动解 panic backtrace 地址，backtrace 解析要 addr2line 工具配合 elf 文件，命令 xtensa-esp32-elf-addr2line -pfiaC -e firmware.elf 0x400d1234\n。GPIO ESP32 12 接 flash 不能用，strapping pin 汇总表：",
+          "doc_id": "",
+          "chunk_id": "src4"
+        },
+        {
+          "title": "06-chaotic-embedded-notes.md",
+          "excerpt": "```c\n// stm32_bootloader_jump.c\n#include \"stm32f1xx.h\"\n\n#define APP1_ADDR   0x08004000UL\n#define APP2_ADDR   0x0803C000UL\n\ntypedef void (*app_entry_t)(void);\n\nvoid jump_to_app(uint32_t app_addr) {\n    uint32_t app_sp = *(volatile uint32_t *)app_addr;\n    uint32_t app_pc = *(volatile uint32_t *)(app_addr + 4);\n\n    // disable interrupts\n    __disable_irq();\n\n    // reset SysTick\n    SysTick->CTRL = 0;\n    SysTick->LOAD = 0;\n    SysTick->VAL = 0;\n\n    // disable all NVIC interrupts\n    for (int i = 0; i < 8; i++) {\n        NVIC->ICER[i] = 0xFFFFFFFF;\n        NVIC->ICPR[i] = 0xFFFFFFFF;\n    }\n\n    // set vector table\n    SCB->VTOR = app_addr;\n\n    // set stack pointer\n    __set_MSP(app_sp);\n\n    // jump\n    app_entry_t app = (app_entry_t)app_pc;\n    app();\n}\n\nvoid bootloader_main(void) {\n    uint32_t active = *(volatile uint32_t *)0x0803F000UL;\n    if (active == 0xDEADBEEF) {\n        jump_to_app(APP2_ADDR);\n    } else {\n        jump_to_app(APP1_ADDR);\n    }\n    // should never reach here\n    while (1) {}\n}\n```\n电源管理调试，LDO 选型 AMS1117-3.3 输出 3.3V 最大 800mA 但压差 1.1V 输入要 4.4V 以上才稳定，压差大发热严重效率低，电池供电用低压差 LDO 如 MCP1700 压差 178mV 或者用 DCDC 降压 TPS5430 效率 90% 以上。去耦电容每个电源脚必须就近放 100nF 陶瓷电容，电源入口放 10uF 钽电容，去耦电容离芯片电源脚越近越好走线短而粗。地平面完整不要分割否则回流路径变长 EMI 增加。模拟地数字地单点连接用磁珠或 0Ω 电阻，ADC 参考电压 VREF+ 要单独去耦 100nF + 1uF。示波器探头的地线夹要尽量短否则电感大测到的纹波是假的。逻辑分析仪采样率至少是信号频率的 4 倍，抓 SPI 36MHz 要 144MHz 以上采样率，否则波形失真。调试时先简单后复杂，先点亮 LED 再调 UART 打印再调 SPI/I2C 再调 DMA 再调 RTOS，每步验证再进下一步。GPIO LED 闪烁是 hello world，能闪说明时钟电源启动都没问题，再串口打印能输出说明时钟分频和波特率都对，再 SPI 读 flash ID 能读到说明 SPI 配置对，逐步推进不要一上来就跑全套功能出问题没法定位。",
+          "doc_id": "",
+          "chunk_id": "src5"
+        }
+      ]
+    },
+    {
+      "question_id": "Q15",
+      "question": "给定一段 STM32 的 GPIO 初始化代码，其中 PA5 配置为推挽输出但无法驱动 LED 亮起。列出所有可能的原因和对应的检测方法，按可能性排序。",
+      "target_doc": "06-chaotic-embedded-notes.md",
+      "difficulty": "难",
+      "scores": {
+        "recall": {
+          "score": 30.0,
+          "max": 30,
+          "detail": "Hit target doc: 06-chaotic-embedded-notes.md"
+        },
+        "answer_coverage": {
+          "score": 25.0,
+          "max": 25,
+          "detail": "Covered 8/8 keyword groups"
+        },
+        "chunk_completeness": {
+          "score": 25.0,
+          "max": 25,
+          "detail": "✓ Group ['RCC', 'GPIO', 'MODER'] found in same chunk"
+        },
+        "chunk_boundary": {
+          "score": 10.0,
+          "max": 10,
+          "detail": "All 5 src chunks clean"
+        },
+        "cross_section": {
+          "score": 10.0,
+          "max": 10,
+          "detail": "✓ GPIO+RCC in same chunk#11"
+        }
+      },
+      "total_score": 100.0,
+      "max_score": 100,
+      "answer_preview": "根据 STM32 常见调试经验（参考知识库中《01-stm32-gpio.md》的常见故障案例和 FAQ），PA5 配置为推挽输出但无法驱动 LED 亮起，常见原因按可能性从高到低排列如下：\n\n---\n\n### 1. GPIO 时钟未使能（最常见）\n- **原因**：STM32 外设时钟默认关闭，操作寄存器前必须先打开对应总线的时钟。\n- **检测方法**：\n  - 读 `RCC->AHB1ENR`（或 APB2ENR，取决于系列）的 GPIOA 位是否置 1。  \n  - 在调试器中检查该寄存器值，或通过串口打印。\n- **参考**：知识库《01-stm32-gpio.md》Q1 第一条、案例 1 第一步。\n\n### 2. MODER 寄存器配置错误（引脚仍为输入或复用模式）\n- **原因**：MODER[11:10] 未正确设为 `01`（输出模式），可能仍是 `00`（输入）或 `10`（复用）。\n- **检测方法**：\n  - 读 `(GPIOA->MODER >> 10) & 0x03`，确认值为 `0x01`。\n  - 检查 HAL/LL 库函数的模式参数是否写对（如 `L",
+      "sources_count": 5,
+      "source_titles": [
+        "01-stm32-gpio.md",
+        "06-chaotic-embedded-notes.md",
+        "01-stm32-gpio.md",
+        "01-stm32-gpio.md",
+        "01-stm32-gpio.md"
+      ],
+      "sources_full": [
+        {
+          "title": "01-stm32-gpio.md",
+          "excerpt": "**Q4: 为什么 GPIO 输出电压不对（不是 3.3V）？**\n\n可能原因：\n1. 引脚输出电流过大，导致电压跌落。解决：检查负载电流，增加驱动电路。\n2. 引脚配置为开漏输出但未接上拉电阻。解决：外接上拉电阻或改用推挽输出。\n3. 引脚处于复用模式，被外设控制。解决：检查 MODER 配置。\n4. VDD 电压不足。解决：检查电源电压。\n\n**Q5: 为什么 I2C 通信不成功？**\n\n可能原因：\n1. SDA/SCL 引脚未配置为开漏输出。解决：使用 `GPIO_MODE_AF_OD`。\n2. 缺少外部上拉电阻。解决：在 SDA/SCL 上各接一个 4.7kΩ 上拉到 VDD。\n3. I2C 地址错误。解决：确认设备地址（7位 vs 8位）。\n4. 引脚复用功能配置错误。解决：检查 AFRL/AFRH 中的 AF 编号。\n\n**Q6: 复位后引脚状态是什么？**\n\n复位后，所有 GPIO 的 MODER=00（输入模式），OTYPER=0（推挽），OSPEEDR=00（低速），PUPDR=00（无上下拉）。即所有引脚为浮空输入。例外：调试引脚 PA13（SWDIO）和 PA14（SWCLK）为复用功能模式。\n\n**Q7: 为什么程序运行后无法调试？**\n\n可能原因：\n1. 误将 PA13/PA14（SWD 引脚）配置为普通 GPIO。解决：在初始化代码中跳过这两个引脚，或使用复位按钮 + 断点调试。\n2. 启用了 LCKR 锁定。解决：只能通过复位解锁。\n3. 进入低功耗模式后 SWD 时钟停止。解决：在进入低功耗模式前配置 DBGMCU 寄存器。\n\n```c\n// Allow debugging in low-power modes\nDBGMCU->CR |= DBGMCU_CR_DBG_SLEEP | DBGMCU_CR_DBG_STOP | DBGMCU_CR_DBG_STANDBY;\n```\n\n**Q8: 如何降低 GPIO 功耗？**\n\n1. 将未使用的引脚配置为模拟模式（MODER=11）\n2. 避免引脚悬空（悬空输入会因噪声翻转，消耗动态功耗）\n3. 选择最低的输出速度\n4. 关闭不需要的上下拉电阻\n5. 在低功耗模式下，断开外部上拉/下拉（如果可能）\n\n**Q9: BSRR 和 ODR 的区别是什么？**\n\n- BSRR 是原子操作（只写），不会被中断打断。适用于中断中或 RTOS 中修改 GPIO。\n- ODR 是读-改-写操作，非原子。如果在读和写之间发生中断，可能导致数据丢失。\n- BSRR 只能设置或复位，不能读取。ODR 可以读写。",
+          "doc_id": "",
+          "chunk_id": "src1"
+        },
+        {
+          "title": "06-chaotic-embedded-notes.md",
+          "excerpt": "这是一份没有任何结构化标记的嵌入式调试笔记，所有内容都是流水账式记录，用于压测分块策略。GPIO 调试是嵌入式开发里最基础也最容易翻车的部分，STM32 的 GPIO 模式配置在 Reference Manual 的 GPIO section 里有详细描述，但是新手经常把 GPIO_Mode_IPU 和 GPIO_Mode_IPD 搞反，上拉是 IPU 下拉是 IPD，记住 U 是 Up D 是 Down 就不会错。下面这段代码是把 STM32F103 的 PA0 配成输入上拉，PA5 配成推挽输出 50MHz 驱动 LED，注意时钟必须先开否则寄存器写不进去。\n```c\n// stm32f1xx_ll_gpio.c style\n#include \"stm32f1xx_ll_bus.h\"\n#include \"stm32f1xx_ll_gpio.h\"\n\nvoid gpio_init_led_button(void) {\n    // enable clock for GPIOA, critical step, forget this and regs stay 0\n    LL_APB2_GRP1_EnableClock(LL_APB2_GRP1_PERIPH_GPIOA);\n\n    // PA0 input pull-up, used as user button on Discovery board\n    LL_GPIO_SetPinMode(GPIOA, LL_GPIO_PIN_0, LL_GPIO_MODE_INPUT);\n    LL_GPIO_SetPinPull(GPIOA, LL_GPIO_PIN_0, LL_GPIO_PULL_UP);\n\n    // PA5 push-pull output 50MHz, onboard green LED LD2\n    LL_GPIO_SetPinMode(GPIOA, LL_GPIO_PIN_5, LL_GPIO_MODE_ALTERNATE);\n    LL_GPIO_SetPinMode(GPIOA, LL_GPIO_PIN_5, LL_GPIO_MODE_OUTPUT);\n    LL_GPIO_SetPinSpeed(GPIOA, LL_GPIO_PIN_5, LL_GPIO_SPEED_FREQ_HIGH);\n    LL_GPIO_SetPinOutputType(GPIOA, LL_GPIO_PIN_5, LL_GPIO_OUTPUT_PUSHPULL);\n    LL_GPIO_SetPinPull(GPIOA, LL_GPIO_PIN_5, LL_GPIO_PULL_NO);\n\n    // initial state: LED off (active high on F103 Discovery)\n    LL_GPIO_ResetOutputPin(GPIOA, LL_GPIO_PIN_5);\n\n    // read button: 0 means pressed because pull-up + button to GND\n    uint8_t pressed = (LL_GPIO_ReadInputPort(GPIOA) & LL_GPIO_PIN_0) ? 0 : 1;\n    (void)pressed;\n}\n```\n上面代码里有个坑，F1 系列的输出模式要先设 MODE 位再设 CNF 位，顺序反了有时候会瞬间短通，F4/F7/H7 系列就没有这个问题，因为它们用的是 MODER 寄存器单独管模式，OTYPER 单独管输出类型，两个寄存器独立。GPIO 模式速查表（注意这是 tab 分隔的没有表头分隔符）：\nGPIOA|MODER bits|用途|上下拉\nPA0|00 input|按键输入|上拉\nPA5|01 output|LED 驱动|无\nPA9|10 AF|USART1_TX|无\nPA10|10 AF|USART1_RX|无\nPA11|10 AF|USB_DM|无\nPA12|10 AF|USB_DP|无\nPB6|10 AF|I2C1_SCL|上拉\nPB7|10 AF|I2C1_SDA|上拉\nPA5|01 output|SPI1_SSEL 软片选|无",
+          "doc_id": "",
+          "chunk_id": "src2"
+        },
+        {
+          "title": "01-stm32-gpio.md",
+          "excerpt": "## 16. Boot 模式与 GPIO 配置\n\n### 16.1 Boot 模式选择\n\nSTM32 的启动模式由 BOOT0 和 BOOT1（部分系列）引脚决定，这些引脚在复位时被采样：\n\n| BOOT1 | BOOT0 | 启动模式 | 说明 |\n|-------|-------|----------|------|\n| x | 0 | 主 Flash 启动 | 正常运行用户程序 |\n| 0 | 1 | 系统存储器启动 | 运行出厂 Bootloader（UART/USB 烧录） |\n| 1 | 1 | 内置 SRAM 启动 | 用于调试，断电丢失 |\n\n在 STM32F4 系列中，BOOT0 是专用引脚，BOOT1 复用 PB2。在 STM32H7 系列中，启动模式配置更复杂，支持从 Flash、SRAM、系统存储器、QSPI、SD卡等多种启动方式。\n\n### 16.2 启动后的 GPIO 状态\n\n复位后，在执行用户代码（Reset_Handler）之前，所有 GPIO 处于默认状态：\n- MODER = 00（输入模式）\n- OTYPER = 0（推挽）\n- OSPEEDR = 00（低速）\n- PUPDR = 00（无上下拉）\n- ODR = 0\n- AFRL/AFRH = 0（AF0）\n\n例外：\n- PA13（SWDIO）和 PA14（SWCLK）配置为复用功能，用于 SWD 调试\n- PA15、PB3、PB4 在 STM32F1 上为 JTAG 引脚，复位后为复用功能\n\n### 16.3 启动时间优化\n\n从复位到第一个 GPIO 输出有效电平的时间（启动时间）受以下因素影响：\n1. 复位释放后的时钟稳定时间（HSI 约 2μs，HSE 约 1ms）\n2. Bootloader 检测时间（系统存储器启动时）\n3. SystemInit 函数执行时间（PLL 配置等）\n4. __main 函数执行时间（数据段初始化）\n5. 用户 main 函数中的 GPIO 初始化代码\n\n```c\n// Fast GPIO output on startup (before SystemInit)\n// Place this in the .preinit_array section\n__attribute__((section(\".preinit_array\"), used))\nvoid Early_GPIO_Init(void) {\n    // Enable GPIOA clock (AHB1)\n    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN;\n\n    // Configure PA5 as output immediately\n    GPIOA->MODER = (GPIOA->MODER & ~GPIO_MODER_MODER5) | GPIO_MODER_MODER5_0;\n    GPIOA->BSRR = GPIO_BSRR_BS5;  // Set PA5 high\n}\n```\n\n---",
+          "doc_id": "",
+          "chunk_id": "src3"
+        },
+        {
+          "title": "01-stm32-gpio.md",
+          "excerpt": "### 12.1 FAQ 列表\n\n**Q1: 为什么 GPIO 引脚没有输出？**\n\n可能原因：\n1. GPIO 时钟未使能（最常见原因）。解决：在使用 GPIO 前调用 `__HAL_RCC_GPIOx_CLK_ENABLE()`。\n2. MODER 寄存器配置错误，引脚仍为输入模式。解决：检查 MODER 寄存器值。\n3. 引脚被复用功能占用。解决：检查 AFRL/AFRH 配置，确保 MODER=01。\n4. 引脚被 LCKR 锁定。解决：检查 LCKR 寄存器，锁定后只能复位解锁。\n5. 引脚是 JTAG/SWD 调试引脚（PA13/PA14/PA15/PB3/PB4）。解决：使用 `__HAL_AFIO_REMAP_SWJ_NOJTAG()` 释放 JTAG 引脚。\n\n**Q2: 为什么进入中断后 HardFault？**\n\n可能原因：\n1. 中断服务函数名拼写错误，导致 NVIC 找不到 handler。解决：检查 startup 文件中的中断向量表，确保函数名匹配。\n2. 中断服务函数中访问了未初始化的外设。解决：确保在 ISR 中只访问已初始化的外设。\n3. EXTI 中断未正确清除 pending bit。解决：在 ISR 中清除 PR 寄存器。\n4. 栈溢出。解决：增加栈大小，检查 ISR 中使用的局部变量。\n\n```c\n// Common error: forgot to clear pending bit\nvoid EXTI0_IRQHandler(void) {\n    // WRONG: no clear, will loop forever\n    HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);\n\n    // CORRECT: clear pending bit first\n    EXTI->PR = EXTI_PR_PR0;\n    HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);\n}\n```\n\n**Q3: 为什么外部中断不触发？**\n\n可能原因：\n1. SYSCFG 时钟未使能，EXTICR 配置无效。解决：`__HAL_RCC_SYSCFG_CLK_ENABLE()`。\n2. EXTI IMR（中断屏蔽寄存器）未设置。解决：`EXTI->IMR |= EXTI_IMR_MR0;`。\n3. 触发方式配置错误（上升沿/下降沿）。解决：检查 RTSR/FTSR 寄存器。\n4. NVIC 中断未使能。解决：`NVIC_EnableIRQ(EXTI0_IRQn);`。\n5. 引脚配置为输出模式，EXTI 只在输入模式下工作。解决：将引脚配置为输入模式。\n6. 同一 EXTI 线上有多个引脚冲突。解决：确保同一 EXTI 线只有一个引脚使用。\n\n**Q4: 为什么 GPIO 输出电压不对（不是 3.3V）？**",
+          "doc_id": "",
+          "chunk_id": "src4"
+        },
+        {
+          "title": "01-stm32-gpio.md",
+          "excerpt": "printf(\"P%-2d: %-7s %-8s %-4s OT=%lu IDR=%lu ODR=%lu\",\n               i, mode_str[mode], speed_str[speed], pupd_str[pupd],\n               otype, idr, odr);\n        if (mode == 2) {\n            printf(\" AF%lu\", af);\n        }\n        printf(\"\\n\");\n    }\n}\n\n// Verify GPIO clock is enabled\nvoid GPIO_Verify_Clock(void) {\n    printf(\"RCC AHB1ENR: 0x%08lX\\n\", RCC->AHB1ENR);\n    if (RCC->AHB1ENR & RCC_AHB1ENR_GPIOAEN) printf(\"GPIOA clock: ON\\n\");\n    else printf(\"GPIOA clock: OFF\\n\");\n    if (RCC->AHB1ENR & RCC_AHB1ENR_GPIOBEN) printf(\"GPIOB clock: ON\\n\");\n    else printf(\"GPIOB clock: OFF\\n\");\n    if (RCC->AHB1ENR & RCC_AHB1ENR_GPIOCEN) printf(\"GPIOC clock: ON\\n\");\n    else printf(\"GPIOC clock: OFF\\n\");\n}\n```\n\n### 38.2 常见故障案例分析\n\n**案例 1：LED 不亮**\n\n现象：配置 PA5 为输出，写 1 后 LED 不亮。\n\n排查步骤：\n1. 检查 GPIOA 时钟是否使能 → `RCC->AHB1ENR & RCC_AHB1ENR_GPIOAEN`\n2. 检查 MODER[11:10] 是否为 01（输出模式）→ `(GPIOA->MODER >> 10) & 3`\n3. 检查 ODR bit5 是否为 1 → `GPIOA->ODR & GPIO_ODR_OD5`\n4. 用万用表测量 PA5 引脚电压，应为 3.3V\n5. 检查 LED 极性，阳极应接 VDD 或 GPIO（取决于电路）\n6. 检查限流电阻阻值（通常 220Ω~1kΩ）\n\n**案例 2：按键无响应**\n\n现象：PC13 配置为输入，但读取始终为 0 或 1。\n\n排查步骤：\n1. 检查 GPIOC 时钟\n2. 检查 MODER 是否为 00（输入模式）\n3. 检查 PUPDR 配置（上拉还是下拉）\n4. 用万用表测量按键按下/释放时的引脚电压\n5. 检查按键电路（是否接地或接 VDD）\n6. 检查是否有消抖处理\n\n**案例 3：EXTI 中断频繁触发**\n\n现象：EXTI 中断频繁进入，即使引脚未变化。\n\n排查步骤：\n1. 检查引脚是否悬空（悬空输入会因噪声触发）\n2. 检查上下拉配置\n3. 检查是否在 ISR 中正确清除 PR 寄存器\n4. 检查触发方式（上升沿/下降沿）是否匹配信号\n5. 在引脚上加硬件滤波（RC 滤波器）\n6. 检查 PCB 走线是否过长，耦合噪声\n\n### 38.3 GPIO 寄存器调试命令\n\n```c\n// Real-time GPIO monitor (call in main loop)\nvoid GPIO_Monitor(GPIO_TypeDef *port, uint16_t pins) {\n    static uint16_t last_idr = 0xFFFF;\n    uint16_t current_idr = port->IDR & pins;",
+          "doc_id": "",
+          "chunk_id": "src5"
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "total_score": 1453.5654761904761,
+    "max_score": 1500,
+    "percentage": 96.90436507936508,
+    "num_questions": 15
+  },
+  "strategies": [],
+  "rescored_at": "2026-06-27T14:06:10.352515",
+  "rescore_note": "chunk_boundary and cross_section re-scored with fixed logic: only checks top-k source chunks (not all doc chunks); CJK chars no longer flagged as mid-sentence; proportional deduction (1 issue=-2, 2-3=-5, 4+=-8) instead of 2 pts/issue."
+}

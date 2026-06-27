@@ -12,6 +12,8 @@ from src.rag.chunking.base import (
     BaseChunker,
     compute_fingerprint,
     verify_page_coverage,
+    PAGE_MARKER_RE,
+    strip_page_markers,
 )
 
 logger = logging.getLogger(__name__)
@@ -21,7 +23,21 @@ logger = logging.getLogger(__name__)
 # splitting (see chunk()), so the splitter never sees ``` markers.
 # This prevents fragmentation at code block boundaries, which produced
 # dozens of 30-100 char contextless chunks between inline code snippets.
-_DEFAULT_SEPARATORS = ["\n## ", "\n### ", "\n#### ", "\n\n", "\n", "。", ".", " ", ""]
+#
+# "\n\n**Q" is placed before "\n\n" so that FAQ-style bold question
+# headings (e.g. "**Q5: 为什么 I2C 通信不成功？**") are treated as
+# section boundaries. Without this, the splitter may leave the question
+# title at the end of one chunk and its answer at the start of the next,
+# causing semantic truncation.
+#
+# "\n\n|" (table boundary) is placed before "\n\n" so that markdown
+# tables stay attached to their preceding heading/intro. Without this,
+# the splitter cuts at "\n\n" between "### Title\n\nintro" and the table,
+# producing a tiny 40-80 char chunk with just the title+intro and
+# stranding the table in the next chunk without context.
+# This affects ALL chunk_sizes (500/800/1200/2000) — smaller sizes just
+# show it more severely (18% tiny at 500 vs 6% at 2000).
+_DEFAULT_SEPARATORS = ["\n## ", "\n### ", "\n#### ", "\n\n**Q", "\n\n|", "\n\n", "\n", "。", ".", " ", ""]
 
 # Pattern for inline fenced code blocks (used by placeholder protection)
 _INLINE_CODE_RE = re.compile(r"```[\s\S]*?```")
@@ -40,7 +56,7 @@ class HybridChunker(BaseChunker):
         self,
         chunk_size: int = 1000,
         chunk_overlap: int = 200,
-        small_chunk_size: int = 500,
+        small_chunk_size: int = 800,
         separators: Optional[list[str]] = None,
     ):
         self.chunk_size = chunk_size
@@ -60,6 +76,18 @@ class HybridChunker(BaseChunker):
             length_function=len,
         )
 
+    @staticmethod
+    def _get_section_pages(section_text: str) -> tuple[int, int]:
+        """Extract page range from section text containing <!-- PAGE:N --> markers.
+
+        Returns (start_page, end_page). Falls back to (1, 1) if no markers found.
+        """
+        markers = PAGE_MARKER_RE.findall(section_text)
+        if markers:
+            pages = [int(m) for m in markers]
+            return (min(pages), max(pages))
+        return (1, 1)
+
     async def chunk(
         self,
         text: str,
@@ -78,6 +106,14 @@ class HybridChunker(BaseChunker):
         chunk_index = 0
 
         for section_title, section_text, section_pages in sections:
+            # Strip page markers from chunk text — they're metadata, not content.
+            # Markers were already used in _split_markdown/_split_plain_text to
+            # determine section_pages; now remove them so they don't pollute
+            # embeddings or LLM generation.
+            section_text = strip_page_markers(section_text).strip()
+            if not section_text:
+                continue
+
             # Fenced code blocks are atomic: never invoke the small splitter
             # on them. RecursiveCharacterTextSplitter would fragment file
             # trees / code examples / configs into meaningless line groups
@@ -263,7 +299,7 @@ class HybridChunker(BaseChunker):
             # small splitter never breaks it into meaningless line fragments.
             if is_long_code:
                 section_title = " > ".join(t for _, t in header_stack) if header_stack else ""
-                sections.append((section_title, part, (0, 0)))
+                sections.append((section_title, part, self._get_section_pages(part)))
                 continue
 
             # Text part (may contain short inline code blocks as placeholders):
@@ -298,7 +334,7 @@ class HybridChunker(BaseChunker):
                     if ph in sub_part:
                         sub_part = sub_part.replace(ph, code)
 
-                sections.append((section_title, sub_part, (0, 0)))
+                sections.append((section_title, sub_part, self._get_section_pages(sub_part)))
 
         return sections
 
@@ -318,11 +354,11 @@ class HybridChunker(BaseChunker):
             if lines and len(lines[0].strip()) < 80:
                 section_title = lines[0].strip()
 
-            # Plain text files have no real page numbers
-            sections.append((section_title, part, (0, 0)))
+            # Detect page range from markers, or default to (1, 1)
+            sections.append((section_title, part, self._get_section_pages(part)))
 
         if not sections:
-            sections.append(("", text, (0, 0)))
+            sections.append(("", text, self._get_section_pages(text)))
 
         return sections
 
@@ -330,10 +366,43 @@ class HybridChunker(BaseChunker):
         self, chunks: list[ChunkResult], threshold: int = 100
     ) -> list[ChunkResult]:
         """Merge non-code chunks shorter than threshold into adjacent chunks
-        from the same section. Code blocks are always preserved as-is."""
+        from the same section. Code blocks are always preserved as-is.
+
+        Two-pass merge:
+        - Pass 1 (backward): absorb tiny chunk into the PREVIOUS same-section
+          chunk (existing behavior).
+        - Pass 2 (forward): if a tiny chunk couldn't be merged backward
+          (e.g. it's the first chunk of a section, or previous is code),
+          absorb it into the NEXT same-section chunk.
+
+        Also filters out pure-symbol chunks (---, ===, |---|) that carry
+        no semantic meaning and pollute retrieval.
+        """
         if len(chunks) <= 1:
             return chunks
 
+        # ── Pre-filter: drop pure-symbol chunks (---, ===, |---|, etc.) ──
+        # These are markdown horizontal rules or table separators that
+        # RecursiveCharacterTextSplitter leaves as standalone chunks.
+        # They have zero retrieval value and were found in every hybrid
+        # KB regardless of chunk_size (1 per doc).
+        symbol_pattern = re.compile(r'^[\s\-_=*#|+.:`\s]+$')
+        filtered: list[ChunkResult] = []
+        for chunk in chunks:
+            is_code = chunk.metadata.get("is_code_block", False)
+            stripped = chunk.text.strip()
+            if not is_code and stripped and len(stripped) < 50 and symbol_pattern.match(stripped):
+                logger.debug(
+                    f"[HybridChunker] Dropped pure-symbol chunk "
+                    f"({len(chunk.text)} chars): {stripped[:30]!r}"
+                )
+                continue
+            filtered.append(chunk)
+        chunks = filtered
+        if len(chunks) <= 1:
+            return chunks
+
+        # ── Pass 1: Backward merge (tiny → previous same-section) ──
         merged: list[ChunkResult] = []
         for chunk in chunks:
             is_code = chunk.metadata.get("is_code_block", False)
@@ -363,8 +432,76 @@ class HybridChunker(BaseChunker):
                     )
                     continue
 
-            # Can't merge: keep as-is (will try next chunk)
+            # Can't merge backward: keep for forward-merge pass
             merged.append(chunk)
+
+        # ── Pass 2: Forward merge (tiny → next same-section) ──
+        # Handles the case where a tiny chunk is the FIRST chunk of a
+        # section (e.g. "### Title\n\nintro" before a table). Backward
+        # merge failed because previous chunk is a different section.
+        # We merge it INTO the next same-section chunk so the tiny
+        # intro stays with its content.
+        if len(merged) > 1:
+            final: list[ChunkResult] = []
+            skip_next = False
+            pending_tiny: Optional[ChunkResult] = None
+
+            for i, chunk in enumerate(merged):
+                if skip_next:
+                    skip_next = False
+                    continue
+
+                is_code = chunk.metadata.get("is_code_block", False)
+                is_tiny = len(chunk.text) < threshold
+
+                if pending_tiny is not None:
+                    # Try to merge pending tiny into current chunk
+                    same_section = pending_tiny.section_title == chunk.section_title
+                    if same_section:
+                        # Merge tiny intro into current chunk (even if current is
+                        # a code block — the intro provides context for the code).
+                        new_text = pending_tiny.text + "\n" + chunk.text
+                        new_meta = {**chunk.metadata}
+                        new_meta["chunk_size"] = len(new_text)
+                        new_meta["big_chunk_text"] = new_text[:4000]
+                        # Preserve is_code_block flag so code chunks stay
+                        # identifiable even with intro prepended.
+                        merged_chunk = ChunkResult(
+                            text=new_text,
+                            metadata=new_meta,
+                            page_range=chunk.page_range,
+                            fingerprint=compute_fingerprint(new_text),
+                            chunk_method=chunk.chunk_method,
+                            section_title=chunk.section_title,
+                        )
+                        final.append(merged_chunk)
+                        pending_tiny = None
+                        continue
+                    else:
+                        # Can't merge: flush pending tiny as-is
+                        final.append(pending_tiny)
+                        pending_tiny = None
+
+                if is_tiny and not is_code and i < len(merged) - 1:
+                    # Check if next chunk is same section (candidate for forward merge)
+                    next_chunk = merged[i + 1]
+                    next_same_section = next_chunk.section_title == chunk.section_title
+                    next_is_code = next_chunk.metadata.get("is_code_block", False)
+                    # Allow forward merge into code block: tiny intro before code
+                    # (e.g. "### Title\n\n以下示例：") should stay with the code
+                    # so retrieval returns intro+code together, not a contextless
+                    # 40-char intro chunk.
+                    if next_same_section:
+                        pending_tiny = chunk
+                        continue
+
+                final.append(chunk)
+
+            # Flush any remaining pending tiny
+            if pending_tiny is not None:
+                final.append(pending_tiny)
+
+            merged = final
 
         # Renumber chunk_index
         for i, chunk in enumerate(merged):

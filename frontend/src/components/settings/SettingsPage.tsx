@@ -64,7 +64,7 @@ export function SettingsPage() {
   const { setActiveNav, themeMode, setThemeMode, lang, setLang, chatFontSize, setChatFontSize } = useAppStore();
   const {
     activeProvider, providerKeys, showKeys, model, visionModel, imageModel,
-    temperature, topK, maxTokens, systemPrompt, longTermMemory, skills,
+    temperature, topK, maxTokens, relevanceThreshold, systemPrompt, longTermMemory, skills,
     mcpServers, toolKeys, showToolKeys, baseUrls,
     setActiveProvider, setProviderKey, toggleShowKey,
     setModel, setVisionModel, setImageModel, setBaseUrl,
@@ -317,7 +317,8 @@ export function SettingsPage() {
                 <div style={{ marginBottom: 24 }}><div className="field-label">{t('temperature')}: {temperature}</div><p style={{ fontSize:12,color:'var(--muted-fg)',marginBottom:8 }}>{t('tempDesc')}</p><div className="range-wrap"><span className="range-label">0</span><input type="range" min="0" max="1" step="0.05" value={temperature} onChange={(e) => updateSetting('temperature', parseFloat(e.target.value))} className="range-slider" /><span className="range-label">1</span></div></div>
                 <div style={{ marginBottom: 24 }}><div className="field-label">{t('topK')}: {topK}</div><p style={{ fontSize:12,color:'var(--muted-fg)',marginBottom:8 }}>{t('topKDesc')}</p><div className="range-wrap"><span className="range-label">1</span><input type="range" min="1" max="20" step="1" value={topK} onChange={(e) => updateSetting('topK', parseInt(e.target.value))} className="range-slider" /><span className="range-label">20</span></div></div>
                 <div style={{ marginBottom: 24 }}><div className="field-label">{t('maxTokens')}: {maxTokens}</div><p style={{ fontSize:12,color:'var(--muted-fg)',marginBottom:8 }}>{t('maxTokensDesc')}</p><div className="range-wrap"><span className="range-label">512</span><input type="range" min="512" max="8192" step="256" value={maxTokens} onChange={(e) => updateSetting('maxTokens', parseInt(e.target.value))} className="range-slider" /><span className="range-label">8192</span></div></div>
-                <div style={{ borderRadius:6,border:'1px solid var(--border)',background:'var(--thinking-bg)',padding:'12px 16px',marginBottom:24 }}><p style={{ fontSize:12,color:'var(--muted-fg)' }}>{t('currentConfig')}: Top-{topK}, Temperature {temperature}, {maxTokens.toLocaleString()} tokens</p></div>
+                <div style={{ marginBottom: 24 }}><div className="field-label">{t('relevanceThreshold')}: {relevanceThreshold === 0 ? (lang === 'zh' ? '关闭' : 'OFF') : `${relevanceThreshold}%`}</div><p style={{ fontSize:12,color:'var(--muted-fg)',marginBottom:8 }}>{t('relevanceThresholdDesc')}</p><div className="range-wrap"><span className="range-label">0</span><input type="range" min="0" max="100" step="5" value={relevanceThreshold} onChange={(e) => updateSetting('relevanceThreshold', parseInt(e.target.value))} className="range-slider" /><span className="range-label">100</span></div></div>
+                <div style={{ borderRadius:6,border:'1px solid var(--border)',background:'var(--thinking-bg)',padding:'12px 16px',marginBottom:24 }}><p style={{ fontSize:12,color:'var(--muted-fg)' }}>{t('currentConfig')}: Top-{topK}, Temperature {temperature}, {maxTokens.toLocaleString()} tokens, {t('relevanceThreshold')} {relevanceThreshold === 0 ? (lang === 'zh' ? '关闭' : 'OFF') : `${relevanceThreshold}%`}</p></div>
 
                 <RagSettingsPanel />
               </div>
@@ -354,7 +355,7 @@ export function SettingsPage() {
                     {TIME_RANGE_OPTIONS.map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
                   </select>
                 </div>
-                <div className="logs-toolbar"><div></div><div className="logs-actions"><button className="verify-btn" onClick={() => {/* refresh */}}>{t('refreshLogs')}</button><button className="verify-btn" onClick={clear}>{t('clearLogs')}</button><button className="verify-btn" onClick={() => { const text = filteredBuffer.map((e) => `[${e.level.toUpperCase()}] [${e.tag}] ${e.msg}`).join('\n'); navigator.clipboard?.writeText(text).catch(() => { const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta); }); }}>{t('copyLogs')}</button></div></div>
+                <div className="logs-toolbar"><div></div><div className="logs-actions"><button className="verify-btn" onClick={() => setLogRefreshKey(k => k + 1)}>{t('refreshLogs')}</button><button className="verify-btn" onClick={clear}>{t('clearLogs')}</button><button className="verify-btn" onClick={() => { const text = filteredBuffer.map((e) => `[${e.level.toUpperCase()}] [${e.tag}] ${e.msg}`).join('\n'); navigator.clipboard?.writeText(text).catch(() => { const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta); }); }}>{t('copyLogs')}</button></div></div>
                 <div className="logs-box">{filteredBuffer.length ? filteredBuffer.map((e, idx) => <div className={`log-line log-${e.level}`} key={idx}><span className="log-ts">{new Date(e.ts).toLocaleTimeString('zh-CN', { hour12:false })}</span> <span className="log-tag">[{e.tag}]</span> {e.msg}</div>) : <div className="log-empty">{t('noLogs')}</div>}</div>
               </div>
             )}

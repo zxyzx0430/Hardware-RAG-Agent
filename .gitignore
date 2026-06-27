@@ -121,3 +121,11 @@ backend/_test_chunker_v2.py
 backend/data/*
 !backend/data/builtin_kb/
 !backend/data/builtin_kb/**
+
+# ─── 临时调试检查脚本 ───
+backend/_check_*.py
+backend/_inspect_*.py
+backend/_list_*.py
+backend/_quick_*.py
+backend/_verify_*.py
+backend/_verify_*.txt

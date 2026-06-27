@@ -125,12 +125,12 @@ def extract_attachment_text(name: str, mime_type: str, data_url: str) -> str:
     is_base64 = data_url.startswith("data:")
     payload = data_url.split(",", 1)[-1] if is_base64 else data_url
 
-    # PDF
+    # PDF — use UnifiedPdfParser for consistent behavior with KB upload
     if ext == ".pdf":
         try:
             raw = base64.b64decode(payload) if is_base64 else data_url.encode("utf-8")
-            from src.rag.file_parsers import PdfParser
-            return PdfParser().parse_from_bytes(raw)
+            from src.rag.document_processor import UnifiedPdfParser
+            return UnifiedPdfParser().parse_from_bytes(raw)
         except Exception as e:
             logger.warning(f"PDF 附件解析失败: {e}")
             return ""

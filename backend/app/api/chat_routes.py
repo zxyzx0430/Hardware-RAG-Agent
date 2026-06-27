@@ -28,6 +28,150 @@ router = APIRouter(prefix="/api")
 
 
 # ═══════════════════════════════════════════
+# P2-1: Query rewrite for RAG
+# ═══════════════════════════════════════════
+
+_QUERY_REWRITE_SYSTEM = """你是一个硬件文档检索查询改写助手。
+用户会给你一个问题，你需要把它改写成更适合检索硬件技术文档的搜索查询。
+
+规则：
+1. 提取问题中的核心硬件术语（芯片型号、外设名、协议名）
+2. 展开常见缩写（如 "IIC" → "I2C"，"串口" → "UART"）
+3. 去除口语化表达，只保留关键技术词
+4. 如果问题指代不明（如"这个芯片"），结合对话历史推断具体型号
+5. 输出格式：用空格分隔的关键词列表，不要多余解释
+6. 保持原始语言（中文问题输出中文关键词，英文问题输出英文）
+
+示例：
+- "STM32F4怎么配置DMA" → "STM32F4 DMA 配置 传输"
+- "esp32 s3的strapping脚怎么接" → "ESP32-S3 strapping pin boot 配置 接线"
+- "这个芯片的IIC怎么用" (历史提到STM32) → "STM32 I2C 使用 配置"
+- "PWM频率怎么设" → "PWM 频率 配置 定时器"
+"""
+
+
+async def _rewrite_query_for_rag(
+    query: str,
+    history: list[ChatMessage],
+    api_key: str,
+    base_url: str,
+    model: str,
+    provider: str,
+) -> str:
+    """Use LLM to rewrite user query for better RAG retrieval.
+
+    Falls back to the original query on any error or timeout.
+    Keeps the last 2 history messages for context (to resolve pronouns
+    like "这个芯片" → actual chip name).
+    """
+    if not query or not query.strip():
+        logger.debug("[RAG-REWRITE] Empty query, skipping rewrite")
+        return query
+    # Skip rewrite for very short queries (likely just chip names)
+    if len(query.strip()) <= 6:
+        logger.debug(f"[RAG-REWRITE] Query too short ({len(query.strip())} chars), skipping: '{query}'")
+        return query
+
+    # P1: Defensive — history may be None from future callers
+    if not history:
+        history = []
+
+    try:
+        import asyncio
+        import time as _time
+
+        # Build context from last 2 history messages (user + assistant).
+        # P0: Handle multimodal content (list[dict]) by extracting text parts,
+        # same logic as client.py — previously multimodal messages were silently
+        # dropped, breaking pronoun resolution for image+text conversations.
+        recent = history[-2:] if len(history) >= 2 else history
+        history_text = ""
+        history_msg_count = 0
+        for m in recent:
+            content = m.content
+            # Extract text from multimodal content (list of {type, text/image_url})
+            if isinstance(content, list):
+                content = " ".join(
+                    p.get("text", "") for p in content
+                    if isinstance(p, dict) and p.get("type") == "text"
+                )
+            if isinstance(content, str) and content.strip():
+                role_cn = "用户" if m.role == "user" else "助手"
+                history_text += f"{role_cn}: {content[:200]}\n"
+                history_msg_count += 1
+
+        user_prompt = f"对话历史:\n{history_text}\n当前问题: {query}\n\n请输出改写后的搜索关键词:"
+
+        logger.debug(
+            f"[RAG-REWRITE] Starting rewrite | query='{query[:80]}' | "
+            f"history_msgs={history_msg_count} | model={model} | provider={provider}"
+        )
+
+        client = LLMClient(
+            api_key=api_key,
+            base_url=base_url,
+            model=model,
+            temperature=0.0,
+            max_tokens=100,
+        )
+
+        _t0 = _time.time()
+        resp = await asyncio.wait_for(
+            client.chat(
+                user_message=user_prompt,
+                system_prompt=_QUERY_REWRITE_SYSTEM,
+                api_key=api_key,
+                base_url=base_url,
+                model=model,
+                provider=provider,
+            ),
+            timeout=8.0,
+        )
+        _elapsed = _time.time() - _t0
+
+        # P0: Clean up internal newlines/whitespace — LLM may return multi-line
+        # output which breaks BM25 tokenization and embedding models.
+        rewritten = " ".join((resp.content or "").split())
+
+        # ── Diagnostic logging: rewrite result + timing + token usage ──
+        usage = resp.usage or {}
+        logger.info(
+            f"[RAG-REWRITE] '{query[:60]}' → '{rewritten[:60]}' | "
+            f"{_elapsed:.2f}s | tokens={usage.get('total_tokens', '?')}"
+        )
+
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                f"[RAG-REWRITE] Full detail:\n"
+                f"  original:    '{query}'\n"
+                f"  rewritten:   '{rewritten}'\n"
+                f"  elapsed:     {_elapsed:.3f}s\n"
+                f"  prompt_tok:  {usage.get('prompt_tokens', '?')}\n"
+                f"  completion:  {usage.get('completion_tokens', '?')}\n"
+                f"  model:       {resp.model}\n"
+                f"  history_ctx: {history_msg_count} msgs"
+            )
+
+        # Sanity check: if rewrite is empty or too long, fall back
+        if not rewritten:
+            logger.warning(f"[RAG-REWRITE] LLM returned empty, falling back to original")
+            return query
+        if len(rewritten) > len(query) * 3:
+            logger.warning(
+                f"[RAG-REWRITE] Rewrite too long ({len(rewritten)} vs {len(query)}), "
+                f"falling back to original"
+            )
+            return query
+        return rewritten
+    except asyncio.TimeoutError:
+        logger.warning(f"[RAG-REWRITE] Timeout (8s) for query '{query[:60]}', falling back to original")
+        return query
+    except Exception as e:
+        logger.warning(f"[RAG-REWRITE] Failed ({type(e).__name__}: {e}), falling back to original")
+        return query
+
+
+# ═══════════════════════════════════════════
 # Pydantic 模型
 # ═══════════════════════════════════════════
 
@@ -42,6 +186,7 @@ class ChatRequest(BaseModel):
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
     top_k: Optional[int] = 5
+    relevance_threshold: Optional[float] = 0.0  # 0.0-1.0, filter RAG results below this score
     system_prompt: Optional[str] = None
     long_term_memory: Optional[str] = None
     provider: Optional[str] = None
@@ -149,7 +294,30 @@ async def chat_sse(payload: ChatRequest, request: Request):
                         )
                     else:
                         rag_query_text = str(last_user_msg)
-                    results = kb_manager.search_all_enabled(rag_query_text, k=payload.top_k, kb_ids=payload.kb_ids)
+                    # P2-1: Rewrite query for better retrieval (extracts keywords,
+                    # expands abbreviations, resolves pronouns from history).
+                    # Falls back to original query on error/timeout.
+                    rag_query_text = await _rewrite_query_for_rag(
+                        rag_query_text, history,
+                        api_key=api_key, base_url=base_url,
+                        model=model, provider=provider,
+                    )
+                    results = kb_manager.search_all_enabled(
+                        rag_query_text, k=payload.top_k, kb_ids=payload.kb_ids,
+                        score_threshold=payload.relevance_threshold or 0.0,
+                    )
+                    # Log threshold filtering decision
+                    threshold = payload.relevance_threshold or 0.0
+                    if threshold > 0.0 and results:
+                        logger.info(
+                            f"[RAG] Retrieval: {len(results)} results passed threshold {threshold:.2f} "
+                            f"(scores: {[f'{r.score:.4f}' for r in results[:5]]})"
+                        )
+                    elif threshold > 0.0:
+                        logger.info(
+                            f"[RAG] Retrieval: 0 results passed threshold {threshold:.2f} "
+                            f"(all filtered out)"
+                        )
                     if results:
                         for i, r in enumerate(results):
                             sid = f"src{i + 1}"
@@ -163,8 +331,22 @@ async def chat_sse(payload: ChatRequest, request: Request):
                             category = r.metadata.get("category", "")
                             chunk_method = r.metadata.get("chunk_method", "")
                             score = float(r.score) if r.score else 0.0
-                            excerpt = r.content[:200] if r.content else ""
+                            excerpt = r.content if r.content else ""
                             small_chunk_id = r.metadata.get("small_chunk_id", "")
+                            # Build citation and relevance level for attribution
+                            score_pct = round(score * 100, 1)
+                            if score >= 0.8:
+                                relevance_level = "high"
+                            elif score >= 0.5:
+                                relevance_level = "medium"
+                            else:
+                                relevance_level = "low"
+                            citation_parts = [r.kb_name or "知识库", title]
+                            if section_title:
+                                citation_parts.append(section_title)
+                            if page_start is not None:
+                                citation_parts.append(f"p{page_start}")
+                            citation = " / ".join(str(p) for p in citation_parts if p)
                             source_data = {
                                 "id": sid,
                                 "title": title,
@@ -178,6 +360,9 @@ async def chat_sse(payload: ChatRequest, request: Request):
                                 "category": category,
                                 "chunk_method": chunk_method,
                                 "score": score,
+                                "score_percentage": score_pct,
+                                "relevance_level": relevance_level,
+                                "citation": citation,
                                 "excerpt": excerpt,
                                 "kb_id": r.kb_id,
                                 "kb_name": r.kb_name,
@@ -185,8 +370,11 @@ async def chat_sse(payload: ChatRequest, request: Request):
                             }
                             yield sse_event("source", source_data)
                             sources.append({
-                                "id": sid, "title": title, "content": r.content[:500],
+                                "id": sid, "title": title, "content": r.content,
                                 "doc": doc, "page": chunk_index, "score": score,
+                                "score_percentage": score_pct,
+                                "relevance_level": relevance_level,
+                                "citation": citation,
                                 "kb_id": r.kb_id, "kb_name": r.kb_name,
                                 "page_start": page_start, "page_end": page_end,
                                 "section_title": section_title, "source_url": source_url,
@@ -196,11 +384,13 @@ async def chat_sse(payload: ChatRequest, request: Request):
                         rag_query = rag_query_text[:80]
                         yield sse_event("tool", {
                             "name": "search_docs", "icon": "search",
-                            "args": {"query": rag_query, "top_k": payload.top_k},
-                            "result": f"找到 {len(results)} 条相关片段",
+                            "args": {"query": rag_query, "top_k": payload.top_k, "threshold": threshold},
+                            "result": f"找到 {len(results)} 条相关片段 (阈值={threshold:.2f})",
                         })
                         rag_context = "\n\n".join(
-                            f"[来源: {r.kb_name} / {r.metadata.get('title', '未知')}]\n{r.content[:500]}"
+                            f"[来源: {r.kb_name} / {r.metadata.get('title', '未知')}"
+                            f"{' / ' + r.metadata.get('section_title', '') if r.metadata.get('section_title') else ''}"
+                            f" (相关度: {float(r.score):.1%})]\n{r.content}"
                             for r in results
                         )
                 except Exception as e:

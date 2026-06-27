@@ -2,6 +2,7 @@ import { useRef, useState, useEffect } from "react";
 import { useKnowledgeStore } from "../../stores/useKnowledgeStore";
 import { useLogStore } from "../../stores/useLogStore";
 import { useAppStore } from "../../stores/useAppStore";
+import { useChatStore } from "../../stores/useChatStore";
 import { apiPost } from "../../api/client";
 import { useI18n } from "../../i18n";
 import { KbCollectionManager } from "./KbCollectionManager";
@@ -15,10 +16,12 @@ export function KnowledgePanel() {
     items, isUploading, setIsUploading, addItem, toggleItem, deleteItemWithAPI, fetchItems,
     collections, activeKbId, fetchCollections, setActiveKb, fetchDocChunks,
   } = useKnowledgeStore();
+  const { selectedKbIds, toggleKbSelection } = useChatStore();
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
   const [showKbManager, setShowKbManager] = useState(false);
   const [chunkMethodOverride, setChunkMethodOverride] = useState<string>("");
+  const [showSearchScope, setShowSearchScope] = useState(false);
   // Track active poll timers so they can be cleared on unmount
   const pollTimersRef = useRef<Set<number>>(new Set());
 
@@ -170,8 +173,26 @@ export function KnowledgePanel() {
         </div>
       </div>
 
-      {/* KB selector + chunk method override */}
-      <div style={{ padding: "0 16px 12px", display: "flex", gap: 8, flexWrap: "wrap" }}>
+      {/* Active KB info card */}
+      {activeKb && (
+        <div style={{
+          margin: "0 16px 8px", padding: "8px 12px", borderRadius: 6,
+          background: "var(--thinking-bg)", border: "1px solid var(--border)",
+        }}>
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2, wordBreak: "break-all" }}>
+            {activeKb.name}
+          </div>
+          <div style={{ fontSize: 11, color: "var(--muted-fg)" }}>
+            {activeKb.chunk_method === "agent" ? t('agent') : activeKb.chunk_method === "multimodal" ? t('multimodal') : t('hybrid')}
+            {activeKb.embedding_model ? ` · ${activeKb.embedding_model}` : ""}
+            {` · ${t('docCount')}: ${activeKb.doc_count}`}
+            {` · ${t('chunkCount')}: ${activeKb.chunk_count}`}
+          </div>
+        </div>
+      )}
+
+      {/* KB selector + chunk method override + search scope */}
+      <div style={{ padding: "0 16px 12px", display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-start" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <label style={{ fontSize: 12, color: "var(--muted-fg)" }}>{t('targetKb')}:</label>
           <select
@@ -191,6 +212,63 @@ export function KnowledgePanel() {
           </select>
         </div>
 
+        {/* Search scope toggle button */}
+        <div style={{ position: "relative" }}>
+          <button
+            onClick={() => setShowSearchScope((v) => !v)}
+            style={{
+              fontSize: 12, padding: "3px 10px", borderRadius: 4,
+              border: "1px solid var(--border)", background: selectedKbIds.length > 0 ? "var(--accent)" : "var(--card)",
+              color: "var(--fg)", cursor: "pointer", display: "flex", alignItems: "center", gap: 4,
+            }}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+            {t('chatSearchScope')}
+            {selectedKbIds.length > 0 && <span style={{ fontSize: 10, background: "var(--primary)", color: "white", padding: "0 4px", borderRadius: 3 }}>{selectedKbIds.length}</span>}
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ transform: showSearchScope ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s' }}><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+          {showSearchScope && (
+            <div style={{
+              position: "absolute", top: "calc(100% + 4px)", left: 0, zIndex: 10,
+              minWidth: 220, maxHeight: 240, overflowY: "auto",
+              background: "var(--card)", border: "1px solid var(--border)", borderRadius: 6,
+              padding: "8px", boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
+            }}>
+              <div style={{ fontSize: 11, color: "var(--muted-fg)", marginBottom: 6 }}>{t('searchAllHint')}</div>
+              {collections.length > 0 ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                  {collections.map((kb) => (
+                    <label
+                      key={kb.id}
+                      style={{
+                        display: "flex", alignItems: "center", gap: 6,
+                        padding: "3px 6px", borderRadius: 4, cursor: "pointer",
+                        background: selectedKbIds.includes(kb.id) ? "var(--accent)" : "transparent",
+                        fontSize: 12,
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedKbIds.includes(kb.id)}
+                        onChange={() => toggleKbSelection(kb.id)}
+                        style={{ margin: 0 }}
+                      />
+                      <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{kb.name}</span>
+                      {kb.is_builtin && (
+                        <span style={{ fontSize: 9, padding: "1px 3px", borderRadius: 2, background: "var(--primary)", color: "white", flexShrink: 0 }}>
+                          {t('builtinKb')}
+                        </span>
+                      )}
+                    </label>
+                  ))}
+                </div>
+              ) : (
+                <div style={{ fontSize: 11, color: "var(--muted-fg)", padding: "4px 0" }}>{t('noKb')}</div>
+              )}
+            </div>
+          )}
+        </div>
+
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <label style={{ fontSize: 12, color: "var(--muted-fg)" }}>{t('chunkMethod')}:</label>
           <select
@@ -201,9 +279,10 @@ export function KnowledgePanel() {
               border: "1px solid var(--border)", background: "var(--bg)", color: "var(--fg)",
             }}
           >
-            <option value="">{t('kbLevelOverride')} ({activeKb?.chunk_method === "agent" ? t('agent') : t('hybrid')})</option>
+            <option value="">{t('kbLevelOverride')} ({activeKb?.chunk_method === "agent" ? t('agent') : activeKb?.chunk_method === "multimodal" ? t('multimodal') : t('hybrid')})</option>
             <option value="hybrid">{t('hybrid')}</option>
             <option value="agent">{t('agent')}</option>
+            <option value="multimodal">{t('multimodal')}</option>
           </select>
         </div>
       </div>
