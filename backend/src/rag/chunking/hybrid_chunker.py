@@ -1,0 +1,600 @@
+"""Hybrid chunker — structural split + recursive character split + small-to-big mapping."""
+
+import re
+import logging
+from pathlib import Path
+from typing import Optional
+
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+from src.rag.chunking.base import (
+    ChunkResult,
+    BaseChunker,
+    compute_fingerprint,
+    verify_page_coverage,
+    PAGE_MARKER_RE,
+    strip_page_markers,
+    protect_structures,
+    truncate_at_boundary,
+)
+from src.rag.chunking._constants import INLINE_CODE_RE
+
+logger = logging.getLogger(__name__)
+
+# Separators for the small splitter. Note: "\n```\n" is intentionally
+# absent — inline code blocks are protected with placeholders before
+# splitting (see chunk()), so the splitter never sees ``` markers.
+# This prevents fragmentation at code block boundaries, which produced
+# dozens of 30-100 char contextless chunks between inline code snippets.
+#
+# "\n\n**Q" is placed before "\n\n" so that FAQ-style bold question
+# headings (e.g. "**Q5: 为什么 I2C 通信不成功？**") are treated as
+# section boundaries. Without this, the splitter may leave the question
+# title at the end of one chunk and its answer at the start of the next,
+# causing semantic truncation.
+#
+# "\n\n|" (table boundary) is placed before "\n\n" so that markdown
+# tables stay attached to their preceding heading/intro. Without this,
+# the splitter cuts at "\n\n" between "### Title\n\nintro" and the table,
+# producing a tiny 40-80 char chunk with just the title+intro and
+# stranding the table in the next chunk without context.
+# This affects ALL chunk_sizes (500/800/1200/2000) — smaller sizes just
+# show it more severely (18% tiny at 500 vs 6% at 2000).
+_DEFAULT_SEPARATORS = ["\n## ", "\n### ", "\n#### ", "\n\n**Q", "\n\n|", "\n\n", "\n", "。", ".", " ", ""]
+
+# INLINE_CODE_RE now imported from src.rag.chunking._constants.
+
+
+class HybridChunker(BaseChunker):
+    """
+    Hybrid chunking strategy:
+
+    1. Structural split: Markdown headers / blank lines / paragraph boundaries
+    2. Recursive character split: oversized blocks → fine-grained chunks
+    3. Small-to-big mapping: small chunks for retrieval, big chunks for LLM context
+    """
+
+    def __init__(
+        self,
+        chunk_size: int = 1000,
+        chunk_overlap: int = 200,
+        small_chunk_size: int = 800,
+        separators: Optional[list[str]] = None,
+    ):
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
+        self.small_chunk_size = small_chunk_size
+        self.separators = separators or _DEFAULT_SEPARATORS
+
+        # Single splitter: overlap=0 to eliminate duplicate chunks at boundaries.
+        # The old design ran _splitter(1000/200) then _small_splitter(500/100) on
+        # each sub-chunk, which re-chunked the 200-char overlap regions and
+        # produced near-duplicate chunks. Now small_splitter cuts the section
+        # directly, and big_chunk_text = full section (see chunk()).
+        self._small_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=small_chunk_size,
+            chunk_overlap=0,
+            separators=self.separators,
+            length_function=len,
+        )
+
+    @staticmethod
+    def _get_section_pages(
+        section_text: str,
+        default_range: tuple[int, int] = (1, 1),
+    ) -> tuple[int, int]:
+        """Extract page range from section text containing <!-- PAGE:N --> markers.
+
+        Returns (start_page, end_page). Falls back to ``default_range`` when no
+        markers are found, so split sub-sections can inherit the most recent
+        page instead of always snapping back to (1, 1).
+        """
+        markers = PAGE_MARKER_RE.findall(section_text)
+        if markers:
+            pages = [int(m) for m in markers]
+            return (min(pages), max(pages))
+        return default_range
+
+    async def chunk(
+        self,
+        text: str,
+        metadata: dict,
+        file_path: Optional[Path] = None,
+        total_pages: int = 0,
+    ) -> list[ChunkResult]:
+        """Execute hybrid chunking pipeline (small-first then aggregate to big)."""
+        # Step 1: Structural split
+        sections = self._structural_split(text, file_path)
+
+        # Step 2: Small-first chunking — small_splitter cuts each section directly.
+        # Each small chunk carries a big_chunk_id pointer to its parent BigChunk
+        # row; the full section text (big_chunk_text) is held on ChunkResult for
+        # the ingest stage to persist, not stored in ChromaDB metadata.
+        doc_id = metadata.get("doc_id", "unknown")
+        all_chunks: list[ChunkResult] = []
+        chunk_index = 0
+
+        for section_index, (section_title, section_text, section_pages) in enumerate(sections):
+            # Task 14: Keep page markers in section_text so each small chunk
+            # can extract its own precise page range after splitting. Markers
+            # are stripped from the final chunk text below.
+            section_text = section_text.strip()
+            if not section_text:
+                continue
+
+            # Fenced code blocks are atomic: never invoke the small splitter
+            # on them. RecursiveCharacterTextSplitter would fragment file
+            # trees / code examples / configs into meaningless line groups
+            # and produce overlapping chunks at piece-boundary rollback.
+            # Keeping the code block whole preserves its structure; the
+            # embedding is computed over the entire block, which is fine
+            # because code blocks are self-contained semantic units.
+            # Strip page markers first so leading/trailing markers don't
+            # break the startswith/endswith check.
+            clean_section_text = strip_page_markers(section_text).strip()
+            is_code_block = (
+                clean_section_text.startswith("```") and clean_section_text.endswith("```")
+            )
+
+            # big_chunk_id links small chunks to their parent BigChunk row.
+            # All small chunks from the same section share one big_chunk_id;
+            # big_chunk_text is the full section (boundary-truncated) for the
+            # ingest stage to persist — it is NOT stored in ChromaDB metadata.
+            big_chunk_id = f"{doc_id}#b{section_index}"
+            big_chunk_text = truncate_at_boundary(clean_section_text, max_chars=4000)
+
+            if is_code_block:
+                chunk_text = clean_section_text
+                chunk_meta = {
+                    **metadata,
+                    "chunk_index": chunk_index,
+                    "section_title": section_title,
+                    "small_chunk_id": f"{doc_id}#s{chunk_index}",
+                    "big_chunk_id": big_chunk_id,
+                    "chunk_size": len(clean_section_text),
+                    "is_code_block": True,
+                }
+                all_chunks.append(ChunkResult(
+                    text=chunk_text,
+                    metadata=chunk_meta,
+                    page_range=section_pages,
+                    fingerprint=compute_fingerprint(chunk_text),
+                    chunk_method="hybrid",
+                    section_title=section_title,
+                    big_chunk_id=big_chunk_id,
+                    big_chunk_text=big_chunk_text,
+                ))
+                chunk_index += 1
+                continue
+
+            # Protect inline code blocks with placeholders so the small
+            # splitter doesn't fragment at ``` boundaries. Without this,
+            # the "\n\n" separator would cut between code blocks and
+            # their surrounding text, producing many tiny contextless
+            # chunks (e.g. "响应：`{ok: true}`" as a standalone chunk).
+            code_map: dict[str, str] = {}
+
+            def _stash_code(m: re.Match) -> str:
+                key = f"\x00CB{len(code_map)}\x00"
+                code_map[key] = m.group(0)
+                return key
+
+            placeholder_text = INLINE_CODE_RE.sub(_stash_code, section_text)
+            # Protect Markdown tables and register-field blocks from splitting
+            placeholder_text, table_map = protect_structures(placeholder_text)
+            code_map.update(table_map)
+            small_chunks = self._small_splitter.split_text(placeholder_text)
+            for small_text in small_chunks:
+                if not small_text.strip():
+                    continue
+
+                # Restore code blocks in each small chunk
+                for ph, code in code_map.items():
+                    if ph in small_text:
+                        small_text = small_text.replace(ph, code)
+
+                # Extract per-small-chunk page range from markers (Task 14).
+                # Falls back to section_pages when no markers are present
+                # (e.g. small chunk landed entirely between two markers).
+                small_markers = PAGE_MARKER_RE.findall(small_text)
+                if small_markers:
+                    small_pages = [int(p) for p in small_markers]
+                    small_page_range = (min(small_pages), max(small_pages))
+                else:
+                    small_page_range = section_pages
+                final_text = strip_page_markers(small_text).strip()
+                if not final_text:
+                    continue
+
+                chunk_meta = {
+                    **metadata,
+                    "chunk_index": chunk_index,
+                    "section_title": section_title,
+                    "small_chunk_id": f"{doc_id}#s{chunk_index}",
+                    "big_chunk_id": big_chunk_id,
+                    "chunk_size": len(final_text),
+                }
+
+                all_chunks.append(ChunkResult(
+                    text=final_text,
+                    metadata=chunk_meta,
+                    page_range=small_page_range,
+                    fingerprint=compute_fingerprint(final_text),
+                    chunk_method="hybrid",
+                    section_title=section_title,
+                    big_chunk_id=big_chunk_id,
+                    big_chunk_text=big_chunk_text,
+                ))
+                chunk_index += 1
+
+        # Post-merge: absorb tiny (<100 chars) non-code chunks into adjacent
+        # chunks from the same section. RecursiveCharacterTextSplitter can
+        # leave 20-80 char fragments between larger pieces (e.g. a single
+        # bullet point stranded between two ~500 char chunks). These are
+        # useless for retrieval and lack context.
+        all_chunks = self._merge_tiny_chunks(all_chunks)
+
+        # Verify page coverage if total_pages is known
+        if total_pages > 0:
+            coverage = verify_page_coverage(all_chunks, total_pages)
+            if coverage["missing_pages"]:
+                logger.warning(
+                    f"Hybrid chunking missing pages: {coverage['missing_pages']}"
+                )
+
+        logger.info(f"Hybrid chunking complete: {len(all_chunks)} chunks from {len(sections)} sections")
+        return all_chunks
+
+    def _structural_split(
+        self,
+        text: str,
+        file_path: Optional[Path] = None,
+    ) -> list[tuple[str, str, tuple[int, int]]]:
+        """
+        Split text by document structure.
+
+        Returns list of (section_title, section_text, (start_page, end_page)).
+        """
+        # Detect format
+        is_markdown = False
+        if file_path:
+            ext = file_path.suffix.lower()
+            is_markdown = ext in (".md", ".markdown")
+        if not is_markdown:
+            # Heuristic: check for Markdown headers
+            is_markdown = bool(re.search(r"^#{1,4}\s", text, re.MULTILINE))
+
+        if is_markdown:
+            return self._split_markdown(text)
+        else:
+            return self._split_plain_text(text)
+
+    def _split_markdown(self, text: str) -> list[tuple[str, str, tuple[int, int]]]:
+        """Split Markdown by headers, with long fenced code blocks extracted
+        as independent sections so they are never split mid-block.
+
+        Short code blocks (<= ``small_chunk_size``) stay inline with their
+        surrounding text so the small splitter can keep them together with
+        their context (e.g. a 2-line API endpoint snippet next to its
+        request/response description).
+
+        Empty header-only sections (e.g. ``## Title`` immediately followed by
+        ``### Subtitle``) are skipped — the parent title is preserved in the
+        header stack so the next non-empty section's title path includes it.
+        """
+        # re.split with a capturing group keeps code blocks as separate items
+        # in the result list (alternating text / code / text / ...).
+        parts_with_code = re.split(r"(```[\s\S]*?```)", text)
+
+        # First pass: merge short code blocks AND text parts into a single
+        # text run so the header split produces one section per header, not
+        # one section per inter-code-block text fragment.
+        #
+        # Without merging text parts, a section like:
+        #   ### 3.5 API
+        #   ```code1```
+        #   响应：...
+        #   ```code2```
+        #   请求：...
+        #   ```code3```
+        # produces 3 separate sections (text+code1, text+code2, text+code3),
+        # each ~40-100 chars — contextless fragments that can't be retrieved
+        # meaningfully.
+        #
+        # Short code blocks are replaced with placeholders so their content
+        # (e.g. bash "#" comments) isn't mistaken for Markdown headers.
+        merged: list[tuple[bool, str]] = []  # (is_long_code_block, text_or_placeholder)
+        code_placeholders: dict[str, str] = {}
+        cb_idx = 0
+        for part in parts_with_code:
+            if not part or not part.strip():
+                continue
+            is_code = part.startswith("```") and part.endswith("```")
+            if is_code and len(part) <= self.small_chunk_size:
+                placeholder = f"\x00CB{cb_idx}\x00"
+                cb_idx += 1
+                code_placeholders[placeholder] = part
+                if merged and not merged[-1][0]:
+                    merged[-1] = (False, merged[-1][1] + placeholder)
+                else:
+                    merged.append((False, placeholder))
+            elif is_code:
+                # Long code block: independent entry (becomes its own section)
+                merged.append((True, part))
+            else:
+                # Text part: merge into previous text entry to keep context
+                # together. The header split below will separate sections.
+                if merged and not merged[-1][0]:
+                    merged[-1] = (False, merged[-1][1] + part)
+                else:
+                    merged.append((False, part))
+
+        sections: list[tuple[str, str, tuple[int, int]]] = []
+        header_stack: list[tuple[int, str]] = []  # [(level, title), ...]
+        current_page_range: tuple[int, int] = (1, 1)
+
+        for is_long_code, part in merged:
+            # Long fenced code block: emit as an independent section so the
+            # small splitter never breaks it into meaningless line fragments.
+            if is_long_code:
+                section_title = " > ".join(t for _, t in header_stack) if header_stack else ""
+                page_range = self._get_section_pages(part, current_page_range)
+                if page_range != current_page_range:
+                    current_page_range = page_range
+                sections.append((section_title, part, page_range))
+                continue
+
+            # Text part (may contain short inline code blocks as placeholders):
+            # split by headers. Placeholders prevent code-block content from
+            # being mistaken for headers.
+            sub_parts = re.split(r"\n(?=#{1,4}\s)", part)
+            for sub_part in sub_parts:
+                sub_part = sub_part.strip()
+                if not sub_part:
+                    continue
+
+                title_match = re.match(r"^(#{1,4})\s+(.+)", sub_part)
+                if title_match:
+                    level = len(title_match.group(1))
+                    title = title_match.group(2).strip()
+                    while header_stack and header_stack[-1][0] >= level:
+                        header_stack.pop()
+                    header_stack.append((level, title))
+                    section_title = " > ".join(t for _, t in header_stack)
+
+                    # Skip header-only sections (title with no body). The
+                    # title is already on header_stack, so the next non-empty
+                    # section will inherit it via the title path.
+                    body = sub_part[title_match.end():].strip()
+                    if not body:
+                        continue
+                else:
+                    section_title = " > ".join(t for _, t in header_stack) if header_stack else ""
+
+                # Restore code block placeholders now that header split is done.
+                for ph, code in code_placeholders.items():
+                    if ph in sub_part:
+                        sub_part = sub_part.replace(ph, code)
+
+                page_range = self._get_section_pages(sub_part, current_page_range)
+                if page_range != current_page_range:
+                    current_page_range = page_range
+                sections.append((section_title, sub_part, page_range))
+
+        return sections
+
+    def _split_plain_text(self, text: str) -> list[tuple[str, str, tuple[int, int]]]:
+        """Split plain text by blank lines and paragraph boundaries.
+
+        Page markers are inherited across split parts: if a part does not
+        contain its own marker, it uses the most recently observed page range
+        instead of falling back to (1, 1). This prevents tables/paragraphs on
+        later pages from being mislabelled as page 1.
+        """
+        parts = re.split(r"\n\s*\n", text)
+
+        sections: list[tuple[str, str, tuple[int, int]]] = []
+        current_page_range: tuple[int, int] = (1, 1)
+
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+
+            lines = part.split("\n")
+            section_title = ""
+            if lines and len(lines[0].strip()) < 80:
+                section_title = lines[0].strip()
+
+            page_range = self._get_section_pages(part, current_page_range)
+            # Update the inherited range when this part contains a real marker.
+            if page_range != current_page_range:
+                current_page_range = page_range
+            sections.append((section_title, part, page_range))
+
+        if not sections:
+            sections.append(("", text, self._get_section_pages(text)))
+
+        return sections
+
+    def _merge_tiny_chunks(
+        self, chunks: list[ChunkResult], threshold: int = 100
+    ) -> list[ChunkResult]:
+        """Merge non-code chunks shorter than threshold into adjacent chunks
+        from the same section. Code blocks are always preserved as-is.
+
+        Two-pass merge:
+        - Pass 1 (backward): absorb tiny chunk into the PREVIOUS same-section
+          chunk (existing behavior).
+        - Pass 2 (forward): if a tiny chunk couldn't be merged backward
+          (e.g. it's the first chunk of a section, or previous is code),
+          absorb it into the NEXT same-section chunk.
+
+        Also filters out pure-symbol chunks (---, ===, |---|) that carry
+        no semantic meaning and pollute retrieval.
+        """
+        if len(chunks) <= 1:
+            return chunks
+
+        # ── Pre-filter: drop pure-symbol chunks (---, ===, |---|, etc.) ──
+        # These are markdown horizontal rules or table separators that
+        # RecursiveCharacterTextSplitter leaves as standalone chunks.
+        # They have zero retrieval value and were found in every hybrid
+        # KB regardless of chunk_size (1 per doc).
+        symbol_pattern = re.compile(r'^[\s\-_=*#|+.:`\s]+$')
+        filtered: list[ChunkResult] = []
+        for chunk in chunks:
+            is_code = chunk.metadata.get("is_code_block", False)
+            stripped = chunk.text.strip()
+            if not is_code and stripped and len(stripped) < 50 and symbol_pattern.match(stripped):
+                logger.debug(
+                    f"[HybridChunker] Dropped pure-symbol chunk "
+                    f"({len(chunk.text)} chars): {stripped[:30]!r}"
+                )
+                continue
+            filtered.append(chunk)
+        chunks = filtered
+        if len(chunks) <= 1:
+            return chunks
+
+        # ── Pass 1: Backward merge (tiny → previous same-section) ──
+        merged: list[ChunkResult] = []
+        for chunk in chunks:
+            is_code = chunk.metadata.get("is_code_block", False)
+            is_tiny = len(chunk.text) < threshold
+
+            if is_code or not is_tiny:
+                merged.append(chunk)
+                continue
+
+            # Try merging into previous chunk (same section)
+            if merged:
+                prev = merged[-1]
+                same_section = prev.section_title == chunk.section_title
+                prev_is_code = prev.metadata.get("is_code_block", False)
+                if same_section and not prev_is_code:
+                    new_text = prev.text + "\n" + chunk.text
+                    new_meta = {**prev.metadata}
+                    new_meta["chunk_size"] = len(new_text)
+                    merged[-1] = ChunkResult(
+                        text=new_text,
+                        metadata=new_meta,
+                        page_range=prev.page_range,
+                        fingerprint=compute_fingerprint(new_text),
+                        chunk_method=prev.chunk_method,
+                        section_title=prev.section_title,
+                        big_chunk_id=prev.big_chunk_id,
+                        big_chunk_text=prev.big_chunk_text,
+                    )
+                    continue
+
+            # Can't merge backward: keep for forward-merge pass
+            merged.append(chunk)
+
+        # ── Pass 2: Forward merge (tiny → next chunk) ──
+        # Handles the case where a tiny chunk is the FIRST chunk of a
+        # section (e.g. "### Title\n\nintro" before a table). Backward
+        # merge failed because previous chunk is a different section.
+        #
+        # Merge priority:
+        # 1. Same-section merge (preferred — preserves section context)
+        # 2. Cross-section merge when pending_tiny has no section_title
+        #    (orphan paragraph like a doc title without Heading style)
+        # 3. Cross-section merge when combined length ≤ small_chunk_size
+        #    (handles table-heavy docs where each table is a different
+        #    section_title but chunks are too small to stand alone)
+        if len(merged) > 1:
+            final: list[ChunkResult] = []
+            skip_next = False
+            pending_tiny: Optional[ChunkResult] = None
+
+            for i, chunk in enumerate(merged):
+                if skip_next:
+                    skip_next = False
+                    continue
+
+                is_code = chunk.metadata.get("is_code_block", False)
+                is_tiny = len(chunk.text) < threshold
+
+                if pending_tiny is not None:
+                    # Try to merge pending tiny into current chunk
+                    same_section = pending_tiny.section_title == chunk.section_title
+                    # Cross-section merge conditions (Task 13 — tightened to
+                    # match MultimodalChunker):
+                    # - pending_tiny has empty section_title (orphan paragraph,
+                    #   e.g. doc title without Heading style)
+                    # - OR combined length fits within small_chunk_size // 2
+                    #   (halved threshold prevents over-eager merging of
+                    #   unrelated short table sections)
+                    combined_len = len(pending_tiny.text) + 1 + len(chunk.text)
+                    cross_section_threshold = self.small_chunk_size // 2
+                    cross_section_ok = (
+                        not pending_tiny.section_title
+                        or combined_len <= cross_section_threshold
+                    )
+                    if same_section or cross_section_ok:
+                        # Merge tiny into current chunk (even if current is
+                        # a code block — the intro provides context for the
+                        # code). For cross-section merges, prefer the current
+                        # chunk's section_title so the merged chunk belongs to
+                        # the section that contains most of its content.
+                        new_text = pending_tiny.text + "\n" + chunk.text
+                        new_meta = {**chunk.metadata}
+                        new_meta["chunk_size"] = len(new_text)
+                        # Preserve is_code_block flag so code chunks stay
+                        # identifiable even with intro prepended.
+                        merged_chunk = ChunkResult(
+                            text=new_text,
+                            metadata=new_meta,
+                            page_range=chunk.page_range,
+                            fingerprint=compute_fingerprint(new_text),
+                            chunk_method=chunk.chunk_method,
+                            section_title=chunk.section_title,
+                            big_chunk_id=chunk.big_chunk_id,
+                            big_chunk_text=chunk.big_chunk_text,
+                        )
+                        final.append(merged_chunk)
+                        pending_tiny = None
+                        continue
+                    else:
+                        # Can't merge: flush pending tiny as-is
+                        final.append(pending_tiny)
+                        pending_tiny = None
+
+                if is_tiny and not is_code and i < len(merged) - 1:
+                    # Check if next chunk is a candidate for forward merge.
+                    # Allow forward merge when:
+                    # - same section (existing behavior), OR
+                    # - current chunk has no section_title (orphan paragraph),
+                    #   so it can be absorbed into the next section, OR
+                    # - combined length fits within small_chunk_size // 2
+                    #   (Task 13 — tightened to match the merge condition above
+                    #   so a tiny chunk is only marked pending when the merge
+                    #   will actually succeed)
+                    next_chunk = merged[i + 1]
+                    next_same_section = next_chunk.section_title == chunk.section_title
+                    next_combined_len = len(chunk.text) + 1 + len(next_chunk.text)
+                    cross_section_eligible = (
+                        not chunk.section_title
+                        or next_combined_len <= self.small_chunk_size // 2
+                    )
+                    if next_same_section or cross_section_eligible:
+                        pending_tiny = chunk
+                        continue
+
+                final.append(chunk)
+
+            # Flush any remaining pending tiny
+            if pending_tiny is not None:
+                final.append(pending_tiny)
+
+            merged = final
+
+        # Renumber chunk_index
+        for i, chunk in enumerate(merged):
+            chunk.metadata["chunk_index"] = i
+            chunk.metadata["small_chunk_id"] = (
+                f"{chunk.metadata.get('doc_id', 'unknown')}#s{i}"
+            )
+
+        return merged

@@ -1,0 +1,74 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Hardware RAG Agent Golden Dataset",
+  "description": "Schema for validating golden_dataset.yaml before running DeepEval evaluation",
+  "type": "object",
+  "required": ["metadata", "samples"],
+  "properties": {
+    "metadata": {
+      "type": "object",
+      "required": ["version", "description", "created", "sample_count", "fields"],
+      "properties": {
+        "version": { "type": "string", "pattern": "^\\d+\\.\\d+$" },
+        "description": { "type": "string" },
+        "created": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "sample_count": { "type": "integer", "minimum": 1 },
+        "fields": { "type": "object" }
+      }
+    },
+    "samples": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "question", "standard_answer", "reference_chunks", "difficulty", "category", "target_doc", "tags"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^G\\d{3}$",
+            "description": "Unique identifier G001-G999"
+          },
+          "question": {
+            "type": "string",
+            "minLength": 5,
+            "description": "User's natural language question"
+          },
+          "standard_answer": {
+            "type": "string",
+            "minLength": 10,
+            "description": "Human-written reference answer for answer_relevancy/faithfulness comparison"
+          },
+          "reference_chunks": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "minLength": 10 },
+            "description": "List of acceptable reference chunk texts (multi-acceptable set)"
+          },
+          "difficulty": {
+            "type": "string",
+            "enum": ["简单", "中等", "难"]
+          },
+          "category": {
+            "type": "string",
+            "description": "Technical category: GPIO/I2C/SPI/UART/CAN/时钟/中断/传感器/工具链/电源/启动配置"
+          },
+          "target_doc": {
+            "type": "string",
+            "description": "Target document filename for recall attribution"
+          },
+          "tags": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1
+          },
+          "notes": {
+            "type": "string",
+            "default": "",
+            "description": "Optional annotation for special test intent"
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  }
+}

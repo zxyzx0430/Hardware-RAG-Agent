@@ -1,0 +1,78 @@
+The Data Sheet of CH340 (the first)   
+ 4 
+CH340B  chip  also  provides  EEPROM  for  configuring  data  area,  product  serial number  and  other 
+information could be customized for each chip by specific software tools, configurable data area is shown in the 
+table below. 
+Byte 
+Address 
+Abbreviati 
+on 
+Description of chip configuration data area 
+Default 
+00H 
+SIG 
+For CH340B: Internal configuration information valid reg, 
+must be 58H. 
+For CH340H/S: External configuration information valid 
+reg, must be 53H. 
+Invalid for other value 
+00H 
+01H 
+MODE 
+Serial mode, must be 23H 
+23H 
+02H 
+CFG 
+Specific configuration of chip, 
+bit5 is used to configure product Serial Number: 
+0= valid; 1= invalid. 
+FEH 
+03H 
+WP 
+Internal configuration information write protect flag，57H 
+imply read only, otherwise can be rewrite 
+00H 
+05~04H 
+VID 
+Vendor ID, high byte is behind, any value. Set to 0000H or 
+0FFFFH implies VID and PID using vendor default value 
+1A86H 
+07~06H 
+PID 
+Product ID, high byte is behind, any value 
+7523H 
+0AH 
+PWR 
+Max Power, The maximum supply current in 2mA units 
+31H 
+17~10H 
+SN 
+Serial Number, the length of ASCII string is 8, disable the 
+Serial number when the first byte is not ASCII character 
+(21H~7FH) 
+12345678 
+3FH~1AH 
+PROD 
+For CH340B: Product String, Unicode string for Product 
+description. The first byte is by total bytes (less than 26H), 
+the next byte is 03H, Unicode string after that, using vendor 
+default description when do not meet characteristics above. 
+Using product 
+default 
+description when
+the first byte is 
+00H 
+Others 
+(Reserved unit) 
+00H or FFH 
+CH340 chip supports 5V and 3.3V power voltage. When using 5V source power, the VCC pin input 5V 
+power and the V3 pin should connect with decoupling 0.1uF capacitor. When using 3.3V power voltage, 
+connects V3 with VCC, both input 3.3V power voltage, and the other circuit voltage which connected with 
+CH340 cannot exceed 3.3V. 
+CH340 supports USB device suspending automatically to save power. USB device suspend is forbidden 
+when NOS# is driven low. 
+The DTR# pin of CH340 is used as a configuration input pin before the USB configuration is complete. An 
+external 4.7KΩ pull-down resistor can be connected with this pin to generate default low level during USB 
+enumeration, apply larger supply current to the USB bus via the configuration descriptor.
+In UART mode, CH340 chip contains these pins: data transfer pins, MODEM liaison signal pins and 
+assistant pins.

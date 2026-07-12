@@ -1,0 +1,40 @@
+{
+  "kb_id": "builtin-001",
+  "collection_name": "hardware-docs-test",
+  "pdfs": [
+    {
+      "pdf": "ch340g.pdf",
+      "doc_id": "d4d191db-0765-4d12-805e-d0176cc7908b",
+      "total_chunks": 47,
+      "text_chunks": 36,
+      "image_description_chunks": 11,
+      "elapsed_seconds": 634.2,
+      "chunk_method": "multimodal",
+      "model": "oc/mimo-v2.5",
+      "snapshot": "ch340g_chunks_v2.json"
+    },
+    {
+      "pdf": "stm32f4.pdf",
+      "doc_id": "baseline-stm32f4-gpio-exti-v2",
+      "total_chunks": 125,
+      "text_chunks": 100,
+      "image_description_chunks": 25,
+      "elapsed_seconds": 1158.3,
+      "chunk_method": "multimodal",
+      "model": "oc/mimo-v2.5",
+      "snapshot": "stm32f4_chunks_v2.json"
+    },
+    {
+      "pdf": "esp32.pdf",
+      "doc_id": "baseline-esp32-datasheet-v2",
+      "total_chunks": 207,
+      "text_chunks": 177,
+      "image_description_chunks": 30,
+      "elapsed_seconds": 1649.8,
+      "chunk_method": "multimodal",
+      "model": "oc/mimo-v2.5",
+      "snapshot": "esp32_chunks_v2.json"
+    }
+  ],
+  "total_chunks_all": 379
+}

@@ -1,0 +1,139 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+.pytest_cache/
+
+# Build
+build/
+dist/
+.pio-final/
+.pio-test/
+.pio-test2/
+.build/
+
+# IDE
+.vscode/
+.idea/
+.claude/
+.agents/
+.codegraph/
+.gitnexus/
+.langgraph_api/
+.deepeval/
+.arduino-data/
+.platformio/
+
+# Project temp
+.trae/tmp/
+.trae/documents/
+*.err
+*.bak
+agent_browser_test.har
+tmp_scan.txt
+test_verify.txt
+temp_check_docs.py
+fix_completed.py
+update_thread.py
+pio-test-run.py
+
+# Data
+data/agent_sessions.db
+data/benchmark/
+data/chroma/
+data/test_results/
+data/test_docs/*.docx
+
+# Backend temp
+backend/_*.txt
+backend/_*.out
+backend/sse_test*.err
+backend/test_*.py
+backend/test_*.json
+backend/test_*.svg
+backend/test_*.png
+backend/unknown_image.png
+backend/check_*.py
+backend/migrate_*.py
+backend/rebuild_*.py
+backend/generate_test_docx.py
+backend/include/
+backend/data/
+backend/platformio.ini
+backend/.deepeval/
+backend/app/db/keys_store.json
+backend/app/db/keys_store.json.bak
+backend/hardware_rag.db
+
+# Frontend
+frontend/REVIEW.md
+frontend/ref-design.html
+frontend_network_recent.json
+
+# Test output
+scripts/output/
+scripts/test_*.ps1
+scripts/verify_fixes.js
+scripts/nav_check.js
+
+# Screenshots
+screenshots/
+
+# Reports
+backend/tests/rag_eval/_sse_probe.py
+backend/tests/test_html_ingest.py
+backend/tests/test_ocr_parser.py
+
+# Specs temp
+.trae/specs/audit-browser-*.png
+.trae/specs/audit-frontend-*.png
+.trae/specs/audit-verify-*.png
+.trae/specs/audit-user-perspective-v2/
+.trae/specs/audit-frontend-agent-ux/
+.trae/specs/*.har
+
+# Misc
+CLAUDE.md
+.superpowers/
+"重启前后端.ps1"
+
+# Temp fix/debug scripts (root)
+.fix-*.py
+.pio-test-run.py
+codex_contents.json
+tree.json
+snap2.txt
+snapshot.txt
+
+# Root-level test screenshots
+agent-browser-*.png
+agent_browser_*.png
+agent-browser-silent-fail-*.png
+frontend_after_*.png
+after_fix_*.png
+page1.png
+serial_demo.png
+test_image_gen.png
+
+# Backend temp scripts & outputs
+backend/_*.py
+backend/_*.json
+backend/_*.png
+backend/stdout.txt
+backend/stderr.txt
+backend/test/
+backend/pio_project/
+backend/src/agent/hitl_permission.py
+backend/src/agent/hitl_sse.py
+
+# Frontend temp
+frontend-rewrite/
+
+# Sketches temp
+sketches/
+
+# Data PDFs (test data)
+data/pdfs/

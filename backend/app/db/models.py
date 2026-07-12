@@ -1,0 +1,231 @@
+"""
+Hardware RAG Agent — SQLAlchemy ORM 模型。
+
+覆盖：
+- Session（会话）
+- Message（消息）
+- KnowledgeDoc（知识库文档记录）
+- Bookmark / BookmarkFolder（书签）
+- Settings（全局设置）
+"""
+
+import datetime
+from sqlalchemy import Column, Integer, String, Text, Boolean, Float, DateTime, ForeignKey, JSON, Enum, Index
+from sqlalchemy.orm import relationship
+from app.db.database import Base
+
+# Context window presets (tokens) — per-session context budget
+CONTEXT_WINDOW_256K = 262144
+CONTEXT_WINDOW_1M = 1048576
+
+
+class Session(Base):
+    """对话会话。"""
+
+    __tablename__ = "sessions"
+    __table_args__ = (
+        Index("idx_sessions_created", "created_at"),
+    )
+
+    id = Column(String, primary_key=True)
+    title = Column(String, default="新对话")
+    model = Column(String, default="")
+    project = Column(String, default="", nullable=True)
+    pinned = Column(Boolean, default=False)
+    msg_count = Column(Integer, default=0)
+    branch_from_session_id = Column(Text, nullable=True)
+    branch_from_message_id = Column(Text, nullable=True)
+    context_window = Column(Integer, default=CONTEXT_WINDOW_256K)  # per-session context budget (tokens)
+    created_at = Column(DateTime, default=datetime.datetime.now(datetime.timezone.utc))
+    updated_at = Column(DateTime, default=datetime.datetime.now(datetime.timezone.utc), onupdate=datetime.datetime.now(datetime.timezone.utc))
+
+    messages = relationship("Message", back_populates="session", order_by="Message.created_at", cascade="all, delete-orphan")
+
+
+class Message(Base):
+    """会话中的消息。"""
+
+    __tablename__ = "messages"
+
+    id = Column(String, primary_key=True)
+    session_id = Column(String, ForeignKey("sessions.id", ondelete="CASCADE"), index=True)
+    role = Column(Enum("user", "assistant", "tool", "system", name="message_role"), nullable=False)
+    content = Column(Text, nullable=False)
+    sources = Column(JSON, nullable=True)  # 来源引用列表
+    tool_calls = Column(JSON, nullable=True)  # 工具调用记录
+    activity = Column(JSON, nullable=True)  # 思考步骤/工具调用活动块 (durationMs, steps, status)
+    created_at = Column(DateTime, default=datetime.datetime.now(datetime.timezone.utc))
+
+    session = relationship("Session", back_populates="messages")
+
+
+class KnowledgeBase(Base):
+    """Knowledge base collection — supports multiple KBs with different embeddings."""
+
+    __tablename__ = "knowledge_bases"
+
+    id = Column(String, primary_key=True)
+    name = Column(String, nullable=False)
+    description = Column(String, default="")
+    collection_name = Column(String, unique=True, nullable=False)
+    chunk_method = Column(String, default="hybrid")  # hybrid / agent
+    small_chunk_size = Column(Integer, default=800)  # hybrid chunker target size (500/800/1200/2000)
+    big_chunk_max_chars = Column(Integer, default=4000)  # ParentDocument big chunk max chars
+    embedding_model = Column(String, default="text-embedding-3-small")
+    embedding_base_url = Column(String, nullable=True)
+    embedding_api_key_encrypted = Column(String, nullable=True)
+    agent_chunker_model = Column(String, default="gpt-4o-mini")
+    agent_chunker_base_url = Column(String, default="https://api.openai.com/v1")
+    agent_chunker_api_key_encrypted = Column(String, nullable=True)
+    context_window = Column(Integer, default=256000)
+    enabled = Column(Boolean, default=True)
+    is_builtin = Column(Boolean, default=False)
+    builtin_path = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.now(datetime.timezone.utc))
+    updated_at = Column(DateTime, default=datetime.datetime.now(datetime.timezone.utc), onupdate=datetime.datetime.now(datetime.timezone.utc))
+
+    docs = relationship("KnowledgeDoc", back_populates="kb")
+
+
+class KnowledgeDoc(Base):
+    """知识库文档入库记录。"""
+
+    __tablename__ = "knowledge_docs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    doc_id = Column(String, unique=True, index=True, nullable=False)
+    kb_id = Column(String, ForeignKey("knowledge_bases.id"), default="builtin-001", nullable=False, index=True)
+    title = Column(String, default="")
+    category = Column(String, default="user_upload")
+    file_type = Column(String, default="")  # pdf / md / txt
+    file_size = Column(Integer, default=0)  # bytes
+    chunk_count = Column(Integer, default=0)
+    chunk_method_used = Column(String, default="hybrid")
+    status = Column(String, default="indexed")  # indexing / indexed / error
+    error_message = Column(String, nullable=True)
+    coverage_json = Column(Text, nullable=True)  # JSON string of page coverage stats
+    created_at = Column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone.utc))
+
+    kb = relationship("KnowledgeBase", back_populates="docs")
+
+
+class BigChunk(Base):
+    """ParentDocument 检索模式的大块文本存储。"""
+
+    __tablename__ = "big_chunks"
+    __table_args__ = (
+        Index("idx_big_chunks_kb", "kb_id"),
+        Index("idx_big_chunks_doc", "doc_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    big_chunk_id = Column(String, unique=True, index=True, nullable=False)  # {doc_id}#b{section_idx}
+    doc_id = Column(String, nullable=False)
+    kb_id = Column(String, nullable=False)
+    section_title = Column(Text, default="")
+    text = Column(Text, nullable=False)  # 边界截断后的 section 全文
+    page_start = Column(Integer, nullable=True)
+    page_end = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.now(datetime.timezone.utc))
+
+
+class BookmarkFolder(Base):
+    """书签文件夹。"""
+
+    __tablename__ = "bookmark_folders"
+
+    id = Column(String, primary_key=True)
+    name = Column(String, nullable=False)
+    icon = Column(String, default="📁")
+    sort_order = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.datetime.now(datetime.timezone.utc))
+
+    # Use save-update, merge (not delete-orphan) to align with FK ondelete="SET NULL"
+    # When a folder is deleted, bookmarks are preserved with folder_id=NULL
+    bookmarks = relationship("Bookmark", back_populates="folder", cascade="save-update, merge")
+
+
+class Bookmark(Base):
+    """书签（收藏的回答或代码片段）。"""
+
+    __tablename__ = "bookmarks"
+
+    id = Column(String, primary_key=True)
+    folder_id = Column(String, ForeignKey("bookmark_folders.id", ondelete="SET NULL"), nullable=True, index=True)
+    title = Column(String, default="")
+    content = Column(Text, nullable=False)
+    content_type = Column(String, default="text")  # text / code / snippet
+    source_message_id = Column(String, nullable=True)
+    source_session_id = Column(String, nullable=True)
+    tags = Column(JSON, default=list)
+    created_at = Column(DateTime, default=datetime.datetime.now(datetime.timezone.utc))
+
+    folder = relationship("BookmarkFolder", back_populates="bookmarks")
+
+
+class Settings(Base):
+    """全局设置键值存储。"""
+
+    __tablename__ = "settings"
+
+    key = Column(String, primary_key=True)
+    value = Column(Text, nullable=True)
+    updated_at = Column(DateTime, default=datetime.datetime.now(datetime.timezone.utc), onupdate=datetime.datetime.now(datetime.timezone.utc))
+
+
+class Feedback(Base):
+    """消息反馈（👍/👎）。"""
+
+    __tablename__ = "feedback"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    message_id = Column(String, nullable=False, index=True)
+    session_id = Column(String, nullable=False, index=True)
+    rating = Column(Integer, nullable=False)  # 1=👍, -1=👎
+    created_at = Column(DateTime, default=datetime.datetime.now(datetime.timezone.utc))
+
+
+class TokenUsage(Base):
+    """Token 用量记录 — 每次 LLM 调用记录一条。"""
+
+    __tablename__ = "token_usage"
+    __table_args__ = (
+        Index("idx_token_usage_created", "created_at"),
+        Index("idx_token_usage_model", "model"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    model = Column(String, nullable=False, index=True)
+    provider = Column(String, default="", nullable=True)
+    session_id = Column(String, nullable=True, index=True)
+    prompt_tokens = Column(Integer, default=0)
+    completion_tokens = Column(Integer, default=0)
+    total_tokens = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.datetime.now(datetime.timezone.utc))
+
+
+class ToolAudit(Base):
+    """Agent 工具调用审计日志 — 每次工具调用决策记录一条（v3-T1）。"""
+
+    __tablename__ = "tool_audit"
+    __table_args__ = (
+        Index("idx_tool_audit_ts", "timestamp"),
+        Index("idx_tool_audit_session", "session_id"),
+        Index("idx_tool_audit_tool", "tool_name"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    timestamp = Column(DateTime, default=datetime.datetime.now(datetime.timezone.utc))
+    session_id = Column(String, nullable=True, index=True)
+    tool_name = Column(String, nullable=False)
+    args_summary = Column(Text, default="")
+    decision = Column(String, default="")  # allow / ask / deny
+    decision_source = Column(String, default="")  # bypass / risk_level / user / deny_pattern
+    risk_level = Column(String, default="")  # low / medium / high / n/a
+    exit_code = Column(Integer, nullable=True)
+    duration_ms = Column(Integer, nullable=True)
+    error = Column(Text, nullable=True)
+    # industrial-tool-runtime Task 6: extended audit fields
+    call_id = Column(String(64), nullable=True)
+    success = Column(Boolean, default=True)
+    error_type = Column(String(64), nullable=True)

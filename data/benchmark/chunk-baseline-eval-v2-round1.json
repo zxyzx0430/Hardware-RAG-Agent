@@ -1,0 +1,169 @@
+{
+  "timestamp": "20260630_220102",
+  "metadata": {
+    "name": "chunk-baseline-golden-v1",
+    "description": "chunk-baseline-v1 Phase 4 golden Q&A dataset",
+    "created_at": "2026-06-30",
+    "kb_id": "builtin-001",
+    "collection": "hardware-docs-test",
+    "pdfs": [
+      {
+        "doc_id": "12f13dda-4d71-4a4a-9870-fe7e9d7e5062",
+        "source_pdf": "data/pdfs/interface/ch340g_datasheet.pdf",
+        "title": "ch340g_datasheet.pdf"
+      },
+      {
+        "doc_id": "baseline-stm32f4-gpio-exti",
+        "source_pdf": "data/pdfs/mcu/stm32f4_gpio_exti_extract.pdf",
+        "title": "stm32f4_gpio_exti_extract.pdf"
+      },
+      {
+        "doc_id": "a01cb55a-3218-4c85-8115-f153a5916881",
+        "source_pdf": "data/pdfs/mcu/esp32_datasheet.pdf",
+        "title": "esp32_datasheet.pdf"
+      }
+    ]
+  },
+  "config": {
+    "round": 1,
+    "model": "deepseek-v4-flash",
+    "base_url": "https://opencode.ai/zen/go/v1",
+    "judge_model": "deepseek-v4-flash",
+    "judge_base_url": "https://opencode.ai/zen/go/v1",
+    "api_base_url": "http://127.0.0.1:58080/api",
+    "kb_id": "builtin-001",
+    "top_k": 8,
+    "threshold": 0.0,
+    "parallel": 1
+  },
+  "overall": {
+    "average": 0.9506,
+    "weighted": 0.9559,
+    "metrics": {
+      "context_recall": 1.0,
+      "faithfulness": 1.0,
+      "answer_relevancy": 0.91,
+      "context_precision": 0.8922
+    }
+  },
+  "per_pdf": {
+    "data/pdfs/interface/ch340g_datasheet.pdf": {
+      "context_recall": 1.0,
+      "faithfulness": 1.0,
+      "answer_relevancy": 0.91,
+      "context_precision": 0.8922,
+      "_count": 5,
+      "_avg": 0.9506,
+      "_weighted": 0.9559
+    }
+  },
+  "per_question": [
+    {
+      "id": "ch340g-q001",
+      "query": "CH340G 的 VCC 供电电压范围是多少？5V 和 3.3V 工作时分别有什么要求？",
+      "source_pdf": "data/pdfs/interface/ch340g_datasheet.pdf",
+      "question_type": "fact_extraction",
+      "actual_output": "根据知识库中的 CH340G 数据手册（直流特性表），CH340G 的 VCC 供电电压范围如下：\n\n- **5V 操作**：供电电压范围为 **4.5V～5.5V**（典型 5V）。[src4]\n- **3.3V 操作**：供电电压范围为 **3.3V～3.8V**（典型 3.3V）。[src4]\n\n两种工作模式对 V3 引脚的要求不同：\n\n- **5V 工作**：VCC 输入 5V，V3 引脚需外接 **4.7‑20nF** 电容到地以滤波内部 3.3V 参考电压 [src5]（另一描述为接 **0.1μF** 去耦电容 [src6]）。\n- **3.3V 工作**：VCC 输入 3.3V，V3 引脚应 **直接连接至 VCC**（即 V3 和 VCC 同时接 3.3V）[src5][src6]。\n\n注意：绝对最大额定值中 VCC 不得超过 **-0.5V～6.5V**，否则可能损坏芯片 [src4]。",
+      "retrieval_context_count": 8,
+      "scores": {
+        "context_recall": 1.0,
+        "faithfulness": 1.0,
+        "answer_relevancy": 1.0,
+        "context_precision": 0.8178571428571427
+      },
+      "average": 0.9545,
+      "error": "",
+      "latency_seconds": 47.11
+    },
+    {
+      "id": "ch340g-q002",
+      "query": "CH340G XI 引脚外接晶振的频率典型值是多少？",
+      "source_pdf": "data/pdfs/interface/ch340g_datasheet.pdf",
+      "question_type": "fact_extraction",
+      "actual_output": "根据参考文档，CH340G 的 XI 引脚外接晶振的**频率典型值为 12 MHz** [src1][src2][src5]。时序参数表也明确给出典型值为 12.00 MHz [src5][src6]。",
+      "retrieval_context_count": 8,
+      "scores": {
+        "context_recall": 1.0,
+        "faithfulness": 1.0,
+        "answer_relevancy": 1.0,
+        "context_precision": 1.0
+      },
+      "average": 1.0,
+      "error": "",
+      "latency_seconds": 28.98
+    },
+    {
+      "id": "ch340g-q003",
+      "query": "CH340G 支持哪些硬件流控信号？",
+      "source_pdf": "data/pdfs/interface/ch340g_datasheet.pdf",
+      "question_type": "fact_extraction",
+      "actual_output": "根据 CH340G 数据手册，其支持的硬件流控信号（MODEM 联络信号）包括：\n\n- **CTS#**（Clear to Send，清除发送）[src1]\n- **DSR#**（Data Set Ready，数据设备就绪）[src1]\n- **RI#**（Ring Indicator，振铃指示）[src1]\n- **DCD#**（Data Carrier Detect，数据载波检测）[src1]\n- **DTR#**（Data Terminal Ready，数据终端就绪）[src1]\n- **RTS#**（Request to Send，请求发送）[src1]\n\n这些信号均为低电平有效，其功能由计算机应用程序定义和控制。[src5]",
+      "retrieval_context_count": 8,
+      "scores": {
+        "context_recall": 1.0,
+        "faithfulness": 1.0,
+        "answer_relevancy": 0.75,
+        "context_precision": 0.7051587301587302
+      },
+      "average": 0.8638,
+      "error": "",
+      "latency_seconds": 34.18
+    },
+    {
+      "id": "ch340g-q004",
+      "query": "CH340G 的 V3 引脚在 5V 供电时应如何连接？",
+      "source_pdf": "data/pdfs/interface/ch340g_datasheet.pdf",
+      "question_type": "table_query",
+      "actual_output": "CH340G 在 5V 供电时，V3 引脚应通过一个滤波电容连接到地。根据文档，容值要求为 **4.7‑20 nF**（参考 [src1] 的引脚定义表及应用说明），也有文档标注为 **0.1 μF**（参考 [src3] 和 [src6] 的引脚描述/功能说明）。PCB 布局时该电容需靠近 V3 引脚放置（参考 [src4] 的设计注释）。若使用 3.3V 供电，则 V3 应直接连接至 VCC。",
+      "retrieval_context_count": 8,
+      "scores": {
+        "context_recall": 1.0,
+        "faithfulness": 1.0,
+        "answer_relevancy": 0.8,
+        "context_precision": 0.9379251700680271
+      },
+      "average": 0.9345,
+      "error": "",
+      "latency_seconds": 35.57
+    },
+    {
+      "id": "ch340g-q005",
+      "query": "CH340G 引脚表中，TXD 和 RXD 的方向和功能分别是什么？",
+      "source_pdf": "data/pdfs/interface/ch340g_datasheet.pdf",
+      "question_type": "table_query",
+      "actual_output": "根据 CH340G 引脚表，TXD 为**输出（Output）**，功能是 **UART 数据发送输出（UART Data Transmit output）**[src2][src8]；RXD 为**输入（Input）**，功能是 **UART 数据接收输入（UART Data Receive input）**[src2][src8]。",
+      "retrieval_context_count": 8,
+      "scores": {
+        "context_recall": 1.0,
+        "faithfulness": 1.0,
+        "answer_relevancy": 1.0,
+        "context_precision": 1.0
+      },
+      "average": 1.0,
+      "error": "",
+      "latency_seconds": 30.86
+    }
+  ],
+  "lowest_question": {
+    "id": "ch340g-q003",
+    "query": "CH340G 支持哪些硬件流控信号？",
+    "source_pdf": "data/pdfs/interface/ch340g_datasheet.pdf",
+    "question_type": "fact_extraction",
+    "actual_output": "根据 CH340G 数据手册，其支持的硬件流控信号（MODEM 联络信号）包括：\n\n- **CTS#**（Clear to Send，清除发送）[src1]\n- **DSR#**（Data Set Ready，数据设备就绪）[src1]\n- **RI#**（Ring Indicator，振铃指示）[src1]\n- **DCD#**（Data Carrier Detect，数据载波检测）[src1]\n- **DTR#**（Data Terminal Ready，数据终端就绪）[src1]\n- **RTS#**（Request to Send，请求发送）[src1]\n\n这些信号均为低电平有效，其功能由计算机应用程序定义和控制。[src5]",
+    "retrieval_context_count": 8,
+    "scores": {
+      "context_recall": 1.0,
+      "faithfulness": 1.0,
+      "answer_relevancy": 0.75,
+      "context_precision": 0.7051587301587302
+    },
+    "average": 0.8638,
+    "error": "",
+    "latency_seconds": 34.18
+  },
+  "summary": {
+    "total": 5,
+    "successful": 5,
+    "failed": 0
+  }
+}

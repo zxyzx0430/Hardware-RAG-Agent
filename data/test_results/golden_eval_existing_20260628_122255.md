@@ -1,0 +1,28 @@
+# Golden Dataset Evaluation Report
+
+- **Timestamp**: 20260628_122255
+- **Strategy**: {'chunk_method': 'existing', 'chunk_size': 'n/a', 'kb_id': 'kb-b01c8b92'}
+- **LLM Judge**: {'model': 'oc/deepseek-v4-flash', 'base_url': 'https://9router.zxyzx.bbroot.com/v1'}
+- **Total Score**: 0.0/100
+- **Sample Count**: 5
+- **Error Count**: 5
+- **Recall Hit Rate**: 100.0%
+
+## Dimension Scores
+
+| Metric | Score | Weight | Weighted |
+|--------|-------|--------|----------|
+| context_recall | 0.0000 | 30 | 0.0 |
+| faithfulness | 0.0000 | 25 | 0.0 |
+| answer_relevancy | 0.0000 | 25 | 0.0 |
+| context_precision | 0.0000 | 20 | 0.0 |
+
+## Per-Sample Results
+
+| ID | Difficulty | recall_hit | max_sim | match | context_recall | faithfulness | answer_relevancy | context_precision | Weighted | Latency |
+|----|-----------|------------|---------|-------|----------------|-------------|-----------------|-------------------|----------|---------|
+| G001 | 简单 | Y | 0.912 | semantic | 0.00 | 0.00 | 0.00 | 0.00 | 0.0 | 46.9s |
+| G002 | 简单 | Y | 0.848 | semantic | 0.00 | 0.00 | 0.00 | 0.00 | 0.0 | 29.9s |
+| G003 | 中等 | Y | 0.914 | semantic | 0.00 | 0.00 | 0.00 | 0.00 | 0.0 | 32.4s |
+| G004 | 中等 | Y | 0.795 | semantic | 0.00 | 0.00 | 0.00 | 0.00 | 0.0 | 35.5s |
+| G005 | 中等 | Y | 0.918 | semantic | 0.00 | 0.00 | 0.00 | 0.00 | 0.0 | 25.3s |

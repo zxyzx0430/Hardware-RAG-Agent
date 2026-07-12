@@ -1,0 +1,237 @@
+{
+  "timestamp": "20260701_032413",
+  "metadata": {
+    "name": "chunk-baseline-golden-v1",
+    "description": "chunk-baseline-v1 Phase 4 golden Q&A dataset",
+    "created_at": "2026-06-30",
+    "kb_id": "builtin-001",
+    "collection": "hardware-docs-test",
+    "pdfs": [
+      {
+        "doc_id": "12f13dda-4d71-4a4a-9870-fe7e9d7e5062",
+        "source_pdf": "data/pdfs/interface/ch340g_datasheet.pdf",
+        "title": "ch340g_datasheet.pdf"
+      },
+      {
+        "doc_id": "baseline-stm32f4-gpio-exti",
+        "source_pdf": "data/pdfs/mcu/stm32f4_gpio_exti_extract.pdf",
+        "title": "stm32f4_gpio_exti_extract.pdf"
+      },
+      {
+        "doc_id": "a01cb55a-3218-4c85-8115-f153a5916881",
+        "source_pdf": "data/pdfs/mcu/esp32_datasheet.pdf",
+        "title": "esp32_datasheet.pdf"
+      }
+    ]
+  },
+  "config": {
+    "round": 4,
+    "model": "deepseek-v4-flash",
+    "base_url": "https://opencode.ai/zen/go/v1",
+    "judge_model": "deepseek-v4-flash",
+    "judge_base_url": "https://opencode.ai/zen/go/v1",
+    "api_base_url": "http://127.0.0.1:58080/api",
+    "kb_id": "builtin-001",
+    "top_k": 8,
+    "threshold": 0.0,
+    "parallel": 1
+  },
+  "overall": {
+    "average": 0.8432,
+    "weighted": 0.8424,
+    "metrics": {
+      "context_recall": 0.7333,
+      "faithfulness": 0.963,
+      "answer_relevancy": 0.9259,
+      "context_precision": 0.7507
+    }
+  },
+  "per_pdf": {
+    "data/pdfs/mcu/stm32f4_gpio_exti_extract.pdf": {
+      "context_recall": 0.7333,
+      "faithfulness": 0.963,
+      "answer_relevancy": 0.9259,
+      "context_precision": 0.7507,
+      "_count": 9,
+      "_avg": 0.8432,
+      "_weighted": 0.8424
+    }
+  },
+  "per_question": [
+    {
+      "id": "stm32f4-q001",
+      "query": "STM32F4 GPIO 端口复位后的默认模式是什么？",
+      "source_pdf": "data/pdfs/mcu/stm32f4_gpio_exti_extract.pdf",
+      "question_type": "fact_extraction",
+      "actual_output": "根据 STM32F4 参考手册中的 GPIO 寄存器映射表，复位后 **大多数 GPIO 端口（如 GPIOx，x = A..I/J/K 的通用模型）的 `MODER` 寄存器所有位为 `00`**，对应 **输入模式** [src8]。  \n部分端口有例外：  \n- **GPIOA**：PA13（SWDIO）复位值 `01`（输出模式），PA14（SWCLK）和 PA15（JTDI）复位值 `10`（复用功能模式）[src8]。  \n- **GPIOB**：PB14 复位值 `01`（输出模式）[src8]。  \n此外，JTAG/SWD 调试引脚在复位后直接分配为专用调试功能，不受 GPIO 控制器控制 [src2]。  \n\n因此，**STM32F4 GPIO 端口复位后的默认模式以输入模式为主，调试相关引脚除外**。",
+      "retrieval_context_count": 8,
+      "scores": {
+        "context_recall": 1.0,
+        "faithfulness": 1.0,
+        "answer_relevancy": 1.0,
+        "context_precision": 0.125
+      },
+      "average": 0.7812,
+      "error": "",
+      "latency_seconds": 56.01
+    },
+    {
+      "id": "stm32f4-q002",
+      "query": "STM32F4 GPIO 模拟模式下，输出缓冲器、施密特触发器和弱上下拉电阻的状态如何？",
+      "source_pdf": "data/pdfs/mcu/stm32f4_gpio_exti_extract.pdf",
+      "question_type": "fact_extraction",
+      "actual_output": "在 STM32F4 的 GPIO 模拟配置模式下：\n- **输出缓冲器**：禁用 [src1]\n- **施密特触发器**：输入停用（关闭），输出强制为常数“0” [src1]\n- **弱上拉和下拉电阻**：禁用 [src1]",
+      "retrieval_context_count": 8,
+      "scores": {
+        "context_recall": 1.0,
+        "faithfulness": 1.0,
+        "answer_relevancy": 1.0,
+        "context_precision": 1.0
+      },
+      "average": 1.0,
+      "error": "",
+      "latency_seconds": 30.88
+    },
+    {
+      "id": "stm32f4-q003",
+      "query": "STM32F4 EXTI 控制器最多支持多少条外部中断/事件线？",
+      "source_pdf": "data/pdfs/mcu/stm32f4_gpio_exti_extract.pdf",
+      "question_type": "fact_extraction",
+      "actual_output": "根据参考文档，STM32F4 的 EXTI 控制器最多支持 **23 条外部中断/事件线**（输入线 0 至 22）。  \n- `EXTI_RTSR` 和 `EXTI_FTSR` 寄存器的位域 `TRx` 的覆盖范围为位 0 到位 22，共 23 位，分别对应输入线 x（x=0~22）的触发配置 [src1]。  \n\n因此，外部中断/事件线总数为 23 条。",
+      "retrieval_context_count": 8,
+      "scores": {
+        "context_recall": 1.0,
+        "faithfulness": 1.0,
+        "answer_relevancy": 1.0,
+        "context_precision": 1.0
+      },
+      "average": 1.0,
+      "error": "",
+      "latency_seconds": 30.36
+    },
+    {
+      "id": "stm32f4-q004",
+      "query": "如何清除 STM32F4 EXTI 挂起寄存器 EXTI_PR 中的 pending bit？",
+      "source_pdf": "data/pdfs/mcu/stm32f4_gpio_exti_extract.pdf",
+      "question_type": "fact_extraction",
+      "actual_output": "要清除 STM32F4 的 EXTI_PR 寄存器中的挂起位（pending bit），需要向该寄存器中对应的 PRx 位写入 `1`。  \n\n根据参考文档，挂起位的清除方法描述如下：  \n- 对 EXTI_PR 寄存器中对应的位写入 `1` 即可清除该挂起位 [src8]。  \n- 该位通过写 `1` 清零，写入 `1` 后该位被清除 [src8]。  \n\n因此，操作步骤为：**向 EXTI_PR 的相应位（PRx）写 `1`**。",
+      "retrieval_context_count": 8,
+      "scores": {
+        "context_recall": 1.0,
+        "faithfulness": 1.0,
+        "answer_relevancy": 1.0,
+        "context_precision": 0.20833333333333331
+      },
+      "average": 0.8021,
+      "error": "",
+      "latency_seconds": 48.87
+    },
+    {
+      "id": "stm32f4-q005",
+      "query": "STM32F4 GPIOx_MODER 寄存器中，MODERy[1:0] 取 01、10、11 时分别对应什么 I/O 模式？",
+      "source_pdf": "data/pdfs/mcu/stm32f4_gpio_exti_extract.pdf",
+      "question_type": "table_query",
+      "actual_output": "知识库未找到相关文档，无法提供GPIOx_MODER寄存器中MODERy[1:0]取01、10、11时对应的I/O模式。建议查阅STM32F4参考手册（RM0090）中关于GPIOx_MODER寄存器的详细描述。",
+      "retrieval_context_count": 8,
+      "scores": {
+        "context_recall": 0.0,
+        "faithfulness": 0.6666666666666666,
+        "answer_relevancy": 0.3333333333333333,
+        "context_precision": 1.0
+      },
+      "average": 0.5,
+      "error": "",
+      "latency_seconds": 112.43
+    },
+    {
+      "id": "stm32f4-q006",
+      "query": "STM32F4 SWJ-DP 调试端口引脚分配中，PA13、PA14、PA15、PB3、PB4 的默认功能是什么？",
+      "source_pdf": "data/pdfs/mcu/stm32f4_gpio_exti_extract.pdf",
+      "question_type": "table_query",
+      "actual_output": "根据参考文档 [src1] 中的 Table 36 “Flexible SWJ-DP pin assignment”，在复位状态下（Full SWJ (JTAG-DP + SW-DP) - Reset state），PA13、PA14、PA15、PB3、PB4 的默认功能分配如下：\n\n- PA13: JTMS / SWDIO  \n- PA14: JTCK / SWCLK  \n- PA15: JTDI  \n- PB3: JTDO  \n- PB4: NJTRST  \n\n[src1]",
+      "retrieval_context_count": 8,
+      "scores": {
+        "context_recall": 0.0,
+        "faithfulness": 1.0,
+        "answer_relevancy": 1.0,
+        "context_precision": 1.0
+      },
+      "average": 0.75,
+      "error": "",
+      "latency_seconds": 29.37
+    },
+    {
+      "id": "stm32f4-q007",
+      "query": "配置 STM32F4 GPIO 为复用功能，需要设置哪些寄存器，各寄存器的作用是什么？",
+      "source_pdf": "data/pdfs/mcu/stm32f4_gpio_exti_extract.pdf",
+      "question_type": "cross_page",
+      "actual_output": "配置 STM32F4 的 GPIO 为复用功能，通常需要操作以下寄存器（每个 GPIO 端口包含一组相同的寄存器）：\n\n1. **GPIOx_MODER（端口模式寄存器）**  \n   将对应引脚的 `MODERy[1:0]` 位域写入 `10`，使该引脚工作于**复用功能模式**。[src3]\n\n2. **GPIOx_AFRL / GPIOx_AFRH（复用功能选择寄存器）**  \n   根据引脚号选择低 8 位（`AFRL`，引脚 0~7）或高 8 位（`AFRH`，引脚 8~15），将对应 4 位域 `AFRLy[3:0]` / `AFRHy[3:0]` 写入所需复用功能编号（`0000` = AF0 至 `1111` = AF15）。[src7][src8]\n\n3. **GPIOx_OTYPER（输出类型寄存器）**  \n   如果复用功能为**输出**，通过 `OTy` 位设置输出类型：`0` 为推挽输出（复位值），`1` 为开漏输出。[src3]\n\n4. **GPIOx_OSPEEDR（输出速度寄存器）**  \n   如果复用功能为**输出**，通过 `OSPEEDRy[1",
+      "retrieval_context_count": 8,
+      "scores": {
+        "context_recall": 1.0,
+        "faithfulness": 1.0,
+        "answer_relevancy": 1.0,
+        "context_precision": 0.8551587301587301
+      },
+      "average": 0.9638,
+      "error": "",
+      "latency_seconds": 53.4
+    },
+    {
+      "id": "stm32f4-q008",
+      "query": "使用 STM32F4 EXTI 外部中断的完整配置流程是什么？",
+      "source_pdf": "data/pdfs/mcu/stm32f4_gpio_exti_extract.pdf",
+      "question_type": "cross_page",
+      "actual_output": "根据 STM32F4 参考手册（RM0090）提供的寄存器描述，配置 EXTI 外部中断需通过系统配置控制器（SYSCFG）和外部中断/事件控制器（EXTI）完成。以下是基于知识库的完整配置流程：\n\n---\n\n### 1. 选择 EXTI 的 GPIO 源引脚（SYSCFG_EXTICR 寄存器）\n- 将所需 GPIO 端口映射到对应 EXTI 线。  \n- EXTI0–3 由 **SYSCFG_EXTICR1** 配置（地址偏移 0x08）[src1][src6]  \n- EXTI4–7 由 **SYSCFG_EXTICR2** 配置（地址偏移 0x0C）[src1][src6]  \n- EXTI8–11 由 **SYSCFG_EXTICR3** 配置（地址偏移 0x10，参考 [src4]）  \n- 每线占用 4 位（EXTIx[3:0]），编码对应端口：  \n  `0000`=PA[x], `0001`=PB[x], `0010`=PC[x], … `1000`=PI[x] [src1][src4]\n\n### 2. 配置触发边沿（EXTI_RTSR / EXTI_FTSR）\n- ",
+      "retrieval_context_count": 8,
+      "scores": {
+        "context_recall": 0.6,
+        "faithfulness": 1.0,
+        "answer_relevancy": 1.0,
+        "context_precision": 0.8260204081632653
+      },
+      "average": 0.8565,
+      "error": "",
+      "latency_seconds": 48.3
+    },
+    {
+      "id": "stm32f4-q009",
+      "query": "描述 STM32F4 GPIO 复用功能选择框图（Figure 26/27）的主要结构。",
+      "source_pdf": "data/pdfs/mcu/stm32f4_gpio_exti_extract.pdf",
+      "question_type": "image_description",
+      "actual_output": "STM32F4 GPIO 复用功能选择框图（Figure 26/27）的主要结构如下：\n\n*   **复用器与寄存器**：每个 I/O 引脚都有一个 **16 进 1 的多路复用器**，通过 **GPIOx_AFRL[31:0]**（控制引脚 0～7）或 **GPIOx_AFRH[31:0]**（控制引脚 8～15）来选择备选功能，每个引脚对应一个 4‑bit 的 AF 选择域。[src4][src6][src8]\n*   **功能映射**：AF0 为系统功能（默认复位值），AF1～AF13 分配给具体外设，AF15 用于 EVENTOUT。[src8]\n*   **Figure 26（STM32F405xx/07xx/415xx/17xx）典型映射**：\n    *   引脚 0～7 与 8～15 均使用相同的 AF 列表，包括 AF1（TIM1/TIM2）、AF2（TIM3..5）、AF3（TIM8..11）、AF4（I2C1..3）、AF5（SPI1/SPI2）、AF6（SPI3）、AF7（USART1..3）、AF8（USART4..6）、AF9（CAN1/CAN2, TIM1",
+      "retrieval_context_count": 8,
+      "scores": {
+        "context_recall": 1.0,
+        "faithfulness": 1.0,
+        "answer_relevancy": 1.0,
+        "context_precision": 0.7416666666666666
+      },
+      "average": 0.9354,
+      "error": "",
+      "latency_seconds": 36.06
+    }
+  ],
+  "lowest_question": {
+    "id": "stm32f4-q005",
+    "query": "STM32F4 GPIOx_MODER 寄存器中，MODERy[1:0] 取 01、10、11 时分别对应什么 I/O 模式？",
+    "source_pdf": "data/pdfs/mcu/stm32f4_gpio_exti_extract.pdf",
+    "question_type": "table_query",
+    "actual_output": "知识库未找到相关文档，无法提供GPIOx_MODER寄存器中MODERy[1:0]取01、10、11时对应的I/O模式。建议查阅STM32F4参考手册（RM0090）中关于GPIOx_MODER寄存器的详细描述。",
+    "retrieval_context_count": 8,
+    "scores": {
+      "context_recall": 0.0,
+      "faithfulness": 0.6666666666666666,
+      "answer_relevancy": 0.3333333333333333,
+      "context_precision": 1.0
+    },
+    "average": 0.5,
+    "error": "",
+    "latency_seconds": 112.43
+  },
+  "summary": {
+    "total": 9,
+    "successful": 9,
+    "failed": 0
+  }
+}

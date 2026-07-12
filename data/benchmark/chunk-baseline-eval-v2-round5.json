@@ -1,0 +1,227 @@
+{
+  "timestamp": "20260701_030719",
+  "metadata": {
+    "name": "chunk-baseline-golden-v1",
+    "description": "chunk-baseline-v1 Phase 4 golden Q&A dataset",
+    "created_at": "2026-06-30",
+    "kb_id": "builtin-001",
+    "collection": "hardware-docs-test",
+    "pdfs": [
+      {
+        "doc_id": "12f13dda-4d71-4a4a-9870-fe7e9d7e5062",
+        "source_pdf": "data/pdfs/interface/ch340g_datasheet.pdf",
+        "title": "ch340g_datasheet.pdf"
+      },
+      {
+        "doc_id": "baseline-stm32f4-gpio-exti",
+        "source_pdf": "data/pdfs/mcu/stm32f4_gpio_exti_extract.pdf",
+        "title": "stm32f4_gpio_exti_extract.pdf"
+      },
+      {
+        "doc_id": "a01cb55a-3218-4c85-8115-f153a5916881",
+        "source_pdf": "data/pdfs/mcu/esp32_datasheet.pdf",
+        "title": "esp32_datasheet.pdf"
+      }
+    ]
+  },
+  "config": {
+    "round": 5,
+    "model": "deepseek-v4-flash",
+    "base_url": "https://opencode.ai/zen/go/v1",
+    "judge_model": "deepseek-v4-flash",
+    "judge_base_url": "https://opencode.ai/zen/go/v1",
+    "api_base_url": "http://127.0.0.1:58080/api",
+    "kb_id": "builtin-001",
+    "top_k": 8,
+    "threshold": 0.0,
+    "parallel": 1
+  },
+  "overall": {
+    "average": 0.8973,
+    "weighted": 0.9021,
+    "metrics": {
+      "context_recall": 0.8571,
+      "faithfulness": 0.9714,
+      "answer_relevancy": 1.0,
+      "context_precision": 0.7607
+    }
+  },
+  "per_pdf": {
+    "data/pdfs/mcu/esp32_datasheet.pdf": {
+      "context_recall": 0.8571,
+      "faithfulness": 0.9714,
+      "answer_relevancy": 1.0,
+      "context_precision": 0.7607,
+      "_count": 7,
+      "_avg": 0.8973,
+      "_weighted": 0.9021
+    }
+  },
+  "per_question": [
+    {
+      "id": "esp32-q001",
+      "query": "ESP32 Deep-sleep 模式下的典型功耗是多少？哪些内容在 Deep-sleep 期间保持供电？",
+      "source_pdf": "data/pdfs/mcu/esp32_datasheet.pdf",
+      "question_type": "fact_extraction",
+      "actual_output": "根据检索到的文档片段，ESP32 在 Deep-sleep 模式下的功耗与内部是否启用特定模块有关，具体数值如下 [src1][src5]：\n\n- **ULP 协处理器运行**：150 µA  \n- **ULP 传感器监测模式（1% 占空比）**：100 µA  \n- **仅 RTC 定时器 + RTC 内存**：10 µA  \n\n在 Deep-sleep 期间保持供电的部分包括 [src1][src4]：  \n- RTC 内存（RTC memory）  \n- RTC 外设（RTC peripherals）  \n- ULP 协处理器（ULP coprocessor，功能可用）  \n- Wi-Fi 和蓝牙的连接数据也会存储在 RTC 内存中（若之前已建立连接）  \n\n其他模块（如 CPU、Wi-Fi/蓝牙基带和射频等）在 Deep-sleep 下均断电。",
+      "retrieval_context_count": 8,
+      "scores": {
+        "context_recall": 1.0,
+        "faithfulness": 1.0,
+        "answer_relevancy": 1.0,
+        "context_precision": 0.7999999999999999
+      },
+      "average": 0.95,
+      "error": "",
+      "latency_seconds": 42.3
+    },
+    {
+      "id": "esp32-q002",
+      "query": "ESP32 内部 SRAM、RTC SRAM 和 ROM 的容量分别是多少？",
+      "source_pdf": "data/pdfs/mcu/esp32_datasheet.pdf",
+      "question_type": "fact_extraction",
+      "actual_output": "根据知识库信息：\n- **内部 SRAM**：容量为 520 KB [src3]。\n- **RTC SRAM**：总计 16 KB，包含 8 KB 的 RTC FAST Memory 和 8 KB 的 RTC SLOW Memory [src3]。\n- **内部 ROM**：容量为 448 KB [src3]。",
+      "retrieval_context_count": 8,
+      "scores": {
+        "context_recall": 1.0,
+        "faithfulness": 1.0,
+        "answer_relevancy": 1.0,
+        "context_precision": 0.41111111111111115
+      },
+      "average": 0.8528,
+      "error": "",
+      "latency_seconds": 31.84
+    },
+    {
+      "id": "esp32-q003",
+      "query": "ESP32 的推荐工作电压和电流要求是什么？",
+      "source_pdf": "data/pdfs/mcu/esp32_datasheet.pdf",
+      "question_type": "fact_extraction",
+      "actual_output": "根据 ESP32 数据手册，推荐工作电压范围为 **2.3 V 至 3.6 V**，典型值为 **3.3 V** [src1]；若芯片内部集成了 Flash 或 PSRAM，最小工作电压为 **3.0 V** [src2]。推荐供电电流为 **500 mA 或更多** [src1][src2]。",
+      "retrieval_context_count": 8,
+      "scores": {
+        "context_recall": 1.0,
+        "faithfulness": 1.0,
+        "answer_relevancy": 1.0,
+        "context_precision": 1.0
+      },
+      "average": 1.0,
+      "error": "",
+      "latency_seconds": 28.94
+    },
+    {
+      "id": "esp32-q004",
+      "query": "ESP32 有多少个可编程 GPIO？其中包含哪些特殊类型？",
+      "source_pdf": "data/pdfs/mcu/esp32_datasheet.pdf",
+      "question_type": "fact_extraction",
+      "actual_output": "根据现有参考文档片段，**无法统计 ESP32 可编程 GPIO 的确切总数**（引脚表仅列出部分编号，未给出合计值）[src8]。但文档中提到了以下**特殊类型的 GPIO**：\n\n1. **自举配置引脚（Strapping pins）**  \n   GPIO0、GPIO2、MTDI、MTDO、GPIO5 在芯片启动时用于配置启动模式、LDO 电压、U0TXD 打印等功能，复位后可作为普通 GPIO 使用 [src3]。\n\n2. **模拟功能引脚**  \n   - **ADC 输入**：最多可配置测量 18 个引脚的电压，需通过 eFuse 校准 [src6]。  \n   - **DAC 输出**：固定为 GPIO25 和 GPIO26，提供两路 8 位模拟输出 [src6]。  \n   - **触摸传感器（Touch Sensor）**：集成 10 个电容感测 GPIO，可检测触摸或接近 [src6]。\n\n3. **特定外设信号引脚**  \n   - **I2S 时钟引脚**：`I2S0_CLK` 和 `I2S1_CLK` 仅能通过 IO MUX 映射到 GPIO0、U0RXD (",
+      "retrieval_context_count": 8,
+      "scores": {
+        "context_recall": 1.0,
+        "faithfulness": 1.0,
+        "answer_relevancy": 1.0,
+        "context_precision": 0.30952380952380953
+      },
+      "average": 0.8274,
+      "error": "",
+      "latency_seconds": 74.78
+    },
+    {
+      "id": "esp32-q005",
+      "query": "ESP32 的 strapping pins 有哪些？它们的默认上拉/下拉配置分别是什么？",
+      "source_pdf": "data/pdfs/mcu/esp32_datasheet.pdf",
+      "question_type": "table_query",
+      "actual_output": "ESP32 的 Strapping Pins 包括 GPIO0、GPIO2、MTDI、MTDO、GPIO5 [src1]。它们的默认上拉/下拉配置如下 [src1]：\n\n- GPIO0：默认上拉（Pull-up），位值 1\n- GPIO2：默认下拉（Pull-down），位值 0\n- MTDI：默认下拉（Pull-down），位值 0\n- MTDO：默认上拉（Pull-up），位值 1\n- GPIO5：默认上拉（Pull-up），位值 1",
+      "retrieval_context_count": 8,
+      "scores": {
+        "context_recall": 1.0,
+        "faithfulness": 1.0,
+        "answer_relevancy": 1.0,
+        "context_precision": 1.0
+      },
+      "average": 1.0,
+      "error": "",
+      "latency_seconds": 29.32
+    },
+    {
+      "id": "esp32-q006",
+      "query": "ESP32 芯片启动模式由哪些 strapping pin 控制？进入 SPI Boot 和 Joint Download Boot 分别需要什么电平？",
+      "source_pdf": "data/pdfs/mcu/esp32_datasheet.pdf",
+      "question_type": "table_query",
+      "actual_output": "",
+      "retrieval_context_count": 0,
+      "scores": {},
+      "average": 0.0,
+      "error": "ConnectError: [WinError 10061] 由于目标计算机积极拒绝，无法连接。",
+      "latency_seconds": 0.0
+    },
+    {
+      "id": "esp32-q007",
+      "query": "ESP32 的 VDD_SDIO 电源域如何配置？MTDI 和 eFuse 如何影响其输出电压？",
+      "source_pdf": "data/pdfs/mcu/esp32_datasheet.pdf",
+      "question_type": "cross_page",
+      "actual_output": "",
+      "retrieval_context_count": 0,
+      "scores": {},
+      "average": 0.0,
+      "error": "ConnectError: [WinError 10061] 由于目标计算机积极拒绝，无法连接。",
+      "latency_seconds": 0.0
+    },
+    {
+      "id": "esp32-q008",
+      "query": "ESP32 进入 Deep-sleep 后如何保持 GPIO 状态？",
+      "source_pdf": "data/pdfs/mcu/esp32_datasheet.pdf",
+      "question_type": "cross_page",
+      "actual_output": "知识库未找到关于 ESP32 进入 Deep-sleep 后如何保持 GPIO 状态的具体配置步骤。参考文档片段仅提及在 Deep-sleep 模式下当 ULP 协处理器上电时，GPIO 和 RTC I2C 等外设能够操作 [src1][src2]，并且 RTC 外设处于上电状态 [src3][src4]，但未说明如何保持 GPIO 输出电平或上下拉状态的方法。建议查阅 ESP32 官方技术参考手册中关于 RTC GPIO 和低功耗管理的章节。",
+      "retrieval_context_count": 8,
+      "scores": {
+        "context_recall": 0.0,
+        "faithfulness": 0.8,
+        "answer_relevancy": 1.0,
+        "context_precision": 0.9484126984126983
+      },
+      "average": 0.6871,
+      "error": "",
+      "latency_seconds": 72.25
+    },
+    {
+      "id": "esp32-q009",
+      "query": "描述 ESP32 功能框图中的主要模块。",
+      "source_pdf": "data/pdfs/mcu/esp32_datasheet.pdf",
+      "question_type": "image_description",
+      "actual_output": "根据 ESP32 功能框图描述，主要模块可分为以下五个功能组：\n\n1. **外设接口模块**：包括 In-Package Flash or PSRAM、SPI、I2C、I2S、SDIO、UART、TWAI®（CAN 总线）、ETH（以太网）、RMT（红外遥控）、PWM、Touch sensor、DAC、ADC 和 Timers。这些接口通过内部总线与核心处理模块连接。[src1][src2]\n\n2. **核心计算与存储模块**：包含 2（或 1）个 Xtensa® 32-bit LX6 微处理器（负责系统控制与数据处理），以及片上 ROM（存储固件）和 SRAM（运行时数据暂存）。[src1][src2]\n\n3. **无线通信子系统**：  \n   - **蓝牙子系统**：Bluetooth link controller（链路控制器）和 Bluetooth baseband（基带）。  \n   - **Wi-Fi 子系统**：Wi-Fi MAC 和 Wi-Fi baseband。  \n   - **射频前端模块**：RF receive、RF transmit、Clock gener",
+      "retrieval_context_count": 8,
+      "scores": {
+        "context_recall": 1.0,
+        "faithfulness": 1.0,
+        "answer_relevancy": 1.0,
+        "context_precision": 0.8555555555555555
+      },
+      "average": 0.9639,
+      "error": "",
+      "latency_seconds": 56.57
+    }
+  ],
+  "lowest_question": {
+    "id": "esp32-q008",
+    "query": "ESP32 进入 Deep-sleep 后如何保持 GPIO 状态？",
+    "source_pdf": "data/pdfs/mcu/esp32_datasheet.pdf",
+    "question_type": "cross_page",
+    "actual_output": "知识库未找到关于 ESP32 进入 Deep-sleep 后如何保持 GPIO 状态的具体配置步骤。参考文档片段仅提及在 Deep-sleep 模式下当 ULP 协处理器上电时，GPIO 和 RTC I2C 等外设能够操作 [src1][src2]，并且 RTC 外设处于上电状态 [src3][src4]，但未说明如何保持 GPIO 输出电平或上下拉状态的方法。建议查阅 ESP32 官方技术参考手册中关于 RTC GPIO 和低功耗管理的章节。",
+    "retrieval_context_count": 8,
+    "scores": {
+      "context_recall": 0.0,
+      "faithfulness": 0.8,
+      "answer_relevancy": 1.0,
+      "context_precision": 0.9484126984126983
+    },
+    "average": 0.6871,
+    "error": "",
+    "latency_seconds": 72.25
+  },
+  "summary": {
+    "total": 9,
+    "successful": 7,
+    "failed": 2
+  }
+}

@@ -1,0 +1,146 @@
+[
+  {
+    "id": "esp32-q001",
+    "query": "ESP32 Deep-sleep 模式下的典型功耗是多少？哪些内容在 Deep-sleep 期间保持供电？",
+    "expected_answer": "Deep-sleep 模式下功耗为 10 µA；RTC 存储器、RTC 外设和 ULP 协处理器保持供电，Wi-Fi/Bluetooth 连接数据可保存在 RTC 存储器中。",
+    "source_pdf": "data/pdfs/mcu/esp32_datasheet.pdf",
+    "source_pages": [
+      5,
+      30
+    ],
+    "relevant_chunks": [
+      "a01cb55a-3218-4c85-8115-f153a5916881#s62",
+      "a01cb55a-3218-4c85-8115-f153a5916881#s67",
+      "a01cb55a-3218-4c85-8115-f153a5916881#s72"
+    ],
+    "question_type": "fact_extraction"
+  },
+  {
+    "id": "esp32-q002",
+    "query": "ESP32 内部 SRAM、RTC SRAM 和 ROM 的容量分别是多少？",
+    "expected_answer": "ESP32 内部包含 448 KB ROM、520 KB SRAM 以及 16 KB RTC SRAM（其中 8 KB 为 RTC FAST Memory，8 KB 为 RTC SLOW Memory）。",
+    "source_pdf": "data/pdfs/mcu/esp32_datasheet.pdf",
+    "source_pages": [
+      4,
+      26
+    ],
+    "relevant_chunks": [
+      "a01cb55a-3218-4c85-8115-f153a5916881#s58",
+      "a01cb55a-3218-4c85-8115-f153a5916881#s63",
+      "a01cb55a-3218-4c85-8115-f153a5916881#s2"
+    ],
+    "question_type": "fact_extraction"
+  },
+  {
+    "id": "esp32-q003",
+    "query": "ESP32 的推荐工作电压和电流要求是什么？",
+    "expected_answer": "ESP32 工作电压范围为 2.3V~3.6V，推荐单电源 3.3V 供电，建议电源输出电流 500mA 或以上。",
+    "source_pdf": "data/pdfs/mcu/esp32_datasheet.pdf",
+    "source_pages": [
+      19,
+      37
+    ],
+    "relevant_chunks": [
+      "a01cb55a-3218-4c85-8115-f153a5916881#s182",
+      "a01cb55a-3218-4c85-8115-f153a5916881#s158",
+      "a01cb55a-3218-4c85-8115-f153a5916881#s163"
+    ],
+    "question_type": "fact_extraction"
+  },
+  {
+    "id": "esp32-q004",
+    "query": "ESP32 有多少个可编程 GPIO？其中包含哪些特殊类型？",
+    "expected_answer": "ESP32 有 34 个可编程 GPIO，包括 5 个 strapping GPIO、6 个 input-only GPIO，以及用于片内 flash/PSRAM 的 6 个 GPIO。",
+    "source_pdf": "data/pdfs/mcu/esp32_datasheet.pdf",
+    "source_pages": [
+      4,
+      37
+    ],
+    "relevant_chunks": [
+      "a01cb55a-3218-4c85-8115-f153a5916881#s182",
+      "a01cb55a-3218-4c85-8115-f153a5916881#s9",
+      "a01cb55a-3218-4c85-8115-f153a5916881#s117"
+    ],
+    "question_type": "fact_extraction"
+  },
+  {
+    "id": "esp32-q005",
+    "query": "ESP32 的 strapping pins 有哪些？它们的默认上拉/下拉配置分别是什么？",
+    "expected_answer": "5 个 strapping pins 为 GPIO0（默认上拉，bit=1）、GPIO2（默认下拉，bit=0）、MTDI（默认下拉，bit=0）、MTDO（默认上拉，bit=1）、GPIO5（默认上拉，bit=1）。",
+    "source_pdf": "data/pdfs/mcu/esp32_datasheet.pdf",
+    "source_pages": [
+      22
+    ],
+    "relevant_chunks": [
+      "a01cb55a-3218-4c85-8115-f153a5916881#s47",
+      "a01cb55a-3218-4c85-8115-f153a5916881#s48",
+      "a01cb55a-3218-4c85-8115-f153a5916881#s182"
+    ],
+    "question_type": "table_query"
+  },
+  {
+    "id": "esp32-q006",
+    "query": "ESP32 芯片启动模式由哪些 strapping pin 控制？进入 SPI Boot 和 Joint Download Boot 分别需要什么电平？",
+    "expected_answer": "启动模式由 GPIO0 和 GPIO2 控制：SPI Boot 模式需要 GPIO0=1（GPIO2 任意值）；Joint Download Boot 模式需要 GPIO0=0 且 GPIO2=0。",
+    "source_pdf": "data/pdfs/mcu/esp32_datasheet.pdf",
+    "source_pages": [
+      23
+    ],
+    "relevant_chunks": [
+      "a01cb55a-3218-4c85-8115-f153a5916881#s50",
+      "a01cb55a-3218-4c85-8115-f153a5916881#s16",
+      "a01cb55a-3218-4c85-8115-f153a5916881#s182"
+    ],
+    "question_type": "table_query"
+  },
+  {
+    "id": "esp32-q007",
+    "query": "ESP32 的 VDD_SDIO 电源域如何配置？MTDI 和 eFuse 如何影响其输出电压？",
+    "expected_answer": "VDD_SDIO 由内部 LDO 供电，默认通过 MTDI 在复位时选择：MTDI=0 时 VDD_SDIO 接 1.8V LDO，MTDI=1 时连接 VDD3P3_RTC。若 EFUSE_SDIO_FORCE=1，则由 EFUSE_SDIO_TIEH 决定：0 接 1.8V，1 接 VDD3P3_RTC。",
+    "source_pdf": "data/pdfs/mcu/esp32_datasheet.pdf",
+    "source_pages": [
+      18,
+      22,
+      24
+    ],
+    "relevant_chunks": [
+      "a01cb55a-3218-4c85-8115-f153a5916881#s53",
+      "a01cb55a-3218-4c85-8115-f153a5916881#s41",
+      "a01cb55a-3218-4c85-8115-f153a5916881#s54"
+    ],
+    "question_type": "cross_page"
+  },
+  {
+    "id": "esp32-q008",
+    "query": "ESP32 进入 Deep-sleep 后如何保持 GPIO 状态？",
+    "expected_answer": "进入 Deep-sleep 前可通过 GPIO hold 功能锁定引脚状态；此外 RTC 存储器和 ULP 协处理器在 Deep-sleep 期间保持供电，可用于维护状态或在唤醒后恢复。",
+    "source_pdf": "data/pdfs/mcu/esp32_datasheet.pdf",
+    "source_pages": [
+      30,
+      31,
+      37,
+      38
+    ],
+    "relevant_chunks": [
+      "a01cb55a-3218-4c85-8115-f153a5916881#s67",
+      "a01cb55a-3218-4c85-8115-f153a5916881#s62",
+      "a01cb55a-3218-4c85-8115-f153a5916881#s72"
+    ],
+    "question_type": "cross_page"
+  },
+  {
+    "id": "esp32-q009",
+    "query": "描述 ESP32 功能框图中的主要模块。",
+    "expected_answer": "功能框图包含：Xtensa LX6 单/双核 CPU、448KB ROM、520KB SRAM、16KB RTC SRAM、2.4GHz Wi-Fi MAC/基带/射频、Bluetooth/Bluetooth LE 控制器、PMU、RTC、ULP 协处理器、时钟发生器、外设接口（SPI/I2S/I2C/UART/SDIO/TWAI/ETH/RMT/PWM/ADC/DAC/Touch）等。",
+    "source_pdf": "data/pdfs/mcu/esp32_datasheet.pdf",
+    "source_pages": [
+      2
+    ],
+    "relevant_chunks": [
+      "a01cb55a-3218-4c85-8115-f153a5916881#s163",
+      "a01cb55a-3218-4c85-8115-f153a5916881#s182",
+      "a01cb55a-3218-4c85-8115-f153a5916881#s86"
+    ],
+    "question_type": "image_description"
+  }
+]

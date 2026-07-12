@@ -1,0 +1,89 @@
+The Data Sheet of CH340 (the first)   
+     2 
+3 Package 
+Package shape Width of plastic 
+Pitch of Pin 
+Instruction of package 
+Ordering type
+SOP-16 
+3.9mm 
+150mil 1.27mm
+50mil 
+Small outline package of 16-pin 
+CH340G 
+SOP-16 
+3.9mm 
+150mil 1.27mm
+50mil 
+Small outline package of 16-pin 
+CH340C 
+SOP-16 
+3.9mm 
+150mil 1.27mm
+50mil 
+Small outline package of 16-pin 
+CH340B 
+MSOP-10 
+3.0mm 
+118mil 0.50mm 19.7mil
+Shrink small outline package of 10-pin 
+CH340E 
+SSOP-20 
+5.30mm 209mil 0.65mm
+25mil 
+Shrink small outline package of 20-pin 
+CH340T 
+SSOP-20 
+5.30mm 209mil 0.65mm
+25mil 
+Shrink small outline package of 20-pin 
+CH340R 
+Model differences: 
+CH340C, CH340E and CH340B have built-in crystal, no external crystal; 
+CH340B also has built-in EEPROM used to configure the serial number,etc.Some functions can be customized. 
+CH340R provides reverse polarity TXD and MODEM signals. (No spot) 
+4. Pins
+SSOP20 
+Pin No. 
+SOP16 
+Pin No. 
+MSOP10 
+Pin No. 
+Pin Name
+Pin Type 
+Pin Description (description in bracket is only about 
+CH340R) 
+19 
+16 
+7 
+VCC 
+POWER 
+Positive power input port, requires an external 0.1uF power
+decoupling capacitor 
+8 
+1 
+3 
+GND 
+POWER 
+Public ground, ground connection for USB 
+5 
+4 
+NONE 
+V3 
+POWER 
+Connect to VCC to input external power when 3.3V power
+supply, connect to 0.1uF decoupling capacitor when 5V 
+power supply 
+XI 
+IN 
+CH340T/R/G: Input of crystal oscillator, connect to crystal
+and capacitor 
+NC. 
+NONE 
+CH340C: No Connection, must be suspended 
+9 
+7 
+NONE 
+RST# 
+IN 
+CH340B: Input of external reset, active low, built-in 

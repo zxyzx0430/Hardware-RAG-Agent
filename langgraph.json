@@ -1,0 +1,7 @@
+{
+  "dependencies": ["./backend"],
+  "graphs": {
+    "hardware_agent": "./backend/src/agent/langgraph_factory.py:create_agent_for_studio"
+  },
+  "env": "backend/.env"
+}

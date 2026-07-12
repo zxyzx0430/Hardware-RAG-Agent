@@ -1,0 +1,375 @@
+/* ── File tree specific styles ── */
+
+.explorer-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.explorer-search-input {
+  flex: 1;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 12px;
+  outline: none;
+}
+
+.explorer-search-input:focus {
+  border-color: var(--primary);
+}
+
+.explorer-search-count {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--muted-fg);
+  white-space: nowrap;
+}
+
+.explorer-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.explorer-open-btn,
+.explorer-recent-toggle,
+.explorer-follow-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--card-fg);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.explorer-open-btn:hover,
+.explorer-recent-toggle:hover:not(:disabled),
+.explorer-follow-btn:hover {
+  background: var(--primary);
+  color: var(--primary-fg);
+  border-color: var(--primary);
+}
+
+.explorer-follow-btn.active {
+  background: var(--primary);
+  color: var(--primary-fg);
+  border-color: var(--primary);
+}
+
+.explorer-recent-toggle:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.explorer-recent-wrapper {
+  position: relative;
+}
+
+.explorer-recent-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 220px;
+  max-width: 320px;
+  max-height: 240px;
+  overflow: auto;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-md);
+  z-index: 100;
+}
+
+.explorer-recent-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: var(--card-fg);
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.explorer-recent-item:last-child {
+  border-bottom: none;
+}
+
+.explorer-recent-item:hover {
+  background: var(--muted);
+}
+
+.explorer-recent-name {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.explorer-recent-path {
+  font-size: 11px;
+  color: var(--muted-fg);
+  word-break: break-all;
+}
+
+.explorer-root-hint {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted-fg);
+  font-size: 11px;
+}
+
+.explorer-loading {
+  padding: 16px;
+  text-align: center;
+  color: var(--muted-fg);
+  font-size: 13px;
+}
+
+.explorer-tree {
+  padding: 4px 0;
+  font-size: 13px;
+}
+
+.explorer-tree-empty {
+  padding: 16px;
+  text-align: center;
+  color: var(--muted-fg);
+  font-size: 13px;
+}
+
+.explorer-tree-node {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.explorer-tree-node:hover {
+  background: var(--muted);
+}
+
+.explorer-tree-node.is-highlighted {
+  background: var(--warn);
+  color: var(--warn-fg, var(--fg));
+}
+
+.explorer-tree-node.is-drag-over {
+  background: var(--primary);
+  color: var(--primary-fg);
+}
+
+.explorer-tree-node.is-file:not(.is-text) {
+  opacity: 0.7;
+}
+
+.explorer-tree-chevron,
+.explorer-tree-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--muted-fg);
+}
+
+.explorer-tree-icon {
+  font-size: 12px;
+}
+
+.explorer-tree-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.explorer-tree-match {
+  background: var(--warn);
+  color: var(--warn-fg, var(--fg));
+  border-radius: 2px;
+  padding: 0 1px;
+  font-weight: 500;
+}
+
+.explorer-tree-rename-input {
+  flex: 1;
+  padding: 2px 6px;
+  border: 1px solid var(--primary);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 13px;
+  outline: none;
+}
+
+.explorer-tree-create-row {
+  cursor: default;
+}
+
+/* Multi-selection highlight (blue background). */
+.explorer-tree-node.is-selected,
+.explorer-tree-node.is-selected:hover {
+  background: var(--primary);
+  color: var(--primary-fg);
+}
+
+/* Dragging visual feedback. */
+.explorer-tree-node.is-dragging {
+  opacity: 0.6;
+}
+
+.explorer-tree-drag-hint {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--primary);
+  color: var(--primary-fg);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+/* Keyboard navigation focus ring. */
+.explorer-tree-node:focus,
+.explorer-tree-node.is-focused {
+  outline: 1px solid var(--primary);
+  outline-offset: -1px;
+}
+
+/* SKIP_DIRS hint: gray italic suffix for skipped directories. */
+.explorer-tree-skipped-hint {
+  color: var(--muted-fg);
+  font-size: 11px;
+  font-style: italic;
+  margin-left: 4px;
+}
+
+/* "Show more" button for directories exceeding the render cap. */
+.explorer-tree-more {
+  display: block;
+  width: 100%;
+  padding: 4px 12px;
+  border: none;
+  background: transparent;
+  color: var(--primary);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.explorer-tree-more:hover {
+  background: var(--muted);
+}
+
+/* Expand-all / collapse-all toolbar buttons. */
+.explorer-toolbar-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--card-fg);
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+
+.explorer-toolbar-btn:hover:not(:disabled) {
+  background: var(--primary);
+  color: var(--primary-fg);
+  border-color: var(--primary);
+}
+
+.explorer-toolbar-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* SSE watch connection status indicator. */
+.explorer-watch-dot {
+  margin-left: auto;
+  font-size: 10px;
+  line-height: 1;
+}
+
+.explorer-watch-dot.on {
+  color: #22c55e;
+}
+
+.explorer-watch-dot.off {
+  color: var(--muted-fg);
+}
+
+/* Virtual scrolling container. */
+.explorer-virtual-tree {
+  height: 100%;
+}
+
+.explorer-virtual-tree:focus {
+  outline: none;
+}
+
+.explorer-virtual-tree .explorer-tree-node {
+  width: 100%;
+}
+
+/* Loading / error hints for lazy directories. */
+.explorer-tree-loading-hint {
+  margin-left: 6px;
+  font-size: 11px;
+}
+
+.explorer-tree-error-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  color: var(--destructive, #ef4444);
+  font-size: 12px;
+}
+
+.explorer-tree-empty-hint {
+  padding: 4px 12px;
+  color: var(--muted-fg);
+  font-size: 12px;
+}
+
+.explorer-tree-retry-btn {
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.explorer-tree-retry-btn:hover {
+  background: var(--muted);
+}

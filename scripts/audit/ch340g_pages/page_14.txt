@@ -1,0 +1,15 @@
+The Data Sheet of CH340 (the first)   
+    8 
+7.3 USB to RS232 Converter Configuration (Simplified version using R232) 
+The image above is USB to RS232 converter design too, the function of this circuit is the same with 7.2 section 
+except the range of output RS232 is narrower. When R232 pin is driven high, the assistant RS232 function will be 
+enabled, just need to add some diodes, transistors, resistors and capacitors, the special level conversion chip U5 in 
+section 7.2 could be replaced and the hardware cost is lower. 
+7.4 USB to Infrared Adapter 
+The image above is USB to infrared adapter design is composed with USB convert IrDA infrared chip 
+CH340R and infrared transceiver U14 (ZHX1810/HSDL3000 etc).The resistor R13 is used to weaken influence of 
+large current in infrared transmitting. The current limiting resistor R14  should be adjusted according to the 
+manufacturer’s recommended value of the infrared transceiver U14. 
+7.5. USB to RS485 Converter Configuration 
+The TNOW pin can be used to control DE (high active send enable) and RE# (low active receive enable) 
+pin of RS485 transceiver. 

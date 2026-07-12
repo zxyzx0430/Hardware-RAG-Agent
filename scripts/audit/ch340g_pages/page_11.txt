@@ -1,0 +1,62 @@
+The Data Sheet of CH340 (the first)   
+   5 
+Data  transfer pins contain: TXD and RXD pin. RXD  keeps high when UART  reception  is  idle. 
+For CH340G/C/T/R chip, If R232 pin is driven high, assistant RS232 function will be enabled, an 
+internal inverter will automatically insert to the RXD pin , and the pin becomes low by default. When 
+UART transmission is idle, the TXD pin of CH340G/C/B/T keeps high, while CH340R keeps low. 
+MODEM liaison signal pins contain: CTS#, DSR#, RI#, DCD# and RTS#. All these MODEM liaison 
+signal are controlled and function defined by computer applications. 
+Assistant pins contain: IR#, R232, CK0, ACT# and TNOW. When IR# is low-level, infrared serial 
+interface mode is enabled. R232 pin is used to control assistant RS232 function. If R232 pin is driven 
+high, the RXD pin input will be reversed automatically. ACT# pin is USB device configuration 
+complete status output (such as USB infrared adapter ready). TNOW pin indicates CH340 is 
+transmitting data from UART when it is high-level and becomes low when transmit over. In RS485 
+and other half-duplex mode, TNOW could be used to indicate UART transmit-receive status. IR# and 
+R232 are detected only once when chip powered on and reset. 
+CH340 has built-in separate transmit-receive buffer and supports simplex, half-duplex and full 
+duplex UART communication. Serial data contains one low-level start bit , 5, 6, 7 or 8 data bits and 1 
+or 2 high-level stop bits, supports  odd/even/mark/space check. CH340 supports common baud rate: 
+50, 75, 100, 110, 134.5, 150, 300, 600, 900, 1200, 1800, 2400, 3600, 4800, 9600, 14400, 19200, 
+33600, 38400, 56000, 57600, 76800, 115200, 128000, 153600, 230400, 460800, 921600,
+1500000,  2000000 etc. 
+The baud rate error of CH340 UART reception allows not less than 2%, the baud rate error of 
+CH340G/CH340T/CH340R UART transmission is less than 0.3%, less than 1% for CH340C/CH340E/
+CH340B.
+In the Windows operation system, CH340 driver can emulate standard serial port. So the mostly 
+original serial applications are totally compatible, without any modification.
+CH340 can be used to upgrade the serial interface peripherals, or expand extra serial port for computers via 
+USB bus, through external level conversion chip provide further RS232, RS485, RS422 interface, etc. 
+Only need to add infrared transceiver, CH340R can expand SIR infrared adapter for computer via USB bus, 
+realize infrared communication between computer and peripheral equipment that comply with IrDA specifications. 
+6. Parameter
+6.1 Absolute maximum rating (Critical or exceeding absolute maximum can cause permanent damage to device) 
+Name 
+Parameter Description 
+Min. 
+Max. 
+Units 
+CH340G/CH340T/CH340R 
+-40 
+85 
+℃
+TA 
+Ambient temperature 
+CH340C/CH340E/CH340B 
+-20 
+70 
+℃
+TS 
+Storage temperature 
+-55 
+125 
+℃
+VCC 
+Supply Voltage(VCC connects to power, GND to ground) 
+-0.5 
+6.0 
+V 
+VIO 
+The voltage of input or output pin 
+-0.5 
+VCC+0.5 
+V 

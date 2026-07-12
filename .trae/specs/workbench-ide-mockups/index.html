@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hardware RAG Agent — IDE 四栏布局（优化版 C）</title>
+<style>
+  :root {
+    --font-size: 14px;
+    --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+    --font-mono: 'JetBrains Mono', monospace;
+    --bg: #F7F8FA;
+    --fg: #1C1E26;
+    --card: #FFFFFF;
+    --card-fg: #1C1E26;
+    --primary: #3B63D4;
+    --primary-fg: #FFFFFF;
+    --secondary: #EEF0F5;
+    --secondary-fg: #3A3D4A;
+    --muted: #F0F1F5;
+    --muted-fg: #8A8FA8;
+    --accent: #E8EDFB;
+    --accent-fg: #2B4FC7;
+    --border: rgba(28,30,38,0.09);
+    --hover-bg: rgba(0,0,0,0.04);
+    --active-bg: rgba(0,0,0,0.08);
+    --shadow-sm: 0 2px 8px rgba(0,0,0,0.15);
+    --radius: 0.375rem;
+  }
+  .dark {
+    --bg: #151518;
+    --fg: #e8e8ec;
+    --card: #202024;
+    --card-fg: #e8e8ec;
+    --primary: #4F7FFF;
+    --primary-fg: #FFFFFF;
+    --secondary: #26262a;
+    --secondary-fg: #d0d0d6;
+    --muted: #2a2a2f;
+    --muted-fg: #8b8b95;
+    --accent: rgba(79,127,255,0.15);
+    --accent-fg: #4F7FFF;
+    --border: rgba(255,255,255,0.08);
+    --hover-bg: rgba(255,255,255,0.06);
+    --active-bg: rgba(255,255,255,0.1);
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: var(--font-sans);
+    font-size: var(--font-size);
+    color: var(--fg);
+    background: var(--bg);
+    overflow: hidden;
+  }
+  button { font-family: inherit; cursor: pointer; border: none; background: transparent; color: inherit; }
+
+  /* Top bar */
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 12px; background: var(--card); border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .topbar-title { font-size: 13px; font-weight: 500; }
+  .theme-toggle { padding: 5px 10px; border-radius: 4px; border: 1px solid var(--border); font-size: 12px; }
+
+  /* App root */
+  .app { display: flex; flex: 1; min-height: 0; overflow: hidden; }
+
+  /* IconNav */
+  .icon-nav {
+    width: 48px; padding: 12px 0; border-right: 1px solid var(--border);
+    background: var(--card); flex-shrink: 0; display: flex; flex-direction: column; align-items: center; gap: 4px;
+  }
+  .nav-logo { width: 28px; height: 28px; border-radius: 6px; background: var(--primary); display: flex; align-items: center; justify-content: center; color: var(--primary-fg); font-weight: 700; font-size: 12px; }
+  .nav-btn { width: 36px; height: 32px; border-radius: 4px; display: flex; align-items: center; justify-content: center; color: var(--muted-fg); }
+  .nav-btn:hover { background: var(--hover-bg); color: var(--fg); }
+  .nav-btn.active { background: var(--accent); color: var(--accent-fg); }
+  .nav-divider { width: 24px; border-top: 1px solid var(--border); margin: 8px 0; }
+  .nav-bottom { margin-top: auto; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+
+  /* Panels */
+  .panel { background: var(--card); display: flex; flex-direction: column; overflow: hidden; }
+  .panel-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: 12px; font-weight: 500; color: var(--fg);
+  }
+  .toolbar-btn { padding: 4px 8px; border-radius: 4px; font-size: 11px; color: var(--muted-fg); border: 1px solid var(--border); }
+  .toolbar-btn:hover { background: var(--hover-bg); color: var(--fg); }
+
+  /* Left panel: sessions */
+  .left-panel { width: 240px; flex-shrink: 0; border-right: 1px solid var(--border); }
+  .session-item { padding: 8px 10px; border-radius: 4px; margin: 0 6px 2px; font-size: 12px; cursor: pointer; }
+  .session-item:hover { background: var(--hover-bg); }
+  .session-item.active { background: var(--accent); color: var(--accent-fg); }
+  .session-title { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .session-meta { font-size: 11px; color: var(--muted-fg); margin-top: 2px; }
+
+  /* Main area: chat */
+  .main-area { flex: 1; display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
+  .chat-topbar {
+    height: 36px; display: flex; align-items: center; justify-content: center;
+    border-bottom: 1px solid var(--border); background: var(--card); font-size: 13px; font-weight: 500;
+  }
+  .chat-area { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 16px; }
+  .message { max-width: 80%; padding: 10px 12px; border-radius: var(--radius); font-size: 13px; line-height: 1.55; }
+  .message.user { align-self: flex-end; background: var(--primary); color: var(--primary-fg); }
+  .message.assistant { align-self: flex-start; background: var(--card); border: 1px solid var(--border); }
+  .input-bar {
+    padding: 10px 12px; border-top: 1px solid var(--border); background: var(--card);
+    display: flex; gap: 8px;
+  }
+  .input-bar input { flex: 1; padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); color: var(--fg); outline: none; }
+  .input-bar button { padding: 8px 14px; border-radius: var(--radius); background: var(--primary); color: var(--primary-fg); }
+
+  /* Resizer */
+  .resizer { width: 4px; cursor: col-resize; background: transparent; position: relative; flex-shrink: 0; }
+  .resizer:hover { background: var(--primary); opacity: 0.3; }
+
+  /* Right panel: workbench / content / file */
+  .right-panel { width: 320px; flex-shrink: 0; border-left: 1px solid var(--border); }
+  .right-tabs { display: flex; border-bottom: 1px solid var(--border); }
+  .right-tab {
+    flex: 1; padding: 8px 6px; font-size: 12px; color: var(--muted-fg);
+    border-bottom: 2px solid transparent; white-space: nowrap;
+  }
+  .right-tab:hover { color: var(--fg); }
+  .right-tab.active { color: var(--accent-fg); border-bottom-color: var(--primary); background: var(--accent); }
+  .right-pane { display: none; flex: 1; flex-direction: column; min-height: 0; }
+  .right-pane.active { display: flex; }
+
+  /* File tab content */
+  .file-tab-meta {
+    padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: 11px; color: var(--muted-fg);
+    display: flex; align-items: center; gap: 8px;
+  }
+  .file-tab-path { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .file-tab-content {
+    flex: 1; overflow: auto; padding: 12px; font-family: var(--font-mono); font-size: 12px;
+    line-height: 1.6; background: var(--card); white-space: pre;
+  }
+  .file-tab-empty { color: var(--muted-fg); display: flex; align-items: center; justify-content: center; height: 100%; }
+
+  /* Fourth panel: explorer */
+  .fourth-panel { width: 240px; flex-shrink: 0; border-left: 1px solid var(--border); background: var(--card); display: flex; flex-direction: column; }
+  .file-tree { overflow-y: auto; font-size: 12px; padding: 4px 0; flex: 1; }
+  .tree-node { user-select: none; }
+  .tree-row {
+    display: flex; align-items: center; gap: 6px;
+    padding: 4px 10px; cursor: pointer; color: var(--fg);
+  }
+  .tree-row:hover { background: var(--hover-bg); }
+  .tree-row.active { background: var(--accent); color: var(--accent-fg); }
+  .tree-row .chevron { width: 12px; height: 12px; color: var(--muted-fg); transition: transform 0.15s; }
+  .tree-row .chevron.collapsed { transform: rotate(-90deg); }
+  .tree-row .icon { width: 14px; height: 14px; color: var(--muted-fg); }
+  .tree-row .icon.folder { color: #C4793B; }
+  .tree-children { padding-left: 14px; }
+
+  /* Placeholder panes */
+  .placeholder { padding: 12px; color: var(--muted-fg); font-size: 12px; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <span class="topbar-title">优化版 C：独立第四栏 · 文件在右侧面板「文件」tab 打开</span>
+  <button class="theme-toggle" id="themeToggle">切换暗黑</button>
+</div>
+
+<div class="app">
+  <!-- 1. IconNav -->
+  <div class="icon-nav">
+    <div class="nav-logo">HR</div>
+    <div class="nav-btn active" title="聊天">💬</div>
+    <div class="nav-btn" title="知识库">📚</div>
+    <div class="nav-btn" title="设置">⚙️</div>
+    <div class="nav-divider"></div>
+    <div class="nav-bottom">
+      <div class="nav-btn" title="帮助">❓</div>
+      <div class="nav-btn" title="设置">⚙</div>
+    </div>
+  </div>
+
+  <!-- 2. 左侧：会话历史 -->
+  <div class="panel left-panel">
+    <div class="panel-header">会话 <button class="toolbar-btn">+ 新建</button></div>
+    <div class="session-item active"><div class="session-title">ESP32-S3 的 GPIO</div><div class="session-meta">昨天 · 4 条消息</div></div>
+    <div class="session-item"><div class="session-title">STM32F103 ADC</div><div class="session-meta">周日 · 6 条消息</div></div>
+    <div class="session-item"><div class="session-title">GPS NEO-6M 接线</div><div class="session-meta">周日 · 44 条消息</div></div>
+  </div>
+
+  <div class="resizer"></div>
+
+  <!-- 3. 中间：Agent 主对话 -->
+  <div class="main-area">
+    <div class="chat-topbar">ESP32-S3 的 GPIO 有几个</div>
+    <div class="chat-area">
+      <div class="message user">ESP32-S3 的 GPIO 有几个？</div>
+      <div class="message assistant">实际可自由使用的 GPIO 约为 22~30 个，具体取决于封装和 Flash 配置。</div>
+    </div>
+    <div class="input-bar"><input placeholder="向硬件文档提问..." /><button>发送</button></div>
+  </div>
+
+  <div class="resizer"></div>
+
+  <!-- 4. 右侧：工作台 / 对话内容 / 文件 -->
+  <div class="panel right-panel">
+    <div class="right-tabs">
+      <button class="right-tab" data-pane="workbench">工作台</button>
+      <button class="right-tab active" data-pane="content">对话内容</button>
+      <button class="right-tab" data-pane="file">文件</button>
+    </div>
+    <div class="right-pane" id="pane-workbench">
+      <div class="placeholder">串口 / 接线图 / 编译日志 / 引脚审计等工具面板</div>
+    </div>
+    <div class="right-pane active" id="pane-content">
+      <div class="placeholder">来源引用 / 检索片段 / 待办清单</div>
+    </div>
+    <div class="right-pane" id="pane-file">
+      <div class="file-tab-meta">
+        <span id="fileTabName">未打开文件</span>
+        <span class="file-tab-path" id="fileTabPath">点击最右侧资源管理器中的文件查看</span>
+      </div>
+      <div class="file-tab-content" id="fileTabContent"><div class="file-tab-empty">暂无打开的文件</div></div>
+    </div>
+  </div>
+
+  <div class="resizer"></div>
+
+  <!-- 5. 最右侧：资源管理器（独立第四栏） -->
+  <div class="fourth-panel">
+    <div class="panel-header"><span>资源管理器</span> <button class="toolbar-btn" id="openFolderBtn">打开文件夹</button></div>
+    <div class="file-tree" id="tree"></div>
+  </div>
+</div>
+
+<script>
+const sampleFiles = [
+  { name: 'agent', type: 'folder', path: 'agent', children: [
+    { name: 'backend', type: 'folder', path: 'agent/backend', children: [
+      { name: 'app', type: 'folder', path: 'agent/backend/app', children: [
+        { name: 'api', type: 'folder', path: 'agent/backend/app/api', children: [
+          { name: 'auth.py', type: 'file', path: 'agent/backend/app/api/auth.py', lang: 'python', content: '# API Key 管理\nfrom fastapi import APIRouter\n\nrouter = APIRouter(prefix="/api/auth")' },
+          { name: 'chat_routes.py', type: 'file', path: 'agent/backend/app/api/chat_routes.py', lang: 'python', content: '# SSE 聊天路由\nfrom fastapi import Request\n\n@router.get("/chat")\nasync def chat_sse(request: Request):\n    ...' },
+          { name: 'build_routes.py', type: 'file', path: 'agent/backend/app/api/build_routes.py', lang: 'python', content: '# 编译烧录路由\nfrom src.hardware.pio_runner import compile_firmware\n\n@router.post("/build")\nasync def build(req: BuildRequest):\n    ...' }
+        ]},
+        { name: 'main.py', type: 'file', path: 'agent/backend/app/main.py', lang: 'python', content: '# FastAPI 入口\nfrom fastapi import FastAPI\n\napp = FastAPI()' }
+      ]},
+      { name: 'src', type: 'folder', path: 'agent/backend/src', children: [
+        { name: 'agent', type: 'folder', path: 'agent/backend/src/agent', children: [
+          { name: 'agent_factory.py', type: 'file', path: 'agent/backend/src/agent/agent_factory.py', lang: 'python', content: '# Agent 工厂\nfrom langgraph.prebuilt import create_react_agent\n\ndef build_agent():\n    return create_react_agent(...)' },
+          { name: 'prompts.py', type: 'file', path: 'agent/backend/src/agent/prompts.py', lang: 'python', content: '# System prompt 常量\nSYSTEM_PROMPT = "..."' }
+        ]},
+        { name: 'hardware', type: 'folder', path: 'agent/backend/src/hardware', children: [
+          { name: 'pio_runner.py', type: 'file', path: 'agent/backend/src/hardware/pio_runner.py', lang: 'python', content: '# PlatformIO 封装\nimport asyncio\n\nasync def compile_firmware(req):\n    ...' }
+        ]}
+      ]}
+    ]},
+    { name: 'frontend', type: 'folder', path: 'agent/frontend', children: [
+      { name: 'src', type: 'folder', path: 'agent/frontend/src', children: [
+        { name: 'components', type: 'folder', path: 'agent/frontend/src/components', children: [
+          { name: 'layout', type: 'folder', path: 'agent/frontend/src/components/layout', children: [
+            { name: 'AppRoot.tsx', type: 'file', path: 'agent/frontend/src/components/layout/AppRoot.tsx', lang: 'typescript', content: 'export function AppRoot() {\n  return <div>...</div>\n}' },
+            { name: 'RightPanel.tsx', type: 'file', path: 'agent/frontend/src/components/layout/RightPanel.tsx', lang: 'typescript', content: 'export function RightPanel() {\n  return <div>...</div>\n}' }
+          ]},
+          { name: 'chat', type: 'folder', path: 'agent/frontend/src/components/chat', children: [
+            { name: 'ChatArea.tsx', type: 'file', path: 'agent/frontend/src/components/chat/ChatArea.tsx', lang: 'typescript', content: 'export function ChatArea() {\n  return <div>Chat</div>\n}' }
+          ]}
+        ]},
+        { name: 'stores', type: 'folder', path: 'agent/frontend/src/stores', children: [
+          { name: 'useChatStore.ts', type: 'file', path: 'agent/frontend/src/stores/useChatStore.ts', lang: 'typescript', content: 'export const useChatStore = create<ChatState>()' }
+        ]}
+      ]}
+    ]},
+    { name: 'docs', type: 'folder', path: 'agent/docs', children: [
+      { name: 'pitfalls.md', type: 'file', path: 'agent/docs/pitfalls.md', lang: 'markdown', content: '# Pitfalls\n\n- 修 bug 必须追加到本文档\n- 后端重启前先确认端口占用' },
+      { name: 'api-contract.md', type: 'file', path: 'agent/docs/api-contract.md', lang: 'markdown', content: '# API Contract\n\n所有接口变更先改本文档。' }
+    ]},
+    { name: 'README.md', type: 'file', path: 'agent/README.md', lang: 'markdown', content: '# Hardware RAG Agent\n\n面向嵌入式开发者的硬件知识库 AI Agent。' }
+  ]}
+];
+
+function renderTree(items, container, level = 0) {
+  items.forEach(item => {
+    const node = document.createElement('div');
+    node.className = 'tree-node';
+    const row = document.createElement('div');
+    row.className = 'tree-row';
+    row.style.paddingLeft = (10 + level * 14) + 'px';
+    if (item.type === 'folder') {
+      row.innerHTML = `<svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg><svg class="icon folder" viewBox="0 0 24 24" fill="currentColor"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg><span>${item.name}</span>`;
+      row.addEventListener('click', () => {
+        const child = node.querySelector('.tree-children');
+        if (child) {
+          const show = child.style.display === 'none';
+          child.style.display = show ? 'block' : 'none';
+          row.querySelector('.chevron').classList.toggle('collapsed', !show);
+        }
+      });
+      const children = document.createElement('div');
+      children.className = 'tree-children';
+      renderTree(item.children, children, level + 1);
+      node.appendChild(row);
+      node.appendChild(children);
+    } else {
+      row.innerHTML = `<svg class="chevron" style="visibility:hidden" viewBox="0 0 24 24"></svg><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><span>${item.name}</span>`;
+      row.addEventListener('click', () => {
+        openFile(item);
+        document.querySelectorAll('#tree .tree-row.active').forEach(r => r.classList.remove('active'));
+        row.classList.add('active');
+      });
+      node.appendChild(row);
+    }
+    container.appendChild(node);
+  });
+}
+
+function openFolder() {
+  const container = document.getElementById('tree');
+  container.innerHTML = '';
+  renderTree(sampleFiles, container);
+}
+
+function openFile(item) {
+  // Switch right panel to "file" tab
+  document.querySelectorAll('.right-tab').forEach(t => t.classList.remove('active'));
+  document.querySelector('.right-tab[data-pane="file"]').classList.add('active');
+  document.querySelectorAll('.right-pane').forEach(p => p.classList.remove('active'));
+  document.getElementById('pane-file').classList.add('active');
+
+  // Show file content
+  document.getElementById('fileTabName').textContent = item.name;
+  document.getElementById('fileTabPath').textContent = item.path;
+  document.getElementById('fileTabContent').innerHTML = escapeHtml(item.content);
+}
+
+function escapeHtml(text) {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// Right panel tab switching
+let previousPane = 'content';
+document.querySelectorAll('.right-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.right-tab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    const pane = tab.dataset.pane;
+    document.querySelectorAll('.right-pane').forEach(p => p.classList.remove('active'));
+    document.getElementById('pane-' + pane).classList.add('active');
+    previousPane = pane;
+  });
+});
+
+// Theme toggle
+document.getElementById('themeToggle').addEventListener('click', () => {
+  document.body.classList.toggle('dark');
+});
+
+// Open folder button
+document.getElementById('openFolderBtn').addEventListener('click', openFolder);
+
+// Initial load
+openFolder();
+</script>
+
+</body>
+</html>

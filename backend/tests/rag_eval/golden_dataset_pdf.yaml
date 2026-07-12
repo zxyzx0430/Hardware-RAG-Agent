@@ -1,0 +1,278 @@
+metadata:
+  version: "1.0"
+  description: PDF专属黄金数据集 — 基于stm32f4_gpio_exti_extract.pdf实际文本
+  created: '2026-06-29'
+  sample_count: 5
+  source_pdf: stm32f4_gpio_exti_extract.pdf
+  kb_id: kb-96eca485
+  fields:
+    id: 唯一标识 G001-G005
+    question: 用户自然语言问题
+    standard_answer: 标准参考答案（完全基于PDF原文）
+    reference_chunks: PDF chunks 中可接受的参考文本
+    difficulty: 简单/中等/难
+    category: GPIO/中断
+    target_doc: 目标PDF文件名
+    tags: 技术标签列表
+    source_pages: 答案来源页码范围
+samples:
+- id: G001
+  question: STM32F4 GPIO 有哪几种工作模式？MODER 寄存器中每种模式对应的二进制编码是什么？
+  standard_answer: '根据 RM0090 参考手册（第8章 GPIO），STM32F4 的每个 GPIO 端口位可以独立配置为以下模式，由 GPIOx_MODER
+    寄存器控制：
+
+
+    每个端口位占 2 个 bit（MODERy[1:0]），四种编码：
+
+    - 00：输入模式 (Input) — 引脚配置为数字输入
+
+    - 01：通用输出模式 (General purpose output) — 引脚配置为推挽或开漏输出
+
+    - 10：复用功能模式 (Alternate function) — 引脚交给外设控制
+
+    - 11：模拟模式 (Analog) — 引脚配置为模拟输入/输出
+
+
+    此外，具体子模式还包括：
+
+    - 输入浮动 (Input floating)
+
+    - 输入上拉 (Input pull-up)
+
+    - 输入下拉 (Input pull-down)
+
+    - 模拟 (Analog)
+
+    - 输出开漏带上拉/下拉
+
+    - 输出推挽带上拉/下拉
+
+    - 复用功能推挽带上拉/下拉
+
+    - 复用功能开漏带上拉/下拉
+
+
+    输出类型由 OTYPER 寄存器选择（0=推挽, 1=开漏），上拉/下拉由 PUPDR 寄存器选择。
+
+    '
+  reference_chunks:
+  - 'MODERy[1:0]: Port x configuration bits (y = 0..15) These bits are written by
+    software to configure the corresponding I/O mode. 00: Input (reset state) 01:
+    General purpose output mode 10: Alternate function mode 11: Analog mode'
+  - 'Port bit config table: MODER[1:0] 00 Input, 01 GP output PP, 10 AF PP, 11 Analog'
+  - Input floating, Input pull-up, Input-pull-down, Analog, Output open-drain, Output
+    push-pull, Alternate function push-pull, Alternate function open-drain
+  difficulty: 简单
+  category: GPIO
+  target_doc: stm32f4_gpio_exti_extract.pdf
+  tags:
+  - STM32
+  - GPIO
+  - MODER
+  - 寄存器
+  - 工作模式
+  notes: 'source_pages: 1-3, 15-16'
+- id: G002
+  question: STM32F4 GPIO 输出速度有几个等级？OSPEEDR 寄存器中各等级对应的二进制编码是什么？
+  standard_answer: '根据 RM0090 参考手册（第8章 GPIO），STM32F4 的 GPIO 输出速度由 GPIOx_OSPEEDR 寄存器控制，有四个等级：
+
+
+    每个端口位占 2 个 bit（OSPEEDRy[1:0]），四种编码：
+
+    - 00：低速 (Low speed)
+
+    - 01：中速 (Medium speed)
+
+    - 10：高速 (High speed)
+
+    - 11：极高速 (Very high speed)
+
+
+    注意：具体的频率值（如 2MHz/25MHz/50MHz/100MHz）在数据手册 (datasheet) 的电气参数表中定义，参考手册只给出等级名称。速度等级适用于输出方向，但输入方向的速度寄存器位也必须正确配置。
+
+
+    I/O 速度引脚直接连接到对应的 GPIOx_OSPEEDR 寄存器位，无论 I/O 方向如何。
+
+    '
+  reference_chunks:
+  - 'OSPEEDRy[1:0]: Port x speed bits (y = 0..15) These bits are written by software
+    to configure the I/O output speed. 00: Low speed 01: Medium speed 10: High speed
+    11: Very high speed'
+  - The I/O speed pins are directly connected to the corresponding GPIOx_OSPEEDR register
+    bits whatever the I/O direction.
+  - OSPEEDR5[1:0] OSPEEDR4[1:0] OSPEEDR3[1:0] OSPEEDR2[1:0] OSPEEDR1[1:0] OSPEEDR0[1:0]
+  difficulty: 简单
+  category: GPIO
+  target_doc: stm32f4_gpio_exti_extract.pdf
+  tags:
+  - STM32
+  - GPIO
+  - OSPEEDR
+  - 速度等级
+  notes: 'source_pages: 1, 16-17'
+- id: G003
+  question: STM32F4 GPIO 锁定机制（LCKR）的具体操作步骤是什么？锁定序列是如何工作的？
+  standard_answer: '根据 RM0090 参考手册（第8章 GPIO，Section 8.3.6 和 8.4.8），GPIOx_LCKR 寄存器用于冻结
+    I/O 配置。
+
+
+    锁定机制工作原理：
+
+    - LOCK_KEY 序列写入 GPIOx_LCKR 寄存器后，GPIOx_MODER、GPIOx_OTYPER、GPIOx_OSPEEDR、GPIOx_PUPDR、GPIOx_OSPEEDR、GPIOx_AFRL
+    和 GPIOx_AFRH 寄存器将被冻结
+
+    - 一旦冻结，在下一次复位之前不能更改这些寄存器的值
+
+    - 每个 I/O 端口的锁定是独立的
+
+
+    锁定序列（需按特定顺序写入 32 位序列）：
+
+    1. 向 GPIOx_LCKR 写入 LOCK_KEY（bit 16 = 1）加上要锁定的位
+
+    2. 再次写入 LOCK_KEY 加上要锁定的位
+
+    3. 再次写入 LOCK_KEY 加上要锁定的位
+
+    4. 读取 GPIOx_LCKR
+
+    5. 再次写入 LOCK_KEY 加上要锁定的位
+
+
+    如果锁定序列中出现任何错误，锁定操作将被中止。
+
+    首次锁定序列后，LCKK 位（bit 16）读取值为 1 表示端口已成功锁定。
+
+    '
+  reference_chunks:
+  - The GPIOx_LCKR register is used to lock the configuration of the GPIO port. When
+    a LOCK sequence has been applied on a port, the value of the GPIOx_MODER, GPIOx_OTYPER,
+    GPIOx_OSPEEDR, GPIOx_PUPDR, GPIOx_AFRL and GPIOx_AFRH registers cannot be modified
+    until the next MCU reset.
+  - 'LOCK_KEY sequence: Write 1 to LCKR bit 16, then write 1 again, then write 1 again,
+    then read LCKR, then write 1 again.'
+  - Any error in the lock sequence aborts the lock. After the first lock sequence
+    the LCKK bit reads as 1.
+  difficulty: 中等
+  category: GPIO
+  target_doc: stm32f4_gpio_exti_extract.pdf
+  tags:
+  - STM32
+  - GPIO
+  - LCKR
+  - 锁定机制
+  notes: 'source_pages: 8-9, 19'
+- id: G004
+  question: STM32F4 EXTI 中断线 5-9 和 10-15 为什么共享 NVIC 向量？EXTI 控制器有哪些关键寄存器？
+  standard_answer: '根据 RM0090 参考手册（第12章 Interrupts and events），STM32F4 的 EXTI 控制器中：
+
+
+    NVIC 向量共享原因：
+
+    - EXTI Line[0] 到 EXTI Line[4] 各有独立的 NVIC 中断向量（IRQ 6-10）
+
+    - EXTI Line[5] 到 EXTI Line[9] 共享一个 NVIC 向量 EXTI9_5（IRQ 23）
+
+    - EXTI Line[10] 到 EXTI Line[15] 共享一个 NVIC 向量 EXTI15_10（IRQ 40）
+
+    这是因为 Cortex-M4 NVIC 的中断向量数量有限，STM32F4 通过共享向量来节省中断资源。软件需要在 ISR 中通过读取 EXTI_PR 寄存器来判断具体是哪条中断线触发。
+
+
+    EXTI 控制器关键寄存器：
+
+    - EXTI_IMR：中断屏蔽寄存器（Interrupt mask register）
+
+    - EXTI_EMR：事件屏蔽寄存器（Event mask register）
+
+    - EXTI_RTSR：上升沿触发选择寄存器（Rising trigger selection register）
+
+    - EXTI_FTSR：下降沿触发选择寄存器（Falling trigger selection register）
+
+    - EXTI_SWIER：软件中断事件寄存器（Software interrupt event register）
+
+    - EXTI_PR：挂起寄存器（Pending register）
+
+
+    配置 EXTI 中断需要通过 SYSCFG_EXTICR 寄存器选择 GPIO 端口。
+
+    '
+  reference_chunks:
+  - EXTI9_5 EXTI Line[9:5] interrupts
+  - EXTI15_10 EXTI Line[15:10] interrupts
+  - 23 settable EXTI9_5 EXTI Line[9:5] interrupts 0x0000 009C
+  - 40 47 settable EXTI15_10 External interrupt/event controller 0x0000 00C8
+  - Configure the mask bits of the 23 interrupt lines (EXTI_IMR) Configure the edge
+    selection bits (EXTI_RTSR and EXTI_FTSR)
+  difficulty: 中等
+  category: 中断
+  target_doc: stm32f4_gpio_exti_extract.pdf
+  tags:
+  - STM32
+  - EXTI
+  - NVIC
+  - 向量共享
+  - 中断
+  notes: 'source_pages: 28-30, 36-40'
+- id: G005
+  question: SYSCFG_EXTICR 寄存器如何选择 EXTI 中断的 GPIO 端口？各端口对应的编码是什么？
+  standard_answer: '根据 RM0090 参考手册（第9章 SYSCFG，Section 9.2.3-9.2.6），SYSCFG_EXTICR 寄存器用于选择外部中断线（EXTI
+    Line）连接到哪个 GPIO 端口。
+
+
+    SYSCFG 提供 4 个 EXTICR 寄存器（EXTICR1-EXTICR4），每个寄存器控制 4 条 EXTI 线：
+
+    - SYSCFG_EXTICR1：EXTI0-EXTI3
+
+    - SYSCFG_EXTICR2：EXTI4-EXTI7
+
+    - SYSCFG_EXTICR3：EXTI8-EXTI11
+
+    - SYSCFG_EXTICR4：EXTI12-EXTI15
+
+
+    每条 EXTI 线占 4 个 bit（EXTIx[3:0]），端口选择编码：
+
+    - 0000：PA[x] pin
+
+    - 0001：PB[x] pin
+
+    - 0010：PC[x] pin
+
+    - 0011：PD[x] pin
+
+    - 0100：PE[x] pin
+
+    - 0101：PF[x] pin
+
+    - 0110：PG[x] pin
+
+    - 0111：PH[x] pin
+
+    - 1000：PI[x] pin（仅部分封装）
+
+
+    例如，要将 EXTI Line13 配置为 PC13 触发：
+
+    设置 SYSCFG_EXTICR4 的 EXTI13[3:0] = 0010（选择 PC）
+
+
+    注意：EXTI Line0-3 只能选择 PA0-PA3（因为 EXTI0 与 PA0 共享），这是硬件限制。
+
+    '
+  reference_chunks:
+  - 'SYSCFG_EXTICR1 external interrupt configuration register 1: 0000: PA[x] pin 0001:
+    PB[x] pin 0010: PC[x] pin 0011: PD[x] pin 0100: PE[x] pin'
+  - 'EXTIx[3:0]: EXTI x configuration (x = 0 to 3) These bits are written by software
+    to select the source of the external interrupt/event request.'
+  - '0000: PA[x] pin 0001: PB[x] pin 0010: PC[x] pin 0011: PD[x] pin 0100: PE[x] pin
+    0101: PF[x] pin 0110: PG[x] pin 0111: PH[x] pin'
+  difficulty: 中等
+  category: 中断
+  target_doc: stm32f4_gpio_exti_extract.pdf
+  tags:
+  - STM32
+  - SYSCFG
+  - EXTICR
+  - 端口选择
+  - EXTI
+  notes: 'source_pages: 22-26'

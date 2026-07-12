@@ -1,0 +1,543 @@
+# ═══════════════════════════════════════════════════════════════════
+# Hardware RAG Agent — Golden Dataset for DeepEval Automated Evaluation
+# ═══════════════════════════════════════════════════════════════════
+#
+# 人类可读、可编辑、可扩展的黄金数据集。
+# 每条样本包含：问题、标准答案、可接受参考 chunk 集合（多可接受）。
+# 供 run_golden_eval.py 使用，与现有规则评分（config.py）并行共存。
+#
+# 字段说明见 metadata.fields，新增样本只需在 samples 列表追加。
+# 格式校验：python -m tests.rag_eval.run_golden_eval --validate-only
+
+metadata:
+  version: "1.0"
+  description: "Hardware RAG Agent 黄金数据集 — DeepEval 自动化评测用"
+  created: "2026-06-27"
+  sample_count: 30
+  fields:
+    id: "唯一标识 G001-G999"
+    question: "用户自然语言问题"
+    standard_answer: "标准参考答案（人工编写，用于 answer_relevancy/faithfulness 对比）"
+    reference_chunks: "可接受的参考 chunk 文本列表（多可接受集合，检索到任一即算命中）"
+    difficulty: "简单/中等/难"
+    category: "GPIO/I2C/SPI/UART/CAN/时钟/中断/传感器/工具链/电源/启动配置"
+    target_doc: "目标文档文件名（用于 recall 归因，与现有 config.py 对齐）"
+    tags: "技术标签列表"
+    notes: "可选标注（如'此题测试跨章节关联'）"
+
+samples:
+  # ═══════════════════════════════════════
+  # 01-stm32-gpio.md（5 题）
+  # ═══════════════════════════════════════
+
+  - id: G001
+    question: "STM32 的 GPIO 引脚可以配置为哪四种工作模式？每种模式对应的 MODER 寄存器值是什么？"
+    standard_answer: |
+      STM32 的 GPIO 有四种工作模式，由 MODER 寄存器控制：
+      1. 输入模式（MODER=00）：引脚配置为数字输入
+      2. 输出模式（MODER=01）：引脚配置为数字输出
+      3. 复用功能模式（MODER=10）：引脚交给外设（如 SPI/I2C/UART）控制
+      4. 模拟模式（MODER=11）：引脚配置为模拟输入（ADC/DAC）
+    reference_chunks:
+      - "STM32 GPIO 工作模式由 MODER 寄存器控制：输入模式 MODER=00、输出模式 MODER=01、复用功能模式 MODER=10、模拟模式 MODER=11。"
+      - "GPIOx_MODER 寄存器配置：00=输入模式、01=输出模式、10=复用功能(AF)、11=模拟模式。"
+    difficulty: 简单
+    category: GPIO
+    target_doc: 01-stm32-gpio.md
+    tags: [STM32, GPIO, MODER, 寄存器]
+    notes: ""
+
+  - id: G002
+    question: "STM32 GPIO 的输出速度有哪几个等级？在什么场景下应该选择不同的速度？"
+    standard_answer: |
+      STM32F4 的 GPIO 输出速度由 OSPEEDR 寄存器控制，有四个等级：
+      - 低速 2MHz（OSPEEDR=00）：适合低 EMI 场景
+      - 中速 25MHz（OSPEEDR=01）：通用场景
+      - 高速 50MHz（OSPEEDR=10）：较高频率信号
+      - 极速 100MHz（OSPEEDR=11）：高速外设如 SPI
+      低速与高速 EMI 差异可达 25dB，对信号完整性和 EMC 影响显著。短走线低速即可，高速外设才需要高速度等级。
+    reference_chunks:
+      - "STM32F4 GPIO 输出速度 OSPEEDR：低速 2MHz、中速 25MHz、高速 50MHz、极速 100MHz。低速与高速 EMI 差异可达 25dB。"
+      - "OSPEEDR 寄存器：00=2MHz、01=25MHz、10=50MHz、11=100MHz。选择速度需考虑 EMI 和信号完整性。"
+    difficulty: 简单
+    category: GPIO
+    target_doc: 01-stm32-gpio.md
+    tags: [STM32, GPIO, OSPEEDR, 速度, EMI]
+    notes: ""
+
+  - id: G003
+    question: "STM32 不同系列的 GPIO 时钟使能寄存器有什么差异？配置 GPIO 前必须先做什么？"
+    standard_answer: |
+      配置 GPIO 前必须先使能对应 GPIO 端口的时钟。不同系列的时钟使能寄存器不同：
+      - STM32F4：RCC->AHB1ENR（如 RCC_AHB1ENR_GPIOAEN）
+      - STM32L4：RCC->AHB2ENR
+      - STM32G0：RCC->IOPENR
+      使能后建议空读一次寄存器确保时钟稳定。
+    reference_chunks:
+      - "STM32F4 GPIO 时钟使能：RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN。STM32L4 用 RCC->AHB2ENR，STM32G0 用 RCC->IOPENR。"
+      - "配置 GPIO 前必须先使能时钟。STM32F4 用 AHB1ENR，L4 用 AHB2ENR，G0 用 IOPENR。使能后空读确保稳定。"
+    difficulty: 中等
+    category: GPIO
+    target_doc: 01-stm32-gpio.md
+    tags: [STM32, GPIO, RCC, 时钟, AHB1ENR]
+    notes: "测试跨系列差异"
+
+  - id: G004
+    question: "STM32 的外部中断 EXTI 如何配置？EXTI5-9 为什么共享同一个中断向量？"
+    standard_answer: |
+      EXTI 配置步骤：
+      1. 使能 GPIO + SYSCFG 时钟
+      2. 配置 GPIO 为输入
+      3. SYSCFG_EXTICR 选择端口给 EXTI 线
+      4. 配置触发方式（FTSR 下降沿/RTSR 上升沿）
+      5. 取消屏蔽（IMR）
+      6. 清挂起标志（PR）
+      7. 配置 NVIC
+      EXTI5-9 共享 EXTI9_5_IRQn 中断向量，EXTI10-15 共享 EXTI15_10_IRQn，因为 ARM Cortex-M 的外部中断向量数量有限，设计上把多个 EXTI 线合并到一个中断入口。
+    reference_chunks:
+      - "EXTI 配置 7 步：使能 GPIO+SYSCFG 时钟 → 配 GPIO 输入 → SYSCFG_EXTICR 选端口 → 配触发方式(FTSR/RTSR) → 取消屏蔽(IMR) → 清挂起(PR) → 配 NVIC。EXTI5-9 共享 EXTI9_5_IRQn。"
+    difficulty: 中等
+    category: 中断
+    target_doc: 01-stm32-gpio.md
+    tags: [STM32, EXTI, 中断, SYSCFG, NVIC]
+    notes: ""
+
+  - id: G005
+    question: "STM32 GPIO 的锁定机制 LCKR 如何配置？写出 5 步写序列。"
+    standard_answer: |
+      GPIO 锁定机制用于保护配置不被意外修改（如安全关键场景、Bootloader 保护）。LCKR 的 5 步写序列：
+      1. 写 LCKK=1
+      2. 写 LCKK=0
+      3. 写 LCKK=1
+      4. 读 LCKR
+      5. 再读 LCKR 确认 LCKK=1（锁定成功）
+      锁定后该 GPIO 配置在下次复位前无法修改。
+    reference_chunks:
+      - "GPIO 锁定机制 LCKR 5 步写序列：LCKK=1 → LCKK=0 → LCKK=1 → 读 LCKR → 再读检查 LCKK。锁定后配置不可修改直到复位。"
+    difficulty: 中等
+    category: GPIO
+    target_doc: 01-stm32-gpio.md
+    tags: [STM32, GPIO, LCKR, 锁定, 安全]
+    notes: ""
+
+  # ═══════════════════════════════════════
+  # 02-esp32-wifi.md（5 题）
+  # ═══════════════════════════════════════
+
+  - id: G006
+    question: "ESP32 Station 模式连接 Wi-Fi 超时怎么办？重连策略应该怎么设计？"
+    standard_answer: |
+      使用指数退避重连策略：
+      - 重试 1-6 次：延迟 2^n 秒（1/2/4/8/16/32 秒）
+      - 第 7 次及以后：封顶 60 秒
+      - 最大重试次数 MAX_RETRY_COUNT=10
+      - 优化：加 0-25% 随机 jitter 避免雪崩，RSSI<-90 跳过重试
+      - reason code 15（4WAY_HANDSHAKE_TIMEOUT，密码错误）应停止重试
+      - reason code 201（NO_AP_FOUND）可继续重试
+    reference_chunks:
+      - "ESP32 指数退避重连：重试 1-6 次用 2^n 秒(1/2/4/8/16/32s)，第 7+ 次封顶 60s，MAX_RETRY_COUNT=10。加 jitter 0-25%。reason=15 停止重试，reason=201 可重试。"
+      - "WIFI_EVENT_STA_DISCONNECTED reason code：15=4WAY_HANDSHAKE_TIMEOUT(密码错误应停止)，201=NO_AP_FOUND(可重试)，202=AUTH_FAIL。"
+    difficulty: 中等
+    category: 启动配置
+    target_doc: 02-esp32-wifi.md
+    tags: [ESP32, WiFi, 指数退避, 重连, reason code]
+    notes: ""
+
+  - id: G007
+    question: "ESP32 的三种 Wi-Fi 省电模式有什么区别？如果应用需要低延迟 TCP 通信应该用哪种？"
+    standard_answer: |
+      三种省电模式：
+      - WIFI_PS_NONE：80-120mA，延迟 <2ms，TCP 性能最佳，适合低延迟通信
+      - WIFI_PS_MIN_MODEM：20-40mA，延迟 <50ms，TCP 良好
+      - WIFI_PS_MAX_MODEM：5-15mA，延迟 100-500ms，需保活
+      低延迟 TCP 通信应选 WIFI_PS_NONE。
+    reference_chunks:
+      - "ESP32 WiFi 省电模式：WIFI_PS_NONE 80-120mA 延迟<2ms TCP最佳；WIFI_PS_MIN_MODEM 20-40mA 延迟<50ms；WIFI_PS_MAX_MODEM 5-15mA 延迟100-500ms。低延迟 TCP 选 WIFI_PS_NONE。"
+    difficulty: 中等
+    category: 电源
+    target_doc: 02-esp32-wifi.md
+    tags: [ESP32, WiFi, 省电, WIFI_PS_NONE, TCP]
+    notes: ""
+
+  - id: G008
+    question: "ESP32 WiFi 初始化的完整流程是什么？NVS 为什么必须先初始化？"
+    standard_answer: |
+      ESP32 WiFi 初始化 8 步：
+      1. nvs_flash_init() — 初始化 NVS 存储
+      2. esp_event_loop_create_default() — 创建事件循环
+      3. esp_netif_create_default_wifi_sta() — 创建默认 STA 网络接口
+      4. WIFI_INIT_CONFIG_DEFAULT() + esp_wifi_init() — 初始化 WiFi 驱动
+      5. 注册 WIFI_EVENT / IP_EVENT handler
+      6. esp_wifi_set_mode(WIFI_MODE_STA) + esp_wifi_set_config()
+      7. esp_wifi_start()
+      8. 事件驱动 esp_wifi_connect()
+      NVS 必须先初始化，因为 WiFi 驱动内部用 NVS 存储校准数据和连接配置。
+    reference_chunks:
+      - "ESP32 WiFi 初始化 8 步：nvs_flash_init → esp_event_loop_create_default → esp_netif_create_default_wifi_sta → WIFI_INIT_CONFIG_DEFAULT + esp_wifi_init → 注册 event handler → esp_wifi_set_mode(WIFI_MODE_STA) + esp_wifi_set_config → esp_wifi_start → esp_wifi_connect。NVS 存储 WiFi 校准数据必须先初始化。"
+    difficulty: 中等
+    category: 启动配置
+    target_doc: 02-esp32-wifi.md
+    tags: [ESP32, WiFi, NVS, 初始化, 事件循环]
+    notes: ""
+
+  - id: G009
+    question: "ESP32 WiFi 断连时 reason code 15 和 201 有什么区别？重连策略应如何区分处理？"
+    standard_answer: |
+      - reason code 15（4WAY_HANDSHAKE_TIMEOUT）：通常是密码错误，重连也不会成功，应停止重试并提示用户检查密码
+      - reason code 201（NO_AP_FOUND）：AP 不在范围内或信号太弱，可以继续重试（等设备靠近 AP）
+      - reason code 202（AUTH_FAIL）：认证失败，类似 15 应停止
+      策略：15/202 停止重试，201 可重试但加 RSSI 检查（<-90 跳过）。
+    reference_chunks:
+      - "reason code 15=4WAY_HANDSHAKE_TIMEOUT 密码错误应停止重试；201=NO_AP_FOUND 可重试；202=AUTH_FAIL 停止。RSSI<-90 跳过重试。"
+    difficulty: 难
+    category: 启动配置
+    target_doc: 02-esp32-wifi.md
+    tags: [ESP32, WiFi, reason code, 4WAY_HANDSHAKE_TIMEOUT, 重连]
+    notes: "测试精确参数召回"
+
+  - id: G010
+    question: "ESP32 WiFi 的 listen_interval 和 DTIM 有什么关系？为什么 listen_interval=30 可能导致被 AP 踢出？"
+    standard_answer: |
+      - DTIM 是 AP 发送缓冲多播数据的信标间隔，通常 1/3/10
+      - listen_interval 是 STA 告诉 AP 自己多久醒一次听信标
+      - listen_interval=3 省电约 20%，=10 省电约 50%，=30 省电约 70%
+      - listen_interval=30 可能导致被 AP 踢出：AP 认为 STA 长时间不响应，主动断开连接以释放缓冲区资源
+    reference_chunks:
+      - "ESP32 listen_interval 与 DTIM 关系：DTIM=1/3/10，listen_interval=3 省 20%、=10 省 50%、=30 省 70%。listen_interval=30 可能被 AP 踢出因长时间不响应。"
+    difficulty: 难
+    category: 电源
+    target_doc: 02-esp32-wifi.md
+    tags: [ESP32, WiFi, listen_interval, DTIM, 省电]
+    notes: ""
+
+  # ═══════════════════════════════════════
+  # 03-i2c-protocol.md（5 题）
+  # ═══════════════════════════════════════
+
+  - id: G011
+    question: "I2C 多主机通信时如何仲裁？仲裁失败的从机应该做什么？"
+    standard_answer: |
+      I2C 仲裁基于线与（wired-AND）特性：
+      - 多个主机同时发起点，输出 0 的主机覆盖输出 1 的主机
+      - 主机在发送 1 时检测到 SDA 为 0，则判定仲裁丢失
+      - 仲裁丢失的主机应：释放总线（停止驱动 SDA）、切换为从机模式、等待 BUSY 标志清除、延迟 1ms 退避后重试
+    reference_chunks:
+      - "I2C 多主机仲裁基于线与特性：输出 0 覆盖输出 1。主机发送 1 时检测 SDA=0 则仲裁丢失。仲裁失败的主机应释放总线、切从机模式、等 BUSY 清除、延迟 1ms 退避重试。"
+    difficulty: 中等
+    category: I2C
+    target_doc: 03-i2c-protocol.md
+    tags: [I2C, 多主机, 仲裁, SDA, 线与]
+    notes: ""
+
+  - id: G012
+    question: "从机时钟拉伸导致 I2C 通信阻塞时，主机应该怎么检测和处理？超时时间一般设为多少？"
+    standard_answer: |
+      时钟拉伸（Clock Stretching）是从机拉低 SCL 延迟通信的机制：
+      - 主机检测 SCL 长时间被拉低（超过预期 tLOW）判定为时钟拉伸
+      - 处理：设置超时（一般 10ms 或 100ms），超时后 HAL_I2C_Master_Transmit 返回 HAL_TIMEOUT
+      - STM32 可通过 NoStretchMode 配置是否允许拉伸（推荐 I2C_NOSTRETCH_DISABLE 允许）
+      - EEPROM 页写典型拉伸 5ms
+    reference_chunks:
+      - "I2C 时钟拉伸：从机拉低 SCL 延迟通信。主机设超时 10ms，超时返回 HAL_TIMEOUT。STM32 NoStretchMode 控制是否允许。EEPROM 页写拉伸约 5ms。"
+    difficulty: 难
+    category: I2C
+    target_doc: 03-i2c-protocol.md
+    tags: [I2C, 时钟拉伸, SCL, 超时, NoStretchMode]
+    notes: ""
+
+  - id: G013
+    question: "I2C 上拉电阻如何计算？400kHz 速率下 100pF 总线电容时 Rp 取值范围是多少？"
+    standard_answer: |
+      上拉电阻计算公式：
+      - tr = 0.8473 × Rp × Cb（tr 是上升时间，Cb 是总线电容）
+      - Rp(min) = (VDD - VOL) / IOL ≈ 970Ω（VDD=3.3V, VOL=0.4V, IOL=3mA）
+      - Rp(max) = tr / (0.8473 × Cb)
+      400kHz 快速模式：tr ≤ 300ns，Cb=100pF 时 Rp(max) ≈ 3.5kΩ
+      推荐值：标准模式 4.7-10kΩ、快速模式 2.2-4.7kΩ、Fm+ 1-2.2kΩ
+    reference_chunks:
+      - "I2C 上拉电阻公式：tr=0.8473×Rp×Cb。Rp(min)=(VDD-VOL)/IOL≈970Ω。400kHz tr≤300ns, Cb=100pF 时 Rp(max)≈3.5kΩ。推荐：标准 4.7-10kΩ、快速 2.2-4.7kΩ、Fm+ 1-2.2kΩ。"
+    difficulty: 中等
+    category: I2C
+    target_doc: 03-i2c-protocol.md
+    tags: [I2C, 上拉电阻, 400kHz, Cb, 计算]
+    notes: ""
+
+  - id: G014
+    question: "MPU6050 的 I2C 7 位地址是 0x68，为什么在 STM32 HAL 调用时要传 0xD0？"
+    standard_answer: |
+      STM32 HAL I2C 函数的 addr 参数是 8 位地址（包含 R/W 位）：
+      - 7 位地址 0x68 左移 1 位 = 0xD0（写方向，R/W=0）
+      - 0x68 左移 1 位 + 1 = 0xD1（读方向，R/W=1）
+      所以 HAL_I2C_Master_Transmit 传 0xD0，HAL_I2C_Master_Receive 传 0xD1。
+      MPU6050 的 AD0 引脚接地时地址为 0x68，接 VCC 时为 0x69。
+    reference_chunks:
+      - "STM32 HAL I2C 地址是 8 位（含 R/W 位）。MPU6050 7 位地址 0x68 左移 1 位=0xD0(写)/0xD1(读)。AD0 接地=0x68，接 VCC=0x69。"
+    difficulty: 中等
+    category: I2C
+    target_doc: 03-i2c-protocol.md
+    tags: [I2C, MPU6050, 地址, HAL, "0x68"]
+    notes: "测试易混淆点"
+
+  - id: G015
+    question: "I2C 总线死锁怎么恢复？写出恢复流程。"
+    standard_answer: |
+      I2C 总线死锁通常发生在从机在传输中途复位，导致 SDA 被拉低卡住。恢复流程：
+      1. 禁用 I2C 外设
+      2. 将 SCL 配为 GPIO 推挽输出
+      3. 手动产生 9 个 SCL 时钟脉冲（让从机移出剩余数据位，释放 SDA）
+      4. 手动发送一个 STOP 条件（SCL 高时 SDA 从低到高）
+      5. 恢复 SCL/SDA 为 I2C 复用功能
+      6. 重新 HAL_I2C_Init
+    reference_chunks:
+      - "I2C 总线死锁恢复：禁用 I2C → SCL 配 GPIO → 发 9 个 SCL 时钟 → 手动发 STOP → 恢复复用 → 重新 HAL_I2C_Init。从机中途复位导致 SDA 卡低。"
+    difficulty: 难
+    category: I2C
+    target_doc: 03-i2c-protocol.md
+    tags: [I2C, 死锁, 恢复, SCL, bit-bang]
+    notes: "测试故障恢复流程"
+
+  # ═══════════════════════════════════════
+  # 04-cortexm-interrupt.md（5 题）
+  # ═══════════════════════════════════════
+
+  - id: G016
+    question: "Cortex-M3 的 NVIC 优先级分组如何配置？如果 USART1 抢占优先级为 1、TIM2 抢占优先级为 2，当中断同时到达时谁先执行？"
+    standard_answer: |
+      通过 SCB->AIRCR 寄存器的 PRIGROUP 字段配置分组：
+      - STM32F4 实现 4 位优先级（16 级），推荐 NVIC_PRIORITYGROUP_4（PRIGROUP=7）：16 个抢占优先级、0 个子优先级
+      - 数值小 = 优先级高
+      - USART1 抢占优先级 1 < TIM2 抢占优先级 2，所以 USART1 先执行并能抢占 TIM2
+    reference_chunks:
+      - "NVIC 优先级分组通过 AIRCR PRIGROUP 配置。STM32F4 推荐 NVIC_PRIORITYGROUP_4(PRIGROUP=7)：16 抢占/0 子。数值小=优先级高。USART1 优先级 1 < TIM2 优先级 2，USART1 先执行。"
+    difficulty: 难
+    category: 中断
+    target_doc: 04-cortexm-interrupt.md
+    tags: [Cortex-M, NVIC, 优先级, PRIGROUP, AIRCR]
+    notes: ""
+
+  - id: G017
+    question: "Cortex-M4 的中断延迟是多少个时钟周期？尾链（Tail-Chaining）和迟来（Late-Arrival）技术分别如何降低延迟？"
+    standard_answer: |
+      - Cortex-M3/M4/M7 中断延迟：12 个时钟周期（零等待内存）
+      - 含 FPU 上下文保存：28 周期
+      - 尾链（Tail-Chaining）：当异常返回时恰好有挂起异常，跳过出栈+压栈，直接切换，节省约 12 周期（从 18 降到 6）
+      - 迟来（Late-Arrival）：高优先级异常在低优先级异常压栈过程中到达，跳过低优先级的出栈，直接处理高优先级，节省约 16 周期
+    reference_chunks:
+      - "Cortex-M4 中断延迟 12 周期。尾链 Tail-Chaining 跳过出栈+压栈直接切换，省约 12 周期。迟来 Late-Arrival 高优先级在低优先级压栈中到达，省约 16 周期。含 FPU 保存 28 周期。"
+    difficulty: 难
+    category: 中断
+    target_doc: 04-cortexm-interrupt.md
+    tags: [Cortex-M, 中断延迟, 尾链, 迟来, FPU]
+    notes: ""
+
+  - id: G018
+    question: "STM32 HAL_NVIC_SetPriority 的优先级数值是越大越高还是越小越高？HAL_NVIC_SetPriority(15, 0) 是什么含义？"
+    standard_answer: |
+      - 数值越小 = 优先级越高（这是 ARM NVIC 的设计，与直觉相反）
+      - HAL_NVIC_SetPriority(15, 0) 中 15 是抢占优先级，0 是子优先级
+      - 在 NVIC_PRIORITYGROUP_4（16 抢占/0 子）下，15 是最低优先级
+      - 常见陷阱：误以为 15 是最高优先级，导致关键中断被低优先级中断抢占
+    reference_chunks:
+      - "NVIC 优先级数值小=高。HAL_NVIC_SetPriority(15,0) 在 PRIORITYGROUP_4 下 15 是最低优先级。常见陷阱：误以为数值大=优先级高。"
+    difficulty: 中等
+    category: 中断
+    target_doc: 04-cortexm-interrupt.md
+    tags: [NVIC, 优先级, 陷阱, HAL_NVIC_SetPriority]
+    notes: "测试易混淆点"
+
+  - id: G019
+    question: "PRIMASK、FAULTMASK、BASEPRI 三个全局屏蔽寄存器有什么区别？FreeRTOS 为什么用 BASEPRI？"
+    standard_answer: |
+      - PRIMASK：屏蔽所有可屏蔽异常（除 NMI 和 HardFault），__disable_irq() 就是设 PRIMASK
+      - FAULTMASK：屏蔽所有异常（含 HardFault，除 NMI），比 PRIMASK 更强
+      - BASEPRI：屏蔽优先级数值 ≥ BASEPRI 值的异常，保留高优先级中断
+      FreeRTOS 用 BASEPRI 因为临界区只需屏蔽低优先级中断（内核相关），保留高优先级中断（如硬件紧急事件）的实时响应。
+    reference_chunks:
+      - "PRIMASK 屏蔽所有 IRQ；FAULTMASK 含 HardFault；BASEPRI 屏蔽优先级≥设定值的异常。FreeRTOS 用 BASEPRI 保留高优先级中断实时响应。__set_BASEPRI(5<<(8-__NVIC_PRIO_BITS))。"
+    difficulty: 难
+    category: 中断
+    target_doc: 04-cortexm-interrupt.md
+    tags: [PRIMASK, FAULTMASK, BASEPRI, FreeRTOS, 临界区]
+    notes: ""
+
+  - id: G020
+    question: "STM32 的中断服务函数 ISR 中为什么必须清除中断源标志？USART1 的 RXNE 标志如何清除？"
+    standard_answer: |
+      - 如果不清除中断源标志，退出 ISR 后 NVIC 会立即重新触发同一中断，导致死循环（ISR 重入）
+      - USART1 的 RXNE（接收缓冲区非空）标志清除方式：读 DR 寄存器（USART1->DR），读操作自动清除 RXNE
+      - 也可以写 1 到 USART_SR 的 RXNE 位清除（但读 DR 是常规做法）
+      - 其他外设标志：ADC 的 EOC 写 0 清除、EXTI 的 PR 写 1 清除
+    reference_chunks:
+      - "ISR 必须清除中断源否则退出后立即重入。USART1 RXNE 清除：读 DR 寄存器(USART1->DR)自动清。EXTI PR 写 1 清除。"
+    difficulty: 中等
+    category: 中断
+    target_doc: 04-cortexm-interrupt.md
+    tags: [ISR, RXNE, USART1, 中断标志, DR]
+    notes: ""
+
+  # ═══════════════════════════════════════
+  # 05-uart-serial.md（4 题）
+  # ═══════════════════════════════════════
+
+  - id: G021
+    question: "STM32 UART 使用 DMA 传输时需要注意哪些问题？接收缓冲区的循环模式怎么防止数据覆盖？"
+    standard_answer: |
+      UART DMA 传输注意事项：
+      - 接收用循环模式（DMA_CIRCULAR），发送用正常模式（DMA_NORMAL）
+      - 循环模式防止数据覆盖：开启半传输中断（HT）+ 完成传输中断（TC），双缓冲策略——HT 中断处理前半缓冲区，TC 中断处理后半缓冲区
+      - 缓冲区大小 = 预期单次最大数据量 × 2
+      - DMA 中断优先级应高于 UART 中断，避免数据丢失
+    reference_chunks:
+      - "UART DMA 接收用循环模式(DMA_CIRCULAR)。防覆盖：开半传输中断(HT)+完成中断(TC)双缓冲，HT 处理前半，TC 处理后半。DMA 中断优先级应高于 UART。"
+    difficulty: 中等
+    category: UART
+    target_doc: 05-uart-serial.md
+    tags: [UART, DMA, 循环模式, 半传输, 双缓冲]
+    notes: ""
+
+  - id: G022
+    question: "UART 通信中出现随机错误位，可能是什么原因？怎么排查和解决？"
+    standard_answer: |
+      可能原因和排查：
+      1. 电磁干扰（EMI）：换屏蔽线，串联 22-100Ω 电阻匹配阻抗
+      2. 波特率误差：检查时钟源（HSI ±1% 不够，高波特率用 HSE ±20ppm）
+      3. 电平不匹配：TTL(3.3V) 直接接 RS-232(±12V) 会损坏，需 MAX3232 转换
+      4. 接线问题：GND 未共地
+      5. 波特率容限：8N1 理论 ±2.63%，工程取 ±2.5%
+    reference_chunks:
+      - "UART 随机错误原因：EMI 干扰(用屏蔽线+串联电阻)、波特率误差(HSI ±1% 不够用 HSE)、电平不匹配(TTL vs RS-232 需 MAX3232)、GND 未共地。8N1 容限 ±2.5%。"
+    difficulty: 简单
+    category: UART
+    target_doc: 05-uart-serial.md
+    tags: [UART, 噪声, EMI, 波特率, RS-232, TTL]
+    notes: ""
+
+  - id: G023
+    question: "STM32 波特率如何计算？fck=72MHz、目标 115200bps 时 USARTDIV 和 BRR 的值是多少？"
+    standard_answer: |
+      波特率公式：波特率 = fck / (16 × USARTDIV)（OVER8=0）
+      - USARTDIV = fck / (16 × 波特率) = 72000000 / (16 × 115200) = 39.0625
+      - BRR = USARTDIV × 16 = 625 = 0x0271
+      - 实际波特率 = 72000000 / (16 × 39.0625) = 115384.6 bps
+      - 误差 = (115384.6 - 115200) / 115200 = +0.16%（在 ±2.5% 容限内）
+    reference_chunks:
+      - "STM32 波特率公式：波特率=fck/(16×USARTDIV)。fck=72MHz 目标 115200：USARTDIV=39.0625，BRR=0x0271，实际 115384.6，误差 +0.16%。"
+    difficulty: 中等
+    category: UART
+    target_doc: 05-uart-serial.md
+    tags: [UART, 波特率, USARTDIV, BRR, 计算]
+    notes: ""
+
+  - id: G024
+    question: "STM32 UART 配置 8 位字长 + 偶校验（Even Parity）时，实际数据位是几位？要 8 位数据 + 偶校验应该怎么配？"
+    standard_answer: |
+      这是一个常见陷阱：
+      - STM32 UART 的 WordLength 包含校验位
+      - UART_WORDLENGTH_8B + UART_PARITY_EVEN：实际只有 7 位数据 + 1 位校验 = 8 位总长
+      - 要 8 位数据 + 偶校验：必须选 UART_WORDLENGTH_9B（9 位总长 = 8 数据 + 1 校验）
+      - 不校验时 UART_WORDLENGTH_8B 才是真正 8 位数据
+    reference_chunks:
+      - "STM32 UART 字长含校验位。8B+Even 实际 7 数据+1 校验。要 8 数据+Even 必须选 9B(9=8数据+1校验)。不校验时 8B 才是真正 8 数据。"
+    difficulty: 中等
+    category: UART
+    target_doc: 05-uart-serial.md
+    tags: [UART, 字长, 校验, 陷阱, WordLength]
+    notes: "测试易混淆点"
+
+  # ═══════════════════════════════════════
+  # 06-hardware-terms-glossary.md（6 题）
+  # ═══════════════════════════════════════
+
+  - id: G025
+    question: "STM32F4 和 STM32H7 在内核、主频、SRAM、Flash 方面有什么区别？"
+    standard_answer: |
+      - STM32F4：Cortex-M4 内核，主频 168MHz，192KB SRAM，1MB Flash，LQFP100 封装，16 路 DMA 流（2 个控制器）
+      - STM32H7：Cortex-M7 内核，主频 480MHz，1MB SRAM，2MB Flash，支持 QSPI
+      STM32H7 性能约为 STM32F4 的 3 倍（主频 480/168 ≈ 2.86x）。
+    reference_chunks:
+      - "STM32F4：Cortex-M4 168MHz 192KB SRAM 1MB Flash LQFP100 16路DMA。STM32H7：Cortex-M7 480MHz 1MB SRAM 2MB Flash 支持 QSPI。"
+    difficulty: 简单
+    category: 工具链
+    target_doc: 06-hardware-terms-glossary.md
+    tags: [STM32F4, STM32H7, Cortex-M4, Cortex-M7, 对比]
+    notes: ""
+
+  - id: G026
+    question: "ESP32-S3 的 Strapping 引脚有哪些？正常启动需要什么电平？"
+    standard_answer: |
+      ESP32-S3 的 Strapping 引脚：
+      - GPIO0：控制启动模式。高电平=正常工作模式，低电平=下载模式。用 10kΩ 上拉电阻确保正常启动
+      - GPIO46：控制 Flash 电压。低电平=3.3V（默认），高电平=1.8V
+      - GPIO45：控制内核电压（VDD_SPI）
+      上电瞬间这些引脚的电平决定芯片工作模式，必须用电阻固定到期望电平。
+    reference_chunks:
+      - "ESP32-S3 Strapping 引脚：GPIO0 控制启动模式(高=正常,低=下载,用 10kΩ 上拉)；GPIO46 控制 Flash 电压(低=3.3V,高=1.8V)；GPIO45 控制内核电压。"
+    difficulty: 中等
+    category: 启动配置
+    target_doc: 06-hardware-terms-glossary.md
+    tags: [ESP32-S3, strapping, GPIO0, 启动, 上拉]
+    notes: ""
+
+  - id: G027
+    question: "MPU6050 的 I2C 地址怎么选择？AD0 引脚的作用是什么？"
+    standard_answer: |
+      MPU6050 的 I2C 7 位地址由 AD0 引脚决定：
+      - AD0 接地（GND）：地址 = 0x68
+      - AD0 接 VCC：地址 = 0x69
+      这样同一总线上可以挂两个 MPU6050（一个 AD0 接地，一个接 VCC）。
+      注意：DS3231 RTC 的地址也是 0x68，与 MPU6050 冲突，不能同时挂在同一总线。
+    reference_chunks:
+      - "MPU6050 I2C 地址：AD0 接地=0x68，接 VCC=0x69。可挂两个 MPU6050。注意 DS3231 地址也是 0x68 会冲突。"
+    difficulty: 简单
+    category: 传感器
+    target_doc: 06-hardware-terms-glossary.md
+    tags: [MPU6050, I2C, 地址, AD0, DS3231]
+    notes: ""
+
+  - id: G028
+    question: "WS2812 RGB LED 的时序要求是什么？STM32 如何驱动 WS2812？"
+    standard_answer: |
+      WS2812 时序（单线协议）：
+      - 0 码：高电平 0.35μs + 低电平 0.8μs（总 1.25μs）
+      - 1 码：高电平 0.9μs + 低电平 0.35μs（总 1.25μs）
+      - 复位：低电平 >50μs
+      STM32 驱动方案：用 PWM + DMA。每个 bit 用一个 PWM 周期，占空比决定 0/1。DMA 自动传输整个数据帧，避免 CPU 中断抖动影响时序。
+      典型配置：PWM 频率 800kHz（周期 1.25μs）。
+    reference_chunks:
+      - "WS2812 时序：0 码高 0.35μs+低 0.8μs，1 码高 0.9μs+低 0.35μs，复位低 >50μs。STM32 用 PWM+DMA 驱动，PWM 800kHz，DMA 传整个数据帧避免时序抖动。"
+    difficulty: 中等
+    category: 传感器
+    target_doc: 06-hardware-terms-glossary.md
+    tags: [WS2812, PWM, DMA, 时序, RGB LED]
+    notes: ""
+
+  - id: G029
+    question: "STM32 的 HAL 库和 LL 库有什么区别？什么场景下应该用 LL 库？"
+    standard_answer: |
+      - HAL（Hardware Abstraction Layer）库：跨系列兼容，API 高层抽象，代码量大，效率较低，适合快速开发和跨系列移植
+      - LL（Low-Layer）库：接近寄存器操作，代码精简，效率高，但跨系列兼容性差，适合对性能/代码体积敏感的场景
+      选择建议：原型开发用 HAL，量产优化用 LL，中断频繁的场景（如高频 SPI）建议 LL。
+    reference_chunks:
+      - "STM32 HAL 库跨系列兼容但效率低；LL 库接近寄存器效率高但兼容性差。原型用 HAL，量产优化用 LL，高频中断场景建议 LL。"
+    difficulty: 简单
+    category: 工具链
+    target_doc: 06-hardware-terms-glossary.md
+    tags: [STM32, HAL, LL, 库, 对比]
+    notes: ""
+
+  - id: G030
+    question: "STM32 晶振的负载电容如何计算？HSE 8MHz 晶振配多大的负载电容？"
+    standard_answer: |
+      负载电容计算公式：CL = (C1 × C2) / (C1 + C2) + Cs
+      - CL：晶振规格书标注的负载电容值（如 8MHz 晶振常见 CL=12pF 或 18pF）
+      - C1/C2：两个外部匹配电容（通常相等）
+      - Cs：寄生电容（PCB 走线 + 引脚，典型 3-5pF）
+      计算：若 CL=18pF, Cs=5pF，则 (C1×C2)/(C1+C2) = 13pF，C1=C2=26pF（取标准值 27pF 或 22pF）
+      LSE 32.768kHz 晶振 CL 通常更小（6-12pF）。
+    reference_chunks:
+      - "晶振负载电容公式：CL=(C1×C2)/(C1+C2)+Cs。Cs 为寄生电容 3-5pF。HSE 8MHz 晶振 CL=18pF 时 C1=C2≈26pF(取 27pF)。LSE 32.768kHz CL 更小 6-12pF。"
+    difficulty: 中等
+    category: 时钟
+    target_doc: 06-hardware-terms-glossary.md
+    tags: [晶振, HSE, 负载电容, CL, 计算]
+    notes: ""

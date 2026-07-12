@@ -1,0 +1,13 @@
+- [x] InputBar.tsx 中已删除 Markdown 预览按钮
+- [x] InputBar.tsx 中已删除 Markdown 预览区域（`input-preview`）
+- [x] InputBar.tsx 中已删除 `showPreview` 状态及相关副作用/计算
+- [x] 输入栏底部操作区新增 Agent 权限下拉选择器
+- [x] 权限下拉选项包含三种模式：全部放行 / 每次询问 / 自动放行低风险
+- [x] 选择权限后调用 `updateSetting("permissionMode", mode)` 更新全局状态
+- [x] 下拉选择器点击外部可关闭
+- [x] 后续聊天请求体中的 `permission_mode` 与选择一致
+- [x] `misc.css` 中不再使用的 Markdown 预览样式已清理
+- [x] i18n 中 `mdPreviewBtn`、`mdPreviewHint` 已删除
+- [x] 权限模式 i18n 词条存在且完整
+- [x] `npx tsc --noEmit` 无类型错误
+- [x] 手动验证输入栏布局和权限切换功能正常

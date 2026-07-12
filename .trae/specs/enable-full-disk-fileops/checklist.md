@@ -1,0 +1,16 @@
+- [x] path_guard.py 的 `_check_access` 仅检查 DENY_PATTERNS，不再检查 allowed-dir
+- [x] DENY_PATTERNS 包含系统敏感目录（Windows/System32/$Recycle.Bin 等）
+- [x] permission_classifier 的 `_decide_medium` 不再调用 path_guard，直接按 permission_mode 路由
+- [x] read_file execute 内部有防御性路径检查（validate_path，含 `..` 拦截 + deny pattern）
+- [x] write_file execute 内部有防御性路径检查（validate_path，含 `..` 拦截 + deny pattern）
+- [x] edit_file execute 内部有防御性路径检查（validate_path，含 `..` 拦截 + deny pattern）
+- [x] read_file description 改为"可读取任意本地路径"
+- [x] write_file description 改为"可写入任意本地路径"
+- [x] edit_file description 同步更新
+- [x] run_command description 明确告知可执行 PowerShell/cmd 命令
+- [x] prompts.py 新增本地文件操作指引段落
+- [x] 后端重启无导入错误
+- [x] .env / *.key 等敏感文件仍被 DENY_PATTERNS 拦截
+- [x] `..` 路径遍历被 validate_path 拦截（修复 Subagent B 发现的阻断性缺陷后通过）
+- [x] Subagent A 完成度检查通过（12/12 PASS，权限审查 5 层链路完整）
+- [x] Subagent B 缺陷检查无阻断性缺陷（1 个阻断性缺陷已修复：`..` 遍历拦截）

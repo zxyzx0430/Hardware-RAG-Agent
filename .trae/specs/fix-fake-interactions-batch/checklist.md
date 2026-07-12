@@ -1,0 +1,20 @@
+- [x] TopBar.tsx 订阅 useSessionStore.sessions[].title，重命名后标题立即更新
+- [x] TopBar.tsx 来源徽章使用最后一条 assistant 消息的 msg.sources，切换会话后归零
+- [x] useBookmarkStore.ts 创建 BookmarkEntry 时注入真实 sessionTitle 和 sessionId
+- [x] StatsPanel.tsx model 字段读取当前会话的 model（session.model || chatModel）
+- [x] useSessionStore.ts renameSession 失败时回滚旧 title
+- [x] useSessionStore.ts pinSession 失败时回滚旧 pinned 状态
+- [x] useSessionStore.ts moveSession 失败时回滚旧 project
+- [x] useSessionStore.ts deleteSession 失败时恢复会话到列表
+- [x] useChatStore.ts clearMessages 失败时回滚 + console.warn
+- [x] ConfirmDialog.tsx 移除"永久允许"按钮，只保留三个按钮
+- [x] SerialPane.tsx 演示数据加 [DEMO] 前缀，按钮加 title 标注
+- [x] SettingsPage.tsx About 占位链接改为"即将上线"文案
+- [x] AuditLogPanel.tsx FilterBar 补充 tool_name 输入框
+- [x] AuditLogPanel.tsx 挂载时自动 fetchLogs
+- [x] endpoints.ts 死代码已删除
+- [x] IconNav.tsx 4 个装饰按钮改为 div 或加 disabled
+- [x] npx tsc --noEmit 通过
+- [x] 浏览器验证：重命名→标题更新
+- [x] 浏览器验证：切会话→来源徽章归零
+- [x] 浏览器验证：书签显示真实会话名

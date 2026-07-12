@@ -1,0 +1,1204 @@
+{
+  "ch340g": [
+    {
+      "id": "ch340g-q001",
+      "query": "CH340G 的 VCC 供电电压范围是多少？5V 和 3.3V 工作时分别有什么要求？",
+      "retrieved": [
+        {
+          "chunk_id": "12f13dda-4d71-4a4a-9870-fe7e9d7e5062#s30",
+          "chunk_index": 30,
+          "page_range": "10-10",
+          "distance": 0.7351275086402893,
+          "section_title": "<!-- PAGE:10 -->",
+          "text_snippet": "<!-- IMAGES:0 --> The Data Sheet of CH340 (the first)     4  CH340B  chip  also  provides  EEPROM  for  configuring  data  area,  product  serial number  and  other  information could be customized fo"
+        },
+        {
+          "chunk_id": "12f13dda-4d71-4a4a-9870-fe7e9d7e5062#s39",
+          "chunk_index": 39,
+          "page_range": "12-12",
+          "distance": 0.7735891342163086,
+          "section_title": "|VCC|Supply Voltage|V3 doesn’t connect to VCC|Col4|4.0|5|5.3|V|",
+          "text_snippet": "|VCC|Supply Voltage|V3 doesn’t connect to VCC|Col4|4.0|5|5.3|V| |---|---|---|---|---|---|---|---| |VCC|Supply Voltage|V3 connect to<br>VCC|CH340G/T/R|2.8|3.3|3.6|3.6| |VCC|Supply Voltage|V3 connect to"
+        },
+        {
+          "chunk_id": "12f13dda-4d71-4a4a-9870-fe7e9d7e5062#s38",
+          "chunk_index": 38,
+          "page_range": "12-12",
+          "distance": 0.8237600922584534,
+          "section_title": "<!-- PAGE:12 -->",
+          "text_snippet": "<!-- IMAGES:1 --> The Data Sheet of CH340 (the first)        6  6.2. Electrical Parameter (test conditions: TA=25℃, VCC=5V, exclude pin connected to USB bus) (All the current parameters should multipl"
+        },
+        {
+          "chunk_id": "12f13dda-4d71-4a4a-9870-fe7e9d7e5062#s37",
+          "chunk_index": 37,
+          "page_range": "11-11",
+          "distance": 0.9264963865280151,
+          "section_title": "|Name|Parameter Description|Col3|Min.|Max.|Units|",
+          "text_snippet": "|Name|Parameter Description|Col3|Min.|Max.|Units| |---|---|---|---|---|---| |TA|Ambient temperature|CH340G/CH340T/CH340R|-40|85|℃| |TA|Ambient temperature|CH340C/CH340E/CH340B|-20|70|℃| |TS|Storage te"
+        },
+        {
+          "chunk_id": "12f13dda-4d71-4a4a-9870-fe7e9d7e5062#s13",
+          "chunk_index": 13,
+          "page_range": "4-4",
+          "distance": 0.9436315298080444,
+          "section_title": "<!-- PAGE:4 -->",
+          "text_snippet": "<!-- IMAGES:0 --> DreamCity Innovations WCH CH340G Datasheet 4. Pinout  5. Application Notes  CH340 chip have built in USB bus pull-up resistors and on-chip signal termination, UD+ and  UD- pins shoul"
+        }
+      ]
+    },
+    {
+      "id": "ch340g-q002",
+      "query": "CH340G XI 引脚外接晶振的频率典型值是多少？",
+      "retrieved": [
+        {
+          "chunk_id": "12f13dda-4d71-4a4a-9870-fe7e9d7e5062#s25",
+          "chunk_index": 25,
+          "page_range": "8-8",
+          "distance": 0.8967297077178955,
+          "section_title": "<!-- PAGE:8 -->",
+          "text_snippet": "<!-- IMAGES:1 --> The Data Sheet of CH340 (the first)         2  3 Package  Model differences:  CH340C, CH340E and CH340B have built-in crystal, no external crystal;  CH340B also has built-in EEPROM u"
+        },
+        {
+          "chunk_id": "12f13dda-4d71-4a4a-9870-fe7e9d7e5062#s19",
+          "chunk_index": 19,
+          "page_range": "5-5",
+          "distance": 0.9422409534454346,
+          "section_title": "",
+          "text_snippet": "H_DTR H_RTS H_RTS H_RXD H_CTS H_CTS H_DCD H_DCD H_RI H_RI H_DSR H_DSR H_RX H_TX USB DreamCity Innovations Page !  of ! 5 6 WCH CH340G Datasheet"
+        },
+        {
+          "chunk_id": "12f13dda-4d71-4a4a-9870-fe7e9d7e5062#s28",
+          "chunk_index": 28,
+          "page_range": "9-9",
+          "distance": 0.9490101337432861,
+          "section_title": "<!-- PAGE:9 -->",
+          "text_snippet": "<!-- IMAGES:0 --> The Data Sheet of CH340 (the first)       3  5. Function Description CH340 chip has built-in USB pull-up resistor, UD+ and UD- pins must be connected to USB bus directly.   CH340 chi"
+        },
+        {
+          "chunk_id": "12f13dda-4d71-4a4a-9870-fe7e9d7e5062#s13",
+          "chunk_index": 13,
+          "page_range": "4-4",
+          "distance": 0.9787908792495728,
+          "section_title": "<!-- PAGE:4 -->",
+          "text_snippet": "<!-- IMAGES:0 --> DreamCity Innovations WCH CH340G Datasheet 4. Pinout  5. Application Notes  CH340 chip have built in USB bus pull-up resistors and on-chip signal termination, UD+ and  UD- pins shoul"
+        },
+        {
+          "chunk_id": "12f13dda-4d71-4a4a-9870-fe7e9d7e5062#s0",
+          "chunk_index": 0,
+          "page_range": "1-1",
+          "distance": 0.989790678024292,
+          "section_title": "<!-- PAGE:1 -->",
+          "text_snippet": "<!-- IMAGES:0 --> DreamCity Innovations WCH CH340G Datasheet WCH CH340 Series USB Interface Integrated Circuit  CH340G USB to UART Interface  Datasheet  WCH Version 1E  DreamCity Version 1.0  Disclaim"
+        }
+      ]
+    },
+    {
+      "id": "ch340g-q003",
+      "query": "CH340G 支持哪些硬件流控信号？",
+      "retrieved": [
+        {
+          "chunk_id": "12f13dda-4d71-4a4a-9870-fe7e9d7e5062#s25",
+          "chunk_index": 25,
+          "page_range": "8-8",
+          "distance": 0.7638406753540039,
+          "section_title": "<!-- PAGE:8 -->",
+          "text_snippet": "<!-- IMAGES:1 --> The Data Sheet of CH340 (the first)         2  3 Package  Model differences:  CH340C, CH340E and CH340B have built-in crystal, no external crystal;  CH340B also has built-in EEPROM u"
+        },
+        {
+          "chunk_id": "12f13dda-4d71-4a4a-9870-fe7e9d7e5062#s28",
+          "chunk_index": 28,
+          "page_range": "9-9",
+          "distance": 0.9179186224937439,
+          "section_title": "<!-- PAGE:9 -->",
+          "text_snippet": "<!-- IMAGES:0 --> The Data Sheet of CH340 (the first)       3  5. Function Description CH340 chip has built-in USB pull-up resistor, UD+ and UD- pins must be connected to USB bus directly.   CH340 chi"
+        },
+        {
+          "chunk_id": "12f13dda-4d71-4a4a-9870-fe7e9d7e5062#s0",
+          "chunk_index": 0,
+          "page_range": "1-1",
+          "distance": 0.9387999176979065,
+          "section_title": "<!-- PAGE:1 -->",
+          "text_snippet": "<!-- IMAGES:0 --> DreamCity Innovations WCH CH340G Datasheet WCH CH340 Series USB Interface Integrated Circuit  CH340G USB to UART Interface  Datasheet  WCH Version 1E  DreamCity Version 1.0  Disclaim"
+        },
+        {
+          "chunk_id": "12f13dda-4d71-4a4a-9870-fe7e9d7e5062#s30",
+          "chunk_index": 30,
+          "page_range": "10-10",
+          "distance": 0.9389609098434448,
+          "section_title": "<!-- PAGE:10 -->",
+          "text_snippet": "<!-- IMAGES:0 --> The Data Sheet of CH340 (the first)     4  CH340B  chip  also  provides  EEPROM  for  configuring  data  area,  product  serial number  and  other  information could be customized fo"
+        },
+        {
+          "chunk_id": "12f13dda-4d71-4a4a-9870-fe7e9d7e5062#s19",
+          "chunk_index": 19,
+          "page_range": "5-5",
+          "distance": 0.9505387544631958,
+          "section_title": "",
+          "text_snippet": "H_DTR H_RTS H_RTS H_RXD H_CTS H_CTS H_DCD H_DCD H_RI H_RI H_DSR H_DSR H_RX H_TX USB DreamCity Innovations Page !  of ! 5 6 WCH CH340G Datasheet"
+        }
+      ]
+    },
+    {
+      "id": "ch340g-q004",
+      "query": "CH340G 的 V3 引脚在 5V 供电时应如何连接？",
+      "retrieved": [
+        {
+          "chunk_id": "12f13dda-4d71-4a4a-9870-fe7e9d7e5062#s30",
+          "chunk_index": 30,
+          "page_range": "10-10",
+          "distance": 0.6987937688827515,
+          "section_title": "<!-- PAGE:10 -->",
+          "text_snippet": "<!-- IMAGES:0 --> The Data Sheet of CH340 (the first)     4  CH340B  chip  also  provides  EEPROM  for  configuring  data  area,  product  serial number  and  other  information could be customized fo"
+        },
+        {
+          "chunk_id": "12f13dda-4d71-4a4a-9870-fe7e9d7e5062#s38",
+          "chunk_index": 38,
+          "page_range": "12-12",
+          "distance": 0.8251832723617554,
+          "section_title": "<!-- PAGE:12 -->",
+          "text_snippet": "<!-- IMAGES:1 --> The Data Sheet of CH340 (the first)        6  6.2. Electrical Parameter (test conditions: TA=25℃, VCC=5V, exclude pin connected to USB bus) (All the current parameters should multipl"
+        },
+        {
+          "chunk_id": "12f13dda-4d71-4a4a-9870-fe7e9d7e5062#s13",
+          "chunk_index": 13,
+          "page_range": "4-4",
+          "distance": 0.8850814700126648,
+          "section_title": "<!-- PAGE:4 -->",
+          "text_snippet": "<!-- IMAGES:0 --> DreamCity Innovations WCH CH340G Datasheet 4. Pinout  5. Application Notes  CH340 chip have built in USB bus pull-up resistors and on-chip signal termination, UD+ and  UD- pins shoul"
+        },
+        {
+          "chunk_id": "12f13dda-4d71-4a4a-9870-fe7e9d7e5062#s28",
+          "chunk_index": 28,
+          "page_range": "9-9",
+          "distance": 0.8876092433929443,
+          "section_title": "<!-- PAGE:9 -->",
+          "text_snippet": "<!-- IMAGES:0 --> The Data Sheet of CH340 (the first)       3  5. Function Description CH340 chip has built-in USB pull-up resistor, UD+ and UD- pins must be connected to USB bus directly.   CH340 chi"
+        },
+        {
+          "chunk_id": "12f13dda-4d71-4a4a-9870-fe7e9d7e5062#s39",
+          "chunk_index": 39,
+          "page_range": "12-12",
+          "distance": 0.8909446597099304,
+          "section_title": "|VCC|Supply Voltage|V3 doesn’t connect to VCC|Col4|4.0|5|5.3|V|",
+          "text_snippet": "|VCC|Supply Voltage|V3 doesn’t connect to VCC|Col4|4.0|5|5.3|V| |---|---|---|---|---|---|---|---| |VCC|Supply Voltage|V3 connect to<br>VCC|CH340G/T/R|2.8|3.3|3.6|3.6| |VCC|Supply Voltage|V3 connect to"
+        }
+      ]
+    },
+    {
+      "id": "ch340g-q005",
+      "query": "CH340G 引脚表中，TXD 和 RXD 的方向和功能分别是什么？",
+      "retrieved": [
+        {
+          "chunk_id": "12f13dda-4d71-4a4a-9870-fe7e9d7e5062#s25",
+          "chunk_index": 25,
+          "page_range": "8-8",
+          "distance": 0.8018358945846558,
+          "section_title": "<!-- PAGE:8 -->",
+          "text_snippet": "<!-- IMAGES:1 --> The Data Sheet of CH340 (the first)         2  3 Package  Model differences:  CH340C, CH340E and CH340B have built-in crystal, no external crystal;  CH340B also has built-in EEPROM u"
+        },
+        {
+          "chunk_id": "12f13dda-4d71-4a4a-9870-fe7e9d7e5062#s19",
+          "chunk_index": 19,
+          "page_range": "5-5",
+          "distance": 0.8222474455833435,
+          "section_title": "",
+          "text_snippet": "H_DTR H_RTS H_RTS H_RXD H_CTS H_CTS H_DCD H_DCD H_RI H_RI H_DSR H_DSR H_RX H_TX USB DreamCity Innovations Page !  of ! 5 6 WCH CH340G Datasheet"
+        },
+        {
+          "chunk_id": "12f13dda-4d71-4a4a-9870-fe7e9d7e5062#s21",
+          "chunk_index": 21,
+          "page_range": "6-6",
+          "distance": 0.8436378240585327,
+          "section_title": "<!-- PAGE:6 -->",
+          "text_snippet": "IC1G$1 2 4 IC1G$2 GND VCC 3 5 IC3G$1 2 4 IC3G$2 GND VCC 3 5 R1 R2 R4 C5 R5 R8 C6 D- D- D+ D+ RXD RXD DCD RI DSR CTS CTS TXD TXD DTR DTR RTS USB DreamCity Innovations Page !  of  6 6 WCH CH340G Datashe"
+        },
+        {
+          "chunk_id": "12f13dda-4d71-4a4a-9870-fe7e9d7e5062#s33",
+          "chunk_index": 33,
+          "page_range": "11-11",
+          "distance": 0.8596219420433044,
+          "section_title": "<!-- PAGE:11 -->",
+          "text_snippet": "<!-- IMAGES:0 --> The Data Sheet of CH340 (the first)       5  Data  transfer pins contain: TXD and RXD pin. RXD  keeps high when UART  reception  is  idle.  For CH340G/C/T/R chip, If R232 pin is driv"
+        },
+        {
+          "chunk_id": "12f13dda-4d71-4a4a-9870-fe7e9d7e5062#s0",
+          "chunk_index": 0,
+          "page_range": "1-1",
+          "distance": 0.8972100019454956,
+          "section_title": "<!-- PAGE:1 -->",
+          "text_snippet": "<!-- IMAGES:0 --> DreamCity Innovations WCH CH340G Datasheet WCH CH340 Series USB Interface Integrated Circuit  CH340G USB to UART Interface  Datasheet  WCH Version 1E  DreamCity Version 1.0  Disclaim"
+        }
+      ]
+    },
+    {
+      "id": "ch340g-q006",
+      "query": "CH340G 5V 供电时，V3 引脚接多大退耦电容？该信息在引脚表和应用说明中分别如何描述？",
+      "retrieved": [
+        {
+          "chunk_id": "12f13dda-4d71-4a4a-9870-fe7e9d7e5062#s30",
+          "chunk_index": 30,
+          "page_range": "10-10",
+          "distance": 0.7041301727294922,
+          "section_title": "<!-- PAGE:10 -->",
+          "text_snippet": "<!-- IMAGES:0 --> The Data Sheet of CH340 (the first)     4  CH340B  chip  also  provides  EEPROM  for  configuring  data  area,  product  serial number  and  other  information could be customized fo"
+        },
+        {
+          "chunk_id": "12f13dda-4d71-4a4a-9870-fe7e9d7e5062#s38",
+          "chunk_index": 38,
+          "page_range": "12-12",
+          "distance": 0.7239723205566406,
+          "section_title": "<!-- PAGE:12 -->",
+          "text_snippet": "<!-- IMAGES:1 --> The Data Sheet of CH340 (the first)        6  6.2. Electrical Parameter (test conditions: TA=25℃, VCC=5V, exclude pin connected to USB bus) (All the current parameters should multipl"
+        },
+        {
+          "chunk_id": "12f13dda-4d71-4a4a-9870-fe7e9d7e5062#s39",
+          "chunk_index": 39,
+          "page_range": "12-12",
+          "distance": 0.8227060437202454,
+          "section_title": "|VCC|Supply Voltage|V3 doesn’t connect to VCC|Col4|4.0|5|5.3|V|",
+          "text_snippet": "|VCC|Supply Voltage|V3 doesn’t connect to VCC|Col4|4.0|5|5.3|V| |---|---|---|---|---|---|---|---| |VCC|Supply Voltage|V3 connect to<br>VCC|CH340G/T/R|2.8|3.3|3.6|3.6| |VCC|Supply Voltage|V3 connect to"
+        },
+        {
+          "chunk_id": "12f13dda-4d71-4a4a-9870-fe7e9d7e5062#s13",
+          "chunk_index": 13,
+          "page_range": "4-4",
+          "distance": 0.8670547008514404,
+          "section_title": "<!-- PAGE:4 -->",
+          "text_snippet": "<!-- IMAGES:0 --> DreamCity Innovations WCH CH340G Datasheet 4. Pinout  5. Application Notes  CH340 chip have built in USB bus pull-up resistors and on-chip signal termination, UD+ and  UD- pins shoul"
+        },
+        {
+          "chunk_id": "12f13dda-4d71-4a4a-9870-fe7e9d7e5062#s28",
+          "chunk_index": 28,
+          "page_range": "9-9",
+          "distance": 0.8814409971237183,
+          "section_title": "<!-- PAGE:9 -->",
+          "text_snippet": "<!-- IMAGES:0 --> The Data Sheet of CH340 (the first)       3  5. Function Description CH340 chip has built-in USB pull-up resistor, UD+ and UD- pins must be connected to USB bus directly.   CH340 chi"
+        }
+      ]
+    },
+    {
+      "id": "ch340g-q007",
+      "query": "CH340G USB 转 RS232 适配器应用电路主要包含哪些核心器件？",
+      "retrieved": [
+        {
+          "chunk_id": "12f13dda-4d71-4a4a-9870-fe7e9d7e5062#s41",
+          "chunk_index": 41,
+          "page_range": "13-13",
+          "distance": 0.6686404943466187,
+          "section_title": "<!-- PAGE:13 -->",
+          "text_snippet": "<!-- IMAGES:2 --> The Data Sheet of CH340 (the first)         7  7.1.2  USB to RS232 Converter Configuration using CH340B The image above use CH340T/CH340B (or CH340C ) to realize USB to RS232 convert"
+        },
+        {
+          "chunk_id": "12f13dda-4d71-4a4a-9870-fe7e9d7e5062#s38",
+          "chunk_index": 38,
+          "page_range": "12-12",
+          "distance": 0.6692814826965332,
+          "section_title": "<!-- PAGE:12 -->",
+          "text_snippet": "<!-- IMAGES:1 --> The Data Sheet of CH340 (the first)        6  6.2. Electrical Parameter (test conditions: TA=25℃, VCC=5V, exclude pin connected to USB bus) (All the current parameters should multipl"
+        },
+        {
+          "chunk_id": "12f13dda-4d71-4a4a-9870-fe7e9d7e5062#s23",
+          "chunk_index": 23,
+          "page_range": "7-7",
+          "distance": 0.6991133689880371,
+          "section_title": "<!-- PAGE:7 -->",
+          "text_snippet": "<!-- IMAGES:1 --> The Data Sheet of CH340 (the first)      1  USB to serial chip CH340  English Data  Sheet Version: 2C  http://wch.cn  1 Introduction  CH340 is a USB bus conversion chip, it can reali"
+        },
+        {
+          "chunk_id": "12f13dda-4d71-4a4a-9870-fe7e9d7e5062#s36",
+          "chunk_index": 36,
+          "page_range": "11-11",
+          "distance": 0.745861828327179,
+          "section_title": "<!-- PAGE:11 -->",
+          "text_snippet": "USB bus, through external level conversion chip provide further RS232, RS485, RS422 interface, etc.  Only need to add infrared transceiver, CH340R can expand SIR infrared adapter for computer via USB "
+        },
+        {
+          "chunk_id": "12f13dda-4d71-4a4a-9870-fe7e9d7e5062#s0",
+          "chunk_index": 0,
+          "page_range": "1-1",
+          "distance": 0.7777525186538696,
+          "section_title": "<!-- PAGE:1 -->",
+          "text_snippet": "<!-- IMAGES:0 --> DreamCity Innovations WCH CH340G Datasheet WCH CH340 Series USB Interface Integrated Circuit  CH340G USB to UART Interface  Datasheet  WCH Version 1E  DreamCity Version 1.0  Disclaim"
+        }
+      ]
+    },
+    {
+      "id": "ch340g-q008",
+      "query": "CH340G 光隔离 USB 转 UART 适配器的设计要点是什么？",
+      "retrieved": [
+        {
+          "chunk_id": "12f13dda-4d71-4a4a-9870-fe7e9d7e5062#s2",
+          "chunk_index": 2,
+          "page_range": "2-2",
+          "distance": 0.7110657691955566,
+          "section_title": "<!-- PAGE:2 -->",
+          "text_snippet": "<!-- IMAGES:0 --> DreamCity Innovations WCH CH340G Datasheet Table of Contents  CH340G USB to UART Interface Datasheet  Disclaimer from DreamCity Innovations  1"
+        },
+        {
+          "chunk_id": "12f13dda-4d71-4a4a-9870-fe7e9d7e5062#s0",
+          "chunk_index": 0,
+          "page_range": "1-1",
+          "distance": 0.7279265522956848,
+          "section_title": "<!-- PAGE:1 -->",
+          "text_snippet": "<!-- IMAGES:0 --> DreamCity Innovations WCH CH340G Datasheet WCH CH340 Series USB Interface Integrated Circuit  CH340G USB to UART Interface  Datasheet  WCH Version 1E  DreamCity Version 1.0  Disclaim"
+        },
+        {
+          "chunk_id": "12f13dda-4d71-4a4a-9870-fe7e9d7e5062#s23",
+          "chunk_index": 23,
+          "page_range": "7-7",
+          "distance": 0.7548743486404419,
+          "section_title": "<!-- PAGE:7 -->",
+          "text_snippet": "<!-- IMAGES:1 --> The Data Sheet of CH340 (the first)      1  USB to serial chip CH340  English Data  Sheet Version: 2C  http://wch.cn  1 Introduction  CH340 is a USB bus conversion chip, it can reali"
+        },
+        {
+          "chunk_id": "12f13dda-4d71-4a4a-9870-fe7e9d7e5062#s31",
+          "chunk_index": 31,
+          "page_range": "10-10",
+          "distance": 0.8153746128082275,
+          "section_title": "<!-- PAGE:10 -->",
+          "text_snippet": "The DTR# pin of CH340 is used as a configuration input pin before the USB configuration is complete. An  external 4.7KΩ pull-down resistor can be connected with this pin to generate default low level "
+        },
+        {
+          "chunk_id": "12f13dda-4d71-4a4a-9870-fe7e9d7e5062#s19",
+          "chunk_index": 19,
+          "page_range": "5-5",
+          "distance": 0.8167652487754822,
+          "section_title": "",
+          "text_snippet": "H_DTR H_RTS H_RTS H_RXD H_CTS H_CTS H_DCD H_DCD H_RI H_RI H_DSR H_DSR H_RX H_TX USB DreamCity Innovations Page !  of ! 5 6 WCH CH340G Datasheet"
+        }
+      ]
+    }
+  ],
+  "stm32f4": [
+    {
+      "id": "stm32f4-q001",
+      "query": "STM32F4 GPIO 端口复位后的默认模式是什么？",
+      "retrieved": [
+        {
+          "chunk_id": "baseline-stm32f4-gpio-exti#s0",
+          "chunk_index": 47,
+          "page_range": "1-1",
+          "distance": 0.8401148319244385,
+          "section_title": "<!-- PAGE:1 -->",
+          "text_snippet": "<!-- IMAGES:0 --> RM0090 Rev 18 267/1749 RM0090 General-purpose I/Os (GPIO) 288 8  General-purpose I/Os (GPIO) This section applies to the whole STM32F4xx family, unless otherwise specified. 8.1  GPIO"
+        },
+        {
+          "chunk_id": "baseline-stm32f4-gpio-exti#s17",
+          "chunk_index": 64,
+          "page_range": "7-7",
+          "distance": 0.9453182816505432,
+          "section_title": "<!-- PAGE:7 -->",
+          "text_snippet": "<!-- IMAGES:0 --> RM0090 Rev 18 273/1749 RM0090 General-purpose I/Os (GPIO) 288 Figure 27. Selecting an alternate function on STM32F42xxx and STM32F43xxx  1. Configured in FS. MS60208V1 For pins 0 to "
+        },
+        {
+          "chunk_id": "baseline-stm32f4-gpio-exti#s101",
+          "chunk_index": 148,
+          "page_range": "34-34",
+          "distance": 1.0071382522583008,
+          "section_title": "<!-- PAGE:34 -->",
+          "text_snippet": "<!-- IMAGES:0 --> RM0090 Interrupts and events 387 Table 62. Vector table for STM32F42xxx and STM32F43xxx (continued)"
+        },
+        {
+          "chunk_id": "baseline-stm32f4-gpio-exti#s105",
+          "chunk_index": 152,
+          "page_range": "36-36",
+          "distance": 1.0073885917663574,
+          "section_title": "<!-- PAGE:36 -->",
+          "text_snippet": "<!-- IMAGES:0 --> RM0090 Interrupts and events 387 12.2.1  EXTI main features The main features of the EXTI controller are the following: • independent trigger and mask on each interrupt/event line • "
+        },
+        {
+          "chunk_id": "baseline-stm32f4-gpio-exti#s99",
+          "chunk_index": 146,
+          "page_range": "33-33",
+          "distance": 1.0159882307052612,
+          "section_title": "<!-- PAGE:33 -->",
+          "text_snippet": "<!-- IMAGES:0 --> Interrupts and events RM0090 Table 62. Vector table for STM32F42xxx and STM32F43xxx (continued)"
+        }
+      ]
+    },
+    {
+      "id": "stm32f4-q002",
+      "query": "STM32F4 GPIO 模拟模式下，输出缓冲器、施密特触发器和弱上下拉电阻的状态如何？",
+      "retrieved": [
+        {
+          "chunk_id": "baseline-stm32f4-gpio-exti#s0",
+          "chunk_index": 47,
+          "page_range": "1-1",
+          "distance": 0.8114360570907593,
+          "section_title": "<!-- PAGE:1 -->",
+          "text_snippet": "<!-- IMAGES:0 --> RM0090 Rev 18 267/1749 RM0090 General-purpose I/Os (GPIO) 288 8  General-purpose I/Os (GPIO) This section applies to the whole STM32F4xx family, unless otherwise specified. 8.1  GPIO"
+        },
+        {
+          "chunk_id": "baseline-stm32f4-gpio-exti#s17",
+          "chunk_index": 64,
+          "page_range": "7-7",
+          "distance": 0.8954522609710693,
+          "section_title": "<!-- PAGE:7 -->",
+          "text_snippet": "<!-- IMAGES:0 --> RM0090 Rev 18 273/1749 RM0090 General-purpose I/Os (GPIO) 288 Figure 27. Selecting an alternate function on STM32F42xxx and STM32F43xxx  1. Configured in FS. MS60208V1 For pins 0 to "
+        },
+        {
+          "chunk_id": "baseline-stm32f4-gpio-exti#s101",
+          "chunk_index": 148,
+          "page_range": "34-34",
+          "distance": 0.9732780456542969,
+          "section_title": "<!-- PAGE:34 -->",
+          "text_snippet": "<!-- IMAGES:0 --> RM0090 Interrupts and events 387 Table 62. Vector table for STM32F42xxx and STM32F43xxx (continued)"
+        },
+        {
+          "chunk_id": "baseline-stm32f4-gpio-exti#s99",
+          "chunk_index": 146,
+          "page_range": "33-33",
+          "distance": 0.9819676876068115,
+          "section_title": "<!-- PAGE:33 -->",
+          "text_snippet": "<!-- IMAGES:0 --> Interrupts and events RM0090 Table 62. Vector table for STM32F42xxx and STM32F43xxx (continued)"
+        },
+        {
+          "chunk_id": "baseline-stm32f4-gpio-exti#s103",
+          "chunk_index": 150,
+          "page_range": "35-35",
+          "distance": 0.9819676876068115,
+          "section_title": "<!-- PAGE:35 -->",
+          "text_snippet": "<!-- IMAGES:0 --> Interrupts and events RM0090 Table 62. Vector table for STM32F42xxx and STM32F43xxx (continued)"
+        }
+      ]
+    },
+    {
+      "id": "stm32f4-q003",
+      "query": "STM32F4 EXTI 控制器最多支持多少条外部中断/事件线？",
+      "retrieved": [
+        {
+          "chunk_id": "baseline-stm32f4-gpio-exti#s105",
+          "chunk_index": 152,
+          "page_range": "36-36",
+          "distance": 0.7414746284484863,
+          "section_title": "<!-- PAGE:36 -->",
+          "text_snippet": "<!-- IMAGES:0 --> RM0090 Interrupts and events 387 12.2.1  EXTI main features The main features of the EXTI controller are the following: • independent trigger and mask on each interrupt/event line • "
+        },
+        {
+          "chunk_id": "baseline-stm32f4-gpio-exti#s115",
+          "chunk_index": 162,
+          "page_range": "40-40",
+          "distance": 0.9505689144134521,
+          "section_title": "<!-- PAGE:40 -->",
+          "text_snippet": "EXTI15[3:0] bits in the SYSCFG_EXTICR4 register EXTI1[3:0] bits in the SYSCFG_EXTICR1 register EXTI0[3:0] bits in the SYSCFG_EXTICR1 register MS30440V1 PJ0 PK0 PJ1 PK1 PJ15"
+        },
+        {
+          "chunk_id": "baseline-stm32f4-gpio-exti#s101",
+          "chunk_index": 148,
+          "page_range": "34-34",
+          "distance": 0.9900932908058167,
+          "section_title": "<!-- PAGE:34 -->",
+          "text_snippet": "<!-- IMAGES:0 --> RM0090 Interrupts and events 387 Table 62. Vector table for STM32F42xxx and STM32F43xxx (continued)"
+        },
+        {
+          "chunk_id": "baseline-stm32f4-gpio-exti#s99",
+          "chunk_index": 146,
+          "page_range": "33-33",
+          "distance": 1.0037381649017334,
+          "section_title": "<!-- PAGE:33 -->",
+          "text_snippet": "<!-- IMAGES:0 --> Interrupts and events RM0090 Table 62. Vector table for STM32F42xxx and STM32F43xxx (continued)"
+        },
+        {
+          "chunk_id": "baseline-stm32f4-gpio-exti#s103",
+          "chunk_index": 150,
+          "page_range": "35-35",
+          "distance": 1.0037381649017334,
+          "section_title": "<!-- PAGE:35 -->",
+          "text_snippet": "<!-- IMAGES:0 --> Interrupts and events RM0090 Table 62. Vector table for STM32F42xxx and STM32F43xxx (continued)"
+        }
+      ]
+    },
+    {
+      "id": "stm32f4-q004",
+      "query": "如何清除 STM32F4 EXTI 挂起寄存器 EXTI_PR 中的 pending bit？",
+      "retrieved": [
+        {
+          "chunk_id": "baseline-stm32f4-gpio-exti#s115",
+          "chunk_index": 162,
+          "page_range": "40-40",
+          "distance": 0.918114185333252,
+          "section_title": "<!-- PAGE:40 -->",
+          "text_snippet": "EXTI15[3:0] bits in the SYSCFG_EXTICR4 register EXTI1[3:0] bits in the SYSCFG_EXTICR1 register EXTI0[3:0] bits in the SYSCFG_EXTICR1 register MS30440V1 PJ0 PK0 PJ1 PK1 PJ15"
+        },
+        {
+          "chunk_id": "baseline-stm32f4-gpio-exti#s105",
+          "chunk_index": 152,
+          "page_range": "36-36",
+          "distance": 0.924089252948761,
+          "section_title": "<!-- PAGE:36 -->",
+          "text_snippet": "<!-- IMAGES:0 --> RM0090 Interrupts and events 387 12.2.1  EXTI main features The main features of the EXTI controller are the following: • independent trigger and mask on each interrupt/event line • "
+        },
+        {
+          "chunk_id": "baseline-stm32f4-gpio-exti#s78",
+          "chunk_index": 125,
+          "page_range": "25-25",
+          "distance": 1.0120949745178223,
+          "section_title": "<!-- PAGE:25 -->",
+          "text_snippet": "These bits are written by software to select the source input for the EXTIx external  interrupt. 0000: PA[x] pin 0001: PB[x] pin 0010: PC[x] pin 0011: PD[x] pin 0100: PE[x] pin 0101: PF[x] pin 0110: P"
+        },
+        {
+          "chunk_id": "baseline-stm32f4-gpio-exti#s77",
+          "chunk_index": 124,
+          "page_range": "25-25",
+          "distance": 1.0128912925720215,
+          "section_title": "<!-- PAGE:25 -->",
+          "text_snippet": "<!-- IMAGES:0 --> System configuration controller (SYSCFG) RM0090 292/1749 RM0090 Rev 18 9.2.5  SYSCFG external interrupt configuration register 3 (SYSCFG_EXTICR3) Address offset: 0x10 Reset value: 0x"
+        },
+        {
+          "chunk_id": "baseline-stm32f4-gpio-exti#s80",
+          "chunk_index": 127,
+          "page_range": "26-26",
+          "distance": 1.0296450853347778,
+          "section_title": "<!-- PAGE:26 -->",
+          "text_snippet": "<!-- IMAGES:0 --> RM0090 System configuration controller (SYSCFG) 301 9.2.6  SYSCFG external interrupt configuration register 4 (SYSCFG_EXTICR4) Address offset: 0x14 Reset value: 0x0000 0000 9.2.7  Co"
+        }
+      ]
+    },
+    {
+      "id": "stm32f4-q005",
+      "query": "STM32F4 GPIOx_MODER 寄存器中，MODERy[1:0] 取 01、10、11 时分别对应什么 I/O 模式？",
+      "retrieved": [
+        {
+          "chunk_id": "baseline-stm32f4-gpio-exti#s0",
+          "chunk_index": 47,
+          "page_range": "1-1",
+          "distance": 0.8176153898239136,
+          "section_title": "<!-- PAGE:1 -->",
+          "text_snippet": "<!-- IMAGES:0 --> RM0090 Rev 18 267/1749 RM0090 General-purpose I/Os (GPIO) 288 8  General-purpose I/Os (GPIO) This section applies to the whole STM32F4xx family, unless otherwise specified. 8.1  GPIO"
+        },
+        {
+          "chunk_id": "baseline-stm32f4-gpio-exti#s38",
+          "chunk_index": 85,
+          "page_range": "15-15",
+          "distance": 0.916675865650177,
+          "section_title": "<!-- PAGE:15 -->",
+          "text_snippet": "<!-- IMAGES:0 --> RM0090 General-purpose I/Os (GPIO) 288 8.4  GPIO registers This section gives a detailed description of the GPIO registers. For a summary of register bits, register address offsets a"
+        },
+        {
+          "chunk_id": "baseline-stm32f4-gpio-exti#s12",
+          "chunk_index": 59,
+          "page_range": "5-5",
+          "distance": 0.9516010880470276,
+          "section_title": "<!-- PAGE:5 -->",
+          "text_snippet": "<!-- IMAGES:0 --> RM0090 General-purpose I/Os (GPIO) 288 • GPIO Configure the desired I/O as output or input in the GPIOx_MODER register. • Peripheral alternate function For the ADC and DAC, configure"
+        },
+        {
+          "chunk_id": "baseline-stm32f4-gpio-exti#s41",
+          "chunk_index": 88,
+          "page_range": "15-15",
+          "distance": 0.9979405403137207,
+          "section_title": "",
+          "text_snippet": "|MODER7[1:0]|Col2|MODER6[1:0]|Col4|MODER5[1:0]|Col6|MODER4[1:0]|Col8|MODER3[1:0]|Col10|MODER2[1:0]|Col12|MODER1[1:0]|Col14|MODER0[1:0]|Col16| |---|---|---|---|---|---|---|---|---|---|---|---|---|---|-"
+        },
+        {
+          "chunk_id": "baseline-stm32f4-gpio-exti#s17",
+          "chunk_index": 64,
+          "page_range": "7-7",
+          "distance": 1.0054430961608887,
+          "section_title": "<!-- PAGE:7 -->",
+          "text_snippet": "<!-- IMAGES:0 --> RM0090 Rev 18 273/1749 RM0090 General-purpose I/Os (GPIO) 288 Figure 27. Selecting an alternate function on STM32F42xxx and STM32F43xxx  1. Configured in FS. MS60208V1 For pins 0 to "
+        }
+      ]
+    },
+    {
+      "id": "stm32f4-q006",
+      "query": "STM32F4 SWJ-DP 调试端口引脚分配中，PA13、PA14、PA15、PB3、PB4 的默认功能是什么？",
+      "retrieved": [
+        {
+          "chunk_id": "baseline-stm32f4-gpio-exti#s96",
+          "chunk_index": 143,
+          "page_range": "32-32",
+          "distance": 1.0729923248291016,
+          "section_title": "<!-- PAGE:32 -->",
+          "text_snippet": "<!-- IMAGES:0 --> RM0090 Interrupts and events 387 Table 61. Vector table for STM32F405xx/07xx and STM32F415xx/17xx (continued) Table 62. Vector table for STM32F42xxx and STM32F43xxx"
+        },
+        {
+          "chunk_id": "baseline-stm32f4-gpio-exti#s17",
+          "chunk_index": 64,
+          "page_range": "7-7",
+          "distance": 1.0995084047317505,
+          "section_title": "<!-- PAGE:7 -->",
+          "text_snippet": "<!-- IMAGES:0 --> RM0090 Rev 18 273/1749 RM0090 General-purpose I/Os (GPIO) 288 Figure 27. Selecting an alternate function on STM32F42xxx and STM32F43xxx  1. Configured in FS. MS60208V1 For pins 0 to "
+        },
+        {
+          "chunk_id": "baseline-stm32f4-gpio-exti#s94",
+          "chunk_index": 141,
+          "page_range": "31-31",
+          "distance": 1.104266881942749,
+          "section_title": "<!-- PAGE:31 -->",
+          "text_snippet": "<!-- IMAGES:0 --> Interrupts and events RM0090 Table 61. Vector table for STM32F405xx/07xx and STM32F415xx/17xx (continued)"
+        },
+        {
+          "chunk_id": "baseline-stm32f4-gpio-exti#s101",
+          "chunk_index": 148,
+          "page_range": "34-34",
+          "distance": 1.1051230430603027,
+          "section_title": "<!-- PAGE:34 -->",
+          "text_snippet": "<!-- IMAGES:0 --> RM0090 Interrupts and events 387 Table 62. Vector table for STM32F42xxx and STM32F43xxx (continued)"
+        },
+        {
+          "chunk_id": "baseline-stm32f4-gpio-exti#s99",
+          "chunk_index": 146,
+          "page_range": "33-33",
+          "distance": 1.1098065376281738,
+          "section_title": "<!-- PAGE:33 -->",
+          "text_snippet": "<!-- IMAGES:0 --> Interrupts and events RM0090 Table 62. Vector table for STM32F42xxx and STM32F43xxx (continued)"
+        }
+      ]
+    },
+    {
+      "id": "stm32f4-q007",
+      "query": "配置 STM32F4 GPIO 为复用功能，需要设置哪些寄存器，各寄存器的作用是什么？",
+      "retrieved": [
+        {
+          "chunk_id": "baseline-stm32f4-gpio-exti#s0",
+          "chunk_index": 47,
+          "page_range": "1-1",
+          "distance": 0.7820615768432617,
+          "section_title": "<!-- PAGE:1 -->",
+          "text_snippet": "<!-- IMAGES:0 --> RM0090 Rev 18 267/1749 RM0090 General-purpose I/Os (GPIO) 288 8  General-purpose I/Os (GPIO) This section applies to the whole STM32F4xx family, unless otherwise specified. 8.1  GPIO"
+        },
+        {
+          "chunk_id": "baseline-stm32f4-gpio-exti#s17",
+          "chunk_index": 64,
+          "page_range": "7-7",
+          "distance": 0.9153653979301453,
+          "section_title": "<!-- PAGE:7 -->",
+          "text_snippet": "<!-- IMAGES:0 --> RM0090 Rev 18 273/1749 RM0090 General-purpose I/Os (GPIO) 288 Figure 27. Selecting an alternate function on STM32F42xxx and STM32F43xxx  1. Configured in FS. MS60208V1 For pins 0 to "
+        },
+        {
+          "chunk_id": "baseline-stm32f4-gpio-exti#s105",
+          "chunk_index": 152,
+          "page_range": "36-36",
+          "distance": 0.9910346865653992,
+          "section_title": "<!-- PAGE:36 -->",
+          "text_snippet": "<!-- IMAGES:0 --> RM0090 Interrupts and events 387 12.2.1  EXTI main features The main features of the EXTI controller are the following: • independent trigger and mask on each interrupt/event line • "
+        },
+        {
+          "chunk_id": "baseline-stm32f4-gpio-exti#s99",
+          "chunk_index": 146,
+          "page_range": "33-33",
+          "distance": 1.005965232849121,
+          "section_title": "<!-- PAGE:33 -->",
+          "text_snippet": "<!-- IMAGES:0 --> Interrupts and events RM0090 Table 62. Vector table for STM32F42xxx and STM32F43xxx (continued)"
+        },
+        {
+          "chunk_id": "baseline-stm32f4-gpio-exti#s103",
+          "chunk_index": 150,
+          "page_range": "35-35",
+          "distance": 1.005965232849121,
+          "section_title": "<!-- PAGE:35 -->",
+          "text_snippet": "<!-- IMAGES:0 --> Interrupts and events RM0090 Table 62. Vector table for STM32F42xxx and STM32F43xxx (continued)"
+        }
+      ]
+    },
+    {
+      "id": "stm32f4-q008",
+      "query": "使用 STM32F4 EXTI 外部中断的完整配置流程是什么？",
+      "retrieved": [
+        {
+          "chunk_id": "baseline-stm32f4-gpio-exti#s105",
+          "chunk_index": 152,
+          "page_range": "36-36",
+          "distance": 0.742415726184845,
+          "section_title": "<!-- PAGE:36 -->",
+          "text_snippet": "<!-- IMAGES:0 --> RM0090 Interrupts and events 387 12.2.1  EXTI main features The main features of the EXTI controller are the following: • independent trigger and mask on each interrupt/event line • "
+        },
+        {
+          "chunk_id": "baseline-stm32f4-gpio-exti#s115",
+          "chunk_index": 162,
+          "page_range": "40-40",
+          "distance": 0.968075692653656,
+          "section_title": "<!-- PAGE:40 -->",
+          "text_snippet": "EXTI15[3:0] bits in the SYSCFG_EXTICR4 register EXTI1[3:0] bits in the SYSCFG_EXTICR1 register EXTI0[3:0] bits in the SYSCFG_EXTICR1 register MS30440V1 PJ0 PK0 PJ1 PK1 PJ15"
+        },
+        {
+          "chunk_id": "baseline-stm32f4-gpio-exti#s101",
+          "chunk_index": 148,
+          "page_range": "34-34",
+          "distance": 1.0215682983398438,
+          "section_title": "<!-- PAGE:34 -->",
+          "text_snippet": "<!-- IMAGES:0 --> RM0090 Interrupts and events 387 Table 62. Vector table for STM32F42xxx and STM32F43xxx (continued)"
+        },
+        {
+          "chunk_id": "baseline-stm32f4-gpio-exti#s99",
+          "chunk_index": 146,
+          "page_range": "33-33",
+          "distance": 1.0389440059661865,
+          "section_title": "<!-- PAGE:33 -->",
+          "text_snippet": "<!-- IMAGES:0 --> Interrupts and events RM0090 Table 62. Vector table for STM32F42xxx and STM32F43xxx (continued)"
+        },
+        {
+          "chunk_id": "baseline-stm32f4-gpio-exti#s103",
+          "chunk_index": 150,
+          "page_range": "35-35",
+          "distance": 1.0389440059661865,
+          "section_title": "<!-- PAGE:35 -->",
+          "text_snippet": "<!-- IMAGES:0 --> Interrupts and events RM0090 Table 62. Vector table for STM32F42xxx and STM32F43xxx (continued)"
+        }
+      ]
+    },
+    {
+      "id": "stm32f4-q009",
+      "query": "描述 STM32F4 GPIO 复用功能选择框图（Figure 26/27）的主要结构。",
+      "retrieved": [
+        {
+          "chunk_id": "baseline-stm32f4-gpio-exti#s0",
+          "chunk_index": 47,
+          "page_range": "1-1",
+          "distance": 0.8849190473556519,
+          "section_title": "<!-- PAGE:1 -->",
+          "text_snippet": "<!-- IMAGES:0 --> RM0090 Rev 18 267/1749 RM0090 General-purpose I/Os (GPIO) 288 8  General-purpose I/Os (GPIO) This section applies to the whole STM32F4xx family, unless otherwise specified. 8.1  GPIO"
+        },
+        {
+          "chunk_id": "baseline-stm32f4-gpio-exti#s17",
+          "chunk_index": 64,
+          "page_range": "7-7",
+          "distance": 0.9941412806510925,
+          "section_title": "<!-- PAGE:7 -->",
+          "text_snippet": "<!-- IMAGES:0 --> RM0090 Rev 18 273/1749 RM0090 General-purpose I/Os (GPIO) 288 Figure 27. Selecting an alternate function on STM32F42xxx and STM32F43xxx  1. Configured in FS. MS60208V1 For pins 0 to "
+        },
+        {
+          "chunk_id": "baseline-stm32f4-gpio-exti#s101",
+          "chunk_index": 148,
+          "page_range": "34-34",
+          "distance": 1.005452036857605,
+          "section_title": "<!-- PAGE:34 -->",
+          "text_snippet": "<!-- IMAGES:0 --> RM0090 Interrupts and events 387 Table 62. Vector table for STM32F42xxx and STM32F43xxx (continued)"
+        },
+        {
+          "chunk_id": "baseline-stm32f4-gpio-exti#s99",
+          "chunk_index": 146,
+          "page_range": "33-33",
+          "distance": 1.0153511762619019,
+          "section_title": "<!-- PAGE:33 -->",
+          "text_snippet": "<!-- IMAGES:0 --> Interrupts and events RM0090 Table 62. Vector table for STM32F42xxx and STM32F43xxx (continued)"
+        },
+        {
+          "chunk_id": "baseline-stm32f4-gpio-exti#s103",
+          "chunk_index": 150,
+          "page_range": "35-35",
+          "distance": 1.0153511762619019,
+          "section_title": "<!-- PAGE:35 -->",
+          "text_snippet": "<!-- IMAGES:0 --> Interrupts and events RM0090 Table 62. Vector table for STM32F42xxx and STM32F43xxx (continued)"
+        }
+      ]
+    }
+  ],
+  "esp32": [
+    {
+      "id": "esp32-q001",
+      "query": "ESP32 Deep-sleep 模式下的典型功耗是多少？哪些内容在 Deep-sleep 期间保持供电？",
+      "retrieved": [
+        {
+          "chunk_id": "a01cb55a-3218-4c85-8115-f153a5916881#s62",
+          "chunk_index": 246,
+          "page_range": "28-28",
+          "distance": 0.9408271312713623,
+          "section_title": "<!-- PAGE:28 -->",
+          "text_snippet": "<!-- IMAGES:0 --> 4 Functional Description Table 4-1. Memory and Peripheral Mapping Espressif Systems 28 Submit Documentation Feedback ESP32 Series Datasheet v5.2"
+        },
+        {
+          "chunk_id": "a01cb55a-3218-4c85-8115-f153a5916881#s67",
+          "chunk_index": 251,
+          "page_range": "30-30",
+          "distance": 0.9445112347602844,
+          "section_title": "<!-- PAGE:30 -->",
+          "text_snippet": "<!-- IMAGES:0 --> 4 Functional Description 4.2.3 Audio PLL Clock The audio clock is generated by the ultra-low-noise fractional-N PLL. For details, see ESP32 Technical Reference Manual > Chapter Reset"
+        },
+        {
+          "chunk_id": "a01cb55a-3218-4c85-8115-f153a5916881#s72",
+          "chunk_index": 256,
+          "page_range": "31-31",
+          "distance": 0.9787675142288208,
+          "section_title": "<!-- PAGE:31 -->",
+          "text_snippet": "The ULP coprocessor and RTC memory remain powered on during the Deep-sleep mode. Hence, the developer can store a program for the ULP coprocessor in the RTC slow memory to access the peripheral device"
+        },
+        {
+          "chunk_id": "a01cb55a-3218-4c85-8115-f153a5916881#s163",
+          "chunk_index": 347,
+          "page_range": "63-63",
+          "distance": 0.9916479587554932,
+          "section_title": "<!-- PAGE:63 -->",
+          "text_snippet": "<!-- IMAGES:0 --> Appendix A Espressif Systems 63 Submit Documentation Feedback ESP32 Series Datasheet v5.2"
+        },
+        {
+          "chunk_id": "a01cb55a-3218-4c85-8115-f153a5916881#s127",
+          "chunk_index": 311,
+          "page_range": "51-51",
+          "distance": 1.0285162925720215,
+          "section_title": "<!-- PAGE:51 -->",
+          "text_snippet": "<!-- IMAGES:0 --> 4 Functional Description Espressif Systems 51 Submit Documentation Feedback ESP32 Series Datasheet v5.2"
+        }
+      ]
+    },
+    {
+      "id": "esp32-q002",
+      "query": "ESP32 内部 SRAM、RTC SRAM 和 ROM 的容量分别是多少？",
+      "retrieved": [
+        {
+          "chunk_id": "a01cb55a-3218-4c85-8115-f153a5916881#s58",
+          "chunk_index": 242,
+          "page_range": "26-26",
+          "distance": 0.8453903794288635,
+          "section_title": "<!-- PAGE:26 -->",
+          "text_snippet": "For information about the Xtensa® Instruction Set Architecture, please refer to Xtensa® Instruction Set Architecture (ISA) Summary. 4.1.2 Internal Memory ESP32’s internal memory includes: • 448 KB of "
+        },
+        {
+          "chunk_id": "a01cb55a-3218-4c85-8115-f153a5916881#s63",
+          "chunk_index": 247,
+          "page_range": "28-28",
+          "distance": 0.96019446849823,
+          "section_title": "|Category|Target|Start Address|End Address|Size|",
+          "text_snippet": "|Category|Target|Start Address|End Address|Size| |---|---|---|---|---| |Embedded<br>Memory|Internal ROM 0|0×4000_0000|0×4005_FFFF|384 KB| |Embedded<br>Memory|Internal ROM 1|0×3FF9_0000|0×3FF9_FFFF|64 "
+        },
+        {
+          "chunk_id": "a01cb55a-3218-4c85-8115-f153a5916881#s2",
+          "chunk_index": 186,
+          "page_range": "2-2",
+          "distance": 1.0119279623031616,
+          "section_title": "<!-- PAGE:2 -->",
+          "text_snippet": "2 (or 1) x Xtensa® 32-bit  LX6 Microprocessors  RF  receive RF  transmit Switch Balun I2C I2S SDIO UART TWAI® ETH RMT PWM Touch sensor DAC ADC Clock  generator RNG SRAM In-Package  Flash or PSRAM Time"
+        },
+        {
+          "chunk_id": "a01cb55a-3218-4c85-8115-f153a5916881#s19",
+          "chunk_index": 203,
+          "page_range": "11-11",
+          "distance": 1.0323209762573242,
+          "section_title": "",
+          "text_snippet": "|Part Number1|Core|Chip Revision2|In-Package<br>Flash/PSRAM|Package|VDD SDIO<br>_| |---|---|---|---|---|---| |Part Number1|Core|Chip Revision2|In-Package<br>Flash/PSRAM|Package|Voltage| |ESP32-D0WD-V3"
+        },
+        {
+          "chunk_id": "a01cb55a-3218-4c85-8115-f153a5916881#s1",
+          "chunk_index": 185,
+          "page_range": "2-2",
+          "distance": 1.032461166381836,
+          "section_title": "<!-- PAGE:2 -->",
+          "text_snippet": "<!-- IMAGES:37 --> Product Overview ESP32 is a single 2.4 GHz Wi-Fi-and-Bluetooth combo chip designed with the TSMC low-power 40 nm technology. It is designed to achieve the best power and RF performa"
+        }
+      ]
+    },
+    {
+      "id": "esp32-q003",
+      "query": "ESP32 的推荐工作电压和电流要求是什么？",
+      "retrieved": [
+        {
+          "chunk_id": "a01cb55a-3218-4c85-8115-f153a5916881#s182",
+          "chunk_index": 366,
+          "page_range": "70-70",
+          "distance": 0.7551250457763672,
+          "section_title": "",
+          "text_snippet": "• Please see Table: Notes on ESP32 Pin Lists for more information.（请参考表：管脚清单说明。） Espressif Systems 70 Submit Documentation Feedback ESP32 Series Datasheet v5.2"
+        },
+        {
+          "chunk_id": "a01cb55a-3218-4c85-8115-f153a5916881#s158",
+          "chunk_index": 342,
+          "page_range": "61-61",
+          "distance": 0.7608025670051575,
+          "section_title": "<!-- PAGE:61 -->",
+          "text_snippet": "<!-- IMAGES:0 --> Related Documentation and Resources Related Documentation and Resources Related Documentation • ESP32 Technical Reference Manual – Detailed information on how to use the ESP32 memory"
+        },
+        {
+          "chunk_id": "a01cb55a-3218-4c85-8115-f153a5916881#s163",
+          "chunk_index": 347,
+          "page_range": "63-63",
+          "distance": 0.7729341983795166,
+          "section_title": "<!-- PAGE:63 -->",
+          "text_snippet": "<!-- IMAGES:0 --> Appendix A Espressif Systems 63 Submit Documentation Feedback ESP32 Series Datasheet v5.2"
+        },
+        {
+          "chunk_id": "a01cb55a-3218-4c85-8115-f153a5916881#s86",
+          "chunk_index": 270,
+          "page_range": "36-36",
+          "distance": 0.8035346865653992,
+          "section_title": "<!-- PAGE:36 -->",
+          "text_snippet": "<!-- IMAGES:0 --> 4 Functional Description – Link Layer Encryption – LE Ping Espressif Systems 36 Submit Documentation Feedback ESP32 Series Datasheet v5.2"
+        },
+        {
+          "chunk_id": "a01cb55a-3218-4c85-8115-f153a5916881#s59",
+          "chunk_index": 243,
+          "page_range": "26-26",
+          "distance": 0.8161382079124451,
+          "section_title": "<!-- PAGE:26 -->",
+          "text_snippet": "Note: Products in the ESP32 series differ from each other, in terms of their support for in-package flash or PSRAM and the size of them. For details, please refer to Section 1 ESP32 Series Comparison."
+        }
+      ]
+    },
+    {
+      "id": "esp32-q004",
+      "query": "ESP32 有多少个可编程 GPIO？其中包含哪些特殊类型？",
+      "retrieved": [
+        {
+          "chunk_id": "a01cb55a-3218-4c85-8115-f153a5916881#s182",
+          "chunk_index": 366,
+          "page_range": "70-70",
+          "distance": 0.7946701645851135,
+          "section_title": "",
+          "text_snippet": "• Please see Table: Notes on ESP32 Pin Lists for more information.（请参考表：管脚清单说明。） Espressif Systems 70 Submit Documentation Feedback ESP32 Series Datasheet v5.2"
+        },
+        {
+          "chunk_id": "a01cb55a-3218-4c85-8115-f153a5916881#s9",
+          "chunk_index": 193,
+          "page_range": "6-6",
+          "distance": 0.8625611066818237,
+          "section_title": "<!-- PAGE:6 -->",
+          "text_snippet": "<!-- IMAGES:0 --> Contents Note: Check the link or the QR code to make sure that you use the latest version of this document: https://www.espressif.com/documentation/esp32_datasheet_en.pdf Contents Pr"
+        },
+        {
+          "chunk_id": "a01cb55a-3218-4c85-8115-f153a5916881#s117",
+          "chunk_index": 301,
+          "page_range": "46-46",
+          "distance": 0.8777324557304382,
+          "section_title": "<!-- PAGE:46 -->",
+          "text_snippet": "<!-- IMAGES:0 --> 4 Functional Description Pin Assignment The 10 capacitive-sensing GPIOs are listed in Table 4-5. Table 4-5. Capacitive-Sensing GPIOs Available on ESP32 For details, see ESP32 Technic"
+        },
+        {
+          "chunk_id": "a01cb55a-3218-4c85-8115-f153a5916881#s31",
+          "chunk_index": 215,
+          "page_range": "17-17",
+          "distance": 0.887163519859314,
+          "section_title": "<!-- PAGE:17 -->",
+          "text_snippet": "• GPIO – have one of the following important functions: – Strapping pins – need to be at certain logic levels at startup. See Section 3 Boot Configurations. – JTAG interface – often used for debugging"
+        },
+        {
+          "chunk_id": "a01cb55a-3218-4c85-8115-f153a5916881#s165",
+          "chunk_index": 349,
+          "page_range": "64-64",
+          "distance": 0.9012918472290039,
+          "section_title": "<!-- PAGE:64 -->",
+          "text_snippet": "<!-- IMAGES:0 --> Appendix A A.2. GPIO_Matrix Table 6-2. GPIO_Matrix Output Enable Output Signal Espressif Systems 64 Submit Documentation Feedback ESP32 Series Datasheet v5.2"
+        }
+      ]
+    },
+    {
+      "id": "esp32-q005",
+      "query": "ESP32 的 strapping pins 有哪些？它们的默认上拉/下拉配置分别是什么？",
+      "retrieved": [
+        {
+          "chunk_id": "a01cb55a-3218-4c85-8115-f153a5916881#s47",
+          "chunk_index": 231,
+          "page_range": "22-22",
+          "distance": 0.8013449311256409,
+          "section_title": "<!-- PAGE:22 -->",
+          "text_snippet": "program eFuse bits, please refer to ESP32 Technical Reference Manual > Chapter eFuse Controller. The default values of the strapping pins, namely the logic levels, are determined by pins’internal weak"
+        },
+        {
+          "chunk_id": "a01cb55a-3218-4c85-8115-f153a5916881#s48",
+          "chunk_index": 232,
+          "page_range": "22-22",
+          "distance": 0.8443148732185364,
+          "section_title": "<!-- PAGE:22 -->",
+          "text_snippet": "pins and store them until the chip is powered down or shut down. The states of latches cannot be changed in any other way. It makes the strapping pin values available during the entire chip operation,"
+        },
+        {
+          "chunk_id": "a01cb55a-3218-4c85-8115-f153a5916881#s182",
+          "chunk_index": 366,
+          "page_range": "70-70",
+          "distance": 0.8477463722229004,
+          "section_title": "",
+          "text_snippet": "• Please see Table: Notes on ESP32 Pin Lists for more information.（请参考表：管脚清单说明。） Espressif Systems 70 Submit Documentation Feedback ESP32 Series Datasheet v5.2"
+        },
+        {
+          "chunk_id": "a01cb55a-3218-4c85-8115-f153a5916881#s16",
+          "chunk_index": 200,
+          "page_range": "10-10",
+          "distance": 0.8610983490943909,
+          "section_title": "<!-- PAGE:10 -->",
+          "text_snippet": "<!-- IMAGES:0 --> List of Figures List of Figures 1-1 ESP32 Series Nomenclature 11 2-1 ESP32 Pin Layout (QFN 6*6, Top View) 12 2-2 ESP32 Pin Layout (QFN 5*5, Top View) 13 2-3 ESP32 Power Scheme 18 2-4"
+        },
+        {
+          "chunk_id": "a01cb55a-3218-4c85-8115-f153a5916881#s50",
+          "chunk_index": 234,
+          "page_range": "23-23",
+          "distance": 0.8775726556777954,
+          "section_title": "<!-- PAGE:23 -->",
+          "text_snippet": "<!-- IMAGES:0 --> 3 Boot Configurations Table 3-2. Description of Timing Parameters for the Strapping Pins Strapping pin VIH_nRST VIH tSU tH CHIP_PU Figure 3-1. Visualization of Timing Parameters for "
+        }
+      ]
+    },
+    {
+      "id": "esp32-q006",
+      "query": "ESP32 芯片启动模式由哪些 strapping pin 控制？进入 SPI Boot 和 Joint Download Boot 分别需要什么电平？",
+      "retrieved": [
+        {
+          "chunk_id": "a01cb55a-3218-4c85-8115-f153a5916881#s50",
+          "chunk_index": 234,
+          "page_range": "23-23",
+          "distance": 0.7140121459960938,
+          "section_title": "<!-- PAGE:23 -->",
+          "text_snippet": "<!-- IMAGES:0 --> 3 Boot Configurations Table 3-2. Description of Timing Parameters for the Strapping Pins Strapping pin VIH_nRST VIH tSU tH CHIP_PU Figure 3-1. Visualization of Timing Parameters for "
+        },
+        {
+          "chunk_id": "a01cb55a-3218-4c85-8115-f153a5916881#s16",
+          "chunk_index": 200,
+          "page_range": "10-10",
+          "distance": 0.7730406522750854,
+          "section_title": "<!-- PAGE:10 -->",
+          "text_snippet": "<!-- IMAGES:0 --> List of Figures List of Figures 1-1 ESP32 Series Nomenclature 11 2-1 ESP32 Pin Layout (QFN 6*6, Top View) 12 2-2 ESP32 Pin Layout (QFN 5*5, Top View) 13 2-3 ESP32 Power Scheme 18 2-4"
+        },
+        {
+          "chunk_id": "a01cb55a-3218-4c85-8115-f153a5916881#s182",
+          "chunk_index": 366,
+          "page_range": "70-70",
+          "distance": 0.8194806575775146,
+          "section_title": "",
+          "text_snippet": "• Please see Table: Notes on ESP32 Pin Lists for more information.（请参考表：管脚清单说明。） Espressif Systems 70 Submit Documentation Feedback ESP32 Series Datasheet v5.2"
+        },
+        {
+          "chunk_id": "a01cb55a-3218-4c85-8115-f153a5916881#s31",
+          "chunk_index": 215,
+          "page_range": "17-17",
+          "distance": 0.8325092792510986,
+          "section_title": "<!-- PAGE:17 -->",
+          "text_snippet": "• GPIO – have one of the following important functions: – Strapping pins – need to be at certain logic levels at startup. See Section 3 Boot Configurations. – JTAG interface – often used for debugging"
+        },
+        {
+          "chunk_id": "a01cb55a-3218-4c85-8115-f153a5916881#s9",
+          "chunk_index": 193,
+          "page_range": "6-6",
+          "distance": 0.8542991876602173,
+          "section_title": "<!-- PAGE:6 -->",
+          "text_snippet": "<!-- IMAGES:0 --> Contents Note: Check the link or the QR code to make sure that you use the latest version of this document: https://www.espressif.com/documentation/esp32_datasheet_en.pdf Contents Pr"
+        }
+      ]
+    },
+    {
+      "id": "esp32-q007",
+      "query": "ESP32 的 VDD_SDIO 电源域如何配置？MTDI 和 eFuse 如何影响其输出电压？",
+      "retrieved": [
+        {
+          "chunk_id": "a01cb55a-3218-4c85-8115-f153a5916881#s53",
+          "chunk_index": 237,
+          "page_range": "24-24",
+          "distance": 0.6717215776443481,
+          "section_title": "<!-- PAGE:24 -->",
+          "text_snippet": "<!-- IMAGES:1 --> 3 Boot Configurations Figure 3-2. Chip Boot Flow uart_download_dis controls boot mode behaviors: It permanently disables Download Boot mode when uart_download_dis is set to 1 (valid "
+        },
+        {
+          "chunk_id": "a01cb55a-3218-4c85-8115-f153a5916881#s41",
+          "chunk_index": 225,
+          "page_range": "20-20",
+          "distance": 0.6859636902809143,
+          "section_title": "|ESP32-U4WDH|In-Package Flash (4 MB)|",
+          "text_snippet": "|ESP32-U4WDH|In-Package Flash (4 MB)| |---|---| |SD_DATA_1|IO0/DI| |GPIO17|IO1/DO| |SD_DATA_0|IO2/WP#| |SD_CMD|IO3/HOLD#| |SD_CLK|CLK| |GPIO16|CS#| |GND|VSS| |VDD_SDIO1|VDD| |ESP32-D0WDRH2-V3|In-Packa"
+        },
+        {
+          "chunk_id": "a01cb55a-3218-4c85-8115-f153a5916881#s54",
+          "chunk_index": 238,
+          "page_range": "24-24",
+          "distance": 0.7312422394752502,
+          "section_title": "<!-- PAGE:24 -->",
+          "text_snippet": "This functionality can be overridden by setting EFUSE_SDIO_FORCE to 1, in which case the EFUSE_SDIO_TIEH determines the VDD_SDIO voltage: • EFUSE_SDIO_TIEH = 0, VDD_SDIO connects to 1.8 V LDO. • EFUSE"
+        },
+        {
+          "chunk_id": "a01cb55a-3218-4c85-8115-f153a5916881#s39",
+          "chunk_index": 223,
+          "page_range": "20-20",
+          "distance": 0.8479560613632202,
+          "section_title": "<!-- PAGE:20 -->",
+          "text_snippet": "<!-- IMAGES:0 --> 2 Pins • When VDD_SDIO 1.8 V is used as the power supply for external flash/PSRAM, a 2 kΩgrounding resistor should be added to VDD_SDIO. For the circuit design, please refer to ESP32"
+        },
+        {
+          "chunk_id": "a01cb55a-3218-4c85-8115-f153a5916881#s182",
+          "chunk_index": 366,
+          "page_range": "70-70",
+          "distance": 0.8574284315109253,
+          "section_title": "",
+          "text_snippet": "• Please see Table: Notes on ESP32 Pin Lists for more information.（请参考表：管脚清单说明。） Espressif Systems 70 Submit Documentation Feedback ESP32 Series Datasheet v5.2"
+        }
+      ]
+    },
+    {
+      "id": "esp32-q008",
+      "query": "ESP32 进入 Deep-sleep 后如何保持 GPIO 状态？",
+      "retrieved": [
+        {
+          "chunk_id": "a01cb55a-3218-4c85-8115-f153a5916881#s67",
+          "chunk_index": 251,
+          "page_range": "30-30",
+          "distance": 0.8923455476760864,
+          "section_title": "<!-- PAGE:30 -->",
+          "text_snippet": "<!-- IMAGES:0 --> 4 Functional Description 4.2.3 Audio PLL Clock The audio clock is generated by the ultra-low-noise fractional-N PLL. For details, see ESP32 Technical Reference Manual > Chapter Reset"
+        },
+        {
+          "chunk_id": "a01cb55a-3218-4c85-8115-f153a5916881#s62",
+          "chunk_index": 246,
+          "page_range": "28-28",
+          "distance": 0.8945961594581604,
+          "section_title": "<!-- PAGE:28 -->",
+          "text_snippet": "<!-- IMAGES:0 --> 4 Functional Description Table 4-1. Memory and Peripheral Mapping Espressif Systems 28 Submit Documentation Feedback ESP32 Series Datasheet v5.2"
+        },
+        {
+          "chunk_id": "a01cb55a-3218-4c85-8115-f153a5916881#s72",
+          "chunk_index": 256,
+          "page_range": "31-31",
+          "distance": 0.9877110719680786,
+          "section_title": "<!-- PAGE:31 -->",
+          "text_snippet": "The ULP coprocessor and RTC memory remain powered on during the Deep-sleep mode. Hence, the developer can store a program for the ULP coprocessor in the RTC slow memory to access the peripheral device"
+        },
+        {
+          "chunk_id": "a01cb55a-3218-4c85-8115-f153a5916881#s127",
+          "chunk_index": 311,
+          "page_range": "51-51",
+          "distance": 1.0001261234283447,
+          "section_title": "<!-- PAGE:51 -->",
+          "text_snippet": "<!-- IMAGES:0 --> 4 Functional Description Espressif Systems 51 Submit Documentation Feedback ESP32 Series Datasheet v5.2"
+        },
+        {
+          "chunk_id": "a01cb55a-3218-4c85-8115-f153a5916881#s123",
+          "chunk_index": 307,
+          "page_range": "49-49",
+          "distance": 1.0005559921264648,
+          "section_title": "<!-- PAGE:49 -->",
+          "text_snippet": "<!-- IMAGES:0 --> 4 Functional Description Espressif Systems 49 Submit Documentation Feedback ESP32 Series Datasheet v5.2"
+        }
+      ]
+    },
+    {
+      "id": "esp32-q009",
+      "query": "描述 ESP32 功能框图中的主要模块。",
+      "retrieved": [
+        {
+          "chunk_id": "a01cb55a-3218-4c85-8115-f153a5916881#s163",
+          "chunk_index": 347,
+          "page_range": "63-63",
+          "distance": 0.9364253282546997,
+          "section_title": "<!-- PAGE:63 -->",
+          "text_snippet": "<!-- IMAGES:0 --> Appendix A Espressif Systems 63 Submit Documentation Feedback ESP32 Series Datasheet v5.2"
+        },
+        {
+          "chunk_id": "a01cb55a-3218-4c85-8115-f153a5916881#s182",
+          "chunk_index": 366,
+          "page_range": "70-70",
+          "distance": 0.9373326301574707,
+          "section_title": "",
+          "text_snippet": "• Please see Table: Notes on ESP32 Pin Lists for more information.（请参考表：管脚清单说明。） Espressif Systems 70 Submit Documentation Feedback ESP32 Series Datasheet v5.2"
+        },
+        {
+          "chunk_id": "a01cb55a-3218-4c85-8115-f153a5916881#s86",
+          "chunk_index": 270,
+          "page_range": "36-36",
+          "distance": 0.9826464653015137,
+          "section_title": "<!-- PAGE:36 -->",
+          "text_snippet": "<!-- IMAGES:0 --> 4 Functional Description – Link Layer Encryption – LE Ping Espressif Systems 36 Submit Documentation Feedback ESP32 Series Datasheet v5.2"
+        },
+        {
+          "chunk_id": "a01cb55a-3218-4c85-8115-f153a5916881#s127",
+          "chunk_index": 311,
+          "page_range": "51-51",
+          "distance": 0.9931280016899109,
+          "section_title": "<!-- PAGE:51 -->",
+          "text_snippet": "<!-- IMAGES:0 --> 4 Functional Description Espressif Systems 51 Submit Documentation Feedback ESP32 Series Datasheet v5.2"
+        },
+        {
+          "chunk_id": "a01cb55a-3218-4c85-8115-f153a5916881#s121",
+          "chunk_index": 305,
+          "page_range": "48-48",
+          "distance": 1.012433409690857,
+          "section_title": "<!-- PAGE:48 -->",
+          "text_snippet": "<!-- IMAGES:0 --> 4 Functional Description Espressif Systems 48 Submit Documentation Feedback ESP32 Series Datasheet v5.2"
+        }
+      ]
+    }
+  ]
+}

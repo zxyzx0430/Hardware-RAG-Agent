@@ -1,0 +1,142 @@
+[
+  {
+    "page": 1,
+    "chars": 1570,
+    "images": 0,
+    "tables": 0,
+    "table_lines": 0,
+    "image_path": "ch340g_pages\\page_01.png",
+    "text_path": "ch340g_pages\\page_01.txt",
+    "tables_path": "ch340g_pages\\page_01_tables.md"
+  },
+  {
+    "page": 2,
+    "chars": 1575,
+    "images": 0,
+    "tables": 0,
+    "table_lines": 0,
+    "image_path": "ch340g_pages\\page_02.png",
+    "text_path": "ch340g_pages\\page_02.txt",
+    "tables_path": "ch340g_pages\\page_02_tables.md"
+  },
+  {
+    "page": 3,
+    "chars": 1160,
+    "images": 0,
+    "tables": 3,
+    "table_lines": 24,
+    "image_path": "ch340g_pages\\page_03.png",
+    "text_path": "ch340g_pages\\page_03.txt",
+    "tables_path": "ch340g_pages\\page_03_tables.md"
+  },
+  {
+    "page": 4,
+    "chars": 2470,
+    "images": 0,
+    "tables": 1,
+    "table_lines": 18,
+    "image_path": "ch340g_pages\\page_04.png",
+    "text_path": "ch340g_pages\\page_04.txt",
+    "tables_path": "ch340g_pages\\page_04_tables.md"
+  },
+  {
+    "page": 5,
+    "chars": 2091,
+    "images": 0,
+    "tables": 0,
+    "table_lines": 0,
+    "image_path": "ch340g_pages\\page_05.png",
+    "text_path": "ch340g_pages\\page_05.txt",
+    "tables_path": "ch340g_pages\\page_05_tables.md"
+  },
+  {
+    "page": 6,
+    "chars": 1017,
+    "images": 0,
+    "tables": 2,
+    "table_lines": 15,
+    "image_path": "ch340g_pages\\page_06.png",
+    "text_path": "ch340g_pages\\page_06.txt",
+    "tables_path": "ch340g_pages\\page_06_tables.md"
+  },
+  {
+    "page": 7,
+    "chars": 1527,
+    "images": 1,
+    "tables": 0,
+    "table_lines": 0,
+    "image_path": "ch340g_pages\\page_07.png",
+    "text_path": "ch340g_pages\\page_07.txt",
+    "tables_path": "ch340g_pages\\page_07_tables.md"
+  },
+  {
+    "page": 8,
+    "chars": 1563,
+    "images": 1,
+    "tables": 2,
+    "table_lines": 16,
+    "image_path": "ch340g_pages\\page_08.png",
+    "text_path": "ch340g_pages\\page_08.txt",
+    "tables_path": "ch340g_pages\\page_08_tables.md"
+  },
+  {
+    "page": 9,
+    "chars": 2331,
+    "images": 0,
+    "tables": 1,
+    "table_lines": 21,
+    "image_path": "ch340g_pages\\page_09.png",
+    "text_path": "ch340g_pages\\page_09.txt",
+    "tables_path": "ch340g_pages\\page_09_tables.md"
+  },
+  {
+    "page": 10,
+    "chars": 2477,
+    "images": 0,
+    "tables": 1,
+    "table_lines": 12,
+    "image_path": "ch340g_pages\\page_10.png",
+    "text_path": "ch340g_pages\\page_10.txt",
+    "tables_path": "ch340g_pages\\page_10_tables.md"
+  },
+  {
+    "page": 11,
+    "chars": 2954,
+    "images": 0,
+    "tables": 1,
+    "table_lines": 7,
+    "image_path": "ch340g_pages\\page_11.png",
+    "text_path": "ch340g_pages\\page_11.txt",
+    "tables_path": "ch340g_pages\\page_11_tables.md"
+  },
+  {
+    "page": 12,
+    "chars": 1372,
+    "images": 1,
+    "tables": 3,
+    "table_lines": 21,
+    "image_path": "ch340g_pages\\page_12.png",
+    "text_path": "ch340g_pages\\page_12.txt",
+    "tables_path": "ch340g_pages\\page_12_tables.md"
+  },
+  {
+    "page": 13,
+    "chars": 2640,
+    "images": 2,
+    "tables": 0,
+    "table_lines": 0,
+    "image_path": "ch340g_pages\\page_13.png",
+    "text_path": "ch340g_pages\\page_13.txt",
+    "tables_path": "ch340g_pages\\page_13_tables.md"
+  },
+  {
+    "page": 14,
+    "chars": 1116,
+    "images": 2,
+    "tables": 0,
+    "table_lines": 0,
+    "image_path": "ch340g_pages\\page_14.png",
+    "text_path": "ch340g_pages\\page_14.txt",
+    "tables_path": "ch340g_pages\\page_14_tables.md"
+  }
+]

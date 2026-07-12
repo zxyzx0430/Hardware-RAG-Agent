@@ -1,0 +1,5 @@
+# OCR 依赖（可选，约 1.5GB）
+# Docker 构建时通过 --build-arg INSTALL_OCR=true 启用
+# 本地开发时按需 pip install -r requirements-ocr.txt
+paddleocr>=2.7
+paddlepaddle>=2.6
