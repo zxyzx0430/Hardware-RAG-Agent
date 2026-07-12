@@ -39,6 +39,22 @@ temp_check_docs.py
 fix_completed.py
 update_thread.py
 pio-test-run.py
+explorer-debug.png
+
+# Debug scripts (root scripts/)
+scripts/_*.py
+scripts/_*.txt
+scripts/debug_*.py
+scripts/tmp_*.py
+scripts/e2e_*.png
+scripts/test_red_box.png
+
+# Debug reports (docs/reports/)
+docs/reports/screen-*
+docs/reports/snap-*.txt
+
+# Data (tracked temp files)
+data/chat_history.db
 
 # Data
 data/agent_sessions.db
