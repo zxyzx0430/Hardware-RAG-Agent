@@ -104,16 +104,15 @@ Agent 不只会写代码，还能真的和板子交互：
 
 ## 快速开始
 
-### 快速开始
-
 需要 Python 3.10+、Node.js 20+。
 
 ```bash
+# 下载内置硬件手册知识库（约几百 MB，包含预构建的向量索引和关键词索引，解压即用不需 API key）
+python scripts/download_builtin_kb.py
+
 # 后端
 cd backend
 pip install -r requirements.txt
-# 下载内置硬件手册知识库（约几百 MB，包含预构建的向量索引和关键词索引，解压即用不需 API key）
-python scripts/download_builtin_kb.py
 python main.py --web --port 58080
 
 # 前端（新终端）
@@ -162,7 +161,7 @@ npx vite --port 5173
 .\scripts\dev.ps1
 
 # 或手动
-cd backend  && python main.py --web --port 8000
+cd backend  && python main.py --web --port 58080
 cd frontend && npx vite --port 5173
 ```
 

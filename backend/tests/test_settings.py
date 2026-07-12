@@ -31,7 +31,7 @@ class TestSettings:
         assert s.llm_temperature == 0.7
         assert s.llm_max_tokens == 4096
         assert s.host == "127.0.0.1"
-        assert s.port == 8000
+        assert s.port == 58080
 
     def test_env_file_override(self, tmp_path, monkeypatch):
         """测试 .env 文件覆盖默认值。"""

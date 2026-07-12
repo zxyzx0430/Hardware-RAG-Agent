@@ -193,7 +193,7 @@ class RunCommandTool(ToolSpec):
     """Execute a shell command with timeout."""
     name: str = "run_command"
     description: str = (
-        "执行 shell 命令（PowerShell）并返回 stdout/stderr/退出码。"
+        "执行 shell 命令并返回 stdout/stderr/退出码。"
         "这是通用命令行工具，能干很多事情，优先使用。"
         "\n\n常用场景："
         "\n- PlatformIO: pio device monitor（看串口日志）、pio lib search（查库）、pio pkg list"
