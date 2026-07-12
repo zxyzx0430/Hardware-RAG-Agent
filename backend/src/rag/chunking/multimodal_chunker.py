@@ -273,7 +273,8 @@ class MultimodalChunker(BaseChunker):
         vision_concurrency: int = 4,
         low_text_density_threshold: int = 300,  # chars per page; below this triggers image description
         timeout: float = 300.0,  # 5 minutes per vision LLM call
-    ):
+        big_chunk_max_chars: int = 4000,
+):
         self.model = model
         self.base_url = base_url
         self.api_key = api_key
@@ -294,6 +295,7 @@ class MultimodalChunker(BaseChunker):
             )
             self.temperature = 1.0
         self.max_chunks = max_chunks
+        self.big_chunk_max_chars = big_chunk_max_chars
         # Concurrency limit for parallel Vision LLM calls within a single PDF.
         # Stage-1 (TOC groups) and Stage-2 (detail batches) both use this to
         # parallelize independent LLM calls via asyncio.gather + Semaphore.
@@ -1266,7 +1268,7 @@ class MultimodalChunker(BaseChunker):
             # All sub_chunks from this section share the same big_chunk_id/text.
             doc_id = metadata.get("doc_id", "unknown")
             big_chunk_id = f"{doc_id}#b{i}"
-            big_chunk_text = truncate_at_boundary(stripped_section)
+            big_chunk_text = truncate_at_boundary(stripped_section, max_chars=self.big_chunk_max_chars)
 
             if is_whole_code_block:
                 logger.info(

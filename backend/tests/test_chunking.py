@@ -96,7 +96,7 @@ class TestHybridChunker:
 
     def test_chunk_markdown_text(self):
         """Markdown 文本应按标题切分。"""
-        chunker = HybridChunker(chunk_size=500, chunk_overlap=50)
+        chunker = HybridChunker(chunk_size=500)
         text = """# ESP32 概述
 
 ESP32 是一款双核 MCU，主频 240MHz。
@@ -124,7 +124,7 @@ GPIO0-GPIO5 可用作通用 IO。
 
     def test_chunk_plain_text(self):
         """纯文本应按段落切分。"""
-        chunker = HybridChunker(chunk_size=200, chunk_overlap=20)
+        chunker = HybridChunker(chunk_size=200)
         text = "这是第一段内容。\n\n这是第二段内容。\n\n这是第三段内容。"
         result = asyncio.run(chunker.chunk(
             text=text,

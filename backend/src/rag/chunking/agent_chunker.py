@@ -205,9 +205,10 @@ class AgentChunker(BaseChunker):
         sub_chunk_overlap: int = 200,
         small_chunk_size: int = 500,
         max_chunks: int = 500,
+        big_chunk_max_chars: int = 4000,
         prompt_template: Optional[str] = None,
         prompt_system_extra: str = "",
-    ):
+):
         self.model = model
         self.base_url = base_url
         self.api_key = api_key
@@ -220,6 +221,7 @@ class AgentChunker(BaseChunker):
         self.sub_chunk_overlap = sub_chunk_overlap
         self.small_chunk_size = small_chunk_size
         self.max_chunks = max_chunks
+        self.big_chunk_max_chars = big_chunk_max_chars
         self.prompt_template = prompt_template or _DEFAULT_AGENT_CHUNK_PROMPT
         self.prompt_system_extra = prompt_system_extra
 
@@ -1030,7 +1032,7 @@ class AgentChunker(BaseChunker):
             # section share the same big_chunk_id/big_chunk_text.
             doc_id = metadata.get("doc_id", "unknown")
             big_chunk_id = f"{doc_id}#b{i}"
-            big_chunk_text = truncate_at_boundary(clean_section_text, max_chars=4000)
+            big_chunk_text = truncate_at_boundary(clean_section_text, max_chars=self.big_chunk_max_chars)
             is_whole_code_block = (
                 clean_section_text.startswith("```")
                 and clean_section_text.endswith("```")
@@ -1370,7 +1372,7 @@ class AgentChunker(BaseChunker):
         # chunks, since unstructured docs have no sections to split on.
         doc_id = metadata.get("doc_id", "unknown")
         big_chunk_id = f"{doc_id}#b0"
-        big_chunk_text = truncate_at_boundary(text, max_chars=4000)
+        big_chunk_text = truncate_at_boundary(text, max_chars=self.big_chunk_max_chars)
 
         # Split by code blocks — keep the fences attached
         parts = re.split(r"(```[\s\S]*?```)", text)

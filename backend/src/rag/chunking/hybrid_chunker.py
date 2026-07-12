@@ -57,13 +57,13 @@ class HybridChunker(BaseChunker):
     def __init__(
         self,
         chunk_size: int = 1000,
-        chunk_overlap: int = 200,
         small_chunk_size: int = 800,
+        big_chunk_max_chars: int = 4000,
         separators: Optional[list[str]] = None,
     ):
         self.chunk_size = chunk_size
-        self.chunk_overlap = chunk_overlap
         self.small_chunk_size = small_chunk_size
+        self.big_chunk_max_chars = big_chunk_max_chars
         self.separators = separators or _DEFAULT_SEPARATORS
 
         # Single splitter: overlap=0 to eliminate duplicate chunks at boundaries.
@@ -141,7 +141,7 @@ class HybridChunker(BaseChunker):
             # big_chunk_text is the full section (boundary-truncated) for the
             # ingest stage to persist — it is NOT stored in ChromaDB metadata.
             big_chunk_id = f"{doc_id}#b{section_index}"
-            big_chunk_text = truncate_at_boundary(clean_section_text, max_chars=4000)
+            big_chunk_text = truncate_at_boundary(clean_section_text, max_chars=self.big_chunk_max_chars)
 
             if is_code_block:
                 chunk_text = clean_section_text
