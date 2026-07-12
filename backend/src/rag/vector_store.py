@@ -373,7 +373,25 @@ class HardwareVectorStore:
         ids_to_delete = collection.get("ids", [])
         if ids_to_delete:
             self.db.delete(ids=ids_to_delete)
+        self._delete_big_chunks_by_doc(doc_id)
         return len(ids_to_delete)
+
+    def _delete_big_chunks_by_doc(self, doc_id: str) -> None:
+        """Delete big_chunks rows by doc_id. Non-blocking on failure."""
+        db = SessionLocal()
+        try:
+            db.query(BigChunk).filter(BigChunk.doc_id == doc_id).delete(
+                synchronize_session=False
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.warning(
+                f"[BigChunk] delete failed for doc {doc_id} (non-blocking)",
+                exc_info=True,
+            )
+        finally:
+            db.close()
 
     def get_chunks_by_doc(self, doc_id: str) -> list[dict]:
         """Retrieve all chunks for a given doc_id. Returns list of dicts with id, content, metadata."""
@@ -494,6 +512,7 @@ class HardwareVectorStore:
             return
         db = SessionLocal()
         try:
+            self._delete_old_big_chunks_by_doc(db, big_chunks)
             self._upsert_big_chunks(db, big_chunks)
             db.commit()
             logger.info(f"[BigChunk] wrote {len(big_chunks)} rows")
@@ -505,6 +524,20 @@ class HardwareVectorStore:
             )
         finally:
             db.close()
+
+    def _delete_old_big_chunks_by_doc(self, db, big_chunks: dict[str, dict]) -> None:
+        """Wipe ALL existing big_chunks rows for the doc being re-ingested.
+
+        Re-uploading a same-named doc produces new big_chunk_ids; the
+        id-scoped delete in _upsert_big_chunks would leave orphan rows
+        under the old ids. Wiping by doc_id first guarantees a clean state.
+        """
+        doc_id = next(iter(big_chunks.values())).get("doc_id", "")
+        if not doc_id:
+            return
+        db.query(BigChunk).filter(BigChunk.doc_id == doc_id).delete(
+            synchronize_session=False
+        )
 
     def _upsert_big_chunks(self, db, big_chunks: dict[str, dict]) -> None:
         """Delete existing rows for this batch then insert (idempotent re-ingest).

@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from sqlalchemy import func
 from sqlalchemy.orm import Session as DBSession
 
-from app.db.models import KnowledgeBase, KnowledgeDoc
+from app.db.models import KnowledgeBase, KnowledgeDoc, BigChunk
 from app.db.database import SessionLocal
 from app.api.auth import encrypt_key, decrypt_key
 
@@ -650,6 +650,7 @@ class KnowledgeBaseManager:
 
             # Delete DB records
             db.query(KnowledgeDoc).filter(KnowledgeDoc.kb_id == kb_id).delete()
+            self._delete_big_chunks_by_kb(kb_id)
             db.delete(kb)
             db.commit()
 
@@ -660,6 +661,23 @@ class KnowledgeBaseManager:
 
             logger.info(f"Deleted KB: {kb_id}")
             return True
+        finally:
+            db.close()
+
+    def _delete_big_chunks_by_kb(self, kb_id: str) -> None:
+        """Delete big_chunks rows by kb_id in a separate session. Non-blocking."""
+        db = self._db_factory()
+        try:
+            db.query(BigChunk).filter(BigChunk.kb_id == kb_id).delete(
+                synchronize_session=False
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.warning(
+                f"[BigChunk] delete failed for kb {kb_id} (non-blocking)",
+                exc_info=True,
+            )
         finally:
             db.close()
 
