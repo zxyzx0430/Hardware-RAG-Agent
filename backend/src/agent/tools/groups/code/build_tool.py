@@ -493,7 +493,7 @@ async def _drain_stream(
         if etype == "compile_log":
             log_lines.append(event.get("line", ""))
             _emit_event(session_id, writer, event)
-        elif etype in ("progress", "thinking", "heartbeat"):
+        elif etype in ("progress", "heartbeat"):
             _emit_event(session_id, writer, event)
         elif etype == "done":
             done_event = event

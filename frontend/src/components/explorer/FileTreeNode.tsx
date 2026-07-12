@@ -45,10 +45,12 @@ function buildNodeClass(
   isSelected: boolean,
   isDragging: boolean,
   isFocused: boolean,
+  isText: boolean,
 ): string {
   return [
     "explorer-tree-node",
     isDir ? "is-dir" : "is-file",
+    !isDir && isText ? "is-text" : "",
     isExpanded ? "is-expanded" : "",
     isHighlighted ? "is-highlighted" : "",
     isDragOver ? "is-drag-over" : "",
@@ -155,7 +157,8 @@ export function FileTreeNode(props: TreeNodeProps) {
     onDrop(node.path, isDir);
   };
 
-  const nodeClass = buildNodeClass(isDir, isExpanded, isHighlighted, isDragOver, isSelected, isDragging, isFocused);
+  const isText = !isDir && isTextFile(node.name);
+  const nodeClass = buildNodeClass(isDir, isExpanded, isHighlighted, isDragOver, isSelected, isDragging, isFocused, isText);
   const indent = depth * INDENT_PX;
   const children = node.children ?? [];
   const visibleChildren = showAll ? children : children.slice(0, MAX_CHILDREN_RENDER);

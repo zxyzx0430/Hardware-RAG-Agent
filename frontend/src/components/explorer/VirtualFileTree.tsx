@@ -49,10 +49,12 @@ function buildNodeClass(
   isSelected: boolean,
   isDragging: boolean,
   isFocused: boolean,
+  isText: boolean,
 ): string {
   return [
     "explorer-tree-node",
     isDir ? "is-dir" : "is-file",
+    !isDir && isText ? "is-text" : "",
     isExpanded ? "is-expanded" : "",
     isHighlighted ? "is-highlighted" : "",
     isDragOver ? "is-drag-over" : "",
@@ -147,7 +149,8 @@ function FileTreeRow({ index, style, data }: ListChildComponentProps<RowData>) {
     onDrop(node.path, isDir);
   };
 
-  const nodeClass = buildNodeClass(isDir, isExpanded, isHighlighted, isDragOver, isSelected, isDragging, isFocused);
+  const isText = !isDir && isTextFile(node.name);
+  const nodeClass = buildNodeClass(isDir, isExpanded, isHighlighted, isDragOver, isSelected, isDragging, isFocused, isText);
 
   return (
     <div style={style} role="treeitem" aria-expanded={isDir ? isExpanded : undefined} aria-level={depth + 1}>

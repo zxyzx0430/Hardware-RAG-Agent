@@ -610,7 +610,7 @@ export function SettingsPage() {
                               <div className="field-label">{t('baseUrl')}</div>
                               <input
                                 className="form-input"
-                                placeholder="https://www.inroi.shop/v1"
+                                placeholder=""
                                 value={imageGenerationConfig.baseUrl}
                                 onChange={(e) => setImageGenerationBaseUrl(e.target.value)}
                                 onBlur={() => triggerSaved('imageGenerationBaseUrl')}
@@ -621,7 +621,7 @@ export function SettingsPage() {
                               <div className="field-label">{lang === 'zh' ? '模型' : 'Model'}</div>
                               <input
                                 className="form-input"
-                                placeholder="gpt-image-2"
+                                placeholder=""
                                 value={imageGenerationConfig.model}
                                 onChange={(e) => setImageGenerationModel(e.target.value)}
                                 onBlur={() => triggerSaved('imageGenerationModel')}

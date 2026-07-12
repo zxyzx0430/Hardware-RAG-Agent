@@ -91,12 +91,13 @@ frontend_network_recent.json
 
 # Test output
 scripts/output/
+scripts/audit/
 scripts/test_*.ps1
 scripts/verify_fixes.js
 scripts/nav_check.js
 
-# Screenshots
-screenshots/
+# Screenshots (root level only, docs/screenshots/ is tracked)
+/screenshots/
 
 # Reports
 backend/tests/rag_eval/_sse_probe.py
@@ -114,7 +115,7 @@ backend/tests/test_ocr_parser.py
 # Misc
 CLAUDE.md
 .superpowers/
-"重启前后端.ps1"
+重启前后端.ps1
 
 # Temp fix/debug scripts (root)
 .fix-*.py
@@ -153,3 +154,11 @@ sketches/
 
 # Data PDFs (test data)
 data/pdfs/
+
+# Internal dev docs (not for end users) - only docs/screenshots/ is tracked
+docs/*
+!docs/screenshots/
+
+# Internal project rules & specs
+AGENTS.md
+.trae/

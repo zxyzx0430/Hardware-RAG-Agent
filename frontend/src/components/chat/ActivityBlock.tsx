@@ -51,9 +51,11 @@ const ActivityBlock = memo(function ActivityBlock({ activity, msgId, startTime }
       {!collapsed ? (
         <div className="activity-steps" id={`act-body-${msgId}`}>
           <div className="activity-chain">
-            {activity.steps.map((step, idx, arr) => {
-              const isLast = idx === arr.length - 1;
-              const stepKey = `${step.source ?? step.type}-${idx}`;
+            {activity.steps
+              .filter((step) => !(step.type === 'thinking' && step.source !== 'reasoning'))
+              .map((step, idx, arr) => {
+                const isLast = idx === arr.length - 1;
+                const stepKey = `${step.source ?? step.type}-${idx}`;
               if (step.type === 'thinking') {
                 return (
                   <div className="activity-chain-node" key={stepKey}>
