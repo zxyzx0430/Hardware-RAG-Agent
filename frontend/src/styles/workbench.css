@@ -94,6 +94,57 @@
 }
 .source-scroll { flex: 1; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
 
+/* Source groups: one collapsible group per message */
+.source-group {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--card);
+  display: flex;
+  flex-direction: column;
+}
+.source-group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--bg);
+  cursor: pointer;
+  width: 100%;
+  border: none;
+  color: var(--fg);
+  font-size: 12px;
+  text-align: left;
+}
+.source-group-header:hover { background: var(--hover-bg); }
+.source-group-chevron {
+  flex-shrink: 0;
+  color: var(--muted-fg);
+  transition: transform 0.15s;
+}
+.source-group-chevron.expanded { transform: rotate(90deg); }
+.source-group-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.source-group-count {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--muted-fg);
+  background: var(--muted);
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+}
+.source-group-body {
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 /* ── Todo Card ── */
 .todo-card {
   display: flex; flex-direction: column; gap: 10px;

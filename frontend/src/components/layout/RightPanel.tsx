@@ -67,20 +67,54 @@ function SourcePanel() {
   const fileViewerSource = sessionFileViewerSource[activeSessionId] ?? null;
   const highlightSourceId = sessionHighlightSourceId[activeSessionId] ?? null;
 
-  // 聚合 sources：流式时合并 streamingSources 和历史消息 sources（解决 isStreaming 时旧消息 source 查不到）。
   // 给每个 source 打上 messageId（解决 source id 跨消息重复 src1/src2 per-request）。
-  const sources = useMemo(() => {
-    const fromMessages = messages.flatMap((m) =>
-      (m.sources || []).map((s) => s.messageId ? s : { ...s, messageId: m.id })
+  const sourcesWithMessageId = useMemo(() => {
+    return messages.flatMap((m) =>
+      (m.sources || []).map((s) => (s.messageId ? s : { ...s, messageId: m.id }))
     );
-    if (!isStreaming) return fromMessages;
-    // 流式时合并，去重（streamingSources 也存在于最后一条消息的 sources 中）
+  }, [messages]);
+
+  // 聚合 sources：流式时合并 streamingSources 和历史消息 sources（解决 isStreaming 时旧消息 source 查不到）。
+  const sources = useMemo(() => {
+    if (!isStreaming) return sourcesWithMessageId;
     const map = new Map<string, SourceRef>();
-    [...streamingSources, ...fromMessages].forEach((s) =>
+    [...streamingSources, ...sourcesWithMessageId].forEach((s) =>
       map.set(`${s.messageId || ""}-${s.id}`, s)
     );
     return [...map.values()];
-  }, [isStreaming, streamingSources, messages]);
+  }, [isStreaming, streamingSources, sourcesWithMessageId]);
+
+  // 按消息分组，用于右侧面板 source 列表展示。
+  const sourceGroups = useMemo(() => {
+    return messages
+      .map((m, idx) => ({
+        messageId: m.id,
+        messageIndex: idx,
+        role: m.role,
+        preview: (m.content || "").slice(0, 60).replace(/\s+/g, " ").trim() || `消息 ${idx + 1}`,
+        sources: [...(m.sources || [])]
+          .map((s) => (s.messageId ? s : { ...s, messageId: m.id }))
+          .sort((a, b) => (b.score ?? 0) - (a.score ?? 0)),
+      }))
+      .filter((g) => g.sources.length > 0);
+  }, [messages]);
+
+  // 默认展开最后一条 assistant 消息的分组。
+  const defaultExpandedId = useMemo(() => {
+    for (let i = sourceGroups.length - 1; i >= 0; i--) {
+      if (sourceGroups[i].role === "assistant") return sourceGroups[i].messageId;
+    }
+    return sourceGroups[sourceGroups.length - 1]?.messageId || null;
+  }, [sourceGroups]);
+
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() =>
+    defaultExpandedId ? new Set([defaultExpandedId]) : new Set()
+  );
+  useEffect(() => {
+    if (defaultExpandedId) {
+      setExpandedGroups((prev) => (prev.size === 0 ? new Set([defaultExpandedId]) : prev));
+    }
+  }, [defaultExpandedId]);
 
   // 当前待办：流式中优先用 streamingTodos，否则取最后一条 assistant 消息的 todos
   const todos: TodoItem[] = (() => {
@@ -192,13 +226,22 @@ function SourcePanel() {
       </div>
       <div className="source-scroll" id="sourceScroll">
         {tab === 'sources' ? (
-          sources.length ? [...sources].sort((a, b) => (b.score ?? 0) - (a.score ?? 0)).map((src, index) => (
-            <SourceListItem
-              key={`${src.messageId || ""}-${src.id}`}
-              src={src}
-              index={index}
-              isHighlighted={highlightSourceId === src.id}
-              onClick={() => { setSessionHighlightSourceId(activeSessionId, src.id); setSessionFileViewerSource(activeSessionId, src.messageId || "", src.id); }}
+          sourceGroups.length ? sourceGroups.map((group) => (
+            <MessageSourceGroup
+              key={group.messageId}
+              group={group}
+              expanded={expandedGroups.has(group.messageId)}
+              onToggle={() => setExpandedGroups((prev) => {
+                const next = new Set(prev);
+                if (next.has(group.messageId)) next.delete(group.messageId);
+                else next.add(group.messageId);
+                return next;
+              })}
+              highlightSourceId={highlightSourceId}
+              onSourceClick={(src) => {
+                setSessionHighlightSourceId(activeSessionId, src.id);
+                setSessionFileViewerSource(activeSessionId, src.messageId || "", src.id);
+              }}
             />
           )) : <EmptyState size="sm" title={t('noSourceData')} icon={<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 7h16M4 12h16M4 17h10" strokeLinecap="round" /></svg>} />
         ) : tab === 'todos' ? (
@@ -311,6 +354,52 @@ function SourceListItem({ src, index, isHighlighted, onClick }: {
       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color:'var(--primary)', flexShrink:0 }}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
       <span className="source-list-title">{src.title}</span>
       <span className={`source-list-score ${scoreClass}`}>{(src.score * 100).toFixed(0)}%</span>
+    </div>
+  );
+}
+
+interface SourceGroup {
+  messageId: string;
+  messageIndex: number;
+  role: string;
+  preview: string;
+  sources: SourceRef[];
+}
+
+/** 按消息分组的来源列表：解决多条消息 source 混在一起的重复/混乱问题。 */
+function MessageSourceGroup({ group, expanded, onToggle, highlightSourceId, onSourceClick }: {
+  group: SourceGroup;
+  expanded: boolean;
+  onToggle: () => void;
+  highlightSourceId: string | null;
+  onSourceClick: (src: SourceRef) => void;
+}) {
+  const label = `${group.role === "user" ? "问" : "答"}: ${group.preview}`;
+  return (
+    <div className="source-group">
+      <button className="source-group-header" onClick={onToggle} type="button">
+        <svg
+          className={`source-group-chevron ${expanded ? "expanded" : ""}`}
+          width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+        >
+          <polyline points="9 18 15 12 9 6" />
+        </svg>
+        <span className="source-group-title" title={label}>{label}</span>
+        <span className="source-group-count">{group.sources.length}</span>
+      </button>
+      {expanded && (
+        <div className="source-group-body">
+          {group.sources.map((src, index) => (
+            <SourceListItem
+              key={`${src.messageId || ""}-${src.id}`}
+              src={src}
+              index={index}
+              isHighlighted={highlightSourceId === src.id}
+              onClick={() => onSourceClick(src)}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
