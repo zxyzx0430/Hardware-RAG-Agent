@@ -152,6 +152,67 @@ npx vite --port 5173
 
 ---
 
+## Agent 部署指南
+
+> 如果你是 AI Agent（被用户要求帮忙部署本项目），请按以下步骤操作。每一步都标注了预计耗时和注意事项。
+
+### 步骤 1：检查环境
+
+```bash
+python --version   # 需要 3.10+，低于则提示用户升级
+node --version     # 需要 20+，低于则提示用户升级
+```
+
+### 步骤 2：克隆 + 下载知识库
+
+```bash
+git clone https://github.com/zxyzx0430/Hardware-RAG-Agent.git
+cd Hardware-RAG-Agent
+python scripts/download_builtin_kb.py   # 下载预构建索引包，约几百 MB
+```
+
+### 步骤 3：安装后端依赖
+
+```bash
+cd backend
+pip install -r requirements.txt
+```
+
+### 步骤 4：配置 API Key
+
+```bash
+cp .env.example .env
+# 编辑 .env，填入用户的 LLM_API_KEY 和 EMBEDDING_API_KEY
+```
+
+### 步骤 5：启动服务
+
+```bash
+# 终端 1：后端（在 backend/ 目录下）
+python main.py --web --port 58080
+
+# 终端 2：前端（在项目根目录下）
+cd frontend
+npm install
+npx vite --port 5173
+```
+
+### 步骤 6：验证
+
+打开 http://127.0.0.1:5173 ，能看到界面即部署成功。
+
+### Agent 温馨提示
+
+- **不要跳过 `download_builtin_kb.py`**：没有知识库，RAG 检索返回空结果，用户会以为部署失败。
+- **首次启动后端会卡 30 秒-2 分钟**：后台在下载 Reranker 模型（280MB），不是卡死，等就好。
+- **首次编译 ESP32 会卡 5-10 分钟**：PlatformIO 在下载工具链，不是卡死，等就好。
+- **端口必须是 58080**：前端 Vite proxy 硬编码代理到 58080，改后端端口会导致前端连不上。
+- **硬件工作台需要真实 USB 连接**：如果用户要烧录/看串口，需要 ESP32 通过 USB 连到电脑，Docker/远程环境不支持。
+- **如果用户在国内**：建议在 `.env` 加 `HF_ENDPOINT=https://hf-mirror.com` 加速模型下载。
+- **不要用 Docker**：本项目已移除 Docker 支持，硬件工作台需要直接访问 USB/串口。
+
+---
+
 ## 贡献指南
 
 ### 开发环境
