@@ -401,9 +401,8 @@ export function apiWS(
     url = explicitWsUrl;
   } else {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const port = window.location.port === "5173" || window.location.hostname === "127.0.0.1"
-      ? "58080"
-      : window.location.port || (window.location.protocol === "https:" ? "443" : "80");
+    const isLocalDev = window.location.port === "5173" || ["127.0.0.1", "localhost"].includes(window.location.hostname);
+    const port = isLocalDev ? "58080" : window.location.port || (window.location.protocol === "https:" ? "443" : "80");
     url = `${protocol}//${window.location.hostname}:${port}${endpoint}`;
   }
   // Inject session_token for WebSocket auth — mirrors getAuthHeaders for fetch.

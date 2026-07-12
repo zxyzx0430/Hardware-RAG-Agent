@@ -10,11 +10,14 @@ PLUR constraint: sandbox tools must use absolute paths; forced deny paths.
 """
 from __future__ import annotations
 
+import asyncio
 import fnmatch
 import logging
 import os
 import re
+import shutil
 import tempfile
+import time
 from pathlib import Path
 
 from src.config.settings import ROOT_DIR
@@ -29,6 +32,8 @@ logger = logging.getLogger(__name__)
 PROJECT_ROOT: Path = ROOT_DIR.parent
 SANDBOX_DIR_NAME: str = "agent-sandbox"
 SANDBOX_TEMP_DIR: Path = Path(tempfile.gettempdir()) / SANDBOX_DIR_NAME
+SANDBOX_CLEANUP_AGE_HOURS: int = 24
+_SECONDS_PER_HOUR: int = 3600
 
 # Directories where Agent file tools may operate.
 ALLOWED_DIRS: tuple[Path, ...] = (PROJECT_ROOT, SANDBOX_TEMP_DIR)
@@ -164,6 +169,42 @@ def ensure_sandbox_dir() -> Path:
     """Create the sandbox temp dir if missing, return its path."""
     SANDBOX_TEMP_DIR.mkdir(parents=True, exist_ok=True)
     return SANDBOX_TEMP_DIR
+
+
+async def cleanup_sandbox(max_age_hours: int = SANDBOX_CLEANUP_AGE_HOURS) -> int:
+    """Delete stale files/dirs in agent sandbox older than max_age_hours."""
+    return await asyncio.to_thread(_sync_cleanup_sandbox, max_age_hours)
+
+
+def _sync_cleanup_sandbox(max_age_hours: int) -> int:
+    """Synchronous sandbox cleanup. Returns count of removed items."""
+    if not SANDBOX_TEMP_DIR.exists():
+        return 0
+    return sum(_try_remove_stale(item, max_age_hours) for item in SANDBOX_TEMP_DIR.iterdir())
+
+
+def _try_remove_stale(item: Path, max_age_hours: int) -> int:
+    """Remove item if older than max_age_hours. Returns 1 or 0."""
+    if not _is_item_stale(item, max_age_hours):
+        return 0
+    return _safe_remove(item)
+
+
+def _is_item_stale(path: Path, max_age_hours: int) -> bool:
+    """True if path mtime is older than max_age_hours."""
+    age_s = time.time() - path.stat().st_mtime
+    return age_s > max_age_hours * _SECONDS_PER_HOUR
+
+
+def _safe_remove(path: Path) -> int:
+    """Remove file or directory. Returns 1 on success, 0 on failure."""
+    try:
+        shutil.rmtree(path) if path.is_dir() else path.unlink()
+        logger.info("sandbox cleanup deleted %s", path)
+        return 1
+    except OSError as e:
+        logger.warning("sandbox cleanup failed %s: %s", path, e)
+        return 0
 
 
 # ═══════════════════════════════════════════

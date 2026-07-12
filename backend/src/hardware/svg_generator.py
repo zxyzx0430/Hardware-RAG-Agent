@@ -5,30 +5,38 @@ Layout philosophy (inspired by KiCad/Fritzing schematics):
 - Peripherals are stacked vertically on the right with collision avoidance.
 - Each logical net gets its own horizontal routing channel (bus).
 - Wires are strictly orthogonal and never cross through component boxes.
+- Power rails run along the top (3V3/VCC/5V) and bottom (GND) so that
+  power connections become short vertical drops instead of long buses.
 """
 
 from __future__ import annotations
 
 import html
+import re
 from collections import Counter, defaultdict
 from typing import Any
 
 
-MCU_BOX_WIDTH = 180
-PERIPHERAL_BOX_WIDTH = 200
+MCU_BOX_WIDTH = 160
+PERIPHERAL_BOX_WIDTH = 190
 PIN_ROW_HEIGHT = 26
 HEADER_HEIGHT = 32
 MARGIN_X = 80
 MARGIN_Y = 60
-CHANNEL_GAP_X = 220
-CHANNEL_GAP_Y = 64
+CHANNEL_GAP_X = 200
+CHANNEL_GAP_Y = 48
 WIRE_OFFSET = 20
 LABEL_HEIGHT = 18
-PERIPHERAL_GAP_Y = 90
+PERIPHERAL_GAP_Y = 70
 MIN_DROP_SPACING = 24
 PULLUP_DROP_MARGIN = 20
 RESISTOR_H_LENGTH = 50
 RESISTOR_V_LENGTH = 60
+RAIL_HEIGHT = 14
+RAIL_MARGIN = 20
+
+POWER_COLOR = "#ef4444"
+GND_COLOR = "#1e293b"
 
 
 def _component_color(component_type: str) -> str:
@@ -61,11 +69,15 @@ def _is_rail_pin(pin_name: str) -> bool:
     return _is_gnd_pin(pin_name) or _is_power_pin(pin_name)
 
 
+def _is_power_net_name(name: str) -> bool:
+    return _is_power_pin(name) or _is_gnd_pin(name)
+
+
 def _default_color_for_pin(pin_name: str) -> str:
     if _is_gnd_pin(pin_name):
-        return "#1e293b"
+        return GND_COLOR
     if _is_power_pin(pin_name):
-        return "#ef4444"
+        return POWER_COLOR
     return "#3b82f6"
 
 
@@ -140,6 +152,80 @@ def _find_mcu(components: list[dict[str, Any]]) -> dict[str, Any]:
         if c.get("type", "").lower() == "mcu":
             return c
     return components[0] if components else {"name": "MCU", "type": "mcu", "pins": []}
+
+
+def _trailing_number(name: str) -> int:
+    match = re.search(r"(\d+)$", name)
+    return int(match.group(1)) if match else 0
+
+
+def _base_component_name(name: str) -> str:
+    base = re.sub(r"\d+$", "", name).strip()
+    return base if base else name
+
+
+def _merge_similar_components(
+    components: list[dict[str, Any]],
+    connections: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, int]]:
+    """Merge repeated identical peripherals (e.g. 蜂鸣器x5) into one compact box.
+
+    Returns the merged component list, updated connections, and a map of
+    merged component name -> original quantity for the BOM.
+    """
+    groups: dict[tuple[str, str, tuple[str, ...]], list[dict[str, Any]]] = defaultdict(list)
+    for c in components:
+        ctype = str(c.get("type", "")).lower()
+        pins = tuple(str(p) for p in (c.get("pins") or []))
+        base = _base_component_name(str(c.get("name", "")))
+        groups[(base, ctype, pins)].append(c)
+
+    merged_components: list[dict[str, Any]] = []
+    pin_mapping: dict[tuple[str, str], tuple[str, str]] = {}
+    merged_qty: dict[str, int] = {}
+
+    for (base, ctype, pins), group in groups.items():
+        if len(group) >= 3 and ctype != "mcu":
+            count = len(group)
+            new_name = f"{base}×{count}"
+            sorted_group = sorted(group, key=lambda c: _trailing_number(str(c.get("name", ""))))
+
+            power_pins = [p for p in pins if _is_power_pin(p) and not _is_gnd_pin(p)]
+            gnd_pins = [p for p in pins if _is_gnd_pin(p)]
+            sig_pins = [p for p in pins if not _is_rail_pin(p)]
+
+            new_pins: list[str] = []
+            new_pins.extend(power_pins)
+            for i in range(1, count + 1):
+                for sig in sig_pins:
+                    new_pins.append(f"{sig}{i}")
+            new_pins.extend(gnd_pins)
+
+            merged_components.append({"name": new_name, "type": ctype, "pins": new_pins})
+            merged_qty[new_name] = count
+
+            for i, old_c in enumerate(sorted_group, 1):
+                old_name = str(old_c["name"])
+                for sig in sig_pins:
+                    pin_mapping[(old_name, sig)] = (new_name, f"{sig}{i}")
+                for pp in power_pins:
+                    pin_mapping[(old_name, pp)] = (new_name, pp)
+                for gp in gnd_pins:
+                    pin_mapping[(old_name, gp)] = (new_name, gp)
+        else:
+            for c in group:
+                merged_components.append(c)
+
+    new_connections: list[dict[str, Any]] = []
+    for conn in connections:
+        new_conn = dict(conn)
+        to_comp = conn.get("to_component")
+        to_pin = conn.get("to_pin")
+        if (to_comp, to_pin) in pin_mapping:
+            new_conn["to_component"], new_conn["to_pin"] = pin_mapping[(to_comp, to_pin)]
+        new_connections.append(new_conn)
+
+    return merged_components, new_connections, merged_qty
 
 
 def _identify_resistors(
@@ -372,7 +458,6 @@ def _compute_peripheral_positions(
     mcu_y: int,
 ) -> dict[str, dict[str, Any]]:
     mcu_name = str(mcu.get("name", "MCU"))
-    resistor_names = set(resistors.keys())
     scored: list[tuple[int, dict[str, Any], int]] = []
 
     for c in components:
@@ -436,9 +521,7 @@ def _draw_box(
     title: str,
     subtitle: str,
 ) -> None:
-    svg_parts.append(
-        f'  <rect x="{x + 3}" y="{y + 3}" width="{w}" height="{h}" fill="#000000" opacity="0.08" rx="8"/>'
-    )
+    # Drop shadow removed to keep node count low; the colored stroke is enough.
     svg_parts.append(
         f'  <rect x="{x}" y="{y}" width="{w}" height="{h}" fill="#ffffff" '
         f'stroke="{color}" stroke-width="2" rx="8"/>'
@@ -449,10 +532,6 @@ def _draw_box(
     svg_parts.append(
         f'  <text x="{x + 12}" y="{y + 22}" font-family="ui-sans-serif, system-ui, sans-serif" '
         f'font-size="14" font-weight="700" fill="#1e293b">{html.escape(title)}</text>'
-    )
-    svg_parts.append(
-        f'  <text x="{x + w - 12}" y="{y + 22}" text-anchor="end" font-family="ui-sans-serif, system-ui, sans-serif" '
-        f'font-size="11" font-weight="500" fill="{color}">{html.escape(subtitle.upper())}</text>'
     )
 
 
@@ -541,6 +620,62 @@ def _compute_drop_xs(
     return result
 
 
+def _draw_rail(
+    svg_parts: list[str],
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+    color: str,
+    label: str,
+) -> None:
+    mid_y = y + height // 2
+    svg_parts.append(
+        f'  <rect x="{x}" y="{y}" width="{width}" height="{height}" '
+        f'rx="{height // 2}" fill="{color}" stroke="{color}" stroke-width="1"/>'
+    )
+    svg_parts.append(
+        f'  <text x="{x + width // 2}" y="{mid_y + 4}" text-anchor="middle" '
+        f'font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" '
+        f'font-weight="600" fill="#ffffff">{html.escape(label)}</text>'
+    )
+
+
+def _draw_peripheral_power_drop(
+    svg_parts: list[str],
+    pin_x: int,
+    pin_y: int,
+    rail_y: int,
+    color: str,
+    tap_x_offset: int = WIRE_OFFSET,
+) -> None:
+    """Draw a peripheral power pin drop: left out of the box, then up/down to the rail."""
+    joint_y = rail_y + RAIL_HEIGHT // 2
+    tap_x = pin_x - tap_x_offset
+    svg_parts.append(
+        f'  <polyline points="{pin_x},{pin_y} {tap_x},{pin_y} '
+        f'{tap_x},{joint_y}" '
+        f'fill="none" stroke="{color}" stroke-width="2.5" '
+        f'stroke-linecap="round" stroke-linejoin="round" opacity="0.9"/>'
+    )
+
+
+def _draw_mcu_power_drop(
+    svg_parts: list[str],
+    pin_x: int,
+    pin_y: int,
+    rail_y: int,
+    color: str,
+) -> None:
+    """Draw an MCU power pin drop: straight up/down to the rail."""
+    joint_y = rail_y + RAIL_HEIGHT // 2
+    svg_parts.append(
+        f'  <polyline points="{pin_x},{pin_y} {pin_x},{joint_y}" '
+        f'fill="none" stroke="{color}" stroke-width="2.5" '
+        f'stroke-linecap="round" stroke-linejoin="round" opacity="0.9"/>'
+    )
+
+
 def generate_wiring_svg(
     title: str,
     components: list[dict[str, Any]],
@@ -548,6 +683,8 @@ def generate_wiring_svg(
 ) -> tuple[str, list[dict[str, Any]]]:
     components = components or []
     connections = [_normalize_connection(c) for c in (connections or [])]
+
+    components, connections, merged_qty = _merge_similar_components(components, connections)
 
     mcu = _find_mcu(components)
     mcu_name = str(mcu.get("name", "MCU"))
@@ -624,11 +761,20 @@ def generate_wiring_svg(
         (p["y"] + p["height"] for p in peripheral_positions.values()),
         default=mcu_y + mcu_height,
     )
+
+    power_nets = {name for name in node_names.values() if _is_power_net_name(name)}
+    has_power = bool(power_nets)
+    top_rail_y = mcu_y - RAIL_HEIGHT - RAIL_MARGIN
+    bottom_rail_y = mcu_y + mcu_height + RAIL_MARGIN
+    rail_width = canvas_width - 2 * MARGIN_X
+    rail_center_x = MARGIN_X + rail_width // 2
+
     canvas_height = max(
         400,
         mcu_y + mcu_height + MARGIN_Y + 40,
         max_peri_bottom + MARGIN_Y + 40,
         MARGIN_Y * 2 + len(net_y) * CHANNEL_GAP_Y + 120,
+        bottom_rail_y + RAIL_HEIGHT + MARGIN_Y + 40,
     )
 
     svg_parts: list[str] = []
@@ -640,6 +786,11 @@ def generate_wiring_svg(
         f'  <text x="{canvas_width // 2}" y="36" text-anchor="middle" '
         f'font-family="ui-sans-serif, system-ui, sans-serif" font-size="18" font-weight="600" fill="#1e293b">{html.escape(title)}</text>'
     )
+
+    # Draw power rails first so wires appear on top.
+    if has_power:
+        _draw_rail(svg_parts, MARGIN_X, top_rail_y, rail_width, RAIL_HEIGHT, POWER_COLOR, "3V3")
+        _draw_rail(svg_parts, MARGIN_X, bottom_rail_y, rail_width, RAIL_HEIGHT, GND_COLOR, "GND")
 
     # MCU box and pins.
     _draw_box(
@@ -653,10 +804,10 @@ def generate_wiring_svg(
         py = mcu_pin_y[str(pin)]
         px = mcu_x + mcu_w
         svg_parts.append(
-            f'  <circle cx="{px}" cy="{py}" r="5" fill="#ffffff" stroke="{mcu_color}" stroke-width="2"/>'
+            f'  <circle cx="{px}" cy="{py}" r="4" fill="#ffffff" stroke="{mcu_color}" stroke-width="2"/>'
         )
         svg_parts.append(
-            f'  <text x="{px - 12}" y="{py + 4}" text-anchor="end" font-family="ui-monospace, monospace" '
+            f'  <text x="{px - 10}" y="{py + 4}" text-anchor="end" font-family="ui-monospace, monospace" '
             f'font-size="12" font-weight="500" fill="#334155">{html.escape(str(pin))}</text>'
         )
 
@@ -666,16 +817,16 @@ def generate_wiring_svg(
             svg_parts, pos["x"], pos["y"], pos["width"], pos["height"],
             _component_color(pos["type"]), name, pos["type"],
         )
+        peri_color = _component_color(pos["type"])
         for idx, pin in enumerate(pos["pins"]):
             py = pos["y"] + HEADER_HEIGHT + 18 + idx * PIN_ROW_HEIGHT
             px = pos["x"]
             peri_pin_coords[(name, str(pin))] = (px, py)
-            color = _component_color(pos["type"])
             svg_parts.append(
-                f'  <circle cx="{px}" cy="{py}" r="5" fill="#ffffff" stroke="{color}" stroke-width="2"/>'
+                f'  <circle cx="{px}" cy="{py}" r="4" fill="#ffffff" stroke="{peri_color}" stroke-width="2"/>'
             )
             svg_parts.append(
-                f'  <text x="{px + 12}" y="{py + 4}" font-family="ui-monospace, monospace" '
+                f'  <text x="{px + 10}" y="{py + 4}" font-family="ui-monospace, monospace" '
                 f'font-size="12" font-weight="500" fill="#334155">{html.escape(str(pin))}</text>'
             )
 
@@ -701,6 +852,30 @@ def generate_wiring_svg(
             excluded_pins.add((rname, info["gpio_pin"]))
             excluded_pins.add((rname, info["load_pin"]))
 
+    # Draw direct power drops for MCU and peripheral power pins.
+    if has_power:
+        # MCU power pins to rails.
+        for pin in mcu_pins:
+            py = mcu_pin_y.get(str(pin))
+            if py is None:
+                continue
+            if _is_power_pin(pin):
+                _draw_mcu_power_drop(svg_parts, mcu_x + mcu_w, py, top_rail_y, POWER_COLOR)
+            elif _is_gnd_pin(pin):
+                _draw_mcu_power_drop(svg_parts, mcu_x + mcu_w, py, bottom_rail_y, GND_COLOR)
+
+        # Peripheral power pins to rails.
+        # Sort top-to-bottom and stagger tap-x so drops don't overlap vertically.
+        sorted_peris = sorted(peripheral_positions.items(), key=lambda item: item[1]["y"])
+        for stack_idx, (name, pos) in enumerate(sorted_peris):
+            tap_x_offset = WIRE_OFFSET + stack_idx * 8
+            for idx, pin in enumerate(pos["pins"]):
+                px, py = peri_pin_coords[(name, str(pin))]
+                if _is_power_pin(pin):
+                    _draw_peripheral_power_drop(svg_parts, px, py, top_rail_y, POWER_COLOR, tap_x_offset)
+                elif _is_gnd_pin(pin):
+                    _draw_peripheral_power_drop(svg_parts, px, py, bottom_rail_y, GND_COLOR, tap_x_offset)
+
     # Build net sources and destinations from electrical-node membership.
     net_source_pin: dict[str, str] = {}
     net_dests: dict[str, list[tuple[int, int, dict[str, Any]]]] = defaultdict(list)
@@ -712,6 +887,8 @@ def generate_wiring_svg(
         net_pins[net].append((comp, pin))
 
     for net, pins in net_pins.items():
+        if _is_power_net_name(net):
+            continue
         source_comp = None
         source_pin = None
         # Prefer MCU pin as source.
@@ -736,6 +913,8 @@ def generate_wiring_svg(
                 continue
             if (comp, pin) in excluded_pins:
                 continue
+            if _is_rail_pin(pin):
+                continue
             coord = peri_pin_coords.get((comp, pin))
             if coord is None:
                 continue
@@ -756,34 +935,32 @@ def generate_wiring_svg(
         if bus_y is None or source_pin is None:
             continue
         source_color = _default_color_for_pin(source_pin)
-        is_power = _is_power_pin(source_pin)
-        stroke_width = 2.5 if is_power else 2
 
         # Source pin to bus.
         source_py = mcu_pin_y.get(source_pin)
-        if source_py is not None:
-            svg_parts.append(
-                f'  <polyline points="{mcu_x + mcu_w},{source_py} {bus_x_start},{source_py} '
-                f'{bus_x_start},{bus_y} {bus_x_end},{bus_y}" '
-                f'fill="none" stroke="{html.escape(source_color)}" stroke-width="{stroke_width}" '
-                f'stroke-linecap="round" stroke-linejoin="round" opacity="0.9"/>'
-            )
+        if source_py is None:
+            continue
 
-        # Compute drop positions and extend bus if needed.
-        drops = _compute_drop_xs(dests, bus_x_start, bus_x_end)
-        actual_bus_end = bus_x_end
-        if drops:
-            max_drop_x = max(x for x, _ in drops)
-            actual_bus_end = max(bus_x_end, max_drop_x + 10)
-            # Redraw bus to actual end if extended.
-            if source_py is not None and actual_bus_end > bus_x_end:
-                svg_parts.pop()  # remove previous bus polyline
-                svg_parts.append(
-                    f'  <polyline points="{mcu_x + mcu_w},{source_py} {bus_x_start},{source_py} '
-                    f'{bus_x_start},{bus_y} {actual_bus_end},{bus_y}" '
-                    f'fill="none" stroke="{html.escape(source_color)}" stroke-width="{stroke_width}" '
-                    f'stroke-linecap="round" stroke-linejoin="round" opacity="0.9"/>'
-                )
+        # Always use a shared horizontal bus so that each signal net has a unique
+        # vertical channel and drops do not pile up on the same x coordinate.
+        # Stagger drop-x by source pin index so different nets use different columns.
+        source_pin_index = mcu_pin_index.get(source_pin, 0)
+        first_dx = dests[0][1] if dests else bus_x_end
+        available = max(0, first_dx - 10 - bus_x_start - 10)
+        stagger_step = min(16, available // max(1, len(mcu_pin_index)))
+        drop_x = first_dx - 10 - (source_pin_index % 10) * stagger_step
+        drop_x = max(drop_x, bus_x_start + 10)
+        drops: list[tuple[int, tuple[int, int, dict[str, Any]]]] = []
+        for dest in dests:
+            drops.append((drop_x, dest))
+        actual_bus_end = max(bus_x_start + 20, max((x for x, _ in drops), default=bus_x_end) + 10)
+
+        svg_parts.append(
+            f'  <polyline points="{mcu_x + mcu_w},{source_py} {bus_x_start},{source_py} '
+            f'{bus_x_start},{bus_y} {actual_bus_end},{bus_y}" '
+            f'fill="none" stroke="{html.escape(source_color)}" stroke-width="2" '
+            f'stroke-linecap="round" stroke-linejoin="round" opacity="0.9"/>'
+        )
 
         for drop_x, (dy, dx, conn) in drops:
             color = conn.get("color") or source_color
@@ -867,6 +1044,10 @@ def generate_wiring_svg(
     svg = "\n".join(svg_parts)
 
     name_counts = Counter(str(c.get("name", "Unknown")) for c in components)
-    bom = [{"component": name, "qty": qty} for name, qty in sorted(name_counts.items())]
+    bom = []
+    for name, qty in sorted(name_counts.items()):
+        if name in merged_qty:
+            qty = merged_qty[name]
+        bom.append({"component": name, "qty": qty})
 
     return svg, bom

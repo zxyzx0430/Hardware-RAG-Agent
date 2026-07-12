@@ -764,6 +764,16 @@
   background: var(--muted);
 }
 
+.folder-picker-item.is-file {
+  cursor: default;
+  opacity: 0.6;
+  color: var(--muted-fg);
+}
+
+.folder-picker-item.is-file:hover {
+  background: none;
+}
+
 .folder-picker-item-icon {
   font-size: 15px;
   flex-shrink: 0;

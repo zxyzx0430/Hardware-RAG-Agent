@@ -104,29 +104,7 @@ Agent 不只会写代码，还能真的和板子交互：
 
 ## 快速开始
 
-### 方式一：Docker（推荐）
-
-需要 Docker 已安装。
-
-```bash
-# 1. 复制环境变量模板并填入你的 API Key
-cp .env.docker.example backend/.env
-
-# 2. 编辑 backend/.env，填写 LLM_API_KEY 和 EMBEDDING_API_KEY
-
-# 3. 启动
-# 生产模式（推荐，访问 127.0.0.1:8000）
-docker compose --profile prod up -d
-
-# 开发模式（访问 127.0.0.1:58080，后端代码热重载）
-docker compose --profile dev up -d
-```
-
-浏览器打开 http://127.0.0.1:8000（prod）。
-
-dev profile 只启动后端（http://127.0.0.1:58080），前端仍需 `cd frontend && npx vite --port 5173` 启动，再访问 http://127.0.0.1:5173。
-
-### 方式二：源码运行
+### 快速开始
 
 需要 Python 3.10+、Node.js 20+。
 
@@ -134,6 +112,8 @@ dev profile 只启动后端（http://127.0.0.1:58080），前端仍需 `cd front
 # 后端
 cd backend
 pip install -r requirements.txt
+# 下载内置硬件手册知识库（约几百 MB，包含预构建的向量索引和关键词索引，解压即用不需 API key）
+python scripts/download_builtin_kb.py
 python main.py --web --port 58080
 
 # 前端（新终端）
@@ -158,10 +138,18 @@ npx vite --port 5173
 | `EMBEDDING_API_KEY` | Embedding API Key | `sk-xxx` |
 | `EMBEDDING_BASE_URL` | Embedding Base URL | `https://api.openai.com/v1` |
 | `EMBEDDING_MODEL` | Embedding 模型 | `text-embedding-3-small` |
+| `TAVILY_API_KEY` | Tavily API Key（web_search 工具，可选） | `tvly-xxx` |
 | `CHROMA_MODE` | ChromaDB 模式 | `persistent` |
 | `OCR_ENABLED` | 是否启用 OCR（需额外安装依赖） | `false` |
 
-> 提示：Docker 模式下 `.env.docker.example` 已经给好默认值；源码模式可以参考 `backend/.env.example`。
+> 提示：可参考 `backend/.env.example` 了解所有可配置项。
+
+---
+
+## 首次使用提示
+
+- 首次编译 ESP32 固件时 PlatformIO 会自动下载工具链（约 200-500MB，需 5-10 分钟）。
+- 首次启动后端时后台会自动下载 Reranker 模型（约 280MB，用于提升检索质量）。国内用户可设置 `HF_ENDPOINT=https://hf-mirror.com` 加速。
 
 ---
 
@@ -176,12 +164,6 @@ npx vite --port 5173
 # 或手动
 cd backend  && python main.py --web --port 8000
 cd frontend && npx vite --port 5173
-```
-
-Docker 开发模式：
-
-```bash
-docker compose --profile dev up -d
 ```
 
 ### 测试命令

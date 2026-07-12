@@ -6,6 +6,7 @@ Hardware RAG Agent — FastAPI 后端入口
   python app/main.py
 """
 
+import asyncio
 import sys
 import os
 import json
@@ -48,6 +49,26 @@ MAX_REQUEST_BODY_SIZE = int(os.getenv("MAX_BODY_SIZE", 20 * 1024 * 1024))
 
 # 日志配置
 _LOGGER = logging.getLogger(__name__)
+
+# Temp file cleanup — runs every 1h, deletes files older than 24h
+_CLEANUP_INTERVAL_SECONDS: int = 3600
+
+
+async def _periodic_cleanup() -> None:
+    """Background loop: clean build tmp + agent sandbox every hour."""
+    while True:
+        await asyncio.sleep(_CLEANUP_INTERVAL_SECONDS)
+        await _run_temp_cleanup()
+
+
+async def _run_temp_cleanup() -> None:
+    """Clean stale build artifacts and sandbox files (>24h)."""
+    from src.hardware.pio_runner import cleanup_old_builds
+    from src.agent.path_guard import cleanup_sandbox
+    builds = await cleanup_old_builds()
+    sandbox = await cleanup_sandbox()
+    if builds or sandbox:
+        _LOGGER.info("periodic cleanup: builds=%d sandbox=%d", builds, sandbox)
 
 # HTTP 请求耗时指标（模块级单例，由 create_app() 在 metrics_enabled 时初始化）
 # 在 _RequestLogMiddleware 中 observe；metrics 关闭时为 None，observe 被跳过。
@@ -386,6 +407,9 @@ def create_app() -> FastAPI:
         # D: BM25 索引预加载（省首次查询 5-10s，每个 KB ~0.5-1s）
         # C: Embedding 客户端预加载（省首次向量检索 2-3s 初始化）
         _warmup_rag_models_background()
+
+        # 4. Start hourly temp file cleanup (>24h build tmp + sandbox)
+        asyncio.create_task(_periodic_cleanup())
 
     @app.get("/")
     async def root():

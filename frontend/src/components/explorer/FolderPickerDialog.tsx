@@ -13,6 +13,7 @@ interface BrowseResponse {
   current: string;
   parent: string | null;
   directories: DirEntry[];
+  files: DirEntry[];
 }
 
 interface FolderPickerDialogProps {
@@ -52,6 +53,7 @@ export function FolderPickerDialog({ initialPath, onConfirm, onCancel }: FolderP
   const [current, setCurrent] = useState<string>(initialPath ?? "");
   const [parent, setParent] = useState<string | null>(null);
   const [dirs, setDirs] = useState<DirEntry[]>([]);
+  const [files, setFiles] = useState<DirEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [pathInput, setPathInput] = useState<string>(initialPath ?? "");
   const recentFolders = useAppStore((s) => s.recentFolders);
@@ -110,6 +112,7 @@ export function FolderPickerDialog({ initialPath, onConfirm, onCancel }: FolderP
       setCurrent(res.current);
       setParent(res.parent);
       setDirs(res.directories);
+      setFiles(res.files);
       setPathInput(res.current);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -174,7 +177,9 @@ export function FolderPickerDialog({ initialPath, onConfirm, onCancel }: FolderP
   }, [pathInput, navigateTo]);
 
   const handleConfirm = useCallback(() => {
-    const target = current || pathInput.trim();
+    // 优先用 pathInput：用户可能在输入框输入了新路径但没按 Enter 导航。
+    // 只有 pathInput 为空时才回退到 current（之前导航到的目录）。
+    const target = pathInput.trim() || current;
     if (target) onConfirm(target);
   }, [current, pathInput, onConfirm]);
 
@@ -292,19 +297,30 @@ export function FolderPickerDialog({ initialPath, onConfirm, onCancel }: FolderP
 
         <div className="folder-picker-list">
           {loading && <div className="folder-picker-loading">{t("loading", "加载中…")}</div>}
-          {!loading && dirs.length === 0 && (
-            <div className="folder-picker-empty">{t("noSubdirs", "没有子文件夹")}</div>
+          {!loading && dirs.length === 0 && files.length === 0 && (
+            <div className="folder-picker-empty">{t("emptyDirectory", "空文件夹")}</div>
           )}
           {!loading && dirs.map((dir) => (
             <button
               key={dir.path}
-              className="folder-picker-item"
+              className="folder-picker-item is-dir"
               onDoubleClick={() => enterDir(dir)}
               onClick={() => setPathInput(dir.path)}
             >
               <span className="folder-picker-item-icon">📁</span>
               <span className="folder-picker-item-name">{dir.name}</span>
             </button>
+          ))}
+          {!loading && files.map((file) => (
+            <div
+              key={file.path}
+              className="folder-picker-item is-file"
+              aria-disabled="true"
+              title={file.name}
+            >
+              <span className="folder-picker-item-icon">📄</span>
+              <span className="folder-picker-item-name">{file.name}</span>
+            </div>
           ))}
         </div>
 

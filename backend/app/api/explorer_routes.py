@@ -161,11 +161,12 @@ def _filter_dir_name(name: str) -> bool:
 
 @router.get("/explorer/browse")
 async def explorer_browse(path: str | None = None):
-    """Browse directories for the folder picker.
+    """Browse directories and files for the folder picker.
 
     This endpoint intentionally allows browsing any directory so the user can
-    navigate and pick a project root. It only lists directory names, never file
-    contents. Because the app is local-only (127.0.0.1), this is acceptable; if
+    navigate and pick a project root. Directories are selectable/enterable; files
+    are shown as context (so the user can confirm the folder contents) but cannot
+    be selected. Because the app is local-only (127.0.0.1), this is acceptable; if
     the service is ever exposed beyond localhost, this endpoint must be gated.
     """
     try:
@@ -174,23 +175,26 @@ async def explorer_browse(path: str | None = None):
                 "current": "",
                 "parent": None,
                 "directories": _list_drives(),
+                "files": [],
             }}
         target = Path(path)
         real = target.resolve(strict=False)
         if not real.is_dir():
             return _error_response("not a directory", str(real), 400)
         dirs: list[dict[str, str]] = []
+        files: list[dict[str, str]] = []
         try:
             for child in sorted(real.iterdir(), key=lambda p: p.name.lower()):
-                if not child.is_dir():
-                    continue
-                if _filter_dir_name(child.name):
-                    continue
-                # Skip system dirs on Windows
-                low = str(child).replace("\\", "/").lower()
-                if any(s in low for s in ("system32/", "syswow64/", "$recycle.bin/", "boot/bootmgr")):
-                    continue
-                dirs.append({"name": child.name, "path": str(child)})
+                if child.is_dir():
+                    if _filter_dir_name(child.name):
+                        continue
+                    # Skip system dirs on Windows
+                    low = str(child).replace("\\", "/").lower()
+                    if any(s in low for s in ("system32/", "syswow64/", "$recycle.bin/", "boot/bootmgr")):
+                        continue
+                    dirs.append({"name": child.name, "path": str(child)})
+                elif child.is_file():
+                    files.append({"name": child.name, "path": str(child)})
         except PermissionError:
             pass
         parent = str(real.parent) if real.parent != real else None
@@ -198,6 +202,7 @@ async def explorer_browse(path: str | None = None):
             "current": str(real),
             "parent": parent,
             "directories": dirs,
+            "files": files,
         }}
     except Exception as exc:
         logger.exception("explorer_browse failed")

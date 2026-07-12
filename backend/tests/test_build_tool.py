@@ -244,10 +244,9 @@ class TestAuditRecording:
             finally:
                 unregister("flash_firmware")
 
-        # AuditRecorder.record called once
+        # AuditRecorder.record called once with a single AuditRecord argument.
         assert mock_recorder.record.called
         call = mock_recorder.record.call_args
-        # Positional: (call_id, spec, args, envelope, decision, ctx)
-        recorded_spec = call.args[1]
-        assert recorded_spec.name == "flash_firmware"
-        assert recorded_spec.risk_level == RiskLevel.HIGH
+        record = call.args[0]
+        assert record.spec.name == "flash_firmware"
+        assert record.spec.risk_level == RiskLevel.HIGH

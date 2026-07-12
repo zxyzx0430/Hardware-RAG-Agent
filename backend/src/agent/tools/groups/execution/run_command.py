@@ -20,6 +20,7 @@ import asyncio
 import logging
 import re
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -43,8 +44,9 @@ MAX_TIMEOUT_MS: int = 300000  # 5 minutes (PLUR constraint)
 MAX_OUTPUT_CHARS: int = 5000
 TRUNCATE_SUFFIX: str = "...[truncated]"
 LOG_CMD_PREVIEW_CHARS: int = 100
-SHELL_EXECUTABLE: str = "powershell.exe"
-SHELL_PREFIX_ARGS: tuple[str, ...] = ("-NoProfile", "-Command")
+SHELL_EXECUTABLE: str = "powershell.exe" if sys.platform == "win32" else "/bin/bash"
+SHELL_PREFIX_ARGS: tuple[str, ...] = ("-NoProfile", "-Command") if sys.platform == "win32" else ("-c",)
+_IS_WINDOWS: bool = sys.platform == "win32"
 
 # Patterns that indicate the command writes to a file (bypassing write_file).
 # When detected, a git snapshot is taken after execution so undo_edit can
@@ -70,6 +72,9 @@ _FILE_WRITE_RE: re.Pattern[str] = re.compile(
         | (?:^|[;&|]\s*)Export-Clixml\s+
         | (?:^|[;&|]\s*)Invoke-WebRequest\s+.*?-OutFile\s+
         | (?:^|[;&|]\s*)New-Item\s+
+        | (?:^|[;&|]\s*)echo\s+.*?>+\s*\S+
+        | (?:^|[;&|]\s*)cat\s+.*?>+\s*\S+
+        | (?:^|[;&|]\s*)printf\s+.*?>+\s*\S+
         | \[(?:System\.)?IO\.File\]::(?:WriteAll|AppendAll)
         | (?:^|[;&|]\s*)(?:del|erase|rd|rmdir)\s+
         | curl\s+.*?(?:-o|--output)\s+\S
@@ -207,7 +212,8 @@ class RunCommandTool(ToolSpec):
         "\n- 编译固件用 build_firmware（有 lib_deps 自动解析+临时项目管理），不要用 pio run"
         "\n- 烧录固件用 flash_firmware（有 binary_path 校验+端口检测），不要用 pio run -t upload"
         "\n\n高风险命令（rm/format/regedit/shutdown 等）需用户确认。"
-        "\n默认使用 PowerShell，cmdlet 需用 'powershell -Command \"...\"' 包裹。"
+        + f"\n当前 shell: {SHELL_EXECUTABLE}（{'Windows PowerShell' if _IS_WINDOWS else 'Bash'}）。"
+        f"{'cmdlet 需用 powershell -Command 包裹' if _IS_WINDOWS else '支持管道、变量展开等 bash 语法'}。"
     )
     args_schema: type = RunCommandArgs
     output_schema: type[BaseModel] | None = RunCommandOutput

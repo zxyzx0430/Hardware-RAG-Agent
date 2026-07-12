@@ -1,13 +1,13 @@
-﻿<#
+<#
 .SYNOPSIS
   Hardware RAG Agent — 一键启动前后端开发环境
 .DESCRIPTION
-  后端固定 :8000，前端固定 :5173。自动检测端口占用、清理旧进程、等待后端就绪。
+  后端固定 :58080，前端固定 :5173。自动检测端口占用、清理旧进程、等待后端就绪。
   按 Ctrl+C 停止所有服务。
 #>
 
 $ROOT = Split-Path -Parent $PSScriptRoot
-$BE_PORT = 8000
+$BE_PORT = 58080
 $FE_PORT = 5173
 
 function step  { Write-Host "`n==> $args" -ForegroundColor Cyan }
@@ -23,7 +23,7 @@ $pv = python --version
 info "Python: $pv"
 
 $node = (Get-Command node -ErrorAction SilentlyContinue).Source
-if (-not $node) { err "未找到 Node.js，请安装 Node.js 18+" }
+if (-not $node) { err "未找到 Node.js，请安装 Node.js 20+" }
 $nv = node --version
 info "Node:   $nv"
 

@@ -7,11 +7,17 @@ langchain==1.3.4
 langchain-openai==1.2.2
 langchain-text-splitters==1.1.2
 langchain-chroma==1.1.0
+# langchain-core 显式声明（langchain 1.x 依赖）
+langchain-core==1.4.7
+# langchain-classic：self_query / multi_query retriever 依赖（pip 包名带横线）
+langchain-classic==1.0.8
 chromadb==0.5.0
 langgraph==1.2.4
 langgraph-checkpoint-sqlite==3.1.0
 jinja2==3.1.4
 rank-bm25==0.2.2
+# Reranker CrossEncoder 推理依赖（BAAI/bge-reranker-base）
+sentence-transformers==4.1.0
 jieba==0.42.1
 pytest==8.3.0
 pytest-asyncio==0.24.0
@@ -44,8 +50,6 @@ deepeval==1.5.5
 jsonschema==4.23.0
 # Prometheus 指标（B9 优化）— /metrics 端点 + 基础指标
 prometheus_client==0.21.1
-# Tavily web_search 工具（免费 1000 次/月，https://tavily.com）
-tavily-python==0.5.1
 # 文件资源管理器实时监听（CAB 第四栏）
 watchdog==6.0.0
 # OCR 依赖见 requirements-ocr.txt（可选，不默认安装）

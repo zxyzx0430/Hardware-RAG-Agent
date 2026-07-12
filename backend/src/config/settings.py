@@ -52,7 +52,7 @@ class Settings(BaseSettings):
 
     # Day 5：FastAPI 服务启动时需要的监听地址和端口。
     host: str = Field(default="127.0.0.1", alias="HOST")
-    port: int = Field(default=8000, alias="PORT")
+    port: int = Field(default=58080, alias="PORT")
 
     # 这些属于后续周次要用到的默认路径。
     # 现在先收口到配置层，后面扩展时不需要到处找字符串。
@@ -72,6 +72,9 @@ class Settings(BaseSettings):
     embedding_model: str = Field(default="text-embedding-3-small", alias="EMBEDDING_MODEL")
     # Embedding 批量大小：每次请求的行数（阿里云百炼 text-embedding-v4 上限 10）
     embedding_batch_size: int = Field(default=10, alias="EMBEDDING_BATCH_SIZE")
+
+    # Tavily（web_search Agent 工具用，留空则禁用联网搜索回退本地知识库）
+    tavily_api_key: str = Field(default="", alias="TAVILY_API_KEY")
 
     # Reranker（BAAI/bge-reranker-base）— 模型名/阈值/最小保留数/重试间隔均可通过环境变量配置
     reranker_model: str = Field(default="BAAI/bge-reranker-base", alias="RERANKER_MODEL")
