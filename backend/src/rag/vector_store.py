@@ -174,7 +174,7 @@ class HardwareVectorStore:
                 tiktoken_enabled=False,
                 check_embedding_ctx_length=False,
                 # Limit batch size: Alibaba Cloud Bailian text-embedding-v4 allows max 10 rows per request.
-                chunk_size=10,
+                chunk_size=settings.embedding_batch_size,
                 # P0: Add retry on transient network errors (httpx.ConnectError,
                 # ReadTimeout, etc). Without this, a single transient failure on
                 # a 294-chunk document aborts the entire ingest and marks the
@@ -198,6 +198,10 @@ class HardwareVectorStore:
         # a failed probe won't be retried on every import_data call).
         self._cached_embedding_dim: Optional[int] = None
         self._dim_check_attempted: bool = False
+        # S2: Dimension of vectors already stored in the ChromaDB collection.
+        # Cached on first db access; used by search() to detect embedding model
+        # switches that would cause dimension mismatch at query time.
+        self._collection_dim: Optional[int] = None
 
     @property
     def db(self) -> Optional[Chroma]:
@@ -256,7 +260,41 @@ class HardwareVectorStore:
                 logger.info(f"[VectorStore] ef_search set to {self._ef_search}")
             except Exception as e:
                 logger.warning(f"[VectorStore] Failed to set ef_search: {e}")
+        self._cache_collection_dim()
         return self._db
+
+    def _cache_collection_dim(self) -> None:
+        """Cache the dimension of vectors stored in the collection (if any)."""
+        if self._collection_dim is not None or self._db is None:
+            return
+        dim = self._probe_collection_dim()
+        if dim is not None:
+            self._collection_dim = dim
+
+    def _probe_collection_dim(self) -> Optional[int]:
+        """Probe the dimension of the first vector in the collection."""
+        try:
+            underlying = getattr(self._db, "_collection", None)
+            if underlying is None or underlying.count() == 0:
+                return None
+            peek = underlying.peek(limit=1)
+            embeddings = peek.get("embeddings") if peek else None
+            if embeddings and len(embeddings) > 0:
+                return len(embeddings[0])
+        except Exception as e:
+            logger.warning(f"[VectorStore] Failed to cache collection dimension: {e}")
+        return None
+
+    def _check_search_dim_consistency(self) -> None:
+        """Raise if current embedding model dim != stored collection dim."""
+        if self._collection_dim is None:
+            return
+        expected = self._get_embedding_dimension()
+        if expected is not None and expected != self._collection_dim:
+            raise ValueError(
+                f"向量维度不匹配：期望 {self._collection_dim} 维，"
+                f"实际 {expected} 维。可能 embedding 模型已切换，请重新索引文档"
+            )
 
     def _build_chunk_metadata(
         self, doc: ProcessedDocument, chunk_index: int, section_title: str
@@ -315,6 +353,12 @@ class HardwareVectorStore:
         """
         if self.embeddings is None:
             return []
+        # S2: Reject queries when embedding model dim != stored collection dim.
+        # Raises ValueError (propagates to caller) to surface the mismatch early
+        # instead of returning empty results or crashing inside ChromaDB.
+        self._check_search_dim_consistency()
+        if self.db is None:
+            return []
         filter_dict = None
         if category:
             filter_dict = {"category": category}
@@ -326,9 +370,14 @@ class HardwareVectorStore:
                 filter=filter_dict,
                 score_threshold=score_threshold,
             )
-        except Exception:
-            logger.exception("向量检索失败")
+        except _TRANSIENT_EXC as e:
+            # 可恢复错误（网络/超时/ChromaDB 连接）— 降级返回空列表
+            logger.warning(f"向量检索可恢复错误，返回空列表: {e}")
             return []
+        except Exception:
+            # 不可恢复错误（维度不匹配/collection 不存在/认证失败）— 上抛让调用方处理
+            logger.exception("向量检索不可恢复错误")
+            raise
         search_results = []
         for lc_doc, score in results:
             search_results.append(

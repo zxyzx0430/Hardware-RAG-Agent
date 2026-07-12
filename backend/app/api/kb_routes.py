@@ -133,11 +133,12 @@ def _validate_small_chunk_size(size: int) -> bool:
     return validate_small_chunk_size(size)
 
 
-def _get_kb_chunker(kb: KnowledgeBase, chunk_method_override: Optional[str] = None, chunk_size: Optional[int] = None, chunk_overlap: Optional[int] = None, small_chunk_size: Optional[int] = None):
+def _get_kb_chunker(kb: KnowledgeBase, chunk_method_override: Optional[str] = None, chunk_size: Optional[int] = None, small_chunk_size: Optional[int] = None):
     """Get a chunker configured for a specific KB."""
     from src.rag.chunking import get_chunker
 
     method = chunk_method_override or kb.chunk_method or "hybrid"
+    big_chunk_max_chars = kb.big_chunk_max_chars or 4000
 
     if method in ("agent", "multimodal"):
         # Decrypt agent chunker API key (shared between agent and multimodal)
@@ -158,6 +159,7 @@ def _get_kb_chunker(kb: KnowledgeBase, chunk_method_override: Optional[str] = No
                 base_url=kb.agent_chunker_base_url or "https://api.openai.com/v1",
                 api_key=agent_key,
                 small_chunk_size=effective_size,
+                big_chunk_max_chars=big_chunk_max_chars,
             )
 
         effective_size = small_chunk_size or kb.small_chunk_size or 500
@@ -173,6 +175,7 @@ def _get_kb_chunker(kb: KnowledgeBase, chunk_method_override: Optional[str] = No
             # exponential backoff gives the API time to recover.
             max_retries=5,
             small_chunk_size=effective_size,
+            big_chunk_max_chars=big_chunk_max_chars,
         )
     else:
         kwargs = {}
@@ -180,6 +183,7 @@ def _get_kb_chunker(kb: KnowledgeBase, chunk_method_override: Optional[str] = No
             kwargs["chunk_size"] = chunk_size
         if small_chunk_size:
             kwargs["small_chunk_size"] = small_chunk_size
+        kwargs["big_chunk_max_chars"] = big_chunk_max_chars
         return get_chunker("hybrid", **kwargs)
 
 
@@ -382,7 +386,29 @@ async def kb_upload(
                 "category": "user_upload",
             }
             try:
-                chunks = await chunker.chunk(
+                chunks = await asyncio.wait_for(
+                    chunker.chunk(
+                        text=text_content,
+                        metadata=metadata,
+                        file_path=save_path,
+                        total_pages=total_pages,
+                    ),
+                    timeout=settings.chunking_timeout_sec,
+                )
+            except asyncio.TimeoutError:
+                # M6: chunking 超时 → fallback 到 hybrid chunker（任何分块方法）
+                logger.warning(
+                    f"文档 {doc_id}: chunking timed out after {settings.chunking_timeout_sec}s, "
+                    f"falling back to hybrid chunking"
+                )
+                _update_doc_status(
+                    doc_id, "processing",
+                    error_message=f"分块超时（{settings.chunking_timeout_sec}s），降级为 hybrid 分块",
+                )
+                hybrid_chunker = _get_kb_chunker(
+                    kb_bg, chunk_method_override="hybrid", chunk_size=chunk_size, small_chunk_size=effective_small_chunk_size
+                )
+                chunks = await hybrid_chunker.chunk(
                     text=text_content,
                     metadata=metadata,
                     file_path=save_path,

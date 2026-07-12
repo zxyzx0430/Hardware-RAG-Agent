@@ -15,6 +15,7 @@ import uuid
 import pickle
 import asyncio
 import logging
+import math
 from pathlib import Path
 from typing import Optional
 from dataclasses import dataclass
@@ -45,19 +46,19 @@ BUILTIN_KB_NAME = "硬件手册库"
 # Allowed small_chunk_size values for large-chunk subdivision
 ALLOWED_SMALL_CHUNK_SIZES: tuple[int, ...] = (500, 800, 1200, 2000)
 
-# Minimum reranker (bge-reranker-base) score to retain a chunk after reranking.
+# Reranker thresholds are configurable via settings (env vars).
 # bge-reranker-base outputs RAW LOGITS (can be negative), not probabilities.
 # Relevant technical chunks often have logits in [-2, 5]; a 0.1 threshold was
 # too aggressive and dropped valid chunks, causing context=0 regressions.
 # -2.0 corresponds to sigmoid ≈ 0.12 (cross-encoder judges ~12% relevant),
 # filtering only obviously irrelevant chunks (e.g. table/config chunks that RRF
 # ranked highly but the cross-encoder flags as off-topic).
-_RERANKER_MIN_SCORE: float = -2.0
+_RERANKER_MIN_SCORE: float = settings.reranker_min_score
 
 # Minimum number of chunks to retain after reranker filtering. If filtering
 # drops below this floor, top-N from reranked order is kept to avoid a thin
 # result set that would starve the LLM of context.
-_RERANKER_MIN_KEEP: int = 2
+_RERANKER_MIN_KEEP: int = settings.reranker_min_keep
 
 # Single-source penalty: chunks only hit by BM25 (no vector semantic match)
 # get dampened — BM25 is relative scoring (top-1=1.0), less reliable than
@@ -84,6 +85,40 @@ class FusedResult:
     doc_id: str
     kb_id: str
     kb_name: str
+
+
+# M5: reranker score blending weights for display score.
+# Reranker sigmoid (cross-encoder relevance) is weighted higher than the RRF
+# fusion score so users see relevance driven by the cross-encoder, with RRF
+# as a tiebreaker. Weights sum to 1.0.
+_RERANKER_WEIGHT: float = 0.7
+_RRF_WEIGHT: float = 0.3
+
+
+def _sigmoid(logit: float) -> float:
+    """Numerically stable sigmoid for reranker raw logits."""
+    if logit >= 0:
+        return 1.0 / (1.0 + math.exp(-logit))
+    exp_val = math.exp(logit)
+    return exp_val / (1.0 + exp_val)
+
+
+def _blend_reranker_score(rrf_score: float, raw_logit: float) -> float:
+    """Blend reranker sigmoid with RRF score: w_reranker*sigmoid + w_rrf*rrf."""
+    return _RERANKER_WEIGHT * _sigmoid(raw_logit) + _RRF_WEIGHT * rrf_score
+
+
+def _apply_reranker_score(
+    results: list[FusedResult], kept: list[tuple[int, float]]
+) -> list[FusedResult]:
+    """Reorder by reranker rank and write back blended score to each FusedResult."""
+    kept_map = {i: s for i, s in kept}
+    out = []
+    for i, _ in kept:
+        r = results[i]
+        r.score = _blend_reranker_score(r.score, kept_map[i])
+        out.append(r)
+    return out
 
 
 class BM25Index:
@@ -488,6 +523,22 @@ class KnowledgeBaseManager:
         finally:
             db.close()
 
+    def _kb_has_data(self, db: DBSession, kb_id: str) -> bool:
+        """Check if KB has any indexed documents."""
+        count = db.query(KnowledgeDoc).filter(KnowledgeDoc.kb_id == kb_id).count()
+        return count > 0
+
+    def _validate_embedding_model_change(
+        self, db: DBSession, kb_id: str, old_model: str, new_model: str
+    ) -> None:
+        """Reject embedding model switch when KB already has vector data."""
+        if new_model == old_model:
+            return
+        if self._kb_has_data(db, kb_id):
+            raise ValueError(
+                "切换 embedding 模型需要先删除知识库中所有文档后重新上传"
+            )
+
     def update_kb_config(
         self,
         kb_id: str,
@@ -513,6 +564,7 @@ class KnowledgeBaseManager:
                 return None
 
             if embedding_model is not None:
+                self._validate_embedding_model_change(db, kb_id, kb.embedding_model, embedding_model)
                 kb.embedding_model = embedding_model
             if embedding_base_url is not None:
                 kb.embedding_base_url = embedding_base_url or None
@@ -1021,7 +1073,9 @@ class KnowledgeBaseManager:
         # Previously each KB ran rerank independently inside search(), causing
         # serial latency: 13 KBs × ~47s = 611s on CPU. Now we merge first and
         # rerank once — a single batch predict ~50s.
-        # FusedResult.score is NOT overwritten; reranker only filters + reorders.
+        # M5: FusedResult.score IS overwritten with a blended reranker+RRF score
+        # (0.7*sigmoid(reranker_logit) + 0.3*rrf) so users see reranker-weighted
+        # relevance. On reranker failure/cooldown, RRF score is preserved.
         if len(all_results) > 1:
             try:
                 from src.rag.reranker import rerank as rerank_chunks
@@ -1036,8 +1090,7 @@ class KnowledgeBaseManager:
                     kept = [(i, s) for i, s in reranked if s >= _RERANKER_MIN_SCORE]
                     if len(kept) < _RERANKER_MIN_KEEP:
                         kept = reranked[:_RERANKER_MIN_KEEP]
-                    kept_idxs = {i for i, _ in kept}
-                    all_results = [all_results[i] for i, _ in kept]
+                    all_results = _apply_reranker_score(all_results, kept)
             except Exception as e:
                 logger.warning(f"[Reranker] batch rerank failed, keeping RRF order: {e}")
 

@@ -70,6 +70,14 @@ class Settings(BaseSettings):
     embedding_api_key: str = Field(default="", alias="EMBEDDING_API_KEY")
     embedding_base_url: str = Field(default="https://api.openai.com/v1", alias="EMBEDDING_BASE_URL")
     embedding_model: str = Field(default="text-embedding-3-small", alias="EMBEDDING_MODEL")
+    # Embedding 批量大小：每次请求的行数（阿里云百炼 text-embedding-v4 上限 10）
+    embedding_batch_size: int = Field(default=10, alias="EMBEDDING_BATCH_SIZE")
+
+    # Reranker（BAAI/bge-reranker-base）— 模型名/阈值/最小保留数/重试间隔均可通过环境变量配置
+    reranker_model: str = Field(default="BAAI/bge-reranker-base", alias="RERANKER_MODEL")
+    reranker_min_score: float = Field(default=-2.0, alias="RERANKER_MIN_SCORE")
+    reranker_min_keep: int = Field(default=2, alias="RERANKER_MIN_KEEP")
+    reranker_retry_interval_sec: int = Field(default=300, alias="RERANKER_RETRY_INTERVAL_SEC")
 
     # 附件文本截断上限（字符数）
     max_attachment_chars: int = Field(default=8000, alias="MAX_ATTACHMENT_CHARS")
@@ -94,6 +102,9 @@ class Settings(BaseSettings):
     chroma_mode: str = Field(default="persistent", alias="CHROMA_MODE")  # "persistent" | "http"
     chroma_host: str = Field(default="localhost", alias="CHROMA_HOST")
     chroma_port: int = Field(default=8001, alias="CHROMA_PORT")
+
+    # Chunking timeout (M6) — seconds before falling back to hybrid chunker
+    chunking_timeout_sec: int = Field(default=300, alias="CHUNKING_TIMEOUT_SEC")
 
     # Agent checkpointer 类型（langgraph 1.x 升级）
     # "sqlite" → SqliteSaver 持久化到 backend/data/agent_checkpoints.sqlite（服务重启后 Agent 会话可恢复）

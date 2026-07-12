@@ -13,17 +13,23 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 from typing import Optional
+
+from src.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
 # Use HF mirror for faster downloads in China (set before importing transformers)
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
-_RERANKER_MODEL = "BAAI/bge-reranker-base"
+# Model name / thresholds are configurable via settings (env vars).
+_RERANKER_MODEL = settings.reranker_model
 _RERANKER: Optional[object] = None  # lazy singleton; None=not loaded, False=unavailable
-# P1: predict 失败后标记不可用，避免每个 KB 每次搜索都重复尝试 predict
-_RERANKER_PREDICT_FAILED: bool = False
+# M1: predict 失败后基于时间戳退避，避免永久禁用。_failed_at 记录失败时间，
+# 在 _RETRY_INTERVAL_S 内跳过 reranker，过后自动重试。间隔从 settings 读取。
+_failed_at: float | None = None
+_RETRY_INTERVAL_S: float = float(settings.reranker_retry_interval_sec)
 # P1: 多线程并行搜索时保护单例加载 + predict 失败标记
 _RERANKER_LOCK = threading.Lock()
 
@@ -55,6 +61,28 @@ def get_reranker():
         return None
 
 
+def _is_reranker_in_cooldown() -> bool:
+    """True if reranker recently failed and is within the retry backoff window."""
+    if _failed_at is None:
+        return False
+    return time.time() - _failed_at < _RETRY_INTERVAL_S
+
+
+def _safe_float_score(s) -> float:
+    """Coerce a model score (scalar or 1-element array) to float."""
+    try:
+        return float(s)
+    except (TypeError, ValueError):
+        return float(s[0]) if hasattr(s, "__iter__") else 0.0
+
+
+def _ranked_scores(raw_scores, top_k: int) -> list[tuple[int, float]]:
+    """Build (index, score) pairs sorted desc, optionally truncated to top_k."""
+    indexed = [(i, _safe_float_score(s)) for i, s in enumerate(raw_scores)]
+    indexed.sort(key=lambda x: x[1], reverse=True)
+    return indexed[:top_k] if top_k > 0 else indexed
+
+
 def rerank(query: str, chunks: list[str], top_k: int = 0) -> list[tuple[int, float]]:
     """Rerank chunks by query relevance using cross-encoder.
 
@@ -65,38 +93,28 @@ def rerank(query: str, chunks: list[str], top_k: int = 0) -> list[tuple[int, flo
 
     Returns:
         List of (original_index, rerank_score) sorted by score descending.
-        If reranker unavailable, returns indices in original order with score=0.0
-        so caller can fall back to RRF order gracefully.
+        If reranker unavailable or in cooldown, returns indices in original
+        order with score=0.0 so caller can fall back to RRF order gracefully.
     """
     if not chunks:
         return []
-    # P1: predict 之前失败过（如 "Modality 'audio' is not supported"）— 不重试
-    global _RERANKER_PREDICT_FAILED
-    if _RERANKER_PREDICT_FAILED:
+    global _failed_at
+    if _is_reranker_in_cooldown():
         return [(i, 0.0) for i in range(len(chunks))]
-    # P1: 加锁保护模型加载 + predict，避免多线程并行搜索时重复加载
     with _RERANKER_LOCK:
-        if _RERANKER_PREDICT_FAILED:
+        if _is_reranker_in_cooldown():
             return [(i, 0.0) for i in range(len(chunks))]
         model = get_reranker()
         if not model:
             return [(i, 0.0) for i in range(len(chunks))]
-
         try:
             pairs = [(query, c) for c in chunks]
             raw_scores = model.predict(pairs)
-            indexed = []
-            for i, s in enumerate(raw_scores):
-                try:
-                    val = float(s)
-                except (TypeError, ValueError):
-                    val = float(s[0]) if hasattr(s, '__iter__') else 0.0
-                indexed.append((i, val))
-            indexed.sort(key=lambda x: x[1], reverse=True)
-            if top_k > 0:
-                indexed = indexed[:top_k]
-            return indexed
+            _failed_at = None  # success — clear cooldown
+            return _ranked_scores(raw_scores, top_k)
         except Exception as e:
-            logger.warning(f"[Reranker] predict failed, disabling reranker for this session: {e}")
-            _RERANKER_PREDICT_FAILED = True  # 标记永久不可用，避免重复尝试
+            logger.warning(
+                f"[Reranker] predict failed, backing off {_RETRY_INTERVAL_S}s: {e}"
+            )
+            _failed_at = time.time()
             return [(i, 0.0) for i in range(len(chunks))]
