@@ -19,7 +19,7 @@ from app.db.models import KnowledgeDoc, KnowledgeBase, BigChunk
 from app.api.common import get_db_ctx
 from app.api.errors import sanitize_error
 from app.api.auth import encrypt_key, decrypt_key
-from app.api.dependencies import current_user
+from app.api.dependencies import current_user_optional
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
@@ -198,7 +198,7 @@ async def kb_upload(
     chunk_method: Optional[str] = Form(None),
     chunk_size: Optional[int] = Form(None),
     small_chunk_size: Optional[int] = Form(None),
-    user: dict = Depends(current_user),
+    user: dict = Depends(current_user_optional),
 ):
     """上传知识库文档，自动解析、分块、向量化入库。
 
@@ -370,6 +370,9 @@ async def kb_upload(
                 _update_doc_status(doc_id, "error", error_message="文件解析后内容为空")
                 return
 
+            # U4: 写中间状态避免前端轮询期间 chunk_count 恒为 0
+            _update_doc_status(doc_id, "indexing", error_message="文件解析完成，正在分块...")
+
             # Get chunker (re-fetch KB to avoid detached session)
             kb_bg = kb_manager.get_kb(kb_id)
             if not kb_bg:
@@ -437,6 +440,13 @@ async def kb_upload(
                 else:
                     raise
 
+            # U4: 分块完成 — 写中间 chunk_count（去重前），让前端看到进度
+            _update_doc_status(
+                doc_id, "indexing",
+                chunk_count=len(chunks),
+                error_message="分块完成，正在向量化...",
+            )
+
             # Deduplicate chunks by (fingerprint, section_title) composite key
             seen: set[tuple[str, str]] = set()
             deduped_chunks = []
@@ -459,6 +469,13 @@ async def kb_upload(
             if not chunks:
                 _update_doc_status(doc_id, "error", error_message="分块结果为空")
                 return
+
+            # U4: 去重后写精确 chunk_count（向量化期间前端轮询能看到最终数字）
+            _update_doc_status(
+                doc_id, "indexing",
+                chunk_count=len(chunks),
+                error_message="正在向量化入库...",
+            )
 
             # Ingest into KB
             ingested = kb_manager.ingest_chunks(kb_id, chunks, doc_id)
@@ -582,7 +599,7 @@ class KbDeleteRequest(BaseModel):
 
 
 @router.post("/kb/delete")
-async def kb_delete(payload: KbDeleteRequest, user: dict = Depends(current_user)):
+async def kb_delete(payload: KbDeleteRequest, user: dict = Depends(current_user_optional)):
     """删除知识库文档：向量 → DB 记录（事务内）→ 文件（事务外 best-effort）。
 
     文件删除放在事务外，避免 Windows 文件锁导致 unlink 失败时整个事务回滚、
@@ -834,7 +851,7 @@ class ToggleKBRequest(BaseModel):
 
 
 @router.patch("/kb/collections/{kb_id}/toggle")
-def toggle_collection(kb_id: str, payload: ToggleKBRequest, user: dict = Depends(current_user)):
+def toggle_collection(kb_id: str, payload: ToggleKBRequest, user: dict = Depends(current_user_optional)):
     """切换知识库搜索开关。"""
     try:
         kb_manager = _get_kb_manager()
@@ -866,7 +883,7 @@ class RenameKBRequest(BaseModel):
 
 
 @router.patch("/kb/collections/{kb_id}/rename")
-def rename_collection(kb_id: str, payload: RenameKBRequest, user: dict = Depends(current_user)):
+def rename_collection(kb_id: str, payload: RenameKBRequest, user: dict = Depends(current_user_optional)):
     """重命名知识库。"""
     try:
         with get_db_ctx() as db:
@@ -910,7 +927,7 @@ class UpdateKBConfigRequest(BaseModel):
 
 
 @router.patch("/kb/collections/{kb_id}/config")
-async def update_kb_config(kb_id: str, payload: UpdateKBConfigRequest, user: dict = Depends(current_user)):
+async def update_kb_config(kb_id: str, payload: UpdateKBConfigRequest, user: dict = Depends(current_user_optional)):
     """更新知识库配置（embedding/agent chunker/分块策略等）。"""
     try:
         # Validate small_chunk_size if provided
@@ -1256,7 +1273,7 @@ def kb_export(kb_id: str):
 async def kb_import(
     kb_id: str,
     file: UploadFile = File(...),
-    user: dict = Depends(current_user),
+    user: dict = Depends(current_user_optional),
 ):
     """Import a previously exported KB JSON file into an existing KB.
 
