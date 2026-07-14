@@ -279,7 +279,7 @@ class HybridChunker(BaseChunker):
         # otherwise match the "^#{1,4}\s" header regex and misroute .py/.c
         # files into _split_markdown, fragmenting them at every comment.
         if file_path and file_path.suffix.lower() in CODE_EXTS:
-            return self._split_plain_text(text)
+            return self._split_plain_text(text, file_path)
 
         # Detect format
         is_markdown = False
@@ -409,15 +409,31 @@ class HybridChunker(BaseChunker):
 
         return sections
 
-    def _split_plain_text(self, text: str) -> list[tuple[str, str, tuple[int, int]]]:
+    def _split_plain_text(
+        self,
+        text: str,
+        file_path: Optional[Path] = None,
+    ) -> list[tuple[str, str, tuple[int, int]]]:
         """Split plain text by blank lines and paragraph boundaries.
 
+        Code files (.c/.h/.py/...) are split at function signatures and
+        preprocessor directives so a single function stays in one section.
         Page markers are inherited across split parts: if a part does not
         contain its own marker, it uses the most recently observed page range
         instead of falling back to (1, 1). This prevents tables/paragraphs on
         later pages from being mislabelled as page 1.
         """
-        parts = re.split(r"\n\s*\n", text)
+        is_code_file = bool(file_path and file_path.suffix.lower() in CODE_EXTS)
+
+        if is_code_file:
+            function_or_preproc = re.compile(
+                r'^\s*(?:#[ \t]*(?:include|define|ifdef|ifndef|if|else|elif|endif|pragma)\b'
+                r'|[a-zA-Z_][\w\s\*]*\s+[a-zA-Z_]\w*\s*\()',
+                re.MULTILINE,
+            )
+            parts = re.split(r'\n(?=' + function_or_preproc.pattern + r')', text)
+        else:
+            parts = re.split(r"\n\s*\n", text)
 
         sections: list[tuple[str, str, tuple[int, int]]] = []
         current_page_range: tuple[int, int] = (1, 1)
@@ -429,8 +445,12 @@ class HybridChunker(BaseChunker):
 
             lines = part.split("\n")
             section_title = ""
-            if lines and len(lines[0].strip()) < 80:
-                section_title = lines[0].strip()
+            if lines:
+                first_line = lines[0].strip()
+                if is_code_file:
+                    section_title = first_line
+                elif len(first_line) < 80:
+                    section_title = first_line
 
             page_range = self._get_section_pages(part, current_page_range)
             # Update the inherited range when this part contains a real marker.
