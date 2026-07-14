@@ -520,6 +520,7 @@ async def kb_upload(
                     "indexed",
                     chunk_count=actual_chunk_count,
                     coverage=coverage,
+                    error_message="",
                 )
             logger.info(f"文档入库完成: {doc_id} → {actual_chunk_count} chunks (向量化: {ingested}, method={effective_method})")
 

@@ -365,7 +365,7 @@ export function KnowledgePanel() {
                   {item.tags.map((tag) => <span className="kb-tag" key={tag}>{tag}</span>)}
                 </div>
                 <div className="kb-item-meta"><span>{item.size}</span></div>
-                {item.errorMessage ? <div className="kb-error"><span style={{ color: 'var(--danger)' }}>◉</span>{item.errorMessage}</div> : null}
+                {item.status === 'error' && item.errorMessage ? <div className="kb-error"><span style={{ color: 'var(--danger)' }}>◉</span>{item.errorMessage}</div> : null}
               </div>
 
               <div className="kb-item-right">
