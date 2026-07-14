@@ -29,3 +29,17 @@ SUB_SPLIT_SEPARATORS: list[str] = [
     "\n\n**Q", "\n\n|",
     "\n\n", "\n", "。", ".", " ", "",
 ]
+
+# File extensions treated as source code. Code files skip Markdown
+# structural heuristics (a "# comment" line would otherwise match the
+# "^#{1,4}\s" header regex and misroute .py/.c files into Markdown
+# splitting) and use code-friendly sub-split separators.
+CODE_EXTS: frozenset[str] = frozenset({
+    ".py", ".c", ".h", ".ino", ".cpp", ".cc",
+    ".js", ".ts", ".java", ".go", ".rs",
+})
+
+# Sub-split separators for code sections. Only cut at blank lines
+# (function boundaries) and single newlines — never at "." so that
+# struct.field / 0.5 / printf.xxx stay intact.
+CODE_SUB_SPLIT_SEPARATORS: list[str] = ["\n\n", "\n", ""]

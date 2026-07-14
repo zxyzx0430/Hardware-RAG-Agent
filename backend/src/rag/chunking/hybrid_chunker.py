@@ -17,7 +17,7 @@ from src.rag.chunking.base import (
     protect_structures,
     truncate_at_boundary,
 )
-from src.rag.chunking._constants import INLINE_CODE_RE
+from src.rag.chunking._constants import INLINE_CODE_RE, CODE_EXTS, CODE_SUB_SPLIT_SEPARATORS
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +78,16 @@ class HybridChunker(BaseChunker):
             length_function=len,
         )
 
+        # Code-aware splitter: only cuts at blank lines / newlines, never at
+        # "." so struct.field / 0.5 / printf.xxx stay intact. Used for source
+        # code files (.py/.c/.h/...) and fenced code-block sections.
+        self._code_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=small_chunk_size,
+            chunk_overlap=0,
+            separators=CODE_SUB_SPLIT_SEPARATORS,
+            length_function=len,
+        )
+
     @staticmethod
     def _get_section_pages(
         section_text: str,
@@ -105,6 +115,9 @@ class HybridChunker(BaseChunker):
         """Execute hybrid chunking pipeline (small-first then aggregate to big)."""
         # Step 1: Structural split
         sections = self._structural_split(text, file_path)
+        # Code files use the code-aware splitter/truncate so functions and
+        # dotted tokens (struct.field / 0.5) are not fragmented at ".".
+        is_code_file = bool(file_path and file_path.suffix.lower() in CODE_EXTS)
 
         # Step 2: Small-first chunking — small_splitter cuts each section directly.
         # Each small chunk carries a big_chunk_id pointer to its parent BigChunk
@@ -141,7 +154,11 @@ class HybridChunker(BaseChunker):
             # big_chunk_text is the full section (boundary-truncated) for the
             # ingest stage to persist — it is NOT stored in ChromaDB metadata.
             big_chunk_id = f"{doc_id}#b{section_index}"
-            big_chunk_text = truncate_at_boundary(clean_section_text, max_chars=self.big_chunk_max_chars)
+            big_chunk_text = truncate_at_boundary(
+                clean_section_text,
+                max_chars=self.big_chunk_max_chars,
+                is_code=is_code_file or is_code_block,
+            )
 
             if is_code_block:
                 chunk_text = clean_section_text
@@ -183,7 +200,10 @@ class HybridChunker(BaseChunker):
             # Protect Markdown tables and register-field blocks from splitting
             placeholder_text, table_map = protect_structures(placeholder_text)
             code_map.update(table_map)
-            small_chunks = self._small_splitter.split_text(placeholder_text)
+            # Code files / code-block sections: use code-friendly separators
+            # (\n\n, \n) so functions and dotted tokens stay intact.
+            splitter = self._code_splitter if (is_code_file or is_code_block) else self._small_splitter
+            small_chunks = splitter.split_text(placeholder_text)
             for small_text in small_chunks:
                 if not small_text.strip():
                     continue
@@ -255,6 +275,12 @@ class HybridChunker(BaseChunker):
 
         Returns list of (section_title, section_text, (start_page, end_page)).
         """
+        # Code files: skip Markdown heuristics — a "# comment" line would
+        # otherwise match the "^#{1,4}\s" header regex and misroute .py/.c
+        # files into _split_markdown, fragmenting them at every comment.
+        if file_path and file_path.suffix.lower() in CODE_EXTS:
+            return self._split_plain_text(text)
+
         # Detect format
         is_markdown = False
         if file_path:

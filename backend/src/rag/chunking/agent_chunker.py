@@ -1027,15 +1027,19 @@ class AgentChunker(BaseChunker):
             # Check if the entire section is a single code block. Strip page
             # markers first so leading/trailing markers don't break the check.
             clean_section_text = strip_page_markers(section_text).strip()
+            is_whole_code_block = (
+                clean_section_text.startswith("```")
+                and clean_section_text.endswith("```")
+            )
             # Generate big chunk (parent section) ID and boundary-truncated
             # text for parent-document retrieval. All sub-chunks of this
             # section share the same big_chunk_id/big_chunk_text.
             doc_id = metadata.get("doc_id", "unknown")
             big_chunk_id = f"{doc_id}#b{i}"
-            big_chunk_text = truncate_at_boundary(clean_section_text, max_chars=self.big_chunk_max_chars)
-            is_whole_code_block = (
-                clean_section_text.startswith("```")
-                and clean_section_text.endswith("```")
+            big_chunk_text = truncate_at_boundary(
+                clean_section_text,
+                max_chars=self.big_chunk_max_chars,
+                is_code=is_whole_code_block,
             )
 
             if is_whole_code_block:

@@ -91,6 +91,25 @@ def _validate_file_magic(ext: str, content_bytes: bytes) -> None:
                 raise ValueError(f"文件头为 {expected} 格式，但扩展名为 {ext}")
 
 
+def _decode_text_bytes(content_bytes: bytes) -> str:
+    """Decode raw text bytes with UTF-8 → GB18030 → chardet fallback.
+
+    GBK/GB18030-encoded .c/.h/.py files would otherwise decode as U+FFFD
+    replacement chars under a blind UTF-8 decode.
+    """
+    try:
+        return content_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    try:
+        return content_bytes.decode("gb18030")
+    except UnicodeDecodeError:
+        pass
+    import chardet
+    enc = chardet.detect(content_bytes).get("encoding") or "utf-8"
+    return content_bytes.decode(enc, errors="replace")
+
+
 def _parse_file(ext: str, content_bytes: bytes, save_path: Path) -> tuple[str, int]:
     """根据文件扩展名解析文件，返回 (纯文本, 总页数)。"""
     if ext == ".pdf":
@@ -114,7 +133,7 @@ def _parse_file(ext: str, content_bytes: bytes, save_path: Path) -> tuple[str, i
         from src.rag.file_parsers import HtmlParser
         return HtmlParser().parse_from_bytes(content_bytes), 0
     else:
-        return content_bytes.decode("utf-8", errors="replace"), 0
+        return _decode_text_bytes(content_bytes), 0
 
 
 # ═══════════════════════════════════════════

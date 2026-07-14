@@ -1268,7 +1268,11 @@ class MultimodalChunker(BaseChunker):
             # All sub_chunks from this section share the same big_chunk_id/text.
             doc_id = metadata.get("doc_id", "unknown")
             big_chunk_id = f"{doc_id}#b{i}"
-            big_chunk_text = truncate_at_boundary(stripped_section, max_chars=self.big_chunk_max_chars)
+            big_chunk_text = truncate_at_boundary(
+                stripped_section,
+                max_chars=self.big_chunk_max_chars,
+                is_code=is_whole_code_block,
+            )
 
             if is_whole_code_block:
                 logger.info(

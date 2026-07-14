@@ -130,7 +130,12 @@ def strip_page_markers(text: str) -> str:
 _BOUNDARY_MARKS: tuple[str, ...] = ("\n\n", "。", ".", "\n")
 
 
-def truncate_at_boundary(text: str, max_chars: int = 4000, tolerance: int = 100) -> str:
+def truncate_at_boundary(
+    text: str,
+    max_chars: int = 4000,
+    tolerance: int = 100,
+    is_code: bool = False,
+) -> str:
     """Truncate text at the nearest sentence/paragraph boundary.
 
     Boundary priority: paragraph (\\n\\n) > period (。/.) > newline (\\n) > hard cut.
@@ -141,6 +146,9 @@ def truncate_at_boundary(text: str, max_chars: int = 4000, tolerance: int = 100)
         text: Input text to truncate.
         max_chars: Target maximum character count.
         tolerance: Search window radius around max_chars.
+        is_code: When True, only use (\\n\\n, \\n) as boundaries so code
+            tokens like ``struct.field`` / ``0.5`` / ``printf.xxx`` are not
+            split at ".".
 
     Returns:
         Truncated text ending at a boundary when possible, or hard-cut at max_chars.
@@ -148,10 +156,11 @@ def truncate_at_boundary(text: str, max_chars: int = 4000, tolerance: int = 100)
     if len(text) <= max_chars + tolerance:
         return text
 
+    marks = ("\n\n", "\n") if is_code else _BOUNDARY_MARKS
     search_start = max(0, max_chars - tolerance)
     search_end = min(len(text), max_chars + tolerance)
 
-    for mark in _BOUNDARY_MARKS:
+    for mark in marks:
         cut_pos = _find_nearest_boundary(text, mark, max_chars, search_start, search_end)
         if cut_pos is not None:
             return text[:cut_pos]
