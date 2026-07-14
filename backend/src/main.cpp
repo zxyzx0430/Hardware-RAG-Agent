@@ -71,8 +71,8 @@ typedef struct {
   bool warning;        // 警戒状态
   bool critical;       // 严重状态
   bool muted;          // 用户静音
-} AlarmState;
-static AlarmState alarm = {false, false, false};
+} AlarmState_t;
+static AlarmState_t g_alarm = {false, false, false};
 
 // ==================== Alarm Thresholds ====================
 static const float TEMP_WARN   = 30.0;   // °C
@@ -236,13 +236,13 @@ void updateAlarm() {
     warn = true;
   }
 
-  alarm.warning  = warn;
-  alarm.critical = crit;
+  g_alarm.warning  = warn;
+  g_alarm.critical = crit;
 }
 
 // ==================== Buzzer Control ====================
 void updateBuzzer() {
-  if (alarm.muted) {
+  if (g_alarm.muted) {
     digitalWrite(PIN_BUZZER1, LOW);
     digitalWrite(PIN_BUZZER2, LOW);
     return;
@@ -250,12 +250,12 @@ void updateBuzzer() {
 
   unsigned long t = millis();
 
-  if (alarm.critical) {
+  if (g_alarm.critical) {
     // 严重报警：双蜂鸣器 200ms 周期 (100ms on/off)
     bool on = (t % 400) < 200;
     digitalWrite(PIN_BUZZER1, on ? HIGH : LOW);
     digitalWrite(PIN_BUZZER2, on ? HIGH : LOW);
-  } else if (alarm.warning) {
+  } else if (g_alarm.warning) {
     // 警戒报警：单蜂鸣器 2s 周期 (1s on/off)
     bool on = (t % 2000) < 1000;
     digitalWrite(PIN_BUZZER1, on ? HIGH : LOW);
@@ -294,13 +294,13 @@ void scanButtons() {
             Serial.printf("[BTN] K2 -> Page %d\n", currentPage);
             break;
           case 2:  // K3: 静音切换
-            alarm.muted = !alarm.muted;
-            Serial.printf("[BTN] K3 -> Mute=%d\n", alarm.muted);
+            g_alarm.muted = !g_alarm.muted;
+            Serial.printf("[BTN] K3 -> Mute=%d\n", g_alarm.muted);
             break;
           case 3:  // K4: 复位报警
-            alarm.warning  = false;
-            alarm.critical = false;
-            alarm.muted    = false;
+            g_alarm.warning  = false;
+            g_alarm.critical = false;
+            g_alarm.muted    = false;
             Serial.println("[BTN] K4 -> Alarm Reset");
             break;
         }
@@ -324,15 +324,15 @@ void updateDisplay() {
   display.setCursor(0, 0);
 
   // 报警状态图标
-  if (alarm.critical) {
+  if (g_alarm.critical) {
     display.print("!CRIT!");
-  } else if (alarm.warning) {
+  } else if (g_alarm.warning) {
     display.print(" WARN ");
   } else {
     display.print("  OK  ");
   }
 
-  if (alarm.muted) {
+  if (g_alarm.muted) {
     display.print(" MUTED");
   }
 
@@ -470,11 +470,11 @@ void drawPage3() {
   // 报警状态
   display.println(" ---");
   display.print(" Alarm: ");
-  if (alarm.critical)   display.println("CRITICAL!");
-  else if (alarm.warning) display.println("Warning");
+  if (g_alarm.critical)   display.println("CRITICAL!");
+  else if (g_alarm.warning) display.println("Warning");
   else                    display.println("None");
   display.print(" Mute:  ");
-  display.println(alarm.muted ? "ON " : "OFF");
+  display.println(g_alarm.muted ? "ON " : "OFF");
 
   // Uptime
   unsigned long sec = millis() / 1000;
