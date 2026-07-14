@@ -550,6 +550,7 @@ const zh: Record<string, string> = {
   editKb: '编辑知识库',
   deleteKb: '删除知识库',
   deleteKbConfirm: '删除不可恢复，关联文档全部删除。确定删除？',
+  confirmDelete: '确认删除',
   kbName: '名称',
   kbDescription: '描述',
   chunkMethod: '分块方式',

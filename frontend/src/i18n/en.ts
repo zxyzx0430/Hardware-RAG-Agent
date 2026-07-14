@@ -550,6 +550,7 @@ const en: Record<string, string> = {
   editKb: 'Edit KB',
   deleteKb: 'Delete KB',
   deleteKbConfirm: 'Deletion is irreversible. All associated documents will be removed. Continue?',
+  confirmDelete: 'Confirm Delete',
   kbName: 'Name',
   kbDescription: 'Description',
   chunkMethod: 'Chunk Method',

@@ -92,6 +92,7 @@ export function KbCollectionManager({ open, onClose }: Props) {
   const [kbDetail, setKbDetail] = useState<KBCollectionDetail | null>(null);
   const [detailError, setDetailError] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [deletingKbId, setDeletingKbId] = useState<string | null>(null);
   const [editingKbId, setEditingKbId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
@@ -178,15 +179,24 @@ export function KbCollectionManager({ open, onClose }: Props) {
   };
 
   const handleDelete = async (kbId: string) => {
-    const ok = await deleteCollection(kbId);
-    if (!ok) {
-      setErrorMsg(t('deleteKbFailed'));
-    }
-    setDeleteConfirmId(null);
-    if (expandedKbId === kbId) {
-      expandedKbIdRef.current = null;
-      setExpandedKbId(null);
-      setKbDetail(null);
+    if (deletingKbId) return;
+    setDeletingKbId(kbId);
+    setErrorMsg("");
+    try {
+      const ok = await deleteCollection(kbId);
+      if (!ok) {
+        setErrorMsg(t('deleteKbFailed'));
+      }
+    } catch (e) {
+      setErrorMsg(e instanceof Error ? e.message : t('deleteKbFailed'));
+    } finally {
+      setDeletingKbId(null);
+      setDeleteConfirmId(null);
+      if (expandedKbId === kbId) {
+        expandedKbIdRef.current = null;
+        setExpandedKbId(null);
+        setKbDetail(null);
+      }
     }
   };
 
@@ -811,6 +821,8 @@ export function KbCollectionManager({ open, onClose }: Props) {
                       <button
                         className="kb-item-icon-btn"
                         title={t('deleteKb')}
+                        disabled={deletingKbId === kb.id}
+                        style={{ opacity: deletingKbId === kb.id ? 0.5 : 1 }}
                         onClick={(e) => {
                           e.stopPropagation();
                           setDeleteConfirmId(kb.id);
@@ -829,15 +841,16 @@ export function KbCollectionManager({ open, onClose }: Props) {
                     }}>
                       <p style={{ fontSize: 12, margin: "0 0 8px" }}>{t('deleteKbConfirm')}</p>
                       <div style={{ display: "flex", gap: 8 }}>
+                        <button className="kb-item-icon-btn" onClick={() => setDeleteConfirmId(null)}>
+                          {t('cancel')}
+                        </button>
                         <button
                           className="btn-new"
                           style={{ background: "var(--danger)", color: "white" }}
                           onClick={() => handleDelete(kb.id)}
+                          disabled={deletingKbId === kb.id}
                         >
-                          {t('deleteKb')}
-                        </button>
-                        <button className="kb-item-icon-btn" onClick={() => setDeleteConfirmId(null)}>
-                          {t('escClose')}
+                          {deletingKbId === kb.id ? "..." : t('confirmDelete')}
                         </button>
                       </div>
                     </div>
