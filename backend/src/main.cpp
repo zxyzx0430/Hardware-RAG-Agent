@@ -1,128 +1,137 @@
 /**
- * BME280 诊断程序 — I2C 扫描 + 地址测试
- * 
- * 硬件接线（请保持你现在的接法）：
- *   GPIO1 → BME280 SDA (SDI)
- *   GPIO2 → BME280 SCL (SCK)
- *   GPIO8 → SSD1306 SDA
- *   GPIO9 → SSD1306 SCL
- *   GPIO4 → DHT11 DATA (暂时没用)
- * 
- * 烧录后打开串口监视器 115200 看输出
+ * BME280 底层寄存器读取测试
+ * 不依赖 Adafruit 库，直接 Wire 读取 Chip ID
  */
+#include <Arduino.h>
 #include <Wire.h>
-#include <Adafruit_BME280.h>
-#include <Adafruit_SSD1306.h>
 
-Adafruit_SSD1306 display(128, 64, &Wire1);
-
-// I2C0 — BME280 (GPIO1=SDA, GPIO2=SCL)
-TwoWire I2C_BME = TwoWire(0);
-// I2C1 — SSD1306 (GPIO8=SDA, GPIO9=SCL)
-TwoWire I2C_OLED = TwoWire(1);
-
-void scanI2C(TwoWire &wire, const char *busName) {
-  byte error, address;
-  int nDevices = 0;
-
-  Serial.print("Scanning ");
-  Serial.print(busName);
-  Serial.println("...");
-
-  for (address = 1; address < 127; address++) {
-    wire.beginTransmission(address);
-    error = wire.endTransmission();
-
-    if (error == 0) {
-      Serial.print("  [FOUND] 0x");
-      if (address < 16) Serial.print("0");
-      Serial.print(address, HEX);
-      Serial.print(" (");
-      Serial.print(address, DEC);
-      Serial.println(")");
-
-      if (address == 0x3C || address == 0x3D) Serial.println("    -> Likely SSD1306 OLED");
-      if (address == 0x76) Serial.println("    -> BME280 (SDO=GND)");
-      if (address == 0x77) Serial.println("    -> BME280 (SDO=VCC)");
-
-      nDevices++;
-    } else if (error == 2) {
-      Serial.print("  [NAK]  0x");
-      if (address < 16) Serial.print("0");
-      Serial.println(address, HEX);
-    }
-  }
-
-  if (nDevices == 0)
-    Serial.println("  No devices found!\n");
-  else
-    Serial.printf("  Total: %d device(s)\n\n", nDevices);
-}
+#define BME280_ADDR 0x76
 
 void setup() {
   Serial.begin(115200);
-  delay(500);
-  Serial.println("\n\n====================================");
-  Serial.println("  BME280 DIAGNOSTIC TOOL v1.0");
-  Serial.println("====================================\n");
+  delay(2000);
 
-  // 初始化两个 I2C 总线
-  I2C_BME.begin(1, 2);   // SDA=GPIO1, SCL=GPIO2
-  I2C_OLED.begin(8, 9);  // SDA=GPIO8, SCL=GPIO9
+  Serial.println("\n\n========================================");
+  Serial.println("  BME280 RAW REGISTER TEST");
+  Serial.println("========================================");
 
-  // 扫描 I2C0 (BME280 总线)
-  Serial.println("--- I2C Bus 0 (GPIO1=SDA, GPIO2=SCL) ---");
-  scanI2C(I2C_BME, "I2C0");
+  Wire.begin(1, 2);
+  Wire.setClock(100000);
+  delay(100);
 
-  // 扫描 I2C1 (OLED 总线)
-  Serial.println("--- I2C Bus 1 (GPIO8=SDA, GPIO9=SCL) ---");
-  scanI2C(I2C_OLED, "I2C1");
-
-  // 尝试两种地址初始化 BME280
-  Serial.println("--- Testing BME280 at 0x76 ---");
-  Adafruit_BME280 bme;
-  if (bme.begin(0x76, &I2C_BME)) {
-    Serial.println("  [OK] BME280 found at 0x76 (SDO=GND)!\n");
-    float t = bme.readTemperature();
-    float h = bme.readHumidity();
-    float p = bme.readPressure() / 100.0F;
-    Serial.printf("  Temp=%.1fC  Hum=%.1f%%  Press=%.1fhPa\n", t, h, p);
+  Serial.println("\n[1] 扫描 0x76 地址...");
+  Wire.beginTransmission(BME280_ADDR);
+  uint8_t err = Wire.endTransmission();
+  if (err == 0) {
+    Serial.println("  ✅ 0x76 地址 ACK 成功");
   } else {
-    Serial.println("  [FAIL] BME280 not found at 0x76\n");
+    Serial.printf("  ❌ 0x76 地址 NAK (错误码: %d)\n", err);
   }
 
-  Serial.println("--- Testing BME280 at 0x77 ---");
-  if (bme.begin(0x77, &I2C_BME)) {
-    Serial.println("  [OK] BME280 found at 0x77 (SDO=VCC)!\n");
-    float t = bme.readTemperature();
-    float h = bme.readHumidity();
-    float p = bme.readPressure() / 100.0F;
-    Serial.printf("  Temp=%.1fC  Hum=%.1f%%  Press=%.1fhPa\n", t, h, p);
+  Serial.println("\n[2] 读取 Chip ID (reg 0xD0)...");
+  Wire.beginTransmission(BME280_ADDR);
+  Wire.write(0xD0);
+  err = Wire.endTransmission();
+  if (err != 0) {
+    Serial.printf("  ❌ 写寄存器地址失败: %d\n", err);
   } else {
-    Serial.println("  [FAIL] BME280 not found at 0x77\n");
+    delay(10);
+    Wire.requestFrom((uint16_t)BME280_ADDR, (uint8_t)1);
+    if (Wire.available()) {
+      uint8_t id = Wire.read();
+      Serial.printf("  Chip ID = 0x%02X\n", id);
+      if (id == 0x60) {
+        Serial.println("  ✅ 确认是 BME280/BMP280!");
+      } else if (id == 0x58) {
+        Serial.println("  ⚠️ 是 BMP280 (ID=0x58)，不是 BME280");
+      } else {
+        Serial.println("  ⚠️ ID 不是 0x60 或 0x58，可能是其他设备");
+      }
+    } else {
+      Serial.println("  ❌ requestFrom 无数据返回");
+    }
   }
 
-  // 尝试初始化 OLED
-  Serial.println("--- Testing SSD1306 ---");
-  if (display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-    Serial.println("  [OK] SSD1306 found at 0x3C\n");
-    display.clearDisplay();
-    display.setTextSize(1);
-    display.setTextColor(SSD1306_WHITE);
-    display.setCursor(0, 0);
-    display.println("I2C Scan Done!");
-    display.display();
-  } else {
-    Serial.println("  [FAIL] SSD1306 not found at 0x3C\n");
+  Serial.println("\n[3] 读取复位状态 (reg 0xE0)...");
+  Wire.beginTransmission(BME280_ADDR);
+  Wire.write(0xE0);
+  Wire.endTransmission();
+  delay(10);
+  Wire.requestFrom((uint16_t)BME280_ADDR, (uint8_t)1);
+  if (Wire.available()) {
+    uint8_t rst = Wire.read();
+    Serial.printf("  Reset status = 0x%02X\n", rst);
   }
 
-  Serial.println("====================================");
-  Serial.println("Diagnostic complete. Check wiring if");
-  Serial.println("devices are missing from the scan.");
-  Serial.println("====================================");
+  Serial.println("\n[4] 读取 ctrl_hum (reg 0xF2)...");
+  Wire.beginTransmission(BME280_ADDR);
+  Wire.write(0xF2);
+  Wire.endTransmission();
+  delay(10);
+  Wire.requestFrom((uint16_t)BME280_ADDR, (uint8_t)1);
+  if (Wire.available()) {
+    uint8_t ctrl_hum = Wire.read();
+    Serial.printf("  ctrl_hum = 0x%02X\n", ctrl_hum);
+  }
+
+  Serial.println("\n[5] 读取 ctrl_meas (reg 0xF4)...");
+  Wire.beginTransmission(BME280_ADDR);
+  Wire.write(0xF4);
+  Wire.endTransmission();
+  delay(10);
+  Wire.requestFrom((uint16_t)BME280_ADDR, (uint8_t)1);
+  if (Wire.available()) {
+    uint8_t ctrl_meas = Wire.read();
+    Serial.printf("  ctrl_meas = 0x%02X\n", ctrl_meas);
+  }
+
+  Serial.println("\n[6] 执行软复位...");
+  Wire.beginTransmission(BME280_ADDR);
+  Wire.write(0xE0);
+  Wire.write(0xB6);
+  err = Wire.endTransmission();
+  Serial.printf("  复位指令发送: %s\n", (err == 0) ? "✅ OK" : "❌ FAIL");
+  delay(150);
+
+  Serial.println("\n[7] 复位后重读 Chip ID...");
+  Wire.beginTransmission(BME280_ADDR);
+  Wire.write(0xD0);
+  Wire.endTransmission();
+  delay(10);
+  Wire.requestFrom((uint16_t)BME280_ADDR, (uint8_t)1);
+  if (Wire.available()) {
+    uint8_t id2 = Wire.read();
+    Serial.printf("  Chip ID = 0x%02X\n", id2);
+    if (id2 == 0x60) {
+      Serial.println("  ✅ 复位后确认是 BME280!");
+    } else if (id2 == 0x58) {
+      Serial.println("  ⚠️ 复位后确认是 BMP280");
+    } else {
+      Serial.println("  ⚠️ 复位后 ID 仍然不是标准值");
+    }
+  }
+
+  Serial.println("\n[8] 读取温度原始值 (regs 0xFA-0xFC)...");
+  Wire.beginTransmission(BME280_ADDR);
+  Wire.write(0xFA);
+  Wire.endTransmission();
+  delay(10);
+  Wire.requestFrom((uint16_t)BME280_ADDR, (uint8_t)3);
+  if (Wire.available() >= 3) {
+    uint32_t raw_temp = ((uint32_t)Wire.read() << 12) | ((uint32_t)Wire.read() << 4) | (Wire.read() >> 4);
+    Serial.printf("  原始温度值: %lu (0x%06lX)\n", raw_temp, raw_temp);
+    if (raw_temp > 0 && raw_temp < 0xFFFFF) {
+      Serial.println("  ✅ 温度数据有效!");
+    } else {
+      Serial.println("  ⚠️ 温度数据异常");
+    }
+  } else {
+    Serial.println("  ❌ requestFrom 3字节失败");
+  }
+
+  Serial.println("\n========================================");
+  Serial.println("  测试完成");
+  Serial.println("========================================\n");
 }
 
-void loop() {
-  // 什么都不做，重启看结果
-  delay(10000);
-}
+void loop() {}
