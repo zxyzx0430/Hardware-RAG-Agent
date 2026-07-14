@@ -431,7 +431,7 @@ class HybridChunker(BaseChunker):
                 r'|[a-zA-Z_][\w\s\*]*\s+[a-zA-Z_]\w*\s*\()',
                 re.MULTILINE,
             )
-            parts = re.split(r'\n(?=' + function_or_preproc.pattern + r')', text)
+            parts = self._split_code_by_signatures(text, function_or_preproc)
         else:
             parts = re.split(r"\n\s*\n", text)
 
@@ -462,6 +462,30 @@ class HybridChunker(BaseChunker):
             sections.append(("", text, self._get_section_pages(text)))
 
         return sections
+
+    @staticmethod
+    def _split_code_by_signatures(
+        text: str,
+        signature_re: re.Pattern[str],
+    ) -> list[str]:
+        """Split source code at function signatures and preprocessor directives.
+
+        ``re.split`` with a look-ahead cannot carry flags such as
+        ``re.MULTILINE``, so we use ``finditer`` to locate line-anchored
+        boundaries and slice the text manually.
+        """
+        boundaries: list[int] = []
+        for match in signature_re.finditer(text):
+            boundaries.append(match.start())
+
+        if not boundaries:
+            return [text]
+
+        parts: list[str] = []
+        for i, start in enumerate(boundaries):
+            end = boundaries[i + 1] if i + 1 < len(boundaries) else len(text)
+            parts.append(text[start:end])
+        return parts
 
     def _merge_tiny_chunks(
         self, chunks: list[ChunkResult], threshold: int = 100
