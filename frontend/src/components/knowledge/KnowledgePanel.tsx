@@ -218,7 +218,11 @@ export function KnowledgePanel() {
                     <span style={{ flexShrink: 0, minWidth: 80 }}>{t('uploadingPercent').replace('{percent}', String(p.percent))}</span>
                   </>
                 ) : (
-                  <span style={{ flex: 1 }}>{t('indexingChunks').replace('{n}', String(p.chunks))}</span>
+                  <span style={{ flex: 1 }}>
+                    {p.chunks > 0
+                      ? t('indexingChunks').replace('{n}', String(p.chunks))
+                      : t('indexing')}
+                  </span>
                 )}
                 <button
                   onClick={() => {
