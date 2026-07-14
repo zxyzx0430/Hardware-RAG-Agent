@@ -128,17 +128,35 @@ export function apiUploadWithProgress<T>(
     };
     xhr.onload = () => {
       try {
-        const data = JSON.parse(xhr.responseText);
+        const json = JSON.parse(xhr.responseText);
         if (xhr.status >= 200 && xhr.status < 300) {
-          getLog()("ok", "api", `POST ${path} → OK`);
-          resolve(data as T);
+          // 对齐 unwrapResponse：解包 { success, data } envelope
+          if (json && typeof json === "object" && "success" in json) {
+            if (json.success === true) {
+              getLog()("ok", "api", `POST ${path} → OK`);
+              resolve(json.data as T);
+            } else if (json.success === false) {
+              const err = json.error ?? {};
+              const msg = err.message ?? "Unknown error";
+              getLog()("error", "api", `POST ${path} → ${msg}`);
+              reject(new ApiError(err.code ?? "UNKNOWN", msg, err.details));
+            } else {
+              reject(new ApiError("INVALID_RESPONSE", "响应格式无效：success 字段值无效", json));
+            }
+          } else {
+            // 旧格式兼容（不带 success 字段）
+            getLog()("ok", "api", `POST ${path} → OK`);
+            resolve(json as T);
+          }
         } else {
-          const msg = data?.error?.message || data?.message || `HTTP ${xhr.status}`;
+          // HTTP 错误：优先从 envelope.error 提取，再回退到裸 message
+          const envErr = json && typeof json === "object" ? json.error : null;
+          const msg = envErr?.message || json?.message || `HTTP ${xhr.status}`;
           getLog()("error", "api", `POST ${path} → ${msg}`);
-          reject(new Error(msg));
+          reject(new ApiError(envErr?.code ?? "HTTP_ERROR", msg, envErr?.details));
         }
       } catch (e) {
-        reject(e);
+        reject(new ApiError("PARSE_ERROR", `响应解析失败: ${e instanceof Error ? e.message : String(e)}`));
       }
     };
     xhr.onerror = () => reject(new Error("Network error"));

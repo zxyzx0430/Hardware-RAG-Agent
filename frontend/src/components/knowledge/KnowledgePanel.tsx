@@ -3,31 +3,12 @@ import { useKnowledgeStore } from "../../stores/useKnowledgeStore";
 import { useLogStore } from "../../stores/useLogStore";
 import { useAppStore } from "../../stores/useAppStore";
 import { useChatStore } from "../../stores/useChatStore";
-import { apiPost, apiUploadWithProgress } from "../../api/client";
+import { apiUploadWithProgress } from "../../api/client";
 import { useI18n } from "../../i18n";
 import { formatFileSize } from "../../utils/format";
 import { Modal } from "../shared/Modal";
 import { KbCollectionManager } from "./KbCollectionManager";
 import { UploadChunkMethodDialog } from "./UploadChunkMethodDialog";
-
-const POLL_INTERVAL = 2000;
-const POLL_TIMEOUT = 120000;
-
-type UploadProgress = {
-  phase: 'uploading' | 'indexing';
-  percent: number;
-  chunks: number;
-  abort?: () => void;
-};
-
-function removeUploadProgressKey(
-  prev: Record<string, UploadProgress>,
-  key: string
-): Record<string, UploadProgress> {
-  const next = { ...prev };
-  delete next[key];
-  return next;
-}
 
 // Test KB name patterns that should be hidden from regular users by default.
 const TEST_KB_PATTERNS: RegExp[] = [
@@ -57,6 +38,7 @@ export function KnowledgePanel() {
   const {
     items, isUploading, setIsUploading, addItem, toggleItem, deleteItemWithAPI, fetchItems,
     collections, activeKbId, fetchCollections, setActiveKb, fetchDocChunks,
+    uploadProgress, setUploadProgress, removeUploadProgress, pollIndexingStatus,
   } = useKnowledgeStore();
   const { selectedKbIds, toggleKbSelection } = useChatStore();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -67,9 +49,6 @@ export function KnowledgePanel() {
   const [pendingFiles, setPendingFiles] = useState<File[] | null>(null);
   const [showChunkMethodDialog, setShowChunkMethodDialog] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
-  const [uploadProgress, setUploadProgress] = useState<Record<string, UploadProgress>>({});
-  // Track active poll timers so they can be cleared on unmount
-  const pollTimersRef = useRef<Set<number>>(new Set());
 
   // Load collections on mount
   useEffect(() => {
@@ -81,14 +60,6 @@ export function KnowledgePanel() {
     setChunkMethodOverride("");
     fetchItems(activeKbId);
   }, [activeKbId, fetchItems]);
-
-  // Clear all poll timers on unmount to prevent memory leaks
-  useEffect(() => {
-    return () => {
-      pollTimersRef.current.forEach((id) => clearTimeout(id));
-      pollTimersRef.current.clear();
-    };
-  }, []);
 
   const enabledCount = items.filter((i) => i.enabled).length;
   const totalChunks = items.reduce((sum, i) => sum + i.chunks, 0);
@@ -160,11 +131,11 @@ export function KnowledgePanel() {
           setUploadProgress((prev) => ({ ...prev, [progressKey]: { phase: 'indexing', percent: 100, chunks: res.chunks ?? 0 } }));
           pollIndexingStatus(docId, progressKey);
         } else {
-          setUploadProgress((prev) => removeUploadProgressKey(prev, progressKey));
+          removeUploadProgress(progressKey);
         }
       } catch (e) {
         const errMsg = e instanceof Error ? e.message : t('fileIncompatible');
-        setUploadProgress((prev) => removeUploadProgressKey(prev, progressKey));
+        removeUploadProgress(progressKey);
         if (errMsg === 'aborted') {
           useLogStore.getState().log("info", "kb", `上传已取消: ${file.name}`);
           continue;
@@ -185,50 +156,6 @@ export function KnowledgePanel() {
       }
     }
     setIsUploading(false);
-  };
-
-  const pollIndexingStatus = (docId: string, progressKey?: string) => {
-    const startTime = Date.now();
-
-    const poll = async () => {
-      if (Date.now() - startTime > POLL_TIMEOUT) {
-        // 轮询超时，标记为 error
-        useKnowledgeStore.getState().setItems(
-          useKnowledgeStore.getState().items.map((item) =>
-            item.id === docId ? { ...item, status: "error" as const, errorMessage: "索引超时" } : item
-          )
-        );
-        if (progressKey) setUploadProgress((prev) => removeUploadProgressKey(prev, progressKey));
-        pollTimersRef.current.delete(timerId);
-        return;
-      }
-
-      try {
-        // Use current activeKbId from store to keep KB filter consistent
-        const currentKbId = useKnowledgeStore.getState().activeKbId;
-        await fetchItems(currentKbId);
-        const item = useKnowledgeStore.getState().items.find((i) => i.id === docId);
-        if (item) {
-          // 更新索引计数
-          if (progressKey) {
-            setUploadProgress((prev) => prev[progressKey] ? { ...prev, [progressKey]: { ...prev[progressKey], chunks: item.chunks } } : prev);
-          }
-          if (item.status === "indexed" || item.status === "error") {
-            if (progressKey) setUploadProgress((prev) => removeUploadProgressKey(prev, progressKey));
-            pollTimersRef.current.delete(timerId);
-            return; // 向量化完成或出错，停止轮询
-          }
-        }
-      } catch {
-        // 轮询请求失败，继续重试
-      }
-
-      timerId = window.setTimeout(poll, POLL_INTERVAL);
-      pollTimersRef.current.add(timerId);
-    };
-
-    let timerId = window.setTimeout(poll, POLL_INTERVAL);
-    pollTimersRef.current.add(timerId);
   };
 
   const handlePreview = (itemId: string) => {
@@ -296,7 +223,7 @@ export function KnowledgePanel() {
                 <button
                   onClick={() => {
                     if (p.phase === 'uploading' && p.abort) p.abort();
-                    else setUploadProgress((prev) => removeUploadProgressKey(prev, key));
+                    else removeUploadProgress(key);
                   }}
                   style={{ flexShrink: 0, fontSize: 11, color: "var(--danger)", background: "transparent", border: "1px solid var(--border)", borderRadius: 4, padding: "2px 8px", cursor: "pointer" }}
                 >

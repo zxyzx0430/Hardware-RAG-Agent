@@ -8,6 +8,23 @@ import { formatFileSize } from "../utils/format";
 // Re-export DocChunk so consumers can import from the store
 export type { DocChunk };
 
+// ─── Upload progress (migrated from KnowledgePanel, survives panel unmount) ───
+export type UploadProgress = {
+  phase: 'uploading' | 'indexing';
+  percent: number;
+  chunks: number;
+  abort?: () => void;
+};
+
+// Polling config — module-level (not reactive, no need to trigger re-renders)
+const POLL_INTERVAL = 2000;
+const POLL_TIMEOUT = 120000;
+
+// Active poll timers; kept at module scope so they survive KnowledgePanel unmount.
+const pollTimers: Set<number> = new Set();
+// Docs currently being polled; prevents duplicate timers when fetchItems re-runs.
+const pollingDocIds: Set<string> = new Set();
+
 interface KnowledgeState {
   // ─── Document-level (legacy) ───
   items: KBDoc[];
@@ -36,6 +53,12 @@ interface KnowledgeState {
   exportCollection: (kbId: string) => Promise<void>;
   importCollection: (kbId: string, file: File) => Promise<number>;
   fetchDocumentChunks: (docId: string) => Promise<ChunkDetail[]>;
+
+  // ─── Upload progress (survives panel unmount) ───
+  uploadProgress: Record<string, UploadProgress>;
+  setUploadProgress: (updater: (prev: Record<string, UploadProgress>) => Record<string, UploadProgress>) => void;
+  removeUploadProgress: (key: string) => void;
+  pollIndexingStatus: (docId: string, progressKey?: string) => void;
 
   // ─── Chunk viewer (right panel) ───
   docChunks: DocChunk[];
@@ -105,6 +128,12 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
         }));
         set({ items });
         useLogStore.getState().log("ok", "kb", `加载 ${items.length} 个知识库文档`);
+        // U3: 回到页面后重启未完成文档的轮询（pollIndexingStatus 内部会去重）
+        for (const doc of items) {
+          if (doc.status === "indexing") {
+            get().pollIndexingStatus(doc.id);
+          }
+        }
       }
     } catch {
       useLogStore.getState().log("error", "kb", "知识库列表加载失败");
@@ -349,6 +378,65 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
       useLogStore.getState().log("error", "kb", `加载文档片段失败: ${e instanceof Error ? e.message : String(e)}`);
       return [];
     }
+  },
+
+  // ─── Upload progress (survives panel unmount) ───
+  uploadProgress: {},
+  setUploadProgress: (updater) => set((s) => ({ uploadProgress: updater(s.uploadProgress) })),
+  removeUploadProgress: (key) => set((s) => {
+    const next = { ...s.uploadProgress };
+    delete next[key];
+    return { uploadProgress: next };
+  }),
+  pollIndexingStatus: (docId, progressKey) => {
+    // 防止重复轮询同一文档（fetchItems 重启时也会调到这里）
+    if (pollingDocIds.has(docId)) return;
+    pollingDocIds.add(docId);
+    const startTime = Date.now();
+
+    const poll = async () => {
+      // 超时：标记为 error 并清理
+      if (Date.now() - startTime > POLL_TIMEOUT) {
+        set((s) => ({
+          items: s.items.map((item) =>
+            item.id === docId ? { ...item, status: "error" as const, errorMessage: "索引超时" } : item
+          ),
+        }));
+        if (progressKey) get().removeUploadProgress(progressKey);
+        pollingDocIds.delete(docId);
+        pollTimers.delete(timerId);
+        return;
+      }
+      try {
+        const currentKbId = get().activeKbId;
+        await get().fetchItems(currentKbId);
+        const item = get().items.find((i) => i.id === docId);
+        if (item) {
+          // 更新索引进度的 chunk 计数
+          if (progressKey) {
+            set((s) => {
+              const cur = s.uploadProgress[progressKey];
+              if (!cur) return {};
+              return { uploadProgress: { ...s.uploadProgress, [progressKey]: { ...cur, chunks: item.chunks } } };
+            });
+          }
+          // 已完成或出错：停止轮询
+          if (item.status === "indexed" || item.status === "error") {
+            if (progressKey) get().removeUploadProgress(progressKey);
+            pollingDocIds.delete(docId);
+            pollTimers.delete(timerId);
+            return;
+          }
+        }
+      } catch {
+        // 单次轮询失败，继续重试
+      }
+      timerId = window.setTimeout(poll, POLL_INTERVAL);
+      pollTimers.add(timerId);
+    };
+
+    let timerId = window.setTimeout(poll, POLL_INTERVAL);
+    pollTimers.add(timerId);
   },
 
   // ─── Chunk viewer (right panel) ───
