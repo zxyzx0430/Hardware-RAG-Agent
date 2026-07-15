@@ -717,7 +717,7 @@ void updateBuzzer() {
     
     if (should_alarm && alarm_enable) {
       // 报警：交替鸣响
-      unsigned long now = ms();
+      unsigned long now = millis();
       bool blink_state = ((now / BUZZER_BLINK_MS) % 2 == 0);
       digitalWrite(PIN_BUZZER1, blink_state ? HIGH : LOW);
       
