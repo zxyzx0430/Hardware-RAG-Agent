@@ -499,7 +499,7 @@ void printSerialLog() {
 // ============================================================
 
 void processButtons() {
-  unsigned long now = ms();
+  unsigned long now = millis();
 
   // 处理每个按键
   processSingleButton(&btn_k1, now);
