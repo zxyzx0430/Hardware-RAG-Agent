@@ -1013,7 +1013,7 @@ void drawPageBuzzer() {
 // ============================================================
 
 void getUptimeString(char* buf, size_t len) {
-  unsigned long t = (ms() - boot_ms) / 1000;
+  unsigned long t = (millis() - boot_ms) / 1000;
   int days = t / 86400;
   int hours = (t % 86400) / 3600;
   int mins = (t % 3600) / 60;
