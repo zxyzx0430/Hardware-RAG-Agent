@@ -49,6 +49,7 @@
 
 // DHT11
 #define PIN_DHT          4
+#define DHT_TYPE         DHT11
 
 // 光敏模块
 #define PIN_LIGHT_AO     10   // 模拟输出 (ADC)
@@ -207,7 +208,7 @@ void setup() {
 //  LOOP
 // ============================================================
 void loop() {
-  unsigned long now = ms();
+  unsigned long now = millis();
 
   // 1. 定时读取传感器
   if (now - last_sensor_ms >= SENSOR_INTERVAL_MS) {
@@ -234,6 +235,7 @@ void loop() {
     printSerialLog();
     last_log_ms = now;
   }
+}
 }
 
 // ============================================================
@@ -277,7 +279,7 @@ void setupPins() {
  */
 void initDisplay() {
   I2C_OLED.begin(PIN_OLED_SDA, PIN_OLED_SCL, 400000);
-  u8g8.setBusClock(400000);
+  u8g2.setBusClock(400000);
   u8g2.begin();
   
   // 显示开机画面
@@ -356,12 +358,12 @@ void readSensors() {
   } else {
     // 尝试重连
     static unsigned long last_reconnect = 0;
-    if (ms() - last_reconnect > 30000) {
+    if (millis() - last_reconnect > 30000) {
       if (bme.begin(BME280_ADDR, &I2C_BME)) {
         bme_data.valid = true;
         Serial.println(F("[INFO] BME280 重新连接成功"));
       }
-      last_reconnect = ms();
+      last_reconnect = millis();
     }
   }
 
@@ -1009,10 +1011,6 @@ void drawPageBuzzer() {
 // ============================================================
 //  工具函数
 // ============================================================
-
-unsigned long ms() {
-  return millis();
-}
 
 void getUptimeString(char* buf, size_t len) {
   unsigned long t = (ms() - boot_ms) / 1000;
