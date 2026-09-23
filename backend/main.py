@@ -15,10 +15,14 @@ Hardware RAG Agent — 主入口。
 import sys
 import asyncio
 import argparse
+from pathlib import Path
 from typing import Optional, List
 
 # ─── 确保 src 可导入 ───
-sys.path.insert(0, ".")
+# 用脚本所在目录（backend/）替代 "."，避免从项目根目录运行时找不到 src
+_BACKEND_DIR = Path(__file__).resolve().parent
+if str(_BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(_BACKEND_DIR))
 
 from src.config.settings import settings
 from src.llm.client import LLMClient, ChatMessage
