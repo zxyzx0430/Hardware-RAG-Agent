@@ -170,9 +170,9 @@ SYSTEM_PROMPT: str = _SYSTEM_PROMPT_BODY  # deprecated
 # Recursion / loop control (see spec §8)
 # ═══════════════════════════════════════════
 
-# LangGraph recursion_limit. 2 * max_iterations + 1 = 2 * 50 + 1 = 101 (50 iterations hard cap).
+# LangGraph recursion_limit. Raised to 500 (~249 iterations) per user request.
 # Passed via astream(config={"recursion_limit": MAX_RECURSION}), NOT a constructor arg.
-MAX_RECURSION: int = 101
+MAX_RECURSION: int = 500
 
 # Soft cap: after this many tool calls, emit a "task is complex" SSE hint (no abort).
 SOFT_LIMIT_ROUNDS: int = 10
