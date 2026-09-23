@@ -26,7 +26,7 @@ import yaml
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from app.api.dependencies import current_user
+from app.api.dependencies import current_user, current_user_optional
 from app.api.errors import sanitize_error
 
 logger = logging.getLogger(__name__)
@@ -173,7 +173,7 @@ def _not_found(skill_id: str) -> HTTPException:
 # ═══════════════════════════════════════════════════════════════════════════
 
 @router.get("/skills")
-async def list_skills(user: dict = Depends(current_user)) -> dict:
+async def list_skills(user: dict = Depends(current_user_optional)) -> dict:
     """List all installed skills."""
     try:
         _ensure_skills_dir()

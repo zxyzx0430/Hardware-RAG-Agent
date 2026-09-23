@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from src.config.settings import settings
 from src.hardware.svg_generator import generate_wiring_svg
-from app.api.dependencies import current_user
+from app.api.dependencies import current_user_optional
 from app.api.errors import sanitize_error
 from app.api.locks import wiring_lock
 from app.hardware.audit import audit_pins_core
@@ -25,7 +25,7 @@ router = APIRouter(prefix="/api")
 # ═══════════════════════════════════════════
 
 @router.get("/devices")
-async def scan_devices(user: dict = Depends(current_user)):
+async def scan_devices(user: dict = Depends(current_user_optional)):
     """扫描当前可用串口设备。"""
     try:
         import serial.tools.list_ports
@@ -63,7 +63,7 @@ class DiagnoseItem(BaseModel):
 
 
 @router.post("/diagnose")
-async def diagnose_code(payload: DiagnoseRequest, user: dict = Depends(current_user)):
+async def diagnose_code(payload: DiagnoseRequest, user: dict = Depends(current_user_optional)):
     """对嵌入式代码做静态扫描，返回 GPIO 安全、引脚冲突等诊断项。"""
     try:
         code = payload.code
@@ -188,7 +188,7 @@ class WiringRequest(BaseModel):
 
 
 @router.post("/wiring")
-async def generate_wiring(payload: WiringRequest, user: dict = Depends(current_user)):
+async def generate_wiring(payload: WiringRequest, user: dict = Depends(current_user_optional)):
     """生成接线 SVG 图。"""
     async with wiring_lock:
         try:
@@ -231,7 +231,7 @@ class PinWarning(BaseModel):
 
 
 @router.post("/audit_pins")
-async def audit_pins(payload: AuditPinsRequest, user: dict = Depends(current_user)):
+async def audit_pins(payload: AuditPinsRequest, user: dict = Depends(current_user_optional)):
     """审计引脚分配，检测冲突和 Strapping 引脚。"""
     try:
         result = audit_pins_core(

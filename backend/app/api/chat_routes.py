@@ -645,7 +645,7 @@ async def list_models(payload: ModelsRequest, request: Request, user: dict = Dep
 def token_usage_stats(
     days: int = 30,
     session_id: Optional[str] = None,
-    user: dict = Depends(current_user),
+    user: dict = Depends(current_user_optional),
 ):
     """返回近 N 天的 Token 用量统计。
 

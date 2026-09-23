@@ -2,7 +2,7 @@
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from src.mcp.manager import get_mcp_manager
-from app.api.dependencies import current_user
+from app.api.dependencies import current_user, current_user_optional
 
 router = APIRouter(prefix="/api/mcp", tags=["mcp"])
 
@@ -21,7 +21,7 @@ async def add_server(config: MCPServerConfig, user: dict = Depends(current_user)
     return {"success": True, "data": {"id": config.id}}
 
 @router.get("/servers")
-async def list_servers(user: dict = Depends(current_user)):
+async def list_servers(user: dict = Depends(current_user_optional)):
     """列出所有 MCP Server 及状态"""
     manager = get_mcp_manager()
     servers = manager.list_servers()
@@ -44,7 +44,7 @@ async def stop_server(server_id: str, user: dict = Depends(current_user)):
     return {"success": True}
 
 @router.get("/servers/{server_id}/tools")
-async def list_tools(server_id: str, user: dict = Depends(current_user)):
+async def list_tools(server_id: str, user: dict = Depends(current_user_optional)):
     """列出 MCP Server 提供的工具"""
     manager = get_mcp_manager()
     client = manager.get_client(server_id)

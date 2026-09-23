@@ -11,7 +11,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-from app.api.dependencies import current_user
+from app.api.dependencies import current_user_optional
 from app.api.errors import sanitize_error
 from app.hardware.code_extractor import extract_wiring_from_code
 
@@ -36,7 +36,7 @@ class ExtractResponse(BaseModel):
 
 
 @router.post("/wiring/extract")
-async def extract_wiring(payload: ExtractRequest, user: dict = Depends(current_user)):
+async def extract_wiring(payload: ExtractRequest, user: dict = Depends(current_user_optional)):
     """从 Arduino 代码提取器件和连线，返回 components/connections。"""
     if not payload.code or not payload.code.strip():
         return _empty_code_error()
