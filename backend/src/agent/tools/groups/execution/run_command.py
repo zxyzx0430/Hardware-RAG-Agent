@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import subprocess
 import sys
@@ -196,8 +197,7 @@ class RunCommandTool(ToolSpec):
         "执行 shell 命令并返回 stdout/stderr/退出码。"
         "这是通用命令行工具，能干很多事情，优先使用。"
         "\n\n常用场景："
-        "\n- PlatformIO: pio device monitor（看串口日志）、pio lib search（查库）、pio pkg list"
-        "\n- 串口监视: pio device monitor -p COM3 -b 115200（烧录后看启动日志、诊断问题）"
+        "\n- PlatformIO: pio lib search（查库）、pio pkg list"
         "\n- 包管理: pip install xxx / npm install xxx / pio pkg install -g xxx"
         "\n- Git: git status / git log / git diff"
         "\n- 系统信息: 查看串口列表 (mode Windows 下 / Get-SerialPort)、查磁盘空间、查进程"
@@ -211,6 +211,7 @@ class RunCommandTool(ToolSpec):
         "\n- 搜文件内容用 grep（有 path_guard+时间预算），但复杂管道（如 Select-String | Sort-Object）用 run_command"
         "\n- 编译固件用 build_firmware（有 lib_deps 自动解析+临时项目管理），不要用 pio run"
         "\n- 烧录固件用 flash_firmware（有 binary_path 校验+端口检测），不要用 pio run -t upload"
+        "\n- 串口监视用前端串口监视器（WS 实时双向），禁止用 pio device monitor（会占用端口导致冲突）"
         "\n\n高风险命令（rm/format/regedit/shutdown 等）需用户确认。"
         + f"\n当前 shell: {SHELL_EXECUTABLE}（{'Windows PowerShell' if _IS_WINDOWS else 'Bash'}）。"
         f"{'cmdlet 需用 powershell -Command 包裹' if _IS_WINDOWS else '支持管道、变量展开等 bash 语法'}。"
@@ -237,6 +238,19 @@ class RunCommandTool(ToolSpec):
                     "duration": 0,
                     "timed_out": False,
                 }
+        # Block pio device monitor — it holds the serial port and conflicts
+        # with the WS-based serial monitor. LLM should use the frontend monitor.
+        cmd_lower = command.lower()
+        if "pio device monitor" in cmd_lower:
+            return {
+                "output": "禁止使用 pio device monitor。请使用前端串口监视器（WS 实时双向）查看串口日志，"
+                          "pio device monitor 会独占串口导致冲突。",
+                "stderr": "",
+                "exit_code": -1,
+                "duration": 0,
+                "timed_out": False,
+            }
+
         # Smart fallback: if LLM forgot to set a big timeout for long commands
         # (platformio/pip install/...), auto-extend so we don't hit 30s default.
         timeout_ms = _smart_timeout(command, requested_timeout_ms)
@@ -261,6 +275,30 @@ class RunCommandTool(ToolSpec):
 # Execution helpers
 # ═══════════════════════════════════════════
 
+async def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
+    """Kill subprocess and its entire process tree (Windows: taskkill /F /T)."""
+    try:
+        pid = proc.pid
+        if os.name == "nt":
+            kill_proc = await asyncio.create_subprocess_exec(
+                "taskkill", "/F", "/T", "/PID", str(pid),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await kill_proc.communicate()
+        else:
+            import signal
+            try:
+                os.killpg(os.getpgid(pid), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        await proc.wait()
+    except ProcessLookupError:
+        pass
+    except Exception as e:
+        logger.warning("Failed to kill subprocess tree: %s", e)
+
+
 async def _do_run(command: str, timeout_ms: int, cwd: str) -> dict:
     """Execute command with timeout, return truncated output.
 
@@ -270,12 +308,17 @@ async def _do_run(command: str, timeout_ms: int, cwd: str) -> dict:
     """
     timeout = min(timeout_ms, MAX_TIMEOUT_MS) / 1000
     start = time.perf_counter()
+    proc = None
     try:
         proc = await _create_process(command, cwd)
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
+        if proc:
+            await _kill_process_tree(proc)
         return _timeout_result(command, start)
     except OSError as exc:
+        if proc:
+            await _kill_process_tree(proc)
         return _error_result(exc)
     return _success_result(stdout, stderr, proc.returncode, start)
 
@@ -292,6 +335,9 @@ async def _create_process(command: str, cwd: str) -> Any:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=cwd or None,
+        # Give POSIX commands their own process group so timeout cleanup cannot
+        # accidentally signal the backend's group. Windows uses taskkill /T.
+        start_new_session=os.name != "nt",
     )
 
 

@@ -13,9 +13,9 @@ const ANSI_COLORS: Record<string, string> = {
 /** Parse ANSI color escape codes and convert to HTML spans. Returns sanitized HTML string. */
 export function parseAnsiToHtml(text: string): string {
   const parts: string[] = [];
-  let remaining = text;
+  const remaining = text;
   let openSpan = false;
-  const ansiRe = /\x1b\[(\d+)m/g;
+  const ansiRe = new RegExp(`${String.fromCharCode(27)}\\[(\\d+)m`, "g");
   let lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = ansiRe.exec(remaining)) !== null) {

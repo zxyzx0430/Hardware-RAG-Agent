@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, useRef, useCallback } from "react";
 import MonacoEditor from "@monaco-editor/react";
 import { useAppStore } from "../../stores/useAppStore";
 import { useLogStore } from "../../stores/useLogStore";
+import { useToastStore } from "../../stores/useToastStore";
 import { useWorkbenchBridge } from "../../stores/useWorkbenchBridge";
 import { useI18n } from "../../i18n";
 import { copyToClipboard } from "../../utils/clipboard";
@@ -82,7 +83,10 @@ export function PreviewPane() {
   }, [activeTab.code, setWbTab]);
 
   const handleDiagnose = useCallback(async () => {
-    if (diagnosing) return;
+    if (diagnosing) {
+      useToastStore.getState().showWarning("正在诊断中，请稍候");
+      return;
+    }
     setDiagnosing(true);
     setDiagnostics(null);
     try {
@@ -90,6 +94,7 @@ export function PreviewPane() {
       setDiagnostics(res.results ?? []);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      useToastStore.getState().showError("诊断失败");
       useLogStore.getState().log("error", "preview", `诊断失败: ${msg}`);
     } finally {
       setDiagnosing(false);

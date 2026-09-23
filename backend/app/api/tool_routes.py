@@ -11,9 +11,16 @@ from pydantic import BaseModel
 
 from src.agent.core.toolkit.tool_router import ToolRouter, list_registered_tools
 from src.agent.exceptions import ToolContext
-from app.api.dependencies import current_user, ws_auth
+from app.api.dependencies import current_user, current_user_optional, ws_auth
 from app.api.errors import sanitize_error
-from app.api.locks import get_port_lock
+from app.api.locks import (
+    get_active_serial,
+    get_port_lock,
+    is_port_uploading,
+    register_serial,
+    update_serial_obj,
+    unregister_serial,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
@@ -74,7 +81,7 @@ def _ensure_tools() -> None:
 # ═══════════════════════════════════════════
 
 @router.get("/tools")
-async def list_tools(user: dict = Depends(current_user)):
+async def list_tools(user: dict = Depends(current_user_optional)):
     """返回 26 个 Agent 工具的元数据（name/description/group/enabled）。
 
     工具元数据来源：agent_factory._build_tool_groups()，按 6 个 group 分组：
@@ -131,6 +138,7 @@ async def toggle_tool(tool_name: str, user: dict = Depends(current_user)):
 # WS /api/monitor/{port} — 串口监视器
 # ═══════════════════════════════════════════
 
+
 @router.websocket("/monitor/{port}")
 async def serial_monitor(websocket: WebSocket, port: str, baud: int = 115200):
     """WebSocket 串口监视器（双向桥接）。"""
@@ -139,105 +147,170 @@ async def serial_monitor(websocket: WebSocket, port: str, baud: int = 115200):
         await websocket.close(code=4401, reason="未授权")
         return
     await websocket.accept()
-    lock = get_port_lock(port)
-    async with lock:
-        ser = None
-        try:
-            import serial
-            from serial.tools import list_ports
-            available_ports = [p.device for p in list_ports.comports()]
-            if port not in available_ports:
-                await websocket.send_text(json.dumps({
-                    "type": "sys",
-                    "payload": f"端口 {port} 不存在或不可用。可用端口: {', '.join(available_ports) or '无'}",
-                }))
-                await websocket.close(code=4004, reason="端口不可用")
-                return
 
-            ser = serial.Serial(port, baudrate=baud, timeout=1)
-            # 1) 打开后 DTR=True, RTS=True → EN LOW → 芯片保持在复位状态
-            # 2) 设 DTR=False → IO0 HIGH（正常启动模式）
-            # 3) 设 RTS=False → EN HIGH → 释放复位，芯片以正常模式启动
-            ser.dtr = False
-            await asyncio.sleep(0.1)
-            ser.rts = False
+    if is_port_uploading(port):
+        await websocket.send_text(json.dumps({
+            "type": "error",
+            "message": f"端口 {port} 正在烧录，请稍后重新连接",
+        }))
+        await websocket.close(code=4007, reason="端口正在烧录")
+        return
+
+    # 注册当前 WS，如果该端口已有旧连接，register_serial 会关闭旧 WS
+    # 旧 WS 关闭后 → 旧 handler 的 receive_text() 抛 WebSocketDisconnect → 旧 finally 关闭 ser → 释放端口
+    register_serial(port, websocket)
+    try:
+        async with get_port_lock(port):
+            active = get_active_serial(port)
+            if is_port_uploading(port):
+                await websocket.send_text(json.dumps({
+                    "type": "error",
+                    "message": f"端口 {port} 正在烧录，请稍后重新连接",
+                }))
+                await websocket.close(code=4007, reason="端口正在烧录")
+                return
+            if not active or active.get("ws") is not websocket:
+                await websocket.close(code=4006, reason="连接已被新连接替换")
+                return
+            await _serial_monitor_session(websocket, port, baud)
+    finally:
+        unregister_serial(port, websocket)
+
+
+async def _serial_monitor_session(websocket: WebSocket, port: str, baud: int) -> None:
+    """Own the serial device while holding the per-port lock."""
+    ser = None
+    try:
+        import serial
+        from serial.tools import list_ports
+        available_ports = [p.device for p in list_ports.comports()]
+        if port not in available_ports:
             await websocket.send_text(json.dumps({
                 "type": "sys",
-                "payload": f"串口已连接: {port} @ {baud} baud",
+                "payload": f"端口 {port} 不存在或不可用。可用端口: {', '.join(available_ports) or '无'}",
             }))
+            await websocket.close(code=4004, reason="端口不可用")
+            return
 
-            async def _read_serial():
-                while True:
+        # 重试打开串口：旧 WS 连接或残留 esptool 可能还在占用端口
+        open_retries = 5
+        for attempt in range(open_retries):
+            try:
+                ser = serial.Serial(port, baudrate=baud, timeout=1)
+                break
+            except (serial.SerialException, PermissionError) as open_err:
+                err_str = str(open_err)
+                is_permission = "PermissionError" in err_str or "拒绝访问" in err_str or isinstance(open_err, PermissionError)
+                if attempt < open_retries - 1 and is_permission:
+                    logger.warning("串口 %s 打开失败(第%d次)，等待端口释放后重试: %s", port, attempt + 1, err_str)
+                    await asyncio.sleep(0.8)
+                else:
+                    raise
+
+        update_serial_obj(port, ser, websocket)
+
+        # 1) 打开后 DTR=True, RTS=True → EN LOW → 芯片保持在复位状态
+        # 2) 设 DTR=False → IO0 HIGH（正常启动模式）
+        # 3) 设 RTS=False → EN HIGH → 释放复位，芯片以正常模式启动
+        ser.dtr = False
+        await asyncio.sleep(0.1)
+        ser.rts = False
+        await websocket.send_text(json.dumps({
+            "type": "sys",
+            "payload": f"串口已连接: {port} @ {baud} baud",
+        }))
+
+        async def _read_serial():
+            consecutive_errors = 0
+            MAX_CONSECUTIVE_ERRORS = 10
+            while True:
+                try:
+                    if ser.in_waiting:
+                        data = ser.read(ser.in_waiting).decode("utf-8", errors="replace")
+                        if data:
+                            await websocket.send_text(json.dumps({"type": "data", "payload": data}))
+                    await asyncio.sleep(0.05)
+                    consecutive_errors = 0  # 成功读取，重置计数
+                except Exception as e:
+                    consecutive_errors += 1
                     try:
-                        if ser.in_waiting:
-                            data = ser.read(ser.in_waiting).decode("utf-8", errors="replace")
-                            if data:
-                                await websocket.send_text(json.dumps({"type": "data", "payload": data}))
-                        await asyncio.sleep(0.05)
-                    except Exception as e:
+                        await websocket.send_text(json.dumps({"type": "error", "message": f"串口读取异常: {e}"}))
+                    except Exception as exc:
+                        logger.debug("send error event failed: %s", exc)
+                    logger.warning("Serial read error on %s (consecutive=%d): %s", port, consecutive_errors, e)
+                    if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                        logger.error("串口 %s 连续 %d 次读取失败，判定设备已断开，关闭连接", port, consecutive_errors)
                         try:
-                            await websocket.send_text(json.dumps({"type": "error", "message": f"串口读取异常: {e}"}))
-                        except Exception as exc:
-                            logger.debug("send error event failed: %s", exc)
-                        logger.warning("Serial read error on %s: %s", port, e)
-                        # 不关闭 WS — 芯片复位期间串口报错是正常的
-                        continue
+                            await websocket.close(code=4005, reason="串口设备持续异常")
+                        except Exception:
+                            pass
+                        break
+                    await asyncio.sleep(0.2)
 
-            read_task = asyncio.create_task(_read_serial())
-            try:
-                while True:
-                    data = await websocket.receive_text()
-                    msg = json.loads(data)
-                    if msg.get("type") == "write":
-                        ser.write(msg.get("payload", "").encode("utf-8"))
-                    elif msg.get("type") == "start":
-                        pass
-                    elif msg.get("type") == "set_dtr":
-                        try:
-                            ser.dtr = bool(msg.get("payload", False))
-                            logger.info("DTR set to %s on port %s", msg.get("payload"), port)
-                        except Exception as e:
-                            logger.warning("set_dtr failed: %s", e)
-                            await websocket.send_text(json.dumps({"type": "error", "message": f"DTR 设置失败: {e}"}))
-
-                    elif msg.get("type") == "set_rts":
-                        try:
-                            ser.rts = bool(msg.get("payload", False))
-                            logger.info("RTS set to %s on port %s", msg.get("payload"), port)
-                        except Exception as e:
-                            logger.warning("set_rts failed: %s", e)
-                            await websocket.send_text(json.dumps({"type": "error", "message": f"RTS 设置失败: {e}"}))
-
-            except WebSocketDisconnect:
-                logger.info(f"串口 WS 断开: {port}")
-            finally:
-                read_task.cancel()
+        read_task = asyncio.create_task(_read_serial())
+        try:
+            while True:
+                # 30s 超时：超时后发心跳检测连接是否存活，
+                # 如果 WS 已断开，send 会抛异常退出循环
                 try:
-                    await read_task
-                except asyncio.CancelledError:
+                    data = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
+                except asyncio.TimeoutError:
+                    try:
+                        await websocket.send_text(json.dumps({"type": "ping"}))
+                    except Exception:
+                        break
+                    continue
+                msg = json.loads(data)
+                if msg.get("type") == "write":
+                    ser.write(msg.get("payload", "").encode("utf-8"))
+                elif msg.get("type") == "start":
                     pass
+                elif msg.get("type") == "set_dtr":
+                    try:
+                        ser.dtr = bool(msg.get("payload", False))
+                        logger.info("DTR set to %s on port %s", msg.get("payload"), port)
+                    except Exception as e:
+                        logger.warning("set_dtr failed: %s", e)
+                        await websocket.send_text(json.dumps({"type": "error", "message": f"DTR 设置失败: {e}"}))
 
-        except serial.SerialException as e:
-            logger.error(f"串口打开失败 {port}: {e}")
-            try:
-                await websocket.send_text(json.dumps({
-                    "type": "error", "message": f"串口打开失败: {sanitize_error(str(e))}",
-                }))
-            except Exception as exc:
-                logger.debug("send serial open error failed: %s", exc)
-            await websocket.close(code=4003, reason="串口打开失败")
-        except Exception as e:
-            logger.error(f"串口监视器异常: {e}")
-            try:
-                await websocket.send_text(json.dumps({
-                    "type": "error", "message": f"串口异常: {sanitize_error(str(e))}",
-                }))
-            except Exception as exc:
-                logger.debug("send serial monitor error failed: %s", exc)
-            await websocket.close(code=4000, reason="串口监视器异常")
+                elif msg.get("type") == "set_rts":
+                    try:
+                        ser.rts = bool(msg.get("payload", False))
+                        logger.info("RTS set to %s on port %s", msg.get("payload"), port)
+                    except Exception as e:
+                        logger.warning("set_rts failed: %s", e)
+                        await websocket.send_text(json.dumps({"type": "error", "message": f"RTS 设置失败: {e}"}))
+
+        except WebSocketDisconnect:
+            logger.info(f"串口 WS 断开: {port}")
         finally:
-            if ser:
-                try:
-                    ser.close()
-                except Exception as exc:
-                    logger.debug("close serial failed: %s", exc)
+            read_task.cancel()
+            try:
+                await read_task
+            except asyncio.CancelledError:
+                pass
+
+    except serial.SerialException as e:
+        logger.error(f"串口打开失败 {port}: {e}")
+        try:
+            await websocket.send_text(json.dumps({
+                "type": "error", "message": f"串口打开失败: {sanitize_error(str(e))}",
+            }))
+        except Exception as exc:
+            logger.debug("send serial open error failed: %s", exc)
+        await websocket.close(code=4003, reason="串口打开失败")
+    except Exception as e:
+        logger.error(f"串口监视器异常: {e}")
+        try:
+            await websocket.send_text(json.dumps({
+                "type": "error", "message": f"串口异常: {sanitize_error(str(e))}",
+            }))
+        except Exception as exc:
+            logger.debug("send serial monitor error failed: %s", exc)
+        await websocket.close(code=4000, reason="串口监视器异常")
+    finally:
+        if ser:
+            try:
+                ser.close()
+            except Exception as exc:
+                logger.debug("close serial failed: %s", exc)

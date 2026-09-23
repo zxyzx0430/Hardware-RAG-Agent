@@ -3,6 +3,7 @@ import MonacoEditor from "@monaco-editor/react";
 import { useAppStore } from "../../stores/useAppStore";
 import { useSerialStore } from "../../stores/useSerialStore";
 import { useLogStore } from "../../stores/useLogStore";
+import { useToastStore } from "../../stores/useToastStore";
 import { useWorkbenchBridge } from "../../stores/useWorkbenchBridge";
 import { useI18n } from "../../i18n";
 import { apiGet, apiSSE } from "../../api/client";
@@ -10,6 +11,7 @@ import type { BuildSSEEvent, BuildDoneSSEEvent } from "../../types/api";
 import type { SerialDevice } from "../../types/serial";
 import { CODE } from "./workbenchConstants";
 import { useAppliedDarkMode } from "../shared/MarkdownRenderer";
+import { getFlashReconnectTarget } from "./serialReconnect";
 
 const THINKING_PREFIX = "› ";
 const PROGRESS_PREFIX = "› ";
@@ -34,6 +36,7 @@ export function FlashPane() {
   const logRef = useRef<HTMLDivElement>(null);
   const compileControllerRef = useRef<AbortController | null>(null);
   const progressHideTimerRef = useRef<number | null>(null);
+  const flashReconnectTargetRef = useRef<{ port: string; baudRate: number } | null>(null);
 
   // 组件卸载时中止正在进行的编译/烧录请求，避免后台资源浪费
   useEffect(() => {
@@ -123,12 +126,6 @@ export function FlashPane() {
       useLogStore.getState().log("ok", "flash", mode === "build" ? "编译成功" : "烧录完成");
       setFlashLog((prev) => [...prev, msg]);
       setProgress(100);
-      // After a successful flash, switch to SerialPane and auto-connect same port
-      if (mode === "flash" && selectedPort) {
-        useAppStore.getState().setWbTab("serial");
-        useSerialStore.getState().setPort(selectedPort);
-        useSerialStore.getState().setAutoConnectPort(selectedPort);
-      }
       // Keep the progress bar visible at 100% for 3 seconds after completion
       setShowProgress(true);
       if (progressHideTimerRef.current !== null) window.clearTimeout(progressHideTimerRef.current);
@@ -145,7 +142,7 @@ export function FlashPane() {
     }
     setCompiling(false);
     setFlashing(false);
-  }, [t, selectedPort]);
+  }, [t]);
 
   const handleBuildEvent = useCallback((e: BuildSSEEvent, mode: "build" | "flash") => {
     switch (e.type) {
@@ -171,6 +168,7 @@ export function FlashPane() {
   }, [handleBuildDone]);
 
   const handleBuildError = useCallback((err: Error, mode: "build" | "flash") => {
+    if (mode === "flash") flashReconnectTargetRef.current = null;
     const label = mode === "build" ? "编译失败" : "烧录失败";
     useLogStore.getState().log("error", "flash", `${label}: ${err.message}`);
     setFlashLog((prev) => [...prev, `✗ ${label}: ${err.message}`]);
@@ -193,7 +191,10 @@ export function FlashPane() {
   }, []);
 
   const handleCompile = useCallback(() => {
-    if (compiling || flashing) return;
+    if (compiling || flashing) {
+      useToastStore.getState().showWarning("正在编译或烧录中，请稍候");
+      return;
+    }
     setCompiling(true);
     setFlashLog([t('compilingStatus')]);
     setProgress(0);
@@ -209,8 +210,13 @@ export function FlashPane() {
   }, [compiling, flashing, selectedPlatform, selectedBoard, flashCode, optionsText, t, handleBuildEvent, handleBuildError, parseOptions]);
 
   const handleFlash = useCallback(() => {
-    if (compiling || flashing) return;
+    if (compiling || flashing) {
+      useToastStore.getState().showWarning("正在编译或烧录中，请稍候");
+      return;
+    }
     setFlashing(true);
+    const serialState = useSerialStore.getState();
+    flashReconnectTargetRef.current = getFlashReconnectTarget(serialState, selectedPort);
     setFlashLog([t('flashingStatus')]);
     setProgress(0);
     const board = selectedBoard || (selectedPlatform === "espressif32" ? "esp32-s3-devkitc-1" : "black_f407vg");
@@ -219,13 +225,21 @@ export function FlashPane() {
     compileControllerRef.current = controller;
     apiSSE("upload", { board, platform: selectedPlatform, port: selectedPort, code: flashCode, options: parseOptions(optionsText) }, {
       onEvent: (event) => handleBuildEvent(event as BuildSSEEvent, "flash"),
-      onDone: () => setFlashing(false),
+      onDone: () => {
+        setFlashing(false);
+        const target = flashReconnectTargetRef.current;
+        flashReconnectTargetRef.current = null;
+        if (!target) return;
+        useAppStore.getState().setWbTab("serial");
+        useSerialStore.getState().setAutoConnectRequest({ ...target, attempt: 0 });
+      },
       onError: (err) => handleBuildError(err, "flash"),
     }, controller);
   }, [compiling, flashing, selectedPlatform, selectedBoard, selectedPort, flashCode, optionsText, t, handleBuildEvent, handleBuildError, parseOptions]);
 
   const handleStop = useCallback(() => {
     compileControllerRef.current?.abort();
+    flashReconnectTargetRef.current = null;
     setCompiling(false);
     setFlashing(false);
     useLogStore.getState().log("info", "flash", "用户中止编译/烧录");

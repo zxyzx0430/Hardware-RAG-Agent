@@ -258,9 +258,24 @@ async def _check_pio_installed() -> bool:
 
 
 async def _kill_process(proc: asyncio.subprocess.Process) -> None:
-    """Kill subprocess and wait for it to exit (errors logged, not raised)."""
+    """Kill subprocess and its entire process tree, then wait for exit."""
     try:
-        proc.kill()
+        pid = proc.pid
+        if os.name == "nt":
+            # Windows: taskkill /F /T kills the entire process tree (esptool etc.)
+            kill_proc = await asyncio.create_subprocess_exec(
+                "taskkill", "/F", "/T", "/PID", str(pid),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await kill_proc.communicate()
+        else:
+            # Unix: kill process group
+            import signal
+            try:
+                os.killpg(os.getpgid(pid), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
         await proc.wait()
     except ProcessLookupError:
         pass
@@ -293,6 +308,8 @@ async def _spawn_pio(args: list[str], cwd: Path) -> asyncio.subprocess.Process |
             "pio", *args, cwd=str(cwd),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
+            # POSIX timeout cleanup kills the process group; isolate it from the server.
+            start_new_session=os.name != "nt",
         )
     except OSError as e:
         logger.error("Failed to spawn pio %s: %s", args, e)
@@ -372,8 +389,23 @@ async def _stream_pio_subprocess(
         if done_event is not None:
             yield done_event
     finally:
-        if proc.returncode is None:
-            await _kill_process(proc)
+        await _ensure_proc_killed(proc)
+
+
+async def _ensure_proc_killed(proc: asyncio.subprocess.Process) -> None:
+    """Best-effort kill: sync kill first, then shielded async cleanup."""
+    if proc.returncode is not None:
+        return
+    try:
+        proc.kill()
+    except ProcessLookupError:
+        return
+    except Exception as e:
+        logger.warning("sync proc.kill failed: %s", e)
+    try:
+        await asyncio.shield(_kill_process(proc))
+    except asyncio.CancelledError:
+        raise
 
 
 # === Temp project creation + timeout resolution ===

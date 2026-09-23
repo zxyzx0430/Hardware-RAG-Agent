@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState, useRef, useCallback } from "react";
 import DOMPurify from "dompurify";
-import { useSerialStore } from "../../stores/useSerialStore";
+import { useSerialStore, type AutoConnectRequest } from "../../stores/useSerialStore";
 import { useLogStore } from "../../stores/useLogStore";
+import { useToastStore } from "../../stores/useToastStore";
 import { useModalStore } from "../../stores/useModalStore";
 import { useI18n } from "../../i18n";
 import { apiGet, apiWS } from "../../api/client";
@@ -11,6 +12,8 @@ import type { SerialDevice } from "../../types/serial";
 
 // Baud rate options (extracted constant, avoids hardcoding in component)
 const BAUD_RATES = [9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600];
+const AUTO_RECONNECT_MAX_ATTEMPTS = 7;
+const AUTO_RECONNECT_RETRY_DELAY_MS = 800;
 
 function nowHHMMSSmmm() {
   const d = new Date();
@@ -23,13 +26,30 @@ function nowHHMMSSmmm() {
 
 export function SerialPane() {
   const { t } = useI18n();
-  const { connected, port, baudRate, log, autoScroll, dtrActive, rtsActive, filter, lineEnding, autoConnectPort, setConnected, setPort, setBaudRate, addLog, clearLog, setAutoScroll, toggleDtr, toggleRts, setFilter, setLineEnding, setAutoConnectPort } = useSerialStore();
+  const { connected, port, baudRate, log, autoScroll, dtrActive, rtsActive, filter, lineEnding, autoConnectRequest, setConnected, setPort, setBaudRate, addLog, clearLog, setAutoScroll, toggleDtr, toggleRts, setFilter, setLineEnding, setAutoConnectRequest } = useSerialStore();
   const { confirmDialog } = useModalStore();
   const [sendText, setSendText] = useState("");
   const [devices, setDevices] = useState<SerialDevice[]>([]);
   const sendInputRef = useRef<HTMLInputElement>(null);
   const logContainerRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const isConnectingRef = useRef(false);
+  const autoReconnectTimerRef = useRef<number | null>(null);
+
+  // Unmount cleanup: close WS to prevent port leak
+  useEffect(() => {
+    return () => {
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+      isConnectingRef.current = false;
+      if (autoReconnectTimerRef.current !== null) {
+        window.clearTimeout(autoReconnectTimerRef.current);
+        autoReconnectTimerRef.current = null;
+      }
+    };
+  }, []);
 
   // On mount, fetch real device list
   useEffect(() => {
@@ -71,74 +91,145 @@ export function SerialPane() {
     ].forEach(addLog);
   };
 
-  const handleConnect = useCallback((portOverride?: string) => {
+  const scheduleAutoReconnect = useCallback((request: AutoConnectRequest) => {
+    if (request.attempt >= AUTO_RECONNECT_MAX_ATTEMPTS) {
+      useToastStore.getState().showError(`串口重连失败: ${request.port}，请手动重试`);
+      useLogStore.getState().log("error", "serial", `烧录后自动重连失败: ${request.port}`);
+      return;
+    }
+    autoReconnectTimerRef.current = window.setTimeout(() => {
+      autoReconnectTimerRef.current = null;
+      setAutoConnectRequest({ ...request, attempt: request.attempt + 1 });
+    }, AUTO_RECONNECT_RETRY_DELAY_MS);
+  }, [setAutoConnectRequest]);
+
+  const handleConnect = useCallback((portOverride?: string, baudOverride?: number, autoReconnect?: AutoConnectRequest) => {
+    if (!autoReconnect) {
+      if (autoReconnectTimerRef.current !== null) {
+        window.clearTimeout(autoReconnectTimerRef.current);
+        autoReconnectTimerRef.current = null;
+      }
+      setAutoConnectRequest(null);
+    }
     if (connected) {
-      // Disconnect
-      wsRef.current?.close();
+      const ws = wsRef.current;
+      if (ws) ws.close();
       wsRef.current = null;
+      isConnectingRef.current = false;
       setConnected(false);
       useLogStore.getState().log("info", "serial", "断开串口连接");
       return;
     }
-    // Try WebSocket connection; portOverride wins over store port
+    if (isConnectingRef.current) {
+      useLogStore.getState().log("warn", "serial", "正在建立连接，请稍候");
+      return;
+    }
     const portName = portOverride || port || devices[0]?.port;
     if (!portName) {
+      useToastStore.getState().showError("请先选择串口设备");
       useLogStore.getState().log("warn", "serial", "请先选择串口设备");
       return;
     }
-    useLogStore.getState().log("info", "serial", `连接串口: ${portName} @ ${baudRate}`);
-    const ws = apiWS(`/api/monitor/${portName}?baud=${baudRate}`, {
+    const connectionBaud = baudOverride ?? baudRate;
+    setPort(portName);
+    setBaudRate(connectionBaud);
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+    isConnectingRef.current = true;
+    useLogStore.getState().log("info", "serial", `连接串口: ${portName} @ ${connectionBaud}`);
+    let wasConnected = false;
+    let serialReady = false;
+    let errorHandled = false;
+    const ws = apiWS(`/api/monitor/${portName}?baud=${connectionBaud}`, {
       onOpen: () => {
+        wasConnected = true;
         setConnected(true);
+        isConnectingRef.current = false;
         ws.send(JSON.stringify({ type: "start" }));
       },
       onMessage: (data) => {
         try {
           const msg = JSON.parse(data);
           if (msg.type === "error") {
+            if (errorHandled) return;
+            errorHandled = true;
+            if (!autoReconnect) useToastStore.getState().showError(msg.message || "串口异常");
             useLogStore.getState().log("error", "serial", msg.message || "串口异常");
             setConnected(false);
-            wsRef.current?.close();
+            ws.close();
             return;
           }
           if (msg.type === 'data') addLog(`${nowHHMMSSmmm()} ${msg.payload}`);
+          else if (msg.type === 'sys') {
+            if (String(msg.payload).startsWith("串口已连接:")) {
+              serialReady = true;
+              if (autoReconnectTimerRef.current !== null) {
+                window.clearTimeout(autoReconnectTimerRef.current);
+                autoReconnectTimerRef.current = null;
+              }
+            }
+            addLog(`${nowHHMMSSmmm()} [SYS] ${msg.payload}`);
+          }
           else addLog(`${nowHHMMSSmmm()} ${data}`);
         } catch {
           addLog(`${nowHHMMSSmmm()} ${data}`);
         }
       },
       onClose: () => {
-        setConnected(false);
+        if (wsRef.current !== ws) return;
+        isConnectingRef.current = false;
         wsRef.current = null;
+        if (autoReconnect && !serialReady) {
+          scheduleAutoReconnect({ ...autoReconnect, port: portName, baudRate: connectionBaud });
+        } else if (!wasConnected && !errorHandled) {
+          useToastStore.getState().showError(`串口连接失败: ${portName}（可能被占用或端口不存在）`);
+          useLogStore.getState().log("error", "serial", `串口连接失败: ${portName} @ ${connectionBaud}`);
+        }
+        setConnected(false);
       },
       onError: () => {
-        setConnected(false);
+        if (wsRef.current !== ws) return;
+        isConnectingRef.current = false;
         wsRef.current = null;
-        useLogStore.getState().log("error", "serial", `串口连接失败: ${portName} @ ${baudRate}`);
+        if (!errorHandled) {
+          if (!wasConnected && !autoReconnect) {
+            useToastStore.getState().showError(`串口连接失败: ${portName}（后端未响应或鉴权失败）`);
+          }
+          useLogStore.getState().log("error", "serial", `串口连接失败: ${portName} @ ${connectionBaud}`);
+        }
+        if (autoReconnect && !serialReady) {
+          scheduleAutoReconnect({ ...autoReconnect, port: portName, baudRate: connectionBaud });
+        }
+        setConnected(false);
       },
     });
     wsRef.current = ws;
-  }, [connected, port, devices, baudRate, setConnected, addLog]);
+  }, [connected, port, devices, baudRate, setConnected, setPort, setBaudRate, setAutoConnectRequest, addLog, scheduleAutoReconnect]);
 
-  // Auto-connect when another pane (e.g. FlashPane after flash success) sets autoConnectPort.
-  // Clears the flag first to avoid re-trigger, syncs store port, then invokes handleConnect.
+  // Restore a pre-upload serial connection, keeping its original port and baud rate.
   useEffect(() => {
-    if (!autoConnectPort) return;
-    setAutoConnectPort(null);
-    if (connected) return;
-    setPort(autoConnectPort);
-    handleConnect(autoConnectPort);
-  }, [autoConnectPort, connected, handleConnect, setPort, setAutoConnectPort]);
+    if (!autoConnectRequest || connected) return;
+    setAutoConnectRequest(null);
+    setPort(autoConnectRequest.port);
+    setBaudRate(autoConnectRequest.baudRate);
+    handleConnect(autoConnectRequest.port, autoConnectRequest.baudRate, autoConnectRequest);
+  }, [autoConnectRequest, connected, handleConnect, setPort, setBaudRate, setAutoConnectRequest]);
 
   const handleSend = useCallback(() => {
     const text = sendText.trim();
-    if (!text) return;
+    if (!text) {
+      useToastStore.getState().showWarning("请输入要发送的内容");
+      return;
+    }
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       const suffix = lineEnding === "none" ? "" : lineEnding;
       const payload = text + suffix;
       wsRef.current.send(JSON.stringify({ type: "write", payload }));
       useLogStore.getState().log("debug", "serial", `发送: ${text.slice(0, 30)}`);
     } else {
+      useToastStore.getState().showWarning("请先连接串口");
       useLogStore.getState().log("error", "serial", "串口未连接，无法发送");
     }
     setSendText("");
@@ -159,6 +250,7 @@ export function SerialPane() {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: "set_dtr", payload: newDtr }));
     } else {
+      useToastStore.getState().showWarning("请先连接串口");
       useLogStore.getState().log("error", "serial", "串口未连接，无法切换 DTR");
     }
   }, [dtrActive, toggleDtr]);
@@ -169,6 +261,7 @@ export function SerialPane() {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: "set_rts", payload: newRts }));
     } else {
+      useToastStore.getState().showWarning("请先连接串口");
       useLogStore.getState().log("error", "serial", "串口未连接，无法切换 RTS");
     }
   }, [rtsActive, toggleRts]);
@@ -215,7 +308,7 @@ export function SerialPane() {
         {filteredLog.length ? filteredLog.map((line, idx) => {
           const timePart = line.split(' ')[0];
           const msgPart = line.slice(line.indexOf(' ') + 1);
-          const hasAnsi = /\x1b\[\d+m/.test(msgPart);
+          const hasAnsi = new RegExp(`${String.fromCharCode(27)}\\[\\d+m`).test(msgPart);
           if (hasAnsi) {
             return (
               <div className="log-line log-recv" key={idx}>

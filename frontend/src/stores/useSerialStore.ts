@@ -1,5 +1,11 @@
 import { create } from "zustand";
 
+export interface AutoConnectRequest {
+  port: string;
+  baudRate: number;
+  attempt: number;
+}
+
 interface SerialState {
   connected: boolean;
   port: string;
@@ -10,9 +16,8 @@ interface SerialState {
   rtsActive: boolean;
   filter: string;
   lineEnding: "none" | "\n" | "\r\n";
-  // Auto-connect trigger: set by other panes (e.g. FlashPane after flash success)
-  // to request SerialPane to connect this port on next mount/render.
-  autoConnectPort: string | null;
+  // One-shot request from another pane to restore a previous serial connection.
+  autoConnectRequest: AutoConnectRequest | null;
 
   setConnected: (c: boolean) => void;
   setPort: (p: string) => void;
@@ -24,7 +29,7 @@ interface SerialState {
   toggleRts: () => void;
   setFilter: (f: string) => void;
   setLineEnding: (le: "none" | "\n" | "\r\n") => void;
-  setAutoConnectPort: (p: string | null) => void;
+  setAutoConnectRequest: (request: AutoConnectRequest | null) => void;
 }
 
 export const useSerialStore = create<SerialState>((set) => ({
@@ -37,7 +42,7 @@ export const useSerialStore = create<SerialState>((set) => ({
   rtsActive: false,
   filter: "",
   lineEnding: "\r\n",
-  autoConnectPort: null,
+  autoConnectRequest: null,
 
   setConnected: (connected) => set({ connected }),
   setPort: (port) => set({ port }),
@@ -49,5 +54,5 @@ export const useSerialStore = create<SerialState>((set) => ({
   toggleRts: () => set((s) => ({ rtsActive: !s.rtsActive })),
   setFilter: (filter) => set({ filter }),
   setLineEnding: (lineEnding) => set({ lineEnding }),
-  setAutoConnectPort: (autoConnectPort) => set({ autoConnectPort }),
+  setAutoConnectRequest: (autoConnectRequest) => set({ autoConnectRequest }),
 }));

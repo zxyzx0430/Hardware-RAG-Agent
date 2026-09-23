@@ -36,8 +36,7 @@ const tdCenter: React.CSSProperties = { padding: "3px 8px", textAlign: "center",
 function countSvgNodes(svg: string): number {
   const tagRe = /<(rect|circle|line|path|text|polygon|ellipse|polyline|g|use|image)\b/g;
   let count = 0;
-  let m: RegExpExecArray | null;
-  while ((m = tagRe.exec(svg)) !== null) count++;
+  while (tagRe.exec(svg) !== null) count++;
   return count;
 }
 
@@ -81,7 +80,6 @@ function endDrag(
 }
 
 export function WiringPane() {
-  const { t } = useI18n();
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState<Pan>({ x: 0, y: 0 });
   const [dragging, setDragging] = useState(false);

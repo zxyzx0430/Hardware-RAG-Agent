@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { useAppStore } from "../../stores/useAppStore";
 import { useLogStore } from "../../stores/useLogStore";
+import { useToastStore } from "../../stores/useToastStore";
 import { useWorkbenchBridge } from "../../stores/useWorkbenchBridge";
 import { useWiringStore } from "../../stores/useWiringStore";
 import { useI18n } from "../../i18n";
@@ -143,7 +144,10 @@ export function SafetyPane() {
   }, [selectedPin]);
 
   const handleVerify = useCallback(() => {
-    if (checking) return;
+    if (checking) {
+      useToastStore.getState().showWarning("正在审查中，请稍候");
+      return;
+    }
     setChecking(true);
     setVerified(false);
     setPinAllocations([]);
@@ -155,6 +159,7 @@ export function SafetyPane() {
     const code = activeTab?.code ?? "";
 
     if (!code.trim()) {
+      useToastStore.getState().showWarning("请输入要审查的代码");
       useLogStore.getState().log("warn", "safety", "无代码可审计");
       setChecking(false);
       return;
@@ -182,6 +187,7 @@ export function SafetyPane() {
       })
       .catch((err) => {
         const msg = err instanceof Error ? err.message : String(err);
+        useToastStore.getState().showError("安全审查失败");
         useLogStore.getState().log("error", "safety", `引脚审计失败: ${msg}`);
         setDiagnoseResults([]);
         setConflictPins(new Set());
@@ -247,7 +253,7 @@ export function SafetyPane() {
               <div style={{ marginBottom: 12 }}>
                 <div style={{ fontSize: 11, fontWeight: 600, color: "var(--fg)", marginBottom: 6 }}>{t('buildDiagnose')}</div>
                 {diagnoseResults.map((d, idx) => {
-                  const pins = d.detail.match(/GPIO\d+/g) ?? [];
+                  const pins: string[] = d.detail.match(/GPIO\d+/g) ?? [];
                   return (
                     <div
                       key={idx}

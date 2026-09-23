@@ -45,3 +45,36 @@ class TestTool:
         data = response.json()
         assert data["success"] is False
         assert data["error"]["error_type"] == "TOOL_NOT_FOUND"
+
+
+@pytest.mark.asyncio
+async def test_command_process_uses_an_isolated_posix_session(monkeypatch):
+    import asyncio
+    import os
+
+    from src.agent.tools.groups.execution import run_command
+
+    captured = {}
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    await run_command._create_process("echo test", "")
+
+    assert captured["start_new_session"] is (os.name != "nt")
+
+
+@pytest.mark.asyncio
+async def test_run_command_blocks_pio_device_monitor_case_insensitively():
+    from src.agent.tools.groups.execution.run_command import RunCommandTool
+
+    result = await RunCommandTool().execute(
+        {"command": "PIO DEVICE MONITOR --port COM3"},
+        None,
+    )
+
+    assert result["exit_code"] == -1
+    assert "禁止使用 pio device monitor" in result["output"]

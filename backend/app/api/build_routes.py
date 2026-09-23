@@ -7,16 +7,22 @@ pio_runner 不自动触发编译：若 /api/upload 只传 code 而无 binary_pat
 本路由层先调 compile_firmware 拿 binary_path 再调 upload_firmware。
 """
 
+import json
 import logging
 import uuid
 from typing import Any, AsyncIterator
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.api.sse import sse_event
-from app.api.locks import get_port_lock
+from app.api.locks import (
+    disconnect_active_serial,
+    get_port_lock,
+    reserve_port_for_upload,
+    release_port_after_upload,
+)
 from src.hardware.pio_runner import (
     CompileRequest as PioCompileRequest,
     UploadRequest as PioUploadRequest,
@@ -73,6 +79,18 @@ def _sse_from_event(event: dict[str, Any]) -> str:
     return sse_event(event_type, data)
 
 
+def _is_done_sse_event(event_text: str) -> bool:
+    """Return whether an encoded SSE event is the terminal ``done`` event."""
+    for line in event_text.splitlines():
+        if not line.startswith("data: "):
+            continue
+        try:
+            return json.loads(line[6:]).get("type") == "done"
+        except (json.JSONDecodeError, AttributeError):
+            return False
+    return False
+
+
 def _error_done(code: str, message: str) -> str:
     """构造错误 done SSE 事件。"""
     return sse_event("done", {"success": False, "error": {"code": code, "message": message}})
@@ -99,11 +117,9 @@ def _make_compile_request(payload: BuildRequest | UploadRequest) -> PioCompileRe
 
 
 def _check_upload_input(payload: UploadRequest) -> str | None:
-    """Return error SSE if input invalid/port busy, else None."""
+    """Return an error SSE if the upload request is invalid, else None."""
     if not payload.binary_path and not payload.code:
         return _error_done("INVALID_ARGS", "需要 binary_path 或 code")
-    if get_port_lock(payload.port).locked():
-        return _error_done("PORT_BUSY", f"端口 {payload.port} 正在使用")
     return None
 
 
@@ -130,7 +146,7 @@ async def build_firmware(payload: BuildRequest):
 
 
 @router.post("/upload")
-async def upload_firmware(payload: UploadRequest):
+async def upload_firmware(payload: UploadRequest, request: Request):
     """烧录固件到设备（SSE 流式返回烧录进度）。
 
     支持两种入参：
@@ -139,21 +155,49 @@ async def upload_firmware(payload: UploadRequest):
     """
 
     async def event_generator() -> AsyncIterator[str]:
-        async for ev in _stream_upload(payload):
+        async for ev in _stream_upload(payload, request):
             yield ev
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
-async def _stream_upload(payload: UploadRequest) -> AsyncIterator[str]:
+async def _stream_upload(payload: UploadRequest, request: Request) -> AsyncIterator[str]:
     """烧录主流程：校验 → 端口锁 → 编译(可选) → 烧录。"""
     err = _check_upload_input(payload)
     if err:
         yield err
         return
-    async with get_port_lock(payload.port):
-        async for ev in _run_upload_steps(payload):
-            yield ev
+
+    if not reserve_port_for_upload(payload.port):
+        yield _error_done("PORT_BUSY", f"端口 {payload.port} 正在烧录，请稍后重试")
+        return
+
+    terminal_event: str | None = None
+    try:
+        await disconnect_active_serial(
+            payload.port,
+            reason="端口即将用于固件烧录",
+        )
+        async with get_port_lock(payload.port):
+            try:
+                async for ev in _run_upload_steps(payload):
+                    if await request.is_disconnected():
+                        logger.info("upload SSE disconnected, port=%s", payload.port)
+                        return
+                    if _is_done_sse_event(ev):
+                        # The browser uses this event to reconnect its monitor. Defer
+                        # it until the upload has released the port lock below.
+                        terminal_event = ev
+                        continue
+                    if terminal_event is None:
+                        yield ev
+            finally:
+                logger.debug("upload stream exit, releasing port lock port=%s", payload.port)
+    finally:
+        release_port_after_upload(payload.port)
+
+    if terminal_event and not await request.is_disconnected():
+        yield terminal_event
 
 
 async def _run_upload_steps(payload: UploadRequest) -> AsyncIterator[str]:
@@ -161,7 +205,7 @@ async def _run_upload_steps(payload: UploadRequest) -> AsyncIterator[str]:
     binary_path = payload.binary_path
     if not binary_path:
         holder: list[str] = [""]
-        async for ev in _stream_compile(payload, holder):
+        async for ev in _stream_compile(payload, holder, terminal_on_success=False):
             yield ev
         if not holder[0]:
             return
@@ -170,7 +214,12 @@ async def _run_upload_steps(payload: UploadRequest) -> AsyncIterator[str]:
         yield ev
 
 
-async def _stream_compile(payload: UploadRequest, holder: list[str]) -> AsyncIterator[str]:
+async def _stream_compile(
+    payload: UploadRequest,
+    holder: list[str],
+    *,
+    terminal_on_success: bool = True,
+) -> AsyncIterator[str]:
     """编译代码并透传事件，成功时 holder[0]=binary_path。"""
     req = _make_compile_request(payload)
     async for event in pio_compile_firmware(req):
@@ -178,7 +227,14 @@ async def _stream_compile(payload: UploadRequest, holder: list[str]) -> AsyncIte
             yield _sse_from_event(event)
             continue
         holder[0] = _extract_binary_path(event)
-        yield _sse_from_event(event)
+        if holder[0] and not terminal_on_success:
+            yield _sse_from_event({
+                "type": "thinking",
+                "content": "编译成功，准备开始烧录...",
+                "source": "flash",
+            })
+        else:
+            yield _sse_from_event(event)
         return
 
 

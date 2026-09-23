@@ -31,6 +31,7 @@ from src.hardware.pio_runner import (
     _validate_binary_path,
     _validate_board,
     _validate_port,
+    _spawn_pio,
     cleanup_old_builds,
     compile_firmware,
 )
@@ -193,6 +194,26 @@ class TestCreateTempProject:
         assert "[env:esp32s3devkitc1]" in content
         assert "board = esp32-s3-devkitc-1" in content
         assert "platform = espressif32" in content
+
+
+@pytest.mark.asyncio
+async def test_spawn_pio_uses_an_isolated_process_session(monkeypatch, tmp_path):
+    captured = {}
+    fake_proc = MagicMock()
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        captured.update(kwargs)
+        return fake_proc
+
+    monkeypatch.setattr(
+        "src.hardware.pio_runner.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+
+    proc = await _spawn_pio(["--version"], tmp_path)
+
+    assert proc is fake_proc
+    assert captured["start_new_session"] is (os.name != "nt")
 
 
 # ═══════════════════════════════════════════
