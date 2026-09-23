@@ -76,13 +76,16 @@ def current_user_optional(
         return {"provider": None, "api_key": None, "anonymous": True}
     result = get_provider_key_by_session(token)
     if not result:
-        return {"provider": None, "api_key": None, "anonymous": True}
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"success": False, "error": {"code": "AUTH_INVALID", "message": "token 无效或已过期"}},
+        )
     provider, api_key = result
     return {"provider": provider, "api_key": api_key, "anonymous": False}
 
 
 def ws_auth(websocket) -> Optional[dict]:
-    """WebSocket 鉴权：在 accept() 前调用，失败返回错误码。"""
+    """Require a valid token once a provider key has been configured."""
     try:
         from app.api.auth import _load_store
 
@@ -93,12 +96,12 @@ def ws_auth(websocket) -> Optional[dict]:
 
         token = websocket.query_params.get("token") or websocket.headers.get("x-token", "")
         if not token:
-            return None  # 调用方负责 close
+            return None
         result = get_provider_key_by_session(token)
         if not result:
             return None
         provider, api_key = result
         return {"provider": provider, "api_key": api_key, "anonymous": False}
     except Exception:
-        logger.warning("WS 鉴权存储读取失败，跳过鉴权")
-        return {"provider": None, "api_key": None, "anonymous": True}
+        logger.warning("WS 鉴权存储读取失败，拒绝访问")
+        return None
