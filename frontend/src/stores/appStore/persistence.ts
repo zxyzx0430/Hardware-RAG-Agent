@@ -10,6 +10,7 @@ export const EDITOR_SHOW_TREE_KEY = "hwrag_editor_show_tree";
 export const RECENT_FOLDERS_KEY = "hwrag_recent_folders";
 export const OPEN_FILES_KEY = "hwrag_open_files";
 export const ACTIVE_FILE_ID_KEY = "hwrag_active_file_id";
+export const INPUT_BAR_WIDTH_KEY = "hwrag_input_bar_width";
 
 export const EXPLORER_EXPANDED_PREFIX = "hwrag_explorer_expanded_";
 export const EXPLORER_SELECTED_PREFIX = "hwrag_explorer_selected_";
@@ -24,6 +25,11 @@ export const RIGHT_PANEL_MIN_WIDTH = 340;
 export const RIGHT_PANEL_MAX_WIDTH = 560;
 export const CHAT_MIN_WIDTH = 400;
 export const EXPLORER_MIN_WIDTH = 340;
+
+// Input bar width bounds (px), persisted to localStorage
+export const DEFAULT_INPUT_BAR_WIDTH = 720;
+export const INPUT_BAR_MIN_WIDTH = 480;
+export const INPUT_BAR_MAX_WIDTH = 900;
 
 export function loadRightPanelOpen(): boolean | null {
   return loadBoolean(RIGHT_PANEL_KEY);
@@ -41,6 +47,16 @@ export function loadRightPanelWidth(): number {
 
 export function saveRightPanelWidth(width: number): void {
   saveNumber(RIGHT_PANEL_WIDTH_KEY, width);
+}
+
+export function loadInputBarWidth(): number {
+  const n = loadNumber(INPUT_BAR_WIDTH_KEY);
+  if (n === null) return DEFAULT_INPUT_BAR_WIDTH;
+  return Math.min(INPUT_BAR_MAX_WIDTH, Math.max(INPUT_BAR_MIN_WIDTH, n));
+}
+
+export function saveInputBarWidth(width: number): void {
+  saveNumber(INPUT_BAR_WIDTH_KEY, width);
 }
 
 export function loadBoolean(key: string): boolean | null {

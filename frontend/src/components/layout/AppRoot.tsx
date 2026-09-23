@@ -3,7 +3,11 @@ import { useAppStore } from "../../stores/useAppStore";
 import { useSessionStore } from "../../stores/useSessionStore";
 import { useChatStore } from "../../stores/useChatStore";
 import { usePanelResize } from "../../hooks/usePanelResize";
-import { RIGHT_PANEL_MIN_WIDTH, RIGHT_PANEL_MAX_WIDTH, CHAT_MIN_WIDTH, EXPLORER_MIN_WIDTH } from "../../stores/appStore/persistence";
+import {
+  RIGHT_PANEL_MIN_WIDTH, RIGHT_PANEL_MAX_WIDTH,
+  CHAT_MIN_WIDTH, EXPLORER_MIN_WIDTH,
+  INPUT_BAR_MIN_WIDTH, INPUT_BAR_MAX_WIDTH,
+} from "../../stores/appStore/persistence";
 import { IconNav } from "./IconNav";
 import { LeftPanel } from "./LeftPanel";
 import { TopBar } from "../topbar/TopBar";
@@ -41,6 +45,8 @@ export function AppRoot() {
     explorerWidth,
     setExplorerOpen,
     setExplorerWidth,
+    inputBarWidth,
+    setInputBarWidth,
   } = useAppStore();
 
   // 启动/刷新时：会话列表加载完成后，加载当前活跃会话的消息；
@@ -90,6 +96,12 @@ export function AppRoot() {
     EXPLORER_MIN_WIDTH, explorerMaxWidth,
     setExplorerWidth, "px",
     () => CHAT_MIN_WIDTH + rightPanelWidth + 64
+  );
+
+  const inputBarResize = usePanelResize(
+    inputBarWidth, "right",
+    INPUT_BAR_MIN_WIDTH, INPUT_BAR_MAX_WIDTH,
+    setInputBarWidth, "px",
   );
 
   // 窗口缩放时钳制右面板宽度，确保对话区不小于 CHAT_MIN_WIDTH
@@ -146,7 +158,17 @@ export function AppRoot() {
           <div id="chatFlex" style={{ flex: 1, display: showChatShell ? "flex" : "none", minHeight: 0, overflow: "hidden" }}>
             <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: CHAT_MIN_WIDTH, overflow: "hidden", background: "var(--bg)" }}>
               <ChatArea />
-              <InputBar />
+              <div className="inputbar-resize-wrap" style={{ display: "flex", alignItems: "stretch" }}>
+                <div style={{ width: inputBarWidth, maxWidth: "100%", minWidth: INPUT_BAR_MIN_WIDTH, flexShrink: 0 }}>
+                  <InputBar />
+                </div>
+                <div
+                  className="inputbar-resizer"
+                  onMouseDown={inputBarResize.onMouseDown}
+                  style={{ cursor: "col-resize" }}
+                  title="拖拽调整输入栏宽度"
+                />
+              </div>
             </div>
             <div className={`panel-btn-strip right${showChatShell ? '' : ' hidden'}`} id="rightStrip">
               <button
@@ -164,8 +186,8 @@ export function AppRoot() {
               </button>
             </div>
             <div
-              className={`right-resizer${showChatShell && rightPanelOpen ? '' : ' hidden'}`}
-              id="rightResizer"
+              className={`chat-resizer${showChatShell && rightPanelOpen ? '' : ' hidden'}`}
+              id="chatResizer"
               onMouseDown={(e) => {
                 right.onMouseDown(e);
               }}
@@ -175,15 +197,6 @@ export function AppRoot() {
               <RightPanel />
             </div>
 
-            <div
-              className={`explorer-resizer${explorerOpen ? '' : ' hidden'}`}
-              id="explorerResizer"
-              onMouseDown={(e) => {
-                if (!explorerOpen) setExplorerOpen(true);
-                explorer.onMouseDown(e);
-              }}
-              style={{ cursor: 'col-resize' }}
-            />
             <div className={`explorer-collapsed-strip${explorerOpen ? ' hidden' : ''}`} id="explorerStrip">
               <button
                 className="explorer-toggle"
@@ -197,6 +210,15 @@ export function AppRoot() {
                 </svg>
               </button>
             </div>
+            <div
+              className={`explorer-resizer${explorerOpen ? '' : ' hidden'}`}
+              id="explorerResizer"
+              onMouseDown={(e) => {
+                if (!explorerOpen) setExplorerOpen(true);
+                explorer.onMouseDown(e);
+              }}
+              style={{ cursor: 'col-resize' }}
+            />
             <div
               style={{
                 width: explorerOpen ? explorerWidth : 0,

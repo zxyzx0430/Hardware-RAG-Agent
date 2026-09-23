@@ -4,6 +4,7 @@ import { useChatStore } from "../../stores/useChatStore";
 import { useLogStore } from "../../stores/useLogStore";
 import { useSettingsStore } from "../../stores/useSettingsStore";
 import { useAppStore } from "../../stores/useAppStore";
+import { useToastStore } from "../../stores/useToastStore";
 import { useSessionStore } from "../../stores/useSessionStore";
 import { TemplatePanel } from "../shared/TemplatePanel";
 import { useI18n } from "../../i18n";
@@ -11,6 +12,18 @@ import type { Attachment } from "../../types/api";
 
 type PermissionMode = "bypassPermissions" | "default" | "acceptEdits";
 const PERMISSION_MODE_ORDER: PermissionMode[] = ["bypassPermissions", "default", "acceptEdits"];
+
+const MIN_INPUT_HEIGHT = 80;
+const MAX_INPUT_HEIGHT = 320;
+const DEFAULT_INPUT_HEIGHT = 120;
+const INPUT_HEIGHT_KEY = "hwrag_input_height";
+
+function loadInputHeight(): number {
+  if (typeof window === "undefined") return DEFAULT_INPUT_HEIGHT;
+  const raw = localStorage.getItem(INPUT_HEIGHT_KEY);
+  const n = raw ? parseInt(raw, 10) : NaN;
+  return Number.isFinite(n) ? Math.max(MIN_INPUT_HEIGHT, Math.min(MAX_INPUT_HEIGHT, n)) : DEFAULT_INPUT_HEIGHT;
+}
 
 function attachmentSignature(attachment: Attachment): string {
   return `${attachment.name}\u0000${attachment.type}\u0000${attachment.content}`;
@@ -32,9 +45,11 @@ export function InputBar() {
   const { t } = useI18n();
   const [showModelDropdown, setShowModelDropdown] = useState(false);
   const [showPermissionDropdown, setShowPermissionDropdown] = useState(false);
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [attachError, setAttachError] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [textareaHeight, setTextareaHeight] = useState(loadInputHeight());
+  const textareaHeightRef = useRef(textareaHeight);
+  useEffect(() => { textareaHeightRef.current = textareaHeight; }, [textareaHeight]);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const dropdownRef = useRef<HTMLDivElement | null>(null);
   const permissionDropdownRef = useRef<HTMLDivElement | null>(null);
@@ -44,12 +59,13 @@ export function InputBar() {
   // Guard against double send (e.g. rapid Enter + click)
   const sendingRef = useRef(false);
 
-  const { sendMessage, stopStreaming, isStreaming } = useChatStore();
+  const { sendMessage, stopStreaming, isStreaming, activeSessionId, drafts, setDraft, clearDraft, sessionAttachments, setSessionAttachments, clearSessionAttachments } = useChatStore();
   const { providers, chatProviderId, chatModel, setChatModel, permissionMode, updateSetting } = useSettingsStore();
   const { sessions, updateSessionMeta } = useSessionStore();
-  const { activeSessionId, drafts, setDraft, clearDraft } = useChatStore();
   // 输入框文本从 store 草稿派生，切换会话自动响应
   const text = drafts[activeSessionId] || "";
+  // 附件按 session 隔离，切换会话时互不干扰
+  const attachments = sessionAttachments[activeSessionId] || [];
   // 模型优先从当前会话读取（各对话独立），回退到全局设置
   const currentSession = sessions.find((s) => s.id === activeSessionId);
   const model = currentSession?.model || chatModel;
@@ -158,14 +174,17 @@ export function InputBar() {
 
   const handleSend = () => {
     if (isStreaming) return;
-    if (sendingRef.current) return;  // 防止重入
+    if (sendingRef.current) {
+      useToastStore.getState().showWarning("正在发送中，请稍候");
+      return;
+    }  // 防止重入
     if (!text.trim() && attachments.length === 0) return;
     sendingRef.current = true;
     const attachmentsCopy = attachments.length > 0 ? attachments : undefined;
     const quoted = useAppStore.getState().quotedMsg;  // 读取引用消息（用 getState 避免闭包陈旧值）
     sendMessage(text.trim() || "", attachmentsCopy, quoted ?? undefined);
     clearDraft(activeSessionId);
-    setAttachments([]);
+    clearSessionAttachments(activeSessionId);
     setAttachError(null);
     setTemplatePanelOpen(false);
     useAppStore.getState().setQuotedMsg(null);  // 发送后清除引用条
@@ -190,21 +209,19 @@ export function InputBar() {
       setAttachError("最多 3 个文件");
     }
 
-    // Process files outside of state updater — no side effects inside setAttachments
+    // Process files outside of state updater — no side effects inside setState
     try {
       const newAttachments = await Promise.all(toAdd.map(fileToAttachment));
-      setAttachments((prev) => {
-        const merged = mergeUniqueAttachments(prev, newAttachments);
-        if (merged.length === prev.length) {
-          setAttachError("已忽略重复文件");
-        }
-        return merged;
-      });
+      const merged = mergeUniqueAttachments(current, newAttachments);
+      if (merged.length === current.length) {
+        setAttachError("已忽略重复文件");
+      }
+      setSessionAttachments(activeSessionId, merged);
     } catch (err) {
       setAttachError(err instanceof Error ? err.message : "文件处理失败");
       useLogStore.getState().log("error", "chat", `附件处理失败: ${err}`);
     }
-  }, [fileToAttachment]);
+  }, [fileToAttachment, activeSessionId, setSessionAttachments]);
 
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
     const items = e.clipboardData?.items;
@@ -249,8 +266,34 @@ export function InputBar() {
   }, [addAttachments]);
 
   const removeAttachment = useCallback((id: string) => {
-    setAttachments((prev) => prev.filter((a) => a.id !== id));
+    setSessionAttachments(activeSessionId, attachments.filter((a) => a.id !== id));
     setAttachError(null);
+  }, [activeSessionId, attachments, setSessionAttachments]);
+
+  // 输入框高度拖拽
+  const handleHeightResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    document.body.style.cursor = "row-resize";
+    document.body.style.userSelect = "none";
+    const startY = e.clientY;
+    const startHeight = textareaHeightRef.current;
+    const onMove = (ev: MouseEvent) => {
+      const delta = startY - ev.clientY;
+      const newHeight = Math.max(MIN_INPUT_HEIGHT, Math.min(MAX_INPUT_HEIGHT, startHeight + delta));
+      setTextareaHeight(newHeight);
+      if (textareaRef.current) {
+        textareaRef.current.style.height = `${newHeight}px`;
+      }
+    };
+    const onUp = () => {
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      localStorage.setItem(INPUT_HEIGHT_KEY, String(textareaHeightRef.current));
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
   }, []);
 
   // ESC 键统一取消行为：优先级 流式 > 引用 > 附件
@@ -264,10 +307,10 @@ export function InputBar() {
       return;
     }
     if (attachments.length > 0) {
-      setAttachments([]);
+      clearSessionAttachments(activeSessionId);
       setAttachError(null);
     }
-  }, [isStreaming, stopStreaming, quotedMsg, setQuotedMsg, attachments, setAttachError]);
+  }, [isStreaming, stopStreaming, quotedMsg, setQuotedMsg, attachments, setAttachError, clearSessionAttachments, activeSessionId]);
 
   return (
     <>
@@ -322,18 +365,26 @@ export function InputBar() {
             <div className="attachment-error">{attachError}</div>
           )}
 
+          <div
+            className="input-height-resizer"
+            onMouseDown={handleHeightResizeStart}
+            title="拖拽调整输入框高度"
+          />
+
           <textarea
             ref={textareaRef}
+            onPaste={handlePaste}
             className="input-textarea"
             id="inputArea"
             placeholder={t('inputPlaceholderHardware')}
             rows={1}
             value={text}
+            style={{ maxHeight: textareaHeight }}
             onChange={(e) => handleChange(e.target.value)}
             onInput={(e) => {
               const el = e.currentTarget;
               el.style.height = "auto";
-              el.style.height = Math.min(el.scrollHeight, 160) + "px";
+              el.style.height = Math.min(el.scrollHeight, textareaHeight) + "px";
             }}
             onKeyDown={(e) => {
               // Ignore Enter while IME is composing (e.g. Chinese input method)

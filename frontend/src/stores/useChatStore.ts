@@ -49,7 +49,7 @@
 // 前置条件：补齐 useChatStore 单元测试（streaming / resume / persist 三条主路径）后再动手
 import { create } from "zustand";
 import type { Message, SourceRef, ActivityStep, Session, ContentPart, TodoItem } from "../types/session";
-import type { ChatSSEEvent, Attachment } from "../types/api";
+import type { ChatSSEEvent, Attachment, BackendMessage } from "../types/api";
 import { loadFromStorage, saveToStorage, saveSessionMessages, loadSessionMessages, removeSessionMessages, migrateMessagesToShards } from "../utils/persistence";
 import { post, on } from "../utils/broadcast";
 import { useAppStore } from "./useAppStore";
@@ -70,9 +70,6 @@ const _needsParagraphBreak = new Map<string, boolean>();
 // can be routed to the correct Workbench pane (FlashPane for build/flash tools).
 // 按 sessionId 隔离，避免多会话切换时串号
 const _lastToolCallId = new Map<string, string>();
-
-// Last heartbeat timestamp (module-level: avoids UI re-renders on heartbeat).
-let _lastHeartbeatAt: number = 0;
 
 declare global {
   interface Window {
@@ -122,6 +119,12 @@ interface ChatState {
   setDraft: (sessionId: string, text: string) => void;
   /** 清空某会话的草稿（发送后调用） */
   clearDraft: (sessionId: string) => void;
+  /** 按 sessionId 存储输入框附件（内存，不持久化到 localStorage） */
+  sessionAttachments: Record<string, Attachment[]>;
+  /** 设置某会话的附件 */
+  setSessionAttachments: (sessionId: string, attachments: Attachment[]) => void;
+  /** 清空某会话的附件（发送后调用） */
+  clearSessionAttachments: (sessionId: string) => void;
   /** HITL pending confirm: when set, ConfirmDialog shows (v2-T4) */
   pendingConfirm: PendingConfirm | null;
   /** Last agent request body, cached for resume API (v2-T4) */
@@ -542,6 +545,8 @@ export const useChatStore = create<ChatState>((set, get) => {
   _lastAgentPayload: null,
   // 草稿按 sessionId 隔离，仅存内存（spec 决策 4：刷新后丢失可接受）
   drafts: {},
+  // 输入框附件按 sessionId 隔离，仅存内存（避免切换会话时附件串号）
+  sessionAttachments: {},
   // 来源查看器状态按 sessionId 隔离（仅内存，刷新后丢失可接受）
   sessionFileViewerSource: {},
   sessionHighlightSourceId: {},
@@ -566,6 +571,16 @@ export const useChatStore = create<ChatState>((set, get) => {
     return { drafts: next };
   }),
 
+  setSessionAttachments: (sessionId, attachments) => set((s) => ({
+    sessionAttachments: { ...s.sessionAttachments, [sessionId]: attachments },
+  })),
+
+  clearSessionAttachments: (sessionId) => set((s) => {
+    const next = { ...s.sessionAttachments };
+    delete next[sessionId];
+    return { sessionAttachments: next };
+  }),
+
   setSessionFileViewerSource: (sessionId, messageId, sourceId) => set((s) => {
     if (!messageId || !sourceId) {
       const next = { ...s.sessionFileViewerSource };
@@ -582,15 +597,18 @@ export const useChatStore = create<ChatState>((set, get) => {
   cleanupSessionSourceState: (sessionId) => set((s) => {
     const nextFv = { ...s.sessionFileViewerSource };
     const nextHl = { ...s.sessionHighlightSourceId };
+    const nextAtt = { ...s.sessionAttachments };
     delete nextFv[sessionId];
     delete nextHl[sessionId];
-    return { sessionFileViewerSource: nextFv, sessionHighlightSourceId: nextHl };
+    delete nextAtt[sessionId];
+    return { sessionFileViewerSource: nextFv, sessionHighlightSourceId: nextHl, sessionAttachments: nextAtt };
   }),
 
   resumeAgent: (decision) => {
     const payload = get()._lastAgentPayload;
     if (!payload) {
       getLog()("warn", "chat", "resumeAgent: no cached payload, ignoring");
+      useToastStore.getState().showWarning("没有可继续的 Agent 会话");
       return;
     }
     const sid = get().streamingSessionId || get().activeSessionId;
@@ -609,7 +627,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     const controller = new AbortController();
     set({ currentSseRequest: controller });
     apiSSE("agent-sandbox/resume", { payload, decision }, {
-      onEvent: (evt) => _handleResumeEvent(evt),
+      onEvent: (evt) => _handleResumeEvent(evt as ChatSSEEvent),
       onDone: () => _finalizeResume(sid),
     }, controller);
   },
@@ -653,9 +671,40 @@ export const useChatStore = create<ChatState>((set, get) => {
           // 迁移后重新 fetch 拿后端 ID
           const refetch = await apiGet<{ messages: BackendMessage[] }>(`sessions/${sessionId}/messages`);
           msgs = (refetch?.messages || []).map(mapBackendMessage);
-        } catch {
-          getLog()("warn", "chat", `懒迁移失败: ${sessionId}，使用本地缓存`);
-          msgs = cached;
+        } catch (migrateErr) {
+          // 404 = 会话不存在于后端，先补录会话再重试
+          const migrateMsg = migrateErr instanceof Error ? migrateErr.message : String(migrateErr);
+          if (migrateMsg.includes("404") || migrateMsg.includes("NOT_FOUND")) {
+            getLog()("info", "chat", `懒迁移遇 404: 会话 ${sessionId} 不存在，补录会话`);
+            try {
+              const session = useSessionStore.getState().sessions.find((s) => s.id === sessionId);
+              await apiPost("sessions", {
+                id: sessionId,
+                title: session?.title || "新对话",
+                model: session?.model || "",
+                project: session?.project || "",
+                context_window: session?.contextWindow || CONTEXT_WINDOW_256K,
+              });
+              for (const m of cached) {
+                await apiPost(`sessions/${sessionId}/messages`, {
+                  role: m.role,
+                  content: serializeMessageContent(m.content),
+                  sources: m.sources || [],
+                  tool_calls: [],
+                  activity: m.activity || null,
+                });
+              }
+              getLog()("ok", "chat", `补录+懒迁移完成: ${sessionId} ${cached.length} 条消息`);
+              const refetch = await apiGet<{ messages: BackendMessage[] }>(`sessions/${sessionId}/messages`);
+              msgs = (refetch?.messages || []).map(mapBackendMessage);
+            } catch {
+              getLog()("warn", "chat", `补录+懒迁移失败: ${sessionId}，使用本地缓存`);
+              msgs = cached;
+            }
+          } else {
+            getLog()("warn", "chat", `懒迁移失败: ${sessionId}，使用本地缓存`);
+            msgs = cached;
+          }
         }
       }
 
@@ -701,6 +750,9 @@ export const useChatStore = create<ChatState>((set, get) => {
       const errMsg = err instanceof Error ? err.message : String(err);
       if (errMsg.includes("401")) {
         set({ needsApiKey: true });
+      } else if (errMsg.includes("aborted") || errMsg.includes("signal is aborted")) {
+        // 请求被中断（快速切换会话等），静默使用缓存，不弹 toast
+        getLog()("debug", "chat", `加载会话消息被中断: ${sessionId}，使用缓存`);
       } else {
         getLog()("warn", "chat", `加载会话消息失败: ${sessionId}，使用缓存`);
         useToastStore.getState().showError(`加载会话消息失败: ${errMsg}`);
@@ -725,7 +777,8 @@ export const useChatStore = create<ChatState>((set, get) => {
       getLog()("warn", "chat", `跳过 persistLastTurn: 会话 ${sessionId} 最后一条 assistant 消息 content 为空`);
       return;
     }
-    try {
+
+    const saveMessages = async () => {
       for (const m of lastTwo) {
         await apiPost(`sessions/${sessionId}/messages`, {
           role: m.role,
@@ -735,10 +788,43 @@ export const useChatStore = create<ChatState>((set, get) => {
           activity: m.activity || null,
         });
       }
+    };
+
+    try {
+      await saveMessages();
       if (lastAssistant) persistedMsgIds.add(lastAssistant.id);
       getLog()("ok", "chat", `已持久化会话 ${sessionId} 最后两条消息到后端`);
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
+      // 404 = 会话不存在于后端（newSession 回退到本地 ID 时），自动补录会话后重试
+      if (errMsg.includes("404") || errMsg.includes("NOT_FOUND")) {
+        getLog()("info", "chat", `会话 ${sessionId} 不存在于后端，尝试补录会话`);
+        try {
+          const session = useSessionStore.getState().sessions.find((s) => s.id === sessionId);
+          await apiPost("sessions", {
+            id: sessionId,
+            title: session?.title || "新对话",
+            model: session?.model || "",
+            project: session?.project || "",
+            context_window: session?.contextWindow || CONTEXT_WINDOW_256K,
+          });
+          getLog()("ok", "chat", `会话 ${sessionId} 已补录到后端，重试保存消息`);
+          await saveMessages();
+          if (lastAssistant) persistedMsgIds.add(lastAssistant.id);
+          getLog()("ok", "chat", `已持久化会话 ${sessionId} 最后两条消息到后端（补录后重试）`);
+          return;
+        } catch (retryErr) {
+          const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+          getLog()("error", "chat", `补录会话失败: ${sessionId} - ${retryMsg}`);
+          useToastStore.getState().showError(`保存会话失败: 会话补录失败`);
+          return;
+        }
+      }
+      // abort 错误静默处理（快速切换导致请求被中断）
+      if (errMsg.includes("aborted") || errMsg.includes("signal is aborted")) {
+        getLog()("debug", "chat", `持久化消息被中断: ${sessionId}，下次重试`);
+        return;
+      }
       getLog()("warn", "chat", `持久化消息失败: ${sessionId}`);
       useToastStore.getState().showError(`保存会话失败: ${errMsg}`);
     }
@@ -747,7 +833,7 @@ export const useChatStore = create<ChatState>((set, get) => {
   setActiveSession: (id) => {
     const { activeSessionId, messages, sessionMessages, isStreaming,
             streamingSessionId, currentSseRequest, streamingContent,
-            streamingSteps, streamingStartTime, backgroundSseRequests } = get();
+            streamingSteps, backgroundSseRequests } = get();
     if (id === activeSessionId) return;
     getLog()("info", "chat", `切换会话: ${activeSessionId} → ${id}`);
 
@@ -994,7 +1080,7 @@ export const useChatStore = create<ChatState>((set, get) => {
           get().stopStreaming(friendlyMessage);
           return;
         }
-        const sse = event;
+        const sse = event as ChatSSEEvent;
         // ★ 始终写入发起请求时的会话，而非当前活跃会话
         set((s) => {
           const sid = requestSessionId;
@@ -1132,8 +1218,7 @@ export const useChatStore = create<ChatState>((set, get) => {
             }
 
             case "heartbeat": {
-              // Backend keepalive: update timestamp only, no UI state change.
-              _lastHeartbeatAt = Date.now();
+              // Backend keepalive: no UI state change.
               return {};
             }
 
@@ -1171,7 +1256,7 @@ export const useChatStore = create<ChatState>((set, get) => {
                 const last = msgs[msgs.length - 1];
                 if (last?.role === "assistant") {
                   const existingSteps = last.activity?.steps || [];
-                  let stepsToUpdate = [...existingSteps];
+                  const stepsToUpdate = [...existingSteps];
                   const lastExisting = stepsToUpdate[stepsToUpdate.length - 1];
                   if (lastExisting && lastExisting.type === "thinking" && lastExisting.source === "rag" && lastExisting.status !== "done") {
                     stepsToUpdate[stepsToUpdate.length - 1] = { ...lastExisting, content: "检索完成", status: "done" };
@@ -1190,7 +1275,7 @@ export const useChatStore = create<ChatState>((set, get) => {
               handleToolResultEvent(sse);
               // Tool execution finished; update the matching step by call_id.
               const resultText = _flattenToolResult(sse.result);
-              const newStatus = sse.success === false ? "error" : "done";
+              const newStatus: ActivityStep["status"] = sse.success === false ? "error" : "done";
               // image_generation: extract image_base64/image_url and append as ImagePart
               const imagePart = sse.tool === "image_generation" ? _extractImagePart(sse.result) : null;
               // File-editing tools: extract file_path for "查看 diff" button
@@ -1572,9 +1657,15 @@ export const useChatStore = create<ChatState>((set, get) => {
 
   retryMessage: (msgId) => {
     const { messages, isStreaming, activeSessionId } = get();
-    if (isStreaming) return; // 流式输出中不允许重试
+    if (isStreaming) {
+      useToastStore.getState().showWarning("正在生成中，请稍候");
+      return; // 流式输出中不允许重试
+    }
     const idx = messages.findIndex((m) => m.id === msgId);
-    if (idx < 0) return;
+    if (idx < 0) {
+      useToastStore.getState().showWarning("消息不存在，无法重试");
+      return;
+    }
     console.info('[ChatStore] retry session=%s msg_id=%s', activeSessionId, msgId);
     getLog()("info", "chat", `重试消息: ${msgId}`);
 
@@ -1614,9 +1705,19 @@ export const useChatStore = create<ChatState>((set, get) => {
 
   editAndResend: (msgId, newContent) => {
     const { messages, isStreaming, activeSessionId } = get();
-    if (isStreaming || !newContent.trim()) return; // 流式输出中不允许编辑
+    if (isStreaming) {
+      useToastStore.getState().showWarning("正在生成中，请稍候");
+      return; // 流式输出中不允许编辑
+    }
+    if (!newContent.trim()) {
+      useToastStore.getState().showWarning("内容不能为空");
+      return;
+    }
     const idx = messages.findIndex((m) => m.id === msgId);
-    if (idx < 0) return;
+    if (idx < 0) {
+      useToastStore.getState().showWarning("消息不存在");
+      return;
+    }
     getLog()("info", "chat", `编辑重发: ${msgId}`);
 
     void truncateAndResend(activeSessionId, idx, newContent);
@@ -1624,9 +1725,15 @@ export const useChatStore = create<ChatState>((set, get) => {
 
   branchThread: (msgId) => {
     const { activeSessionId, messages } = get();
-    if (!activeSessionId) return;
+    if (!activeSessionId) {
+      useToastStore.getState().showWarning("没有活动会话");
+      return;
+    }
     const idx = messages.findIndex((m) => m.id === msgId);
-    if (idx < 0) return;
+    if (idx < 0) {
+      useToastStore.getState().showWarning("消息不存在，无法分叉");
+      return;
+    }
     getLog()("info", "chat", `分支线程: ${msgId}`);
 
     const branchMsgs = messages.slice(0, idx + 1).map((m, i) =>
@@ -1704,6 +1811,7 @@ export const useChatStore = create<ChatState>((set, get) => {
       saveToStorage("activeSession", sid);
     }).catch(() => {
       getLog()("warn", "chat", "分支会话仅保存在本地");
+      useToastStore.getState().showError("分叉对话失败");
       // 回退：纯本地创建
       const sid = `s${Date.now()}`;
       const now = Date.now();
@@ -1817,6 +1925,16 @@ export const useChatStore = create<ChatState>((set, get) => {
 };
 });
 
+// 刷新/关闭页面前主动 abort 所有 SSE 连接，避免浏览器 keep-alive 连接池
+// 被旧 SSE 流卡住导致刷新后新请求全部超时（"signal is aborted without reason"）
+if (typeof window !== "undefined") {
+  window.addEventListener("beforeunload", () => {
+    const { currentSseRequest, backgroundSseRequests } = useChatStore.getState();
+    currentSseRequest?.abort();
+    backgroundSseRequests.forEach((c) => c.abort());
+  });
+}
+
 // 多 tab 同步：监听其他 tab 的消息变化和会话删除
 // 自己 tab 发的事件不会收到（BroadcastChannel 只跨 tab），不会重复刷新
 on('messages_changed', (payload) => {
@@ -1840,7 +1958,7 @@ on('session_deleted', (payload) => {
 
 // 自动持久化 sessionMessages（debounce，避免 SSE 期间频繁写入）
 let _persistTimer: ReturnType<typeof setTimeout> | null = null;
-let _pendingShards: Map<string, Message[]> = new Map();
+const _pendingShards: Map<string, Message[]> = new Map();
 
 function flushPendingShards() {
   for (const [sid, msgs] of _pendingShards) {

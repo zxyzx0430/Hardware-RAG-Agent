@@ -454,6 +454,33 @@
 .svg-accent { color: var(--primary); }
 
 /* ── InputBar ── */
+.inputbar-resize-wrap {
+  display: flex; align-items: stretch;
+}
+.inputbar-resizer {
+  width: 4px; cursor: col-resize; flex-shrink: 0;
+  background: transparent; position: relative;
+  transition: background 0.2s;
+}
+.inputbar-resizer::after {
+  content: ''; position: absolute; inset: 0 -3px;
+}
+.inputbar-resizer:hover,
+.inputbar-resizer.active {
+  background: var(--primary); opacity: 0.3;
+}
+.input-height-resizer {
+  height: 4px; cursor: row-resize; flex-shrink: 0;
+  background: transparent; position: relative;
+  transition: background 0.2s;
+}
+.input-height-resizer::after {
+  content: ''; position: absolute; inset: -3px 0;
+}
+.input-height-resizer:hover,
+.input-height-resizer.active {
+  background: var(--primary); opacity: 0.3;
+}
 .inputbar {
   border-top: 1px solid var(--border); background: var(--bg);
   padding: 12px 16px; position: relative; z-index: 100;

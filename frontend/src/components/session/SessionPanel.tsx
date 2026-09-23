@@ -28,7 +28,7 @@ export function SessionPanel() {
     setActiveProject, setSearchQuery, newSession,
     deleteSession, pinSession, renameSession, moveSessionToProject,
     createProject, deleteProject, createProjectInputVisible, setCreateProjectInputVisible,
-    initSessions,
+    initSessions, creatingSession,
   } = useSessionStore();
   const { sessionGroupsCollapsed, toggleSessionGroupCollapsed } = useAppStore();
   const { activeSessionId, setActiveSession } = useChatStore();
@@ -238,7 +238,7 @@ export function SessionPanel() {
 
       <div className="session-content-header">
         <span>{t('sessions')}</span>
-        <button className="btn-new" onClick={() => newSession()}>
+        <button className="btn-new" onClick={() => newSession()} disabled={creatingSession}>
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
           </svg>

@@ -5,6 +5,7 @@ import { loadFromStorage, saveToStorage, removeSessionMessages } from "../utils/
 import { post, on } from "../utils/broadcast";
 import { useChatStore } from "./useChatStore";
 import { useSettingsStore } from "./useSettingsStore";
+import { useToastStore } from "./useToastStore";
 import { apiGet, apiPost, apiPut, apiPatch, apiDelete } from "../api/client";
 import { useLogStore } from "./useLogStore";
 
@@ -105,6 +106,7 @@ interface SessionState {
   searchQuery: string;
   createProjectInputVisible: boolean;
   initialized: boolean;
+  creatingSession: boolean;
 
   // Actions
   initSessions: () => Promise<void>;
@@ -139,6 +141,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   searchQuery: "",
   createProjectInputVisible: false,
   initialized: false,
+  creatingSession: false,
 
   initSessions: async () => {
     if (get().initialized) return;
@@ -175,6 +178,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   newSession: async () => {
+    // 防止连续点击：正在创建中时直接返回
+    if (get().creatingSession) return;
+    set({ creatingSession: true });
+    try {
     const { chatModel } = useSettingsStore.getState();
     const { activeProject } = get();
     // activeProject 为 "all" 时不指定项目
@@ -183,11 +190,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     const defaultTitle = getDefaultSessionTitle();
 
-    // 先调用后端创建会话，拿到真实 ID 再创建本地会话
-    // 消除 localId/res.id 双 ID 并存窗口，避免 SSE 回调写入幽灵会话
-    let sid = "";
+    // 先生成本地 ID，传给后端。后端失败时用本地 ID 回退，
+    // persistLastTurn 遇到 404 会自动补录会话到后端。
+    const localId = `s${Date.now()}`;
+    let sid = localId;
     try {
       const res = await apiPost<{ id: string }>("sessions", {
+        id: localId,
         title: defaultTitle,
         model: sessionModel,
         project,
@@ -197,19 +206,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         sid = res.id;
         getLog()("ok", "session", `会话已创建于后端: ${sid}`);
       } else {
-        getLog()("warn", "session", "后端未返回 id，回退到本地会话");
+        getLog()("warn", "session", "后端未返回 id，使用本地 ID");
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes("401")) {
         useChatStore.setState({ needsApiKey: true });
       }
-      getLog()("warn", "session", "后端创建失败，回退到本地会话");
-    }
-
-    // 后端失败时回退到 localId
-    if (!sid) {
-      sid = `s${Date.now()}`;
+      // abort 或其他错误：使用本地 ID，persistLastTurn 会自动补录
+      getLog()("warn", "session", `后端创建失败（${msg}），使用本地 ID ${localId}`);
     }
 
     const session: Session = {
@@ -237,6 +242,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     // 切换到新会话
     useChatStore.getState().setActiveSession(sid);
+    } finally {
+      set({ creatingSession: false });
+    }
   },
 
   selectSession: (id) => {
@@ -288,6 +296,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
 
     apiDelete(`sessions/${id}`).catch((err) => {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      // abort 错误（连续操作导致请求被取消）不回滚，后端可能已删除
+      if (errMsg.includes("aborted") || errMsg.includes("signal is aborted")) {
+        getLog()("warn", "session", `删除会话 ${id} 请求被中断，不回滚（后端可能已删除）`);
+        return;
+      }
+      // 404：后端本来就没有这个会话，和目标一致，不回滚
+      if (errMsg.includes("404") || errMsg.includes("Not Found")) {
+        getLog()("info", "session", `删除会话 ${id} 在后端不存在，无需回滚`);
+        return;
+      }
       if (deletedSession) {
         set((s) => {
           const restored = [...s.sessions];
@@ -343,7 +362,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   renameSession: (id, title) => {
     getLog()("info", "session", `重命名会话 ${id}: ${title}`);
-    const oldTitle = get().sessions.find((x) => x.id === id)?.title;
+    const oldTitle = get().sessions.find((x) => x.id === id)?.title ?? "";
     set((s) => {
       const updated = {
         sessions: s.sessions.map((x) => x.id === id ? { ...x, title } : x),
@@ -371,7 +390,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   moveSessionToProject: (sessionId, project) => {
     getLog()("info", "session", `移动会话 ${sessionId} 到项目: ${project}`);
-    const oldProject = get().sessions.find((x) => x.id === sessionId)?.project;
+    const oldProject = get().sessions.find((x) => x.id === sessionId)?.project ?? "";
     set((s) => {
       const updated = {
         sessions: s.sessions.map((x) =>
@@ -398,6 +417,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // 移动失败回滚：通知其他 tab 会话列表恢复
       post('sessions_changed');
       console.warn('[useSessionStore] moveSession failed:', err);
+      useToastStore.getState().showError("移动会话失败");
     });
   },
 
@@ -491,7 +511,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const sid = useChatStore.getState().activeSessionId;
     if (!sid) return;
     getLog()("info", "session", `更新 contextWindow: ${sid} → ${window}`);
-    const old = get().sessions.find((x) => x.id === sid)?.contextWindow;
+    const old = get().sessions.find((x) => x.id === sid)?.contextWindow ?? CONTEXT_WINDOW_256K;
     set((s) => {
       const updated = {
         sessions: s.sessions.map((x) => x.id === sid ? { ...x, contextWindow: window } : x),
@@ -508,6 +528,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         return updated;
       });
       console.warn('[useSessionStore] setContextWindow failed:', err);
+      useToastStore.getState().showError("设置上下文窗口失败");
     });
   },
 }));

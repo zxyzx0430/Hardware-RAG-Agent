@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session as DBSession
 
 from app.db.database import get_db
-from app.api.dependencies import current_user
+from app.api.dependencies import current_user_optional
 
 logger = logging.getLogger(__name__)
 from app.db.models import Session as SessionModel
@@ -52,6 +52,7 @@ class SessionCreate(BaseModel):
     branch_from_session_id: Optional[str] = None
     branch_from_message_id: Optional[str] = None
     context_window: int = CONTEXT_WINDOW_256K
+    id: Optional[str] = None
 
 
 class SessionUpdate(BaseModel):
@@ -81,7 +82,7 @@ def _serialize_session(s: SessionModel) -> dict:
 
 
 @db_router.get("/sessions")
-def list_sessions(offset: int = 0, limit: int = 50, db: DBSession = Depends(get_db), user: dict = Depends(current_user)) -> dict:
+def list_sessions(offset: int = 0, limit: int = 50, db: DBSession = Depends(get_db), user: dict = Depends(current_user_optional)) -> dict:
     """获取所有会话列表，按更新时间倒序（分页）。"""
     sessions = (
         db.query(SessionModel)
@@ -94,9 +95,16 @@ def list_sessions(offset: int = 0, limit: int = 50, db: DBSession = Depends(get_
 
 
 @db_router.post("/sessions")
-def create_session(payload: SessionCreate, db: DBSession = Depends(get_db), user: dict = Depends(current_user)) -> dict:
+def create_session(payload: SessionCreate, db: DBSession = Depends(get_db), user: dict = Depends(current_user_optional)) -> dict:
     """创建新会话。"""
-    sid = f"s{uuid.uuid4().hex[:8]}"
+    # 如果前端传了 id 且后端不存在同 id 会话，则使用前端 id（支持本地回退会话补录）
+    if payload.id:
+        existing = db.query(SessionModel).filter(SessionModel.id == payload.id).first()
+        if existing:
+            return _ok(_serialize_session(existing))
+        sid = payload.id
+    else:
+        sid = f"s{uuid.uuid4().hex[:8]}"
     session = SessionModel(
         id=sid,
         title=payload.title,
@@ -136,7 +144,7 @@ def create_session(payload: SessionCreate, db: DBSession = Depends(get_db), user
 
 
 @db_router.get("/sessions/{session_id}")
-def get_session(session_id: str, db: DBSession = Depends(get_db), user: dict = Depends(current_user)) -> dict:
+def get_session(session_id: str, db: DBSession = Depends(get_db), user: dict = Depends(current_user_optional)) -> dict:
     """获取单个会话（含消息）。"""
     s = db.query(SessionModel).filter(SessionModel.id == session_id).first()
     if not s:
@@ -159,7 +167,7 @@ def get_session(session_id: str, db: DBSession = Depends(get_db), user: dict = D
 
 
 @db_router.put("/sessions/{session_id}")
-def update_session(session_id: str, payload: SessionUpdate, db: DBSession = Depends(get_db), user: dict = Depends(current_user)) -> dict:
+def update_session(session_id: str, payload: SessionUpdate, db: DBSession = Depends(get_db), user: dict = Depends(current_user_optional)) -> dict:
     """更新会话属性。"""
     s = db.query(SessionModel).filter(SessionModel.id == session_id).first()
     if not s:
@@ -201,7 +209,7 @@ def _apply_session_update(s: SessionModel, payload: SessionUpdate) -> None:
 
 
 @db_router.patch("/sessions/{session_id}")
-def patch_session(session_id: str, payload: SessionUpdate, db: DBSession = Depends(get_db), user: dict = Depends(current_user)) -> dict:
+def patch_session(session_id: str, payload: SessionUpdate, db: DBSession = Depends(get_db), user: dict = Depends(current_user_optional)) -> dict:
     """Partial update session fields (e.g., context_window). Returns full session."""
     s = db.query(SessionModel).filter(SessionModel.id == session_id).first()
     if not s:
@@ -215,7 +223,7 @@ def patch_session(session_id: str, payload: SessionUpdate, db: DBSession = Depen
 
 
 @db_router.delete("/sessions/{session_id}")
-def delete_session(session_id: str, db: DBSession = Depends(get_db), user: dict = Depends(current_user)) -> dict:
+def delete_session(session_id: str, db: DBSession = Depends(get_db), user: dict = Depends(current_user_optional)) -> dict:
     """删除会话及其所有消息（级联删除）。"""
     s = db.query(SessionModel).filter(SessionModel.id == session_id).first()
     if not s:
@@ -239,7 +247,7 @@ class MessageCreate(BaseModel):
 
 
 @db_router.get("/sessions/{session_id}/messages")
-def list_messages(session_id: str, db: DBSession = Depends(get_db), user: dict = Depends(current_user)) -> dict:
+def list_messages(session_id: str, db: DBSession = Depends(get_db), user: dict = Depends(current_user_optional)) -> dict:
     """获取会话的所有消息。"""
     msgs = db.query(MessageModel).filter(
         MessageModel.session_id == session_id
@@ -259,7 +267,7 @@ def list_messages(session_id: str, db: DBSession = Depends(get_db), user: dict =
 
 
 @db_router.post("/sessions/{session_id}/messages")
-def create_message(session_id: str, payload: MessageCreate, db: DBSession = Depends(get_db), user: dict = Depends(current_user)) -> dict:
+def create_message(session_id: str, payload: MessageCreate, db: DBSession = Depends(get_db), user: dict = Depends(current_user_optional)) -> dict:
     """在会话中添加一条消息。"""
     s = db.query(SessionModel).filter(SessionModel.id == session_id).first()
     if not s:
@@ -293,7 +301,7 @@ def create_message(session_id: str, payload: MessageCreate, db: DBSession = Depe
 
 
 @db_router.delete("/sessions/{session_id}/messages")
-def truncate_messages(session_id: str, keep_count: int = 0, db: DBSession = Depends(get_db), user: dict = Depends(current_user)) -> dict:
+def truncate_messages(session_id: str, keep_count: int = 0, db: DBSession = Depends(get_db), user: dict = Depends(current_user_optional)) -> dict:
     """截断会话消息：保留前 keep_count 条，删除其余。keep_count=0 清空。
     用于前端 retry/editAndResend 时同步删除后端旧消息，防止刷新后重复。"""
     s = db.query(SessionModel).filter(SessionModel.id == session_id).first()
@@ -326,14 +334,14 @@ ALLOWED_SETTINGS_KEYS = {
 
 
 @db_router.get("/settings")
-def get_settings(db: DBSession = Depends(get_db), user: dict = Depends(current_user)) -> dict:
+def get_settings(db: DBSession = Depends(get_db), user: dict = Depends(current_user_optional)) -> dict:
     """获取所有设置键值对。"""
     rows = db.query(SettingsModel).all()
     return _ok({"settings": {r.key: r.value for r in rows}})
 
 
 @db_router.put("/settings")
-def update_settings(payload: dict, db: DBSession = Depends(get_db), user: dict = Depends(current_user)) -> dict:
+def update_settings(payload: dict, db: DBSession = Depends(get_db), user: dict = Depends(current_user_optional)) -> dict:
     """批量保存设置。只允许白名单中的键。"""
     # 白名单校验
     invalid_keys = set(payload.keys()) - ALLOWED_SETTINGS_KEYS

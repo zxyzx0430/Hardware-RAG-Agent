@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { ChatSSEEvent } from "../types/api";
-import { useSessionStore } from "./useSessionStore";
+import type { Session } from "../types/session";
 
 // 捕获 SSE 回调与 controller，便于测试手动驱动事件流
 let capturedCallbacks: {
@@ -8,12 +8,10 @@ let capturedCallbacks: {
   onDone?: () => void;
   onError?: (err: Error) => void;
 } | null = null;
-let capturedController: AbortController | null = null;
 
 vi.mock("../api/client", () => ({
-  apiSSE: vi.fn((_path, _body, callbacks, controller) => {
+  apiSSE: vi.fn((_path, _body, callbacks) => {
     capturedCallbacks = callbacks;
-    capturedController = controller ?? null;
     return Promise.resolve();
   }),
 }));
@@ -29,7 +27,10 @@ vi.mock("../stores/useSettingsStore", () => ({
       maxTokens: 8192,
       providers: [],
       chatProviderId: "",
+      webSearchConfig: { apiKey: "", baseUrl: "" },
       resolveChatCreds: () => ({ providerId: "", model: "gpt-4o", baseUrl: "https://api.openai.com/v1", apiKey: "" }),
+      resolveVisionCreds: () => ({ model: "", baseUrl: "", apiKey: "" }),
+      resolveImageCreds: () => ({ model: "", baseUrl: "", apiKey: "" }),
     }),
   },
 }));
@@ -47,7 +48,7 @@ vi.mock("../stores/useSessionStore", async (importOriginal) => {
     ...actual,
     useSessionStore: {
       getState: () => ({
-        sessions: [{ id: "s1", title: "新对话", model: "gpt-4o" } as any],
+        sessions: [{ id: "s1", title: "新对话", model: "gpt-4o" } as Session],
         updateSessionMeta,
       }),
       setState: vi.fn(),
@@ -77,7 +78,6 @@ describe("useChatStore", () => {
   beforeEach(() => {
     vi.resetModules();
     capturedCallbacks = null;
-    capturedController = null;
     updateSessionMeta.mockClear();
     localStorage.clear();
     vi.setSystemTime(new Date("2026-06-20T12:00:00.000Z"));
@@ -150,10 +150,10 @@ describe("useChatStore", () => {
       totalTokens: 15,
     });
     expect(store.getState().messages[1].activity).toBeTruthy();
-    expect(updateSessionMeta).toHaveBeenCalledWith(
+    await vi.waitFor(() => expect(updateSessionMeta).toHaveBeenCalledWith(
       "s1",
       expect.objectContaining({ msgCount: expect.any(Number), preview: "你好" })
-    );
+    ));
   });
 
   it("error 事件触发 stopStreaming 并在消息中追加错误", async () => {
@@ -229,9 +229,9 @@ describe("useChatStore", () => {
       usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
     });
     capturedCallbacks!.onDone!();
-    expect(updateSessionMeta).toHaveBeenCalledWith(
+    await vi.waitFor(() => expect(updateSessionMeta).toHaveBeenCalledWith(
       "s1",
       expect.any(Object)
-    );
+    ));
   });
 });

@@ -55,16 +55,18 @@
 .dark .panel-toggle { box-shadow: 0 1px 4px rgba(0,0,0,0.4); }
 .dark .panel-toggle:hover { box-shadow: 0 1px 7px rgba(0,0,0,0.5); }
 
-.sidebar-resizer, .right-resizer {
+.sidebar-resizer, .right-resizer, .chat-resizer {
   width: 4px; cursor: col-resize; flex-shrink: 0;
   background: transparent; position: relative;
   transition: background 0.2s;
+  align-self: stretch; height: 100%;
 }
-.sidebar-resizer::after, .right-resizer::after {
+.sidebar-resizer::after, .right-resizer::after, .chat-resizer::after {
   content: ''; position: absolute; inset: 0 -3px;
 }
 .sidebar-resizer:hover, .sidebar-resizer.active,
-.right-resizer:hover, .right-resizer.active {
+.right-resizer:hover, .right-resizer.active,
+.chat-resizer:hover, .chat-resizer.active {
   background: var(--primary); opacity: 0.3;
 }
 
@@ -73,6 +75,7 @@
 .main-area.hidden { display: none !important; }
 .right-panel-wrap.hidden { display: none !important; }
 .right-resizer.hidden { display: none !important; }
+.chat-resizer.hidden { display: none !important; }
 .panel-btn-strip.right.hidden { display: none !important; }
 .sidebar-resizer.hidden { display: none !important; }
 .panel-btn-strip.left.hidden { display: none !important; }
