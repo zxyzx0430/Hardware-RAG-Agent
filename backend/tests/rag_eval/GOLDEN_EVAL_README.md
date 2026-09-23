@@ -6,6 +6,12 @@
 
 ## 快速开始
 
+DeepEval 是开发评测工具，不是启动项目的必需依赖。请使用 Python 3.10-3.12，在已安装后端依赖的环境中额外执行：
+
+```bash
+python -m pip install -r requirements-eval.txt
+```
+
 ### 1. 仅校验数据集格式（不调用 API）
 
 ```bash

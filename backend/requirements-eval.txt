@@ -1,0 +1,4 @@
+-r requirements.txt
+
+# Optional RAG evaluation tooling. Use Python 3.10-3.12.
+deepeval==1.5.5

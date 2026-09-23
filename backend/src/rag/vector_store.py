@@ -721,7 +721,6 @@ class HardwareVectorStore:
             # langchain_chroma 1.1.0: 用 getattr 容错 _collection 私有属性访问方式变更。
             # import_data 必须用底层 collection.add 传入预计算的 embeddings，
             # Chroma 包装类的 add_texts 不支持 embeddings 参数。
-            collection = getattr(self.db, "_collection", None)
             ids = data.get("ids", [])
             documents = data.get("documents", [])
             embeddings = data.get("embeddings", [])
@@ -745,6 +744,7 @@ class HardwareVectorStore:
                     f"Embeddings length mismatch: got {len(embeddings)} embeddings "
                     f"but {len(documents)} documents. Export data may be corrupted."
                 )
+            collection = getattr(self.db, "_collection", None)
             valid_embeddings = [embeddings[i] for i in valid_indices] if embeddings and len(embeddings) == len(documents) else None
             valid_metadatas = [metadatas[i] if i < len(metadatas) else {} for i in valid_indices]
 

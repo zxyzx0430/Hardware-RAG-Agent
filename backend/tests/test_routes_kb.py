@@ -7,6 +7,7 @@
 - 文件大小超限返回 200 + {"success": False, "error": {"code": "FILE_TOO_LARGE"}}
 """
 import sys
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 
@@ -57,17 +58,18 @@ class TestKbUpload:
         新版 API 异步索引，响应中 chunks=0，status="indexing"。
         """
         content = b"# ESP32\n\nThis is a test document.\n\n" + b"word " * 200
+        filename = f"esp32_guide_{uuid.uuid4().hex}.md"
         response = client.post(
             "/api/kb/upload",
-            files={"file": ("esp32_guide.md", content, "text/markdown")},
+            files={"file": (filename, content, "text/markdown")},
         )
 
         assert response.status_code == 200
         data = response.json()
-        assert data["success"] is True
+        assert data["success"] is True, data
         assert "data" in data
         assert "doc_id" in data["data"]
-        assert data["data"]["filename"] == "esp32_guide.md"
+        assert data["data"]["filename"] == filename
         assert data["data"]["status"] == "indexing"
         assert isinstance(data["data"]["chunks"], int)
 

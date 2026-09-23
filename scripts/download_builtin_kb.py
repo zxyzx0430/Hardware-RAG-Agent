@@ -8,8 +8,8 @@ The zip is expected to contain: chroma_db/ + bm25/ + uploads/ + builtin_kb/.
 Usage:
     python scripts/download_builtin_kb.py
 
-NOTE: DOWNLOAD_URL is a placeholder. Replace it with the actual
-GitHub Release URL before publishing.
+The prebuilt index has not been published yet. Pass its release URL when available:
+    python scripts/download_builtin_kb.py https://example.com/builtin_kb.zip
 """
 
 import sys
@@ -17,8 +17,6 @@ import zipfile
 import urllib.request
 from pathlib import Path
 
-# TODO: replace with actual GitHub Release URL before publishing
-DOWNLOAD_URL = "https://github.com/USER/Hardware-RAG-Agent/releases/download/v1.0.0/builtin_kb.zip"
 TARGET_DIR = Path(__file__).resolve().parent.parent / "backend" / "data"
 
 EXISTS_MSG = "内置知识库已存在，跳过下载。如需重新下载请先删除 backend/data/builtin_kb/ 目录。"
@@ -68,21 +66,24 @@ def cleanup_temp(zip_path: Path) -> None:
         zip_path.unlink()
 
 
-def run_steps(temp_zip: Path) -> None:
+def run_steps(temp_zip: Path, download_url: str) -> None:
     """Run download, extract, cleanup steps in sequence."""
-    print(f"开始下载内置知识库: {DOWNLOAD_URL}")
-    download_zip(DOWNLOAD_URL, temp_zip)
+    print(f"开始下载内置知识库: {download_url}")
+    download_zip(download_url, temp_zip)
     extract_zip(temp_zip, TARGET_DIR)
     cleanup_temp(temp_zip)
 
 
 def main() -> None:
     """Entry point: download and extract builtin knowledge base."""
+    if len(sys.argv) != 2 or not sys.argv[1].startswith("https://"):
+        print("预构建知识库尚未发布。发布后请传入可信的 HTTPS 下载地址；目前可在界面上传自己的 PDF。")
+        sys.exit(1)
     if builtin_kb_exists(TARGET_DIR):
         print(EXISTS_MSG)
         return
     TARGET_DIR.mkdir(parents=True, exist_ok=True)
-    run_steps(TARGET_DIR / "builtin_kb.zip")
+    run_steps(TARGET_DIR / "builtin_kb.zip", sys.argv[1])
     print(SUCCESS_MSG)
 
 

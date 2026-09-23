@@ -316,6 +316,7 @@ def _make_store_with_mocks(embeddings_present=True, dim=4):
     store._cached_embedding_dim = None
     store._dim_check_attempted = False
     store._db_unavailable = False  # added by P1 cache-unavailable fix
+    store._collection_dim = None
     if embeddings_present:
         store.embeddings = MagicMock()
         store.embeddings.embed_query.return_value = [0.1] * dim

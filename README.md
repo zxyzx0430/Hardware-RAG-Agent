@@ -104,24 +104,25 @@ Agent 不只会写代码，还能真的和板子交互：
 
 ## 快速开始
 
-需要 Python 3.10+、Node.js 20+。
+需要 Python 3.10+、Node.js 20+。以下命令会把 Python 依赖装进项目自己的隔离环境，不会弄乱电脑里其他 Python 项目。
 
-```bash
-# 下载内置硬件手册知识库（约几百 MB，包含预构建的向量索引和关键词索引，解压即用不需 API key）
-python scripts/download_builtin_kb.py
-
+```powershell
 # 后端
 cd backend
-pip install -r requirements.txt
-python main.py --web --port 58080
+python -m venv .venv
+.\.venv\Scripts\python -m pip install -r requirements.txt
+.\.venv\Scripts\python main.py --web --port 58080
 
 # 前端（新终端）
 cd frontend
-npm install
+npm ci
 npx vite --port 5173
 ```
 
+macOS / Linux 请把 `.\.venv\Scripts\python` 换成 `./.venv/bin/python`。
+
 浏览器打开 http://127.0.0.1:5173，Vite 会自动把 `/api/*` 代理到后端的 58080。
+首次使用请在界面中创建知识库并上传自己的芯片手册 PDF。预构建的内置知识库尚未发布，不是启动必需项。
 
 ---
 
@@ -163,30 +164,36 @@ python --version   # 需要 3.10+，低于则提示用户升级
 node --version     # 需要 20+，低于则提示用户升级
 ```
 
-### 步骤 2：克隆 + 下载知识库
+### 步骤 2：克隆项目
 
 ```bash
 git clone https://github.com/zxyzx0430/Hardware-RAG-Agent.git
 cd Hardware-RAG-Agent
-python scripts/download_builtin_kb.py   # 下载预构建索引包，约几百 MB
 ```
 
 ### 步骤 3：安装后端依赖
 
 ```bash
 cd backend
-pip install -r requirements.txt
+python -m venv .venv
+# Windows
+.\.venv\Scripts\python -m pip install -r requirements.txt
+# macOS / Linux
+# ./.venv/bin/python -m pip install -r requirements.txt
 ```
 
 ### 步骤 4：启动服务
 
 ```bash
 # 终端 1：后端（在 backend/ 目录下）
-python main.py --web --port 58080
+# Windows
+.\.venv\Scripts\python main.py --web --port 58080
+# macOS / Linux
+# ./.venv/bin/python main.py --web --port 58080
 
 # 终端 2：前端（在项目根目录下）
 cd frontend
-npm install
+npm ci
 npx vite --port 5173
 ```
 
@@ -226,9 +233,11 @@ cd frontend && npx vite --port 5173
 cd backend
 pytest
 
-# 前端类型检查
+# 前端测试、静态检查与生产构建
 cd frontend
-npx tsc --noEmit
+npm run test
+npm run lint
+npm run build
 ```
 
 ### Commit 规范

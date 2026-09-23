@@ -1,8 +1,8 @@
 fastapi==0.115.0
 uvicorn[standard]==0.30.0
 python-dotenv==1.0.1
-pydantic-settings==2.5.0
-openai==1.50.0
+pydantic-settings==2.14.1
+openai==2.41.0
 langchain==1.3.4
 langchain-openai==1.2.2
 langchain-text-splitters==1.1.2
@@ -11,18 +11,21 @@ langchain-chroma==1.1.0
 langchain-core==1.4.7
 # langchain-classic：self_query / multi_query retriever 依赖（pip 包名带横线）
 langchain-classic==1.0.8
-chromadb==0.5.0
+chromadb==1.5.9
 langgraph==1.2.4
 langgraph-checkpoint-sqlite==3.1.0
 jinja2==3.1.4
 rank-bm25==0.2.2
 # Reranker CrossEncoder 推理依赖（BAAI/bge-reranker-base）
 sentence-transformers==4.1.0
+# Transformers checks TorchCodec package metadata even for text-only imports.
+# The project shim falls back safely when FFmpeg shared libraries are absent.
+torchcodec==0.14.0
 jieba==0.42.1
 pytest==8.3.0
 pytest-asyncio==0.24.0
-httpx==0.27.0
-docling==2.0.0
+httpx==0.28.1
+docling==2.102.1
 # 运行时依赖（原缺失，导致新环境部署失败）
 aiofiles==24.1.0
 python-multipart==0.0.9
@@ -30,7 +33,7 @@ PyYAML==6.0.2
 cryptography==43.0.0
 sqlalchemy==2.0.35
 alembic==1.13.3
-pydantic==2.9.0
+pydantic==2.13.4
 # 串口通信
 pyserial==3.5
 # PlatformIO 编译烧录（Agent BuildTool/FlashTool 真实编译到 ESP32）
@@ -45,8 +48,6 @@ lxml==5.3.0
 html2text==2024.2.26
 # Embedding 缓存（避免重复入库重新打 API）
 diskcache==5.6.3
-# RAG 自动化评测（golden dataset + DeepEval）
-deepeval==1.5.5
 jsonschema==4.23.0
 # Prometheus 指标（B9 优化）— /metrics 端点 + 基础指标
 prometheus_client==0.21.1
