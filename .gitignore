@@ -32,6 +32,7 @@ dist/
 .trae/documents/
 *.err
 *.bak
+*.har
 agent_browser_test.har
 tmp_scan.txt
 test_verify.txt
@@ -91,6 +92,7 @@ frontend_network_recent.json
 
 # Test output
 scripts/output/
+scripts/output_opendataloader/
 scripts/audit/
 scripts/test_*.ps1
 scripts/verify_fixes.js
@@ -126,6 +128,7 @@ snap2.txt
 snapshot.txt
 
 # Root-level test screenshots
+/tmp/
 agent-browser-*.png
 agent_browser_*.png
 agent-browser-silent-fail-*.png
@@ -143,8 +146,14 @@ backend/stdout.txt
 backend/stderr.txt
 backend/test/
 backend/pio_project/
-backend/src/agent/hitl_permission.py
-backend/src/agent/hitl_sse.py
+
+# Local hardware/debug artifacts
+/backend/bme280-test/include/README
+/backend/bme280-test/test/README
+/inspect_kb.py
+/scripts/download_datasheets.ps1
+/scripts/gen_spec_pdfs.py
+/scripts/verify_pdfs.py
 
 # Frontend temp
 frontend-rewrite/
