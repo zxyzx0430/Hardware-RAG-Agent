@@ -13,7 +13,7 @@ const ActivityBlock = memo(function ActivityBlock({ activity, msgId, startTime }
   const isRunning = activity.status === 'running';
   // activityDone: activity 已结束（done/error/等），活跃流式期间为 false。
   // 用于阻止 pending step 在历史消息/已结束 activity 上启动定时器。
-  const activityDone = activity.status !== 'running' && activity.status !== 'pending';
+  const activityDone = activity.status !== 'running';
   // Expand by default while streaming so the user immediately sees RAG/thinking;
   // collapse once finished.
   const [collapsed, setCollapsed] = useState(!isRunning);

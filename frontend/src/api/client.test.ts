@@ -41,7 +41,7 @@ describe('apiPost unwrapResponse', () => {
   });
 
   it('throws ApiError on {success: false, error: ...}', async () => {
-    const { apiPost, ApiError } = await import('./client');
+    const { apiPost } = await import('./client');
     mockFetch.mockResolvedValueOnce({
       ok: true,
       json: async () => ({ success: false, error: { code: 'TEST_ERR', message: 'test error' } }),

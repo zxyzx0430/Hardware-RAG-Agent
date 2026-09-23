@@ -7,7 +7,7 @@ import { useI18n } from "../../i18n";
 
 export function TopBar() {
   const { t } = useI18n();
-  const { activeNav, rightPanelOpen, setRightPanelOpen, setRightMode } = useAppStore();
+  const { activeNav } = useAppStore();
   const { messages, activeSessionId } = useChatStore();
   const { sessions } = useSessionStore();
   const [hamburgerOpen, setHamburgerOpen] = useState(false);

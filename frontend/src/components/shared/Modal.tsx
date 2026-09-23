@@ -126,7 +126,7 @@ function buildConfirmStyle(danger?: boolean): React.CSSProperties {
 }
 
 /** 在 modal 卡片内循环焦点（Tab / Shift+Tab） */
-function useFocusTrap(cardRef: React.RefObject<HTMLDivElement>, active: boolean): void {
+function useFocusTrap(cardRef: React.RefObject<HTMLDivElement | null>, active: boolean): void {
   useEffect(() => {
     if (!active) return;
     const node = cardRef.current;
@@ -167,7 +167,7 @@ function useEscapeKey(active: boolean, onCancel: () => void): void {
 
 /** prompt 模式自动聚焦输入框并选中文本 */
 function useAutofocusInput(
-  cardRef: React.RefObject<HTMLDivElement>,
+  cardRef: React.RefObject<HTMLDivElement | null>,
   mode: string | null,
   visible: boolean,
 ): void {
@@ -188,7 +188,7 @@ function useAutofocusInput(
 
 /** confirm 模式自动聚焦确认按钮 */
 function useAutofocusConfirm(
-  cardRef: React.RefObject<HTMLDivElement>,
+  cardRef: React.RefObject<HTMLDivElement | null>,
   mode: string | null,
   visible: boolean,
 ): void {

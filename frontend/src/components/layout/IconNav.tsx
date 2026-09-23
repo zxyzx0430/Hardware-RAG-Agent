@@ -1,8 +1,6 @@
 import { useAppStore } from "../../stores/useAppStore";
 import { useI18n } from "../../i18n";
 
-const NAVS = ["chat", "knowledge", "bookmarks"] as const;
-
 export function IconNav() {
   const { activeNav, setActiveNav } = useAppStore();
   const { t } = useI18n();

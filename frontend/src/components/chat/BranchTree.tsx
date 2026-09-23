@@ -1,9 +1,7 @@
 import React, { useMemo } from "react";
 import { useSessionStore } from "../../stores/useSessionStore";
-import { useChatStore } from "../../stores/useChatStore";
 import { Modal } from "../shared/Modal";
 import { useI18n } from "../../i18n";
-import type { Session } from "../../types/session";
 
 interface BranchNode {
   sessionId: string;

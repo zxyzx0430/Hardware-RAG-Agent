@@ -4,7 +4,7 @@
  * These values are used as defaults when creating a new KB.
  * Individual KBs can override them.
  */
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useSettingsStore } from "../../stores/useSettingsStore";
 import { useKnowledgeStore } from "../../stores/useKnowledgeStore";
 import { useI18n } from "../../i18n";

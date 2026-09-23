@@ -265,10 +265,11 @@ export async function apiSSE(
     if (!res.ok) throw new Error(`SSE ${res.status}: ${res.statusText}`);
 
     getLog()("info", "sse", `SSE ${path} connected`);
-    // 连接超时已过，转为读超时：5 分钟无数据则断开
+    // 连接超时已过，转为读超时：30 分钟无数据则断开
+    // Agent 工具（编译/烧录/沙箱命令）可能长时间无输出，5 分钟太短
     if (connTimer) clearTimeout(connTimer);
     idleTimer = null;
-    const IDLE_TIMEOUT = 5 * 60 * 1000;
+    const IDLE_TIMEOUT = 30 * 60 * 1000;
     resetIdleTimer = () => {
       if (idleTimer) clearTimeout(idleTimer);
       idleTimer = setTimeout(() => {

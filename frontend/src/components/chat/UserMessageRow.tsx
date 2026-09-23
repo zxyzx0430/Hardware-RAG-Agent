@@ -1,5 +1,5 @@
 import { memo, useCallback } from "react";
-import type { ContentPart, Message } from "../../types/session";
+import type { Message } from "../../types/session";
 import { renderMessageContent as renderContent } from "../../utils/content";
 import { UserMessageContent } from "./UserMessageContent";
 import { copyToClipboard } from "../../utils/clipboard";
@@ -45,7 +45,7 @@ export const UserMessageRow = memo(function UserMessageRow({
   const handleCopy = useCallback(async () => {
     const text = renderContent(msg.content);
     const ok = await copyToClipboard(text);
-    if (ok) showSuccess(t('copySuccess', '已复制'));
+    if (ok) showSuccess(t('copySuccess'));
   }, [msg.content, showSuccess, t]);
 
   return (

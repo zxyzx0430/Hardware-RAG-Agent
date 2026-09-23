@@ -91,7 +91,7 @@ function SourcePanel() {
         messageId: m.id,
         messageIndex: idx,
         role: m.role,
-        preview: (m.content || "").slice(0, 60).replace(/\s+/g, " ").trim() || `消息 ${idx + 1}`,
+        preview: (typeof m.content === "string" ? m.content : "").slice(0, 60).replace(/\s+/g, " ").trim() || `消息 ${idx + 1}`,
         sources: [...(m.sources || [])]
           .map((s) => (s.messageId ? s : { ...s, messageId: m.id }))
           .sort((a, b) => (b.score ?? 0) - (a.score ?? 0)),

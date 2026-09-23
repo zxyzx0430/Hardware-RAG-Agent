@@ -118,6 +118,7 @@ export interface SourceRef {
   relevance_level?: 'high' | 'medium' | 'low' | string;
   citation?: string;
   excerpt: string;
+  language?: string;
   kb_id?: string;
   kb_name?: string;
   small_chunk_id?: string; // for fetching big_chunk_text via API
