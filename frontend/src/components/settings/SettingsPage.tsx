@@ -6,6 +6,7 @@ import { useChatStore } from "../../stores/useChatStore";
 import { useSessionStore, CONTEXT_WINDOW_256K, CONTEXT_WINDOW_1M } from "../../stores/useSessionStore";
 import { useLogStore } from "../../stores/useLogStore";
 import { useModalStore } from "../../stores/useModalStore";
+import { useToastStore } from "../../stores/useToastStore";
 import { useI18n } from "../../i18n";
 import { RagSettingsPanel } from "./RagSettingsPanel";
 import { TokenUsagePanel } from "./TokenUsagePanel";
@@ -33,9 +34,9 @@ export function SettingsPage() {
     mcpServers, webSearchConfig, showWebSearchKey, imageGenerationConfig, showImageGenerationKey,
     addProvider, removeProvider, updateProvider, verifyProvider, fetchProviderModels,
     setChatModel, setImageModel, setVisionModel,
-    updateSetting, toggleSkill, toggleMcpServer,
+    updateSetting, toggleSkill,
     setWebSearchKey, setWebSearchBaseUrl, toggleShowWebSearchKey,
-    setImageGenerationKey, setImageGenerationBaseUrl, setImageGenerationModel, toggleShowImageGenerationKey, addMcpServer,
+    setImageGenerationKey, setImageGenerationBaseUrl, setImageGenerationModel, toggleShowImageGenerationKey,
     fetchMCPServers, startMCPServer, stopMCPServer, addMCPServer, removeMCPServer,
     fetchTools,
   } = useSettingsStore();
@@ -101,7 +102,7 @@ export function SettingsPage() {
   );
 
   // MCP 服务器列表从 API 拉取
-  const { data: mcpServersData } = useQuery({
+  useQuery({
     queryKey: ["mcpServers"],
     queryFn: async () => {
       try {
@@ -175,7 +176,10 @@ export function SettingsPage() {
   }, [selectedProvider, removeProvider, lang, confirmDialog]);
 
   const handleAddMcpServer = async () => {
-    if (!mcpFormName.trim() || !mcpFormCommand.trim()) return;
+    if (!mcpFormName.trim() || !mcpFormCommand.trim()) {
+      useToastStore.getState().showWarning("请填写名称和命令");
+      return;
+    }
     const id = mcpFormName.trim().toLowerCase().replace(/\s+/g, '-');
     await addMCPServer({
       id,

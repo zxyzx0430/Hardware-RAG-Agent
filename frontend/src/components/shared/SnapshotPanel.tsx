@@ -4,6 +4,7 @@ import { useChatStore } from "../../stores/useChatStore";
 import { useAppStore } from "../../stores/useAppStore";
 import { useKnowledgeStore } from "../../stores/useKnowledgeStore";
 import { useModalStore } from "../../stores/useModalStore";
+import { useToastStore } from "../../stores/useToastStore";
 
 interface Snapshot {
   name: string;
@@ -77,7 +78,7 @@ export function SnapshotPanel() {
 
   const { messages } = useChatStore();
   const { setSnapshotPanelOpen } = useAppStore();
-  const { items: kbItems, setItems: setKbItems, toggleItem: toggleKbItem } = useKnowledgeStore();
+  const { items: kbItems, setItems: setKbItems } = useKnowledgeStore();
   const { confirmDialog } = useModalStore();
 
   useEffect(() => {
@@ -85,9 +86,15 @@ export function SnapshotPanel() {
   }, [snapshots]);
 
   const handleSave = useCallback(() => {
-    if (messages.length === 0) return;
+    if (messages.length === 0) {
+      useToastStore.getState().showWarning("没有消息可保存");
+      return;
+    }
     if (saving) {
-      if (!snapshotName.trim()) return;
+      if (!snapshotName.trim()) {
+        useToastStore.getState().showWarning("请输入快照名称");
+        return;
+      }
       const now = new Date();
       const timeStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
       const kbConfig = kbItems.map((item) => ({ id: item.id, enabled: item.enabled }));

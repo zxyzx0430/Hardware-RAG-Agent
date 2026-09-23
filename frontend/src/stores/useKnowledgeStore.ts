@@ -3,6 +3,7 @@ import type { KBDoc, BackendKBDoc, BackendKB, BackendChunk } from "../types/api"
 import type { KnowledgeBase, CreateKBRequest, KBCollectionDetail, ChunkDetail, DocChunk } from "../types/kb";
 import { apiGet, apiPost, apiDelete, apiPatch } from "../api/client";
 import { useLogStore } from "./useLogStore";
+import { useToastStore } from "./useToastStore";
 import { formatFileSize } from "../utils/format";
 
 // Re-export DocChunk so consumers can import from the store
@@ -137,6 +138,7 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
       }
     } catch {
       useLogStore.getState().log("error", "kb", "知识库列表加载失败");
+      useToastStore.getState().showError("加载文件列表失败");
     }
   },
 
@@ -465,6 +467,7 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
     } catch (e) {
       set({ docChunks: [], chunksLoading: false });
       useLogStore.getState().log("error", "kb", `加载文档片段失败: ${e instanceof Error ? e.message : String(e)}`);
+      useToastStore.getState().showError("加载文档分块失败");
     }
   },
 

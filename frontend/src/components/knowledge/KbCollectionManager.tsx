@@ -4,6 +4,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useKnowledgeStore } from "../../stores/useKnowledgeStore";
 import { useSettingsStore } from "../../stores/useSettingsStore";
+import { useToastStore } from "../../stores/useToastStore";
 import { useI18n } from "../../i18n";
 import type { CreateKBRequest, KBCollectionDetail } from "../../types/kb";
 import { CHUNK_METHOD_INFO } from "../../constants/chunkMethodInfo";
@@ -40,34 +41,6 @@ function getContextWindowForModel(model: string | null | undefined): number {
     if (stripped.includes(key) || key.includes(stripped)) return val;
   }
   return MODEL_DEFAULT_CONTEXT_WINDOW;
-}
-
-// ─── Model max tokens mapping (kept in sync with backend/src/llm/model_registry.py) ───
-const MODEL_MAX_TOKENS: Record<string, number> = {
-  "gpt-4o": 16384,
-  "gpt-4o-mini": 16384,
-  "gpt-4.1": 65536,
-  "gpt-4.1-mini": 65536,
-  "deepseek-v4": 8192,
-  "deepseek-v4-flash": 8192,
-  "deepseek-chat": 8192,
-  "qwen3-235b": 8192,
-  "qwen-plus": 8192,
-  "qwen-max": 8192,
-  "claude-3-5-sonnet": 8192,
-  "claude-3-5-haiku": 8192,
-};
-const MODEL_DEFAULT_MAX_TOKENS = 4096;
-
-function getMaxTokensForModel(model: string | null | undefined): number {
-  if (!model) return MODEL_DEFAULT_MAX_TOKENS;
-  if (MODEL_MAX_TOKENS[model]) return MODEL_MAX_TOKENS[model];
-  const stripped = model.includes("/") ? model.split("/").pop()! : model;
-  if (MODEL_MAX_TOKENS[stripped]) return MODEL_MAX_TOKENS[stripped];
-  for (const [key, val] of Object.entries(MODEL_MAX_TOKENS)) {
-    if (stripped.includes(key) || key.includes(stripped)) return val;
-  }
-  return MODEL_DEFAULT_MAX_TOKENS;
 }
 
 export function KbCollectionManager({ open, onClose }: Props) {
@@ -282,6 +255,7 @@ export function KbCollectionManager({ open, onClose }: Props) {
       await renameCollection(kbId, newName);
     } catch {
       // error already logged in store
+      useToastStore.getState().showError("重命名失败");
     }
   };
 

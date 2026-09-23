@@ -1,6 +1,7 @@
 import { useRef, useState, useEffect } from "react";
 import { useKnowledgeStore } from "../../stores/useKnowledgeStore";
 import { useLogStore } from "../../stores/useLogStore";
+import { useToastStore } from "../../stores/useToastStore";
 import { useAppStore } from "../../stores/useAppStore";
 import { useChatStore } from "../../stores/useChatStore";
 import { apiUploadWithProgress } from "../../api/client";
@@ -91,7 +92,10 @@ export function KnowledgePanel() {
   };
 
   const handleFiles = async (files: FileList | null | File[], methodOverride?: string) => {
-    if (!files?.length) return;
+    if (!files?.length) {
+      useToastStore.getState().showWarning("请选择文件");
+      return;
+    }
     setIsUploading(true);
     for (const file of Array.from(files)) {
       const formData = new FormData();

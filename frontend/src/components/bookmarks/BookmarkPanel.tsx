@@ -3,6 +3,7 @@ import { useChatStore } from "../../stores/useChatStore";
 import { useBookmarkStore } from "../../stores/useBookmarkStore";
 import { useAppStore } from "../../stores/useAppStore";
 import { useI18n } from "../../i18n";
+import { useToastStore } from "../../stores/useToastStore";
 import { renderMessageContent as renderContent } from "../../utils/content";
 
 const MINUTE_MS = 60 * 1000;
@@ -40,7 +41,10 @@ function FolderSelectDialog({
 
   const handleConfirmCreate = () => {
     const trimmed = name.trim();
-    if (!trimmed) return;
+    if (!trimmed) {
+      useToastStore.getState().showWarning("请输入书签夹名称");
+      return;
+    }
     const newId = onCreateFolder(trimmed);
     setName("");
     setCreating(false);
@@ -187,7 +191,10 @@ export function BookmarkPanel() {
 
   const handleNewFolder = () => {
     const name = newFolderName.trim();
-    if (!name) return;
+    if (!name) {
+      useToastStore.getState().showWarning("请输入文件夹名称");
+      return;
+    }
     addBookmarkFolder(name);
     setNewFolderName("");
     setNewFolderMode(false);

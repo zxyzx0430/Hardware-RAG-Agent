@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { loadFromStorage, saveToStorage } from "../utils/persistence";
 import { useLogStore } from "./useLogStore";
+import { useToastStore } from "./useToastStore";
 import { apiPost, apiGet, apiPut, apiPatch, apiDelete } from "../api/client";
 
 interface Skill { name: string; desc: string; enabled: boolean; group?: string; }
@@ -258,7 +259,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
               localStorage.setItem("session_token", data.session_token);
               useLogStore.getState().log("ok", "settings", `API Key 已加密存储并获取 session_token`);
             }
-          } catch (storeKeyErr) {
+          } catch {
             // store-key 401 → 后端已有 provider 但本机无 token，尝试 login 恢复会话
             try {
               const loginData = await apiPost<{ session_token?: string }>("auth/login", {
@@ -309,6 +310,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       }
       return [];
     } catch {
+      useToastStore.getState().showError("获取模型列表失败");
       return [];
     }
   },
@@ -398,6 +400,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       // 后端没改，本地状态保持不变
       console.warn(`toggleSkill failed: ${name}`, err);
       useLogStore.getState().log("warn", "settings", `切换技能失败: ${name} - ${err instanceof Error ? err.message : String(err)}`);
+      useToastStore.getState().showError("切换技能失败");
     }
   },
   toggleMcpServer: (name) => {
@@ -423,6 +426,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       }
     } catch (err) {
       useLogStore.getState().log("warn", "settings", `MCP 服务器列表获取失败: ${err instanceof Error ? err.message : String(err)}`);
+      useToastStore.getState().showError("获取 MCP 服务器列表失败");
     }
   },
   startMCPServer: async (id) => {
@@ -459,6 +463,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       await get().fetchMCPServers();
     } catch (err) {
       useLogStore.getState().log("error", "settings", `MCP 服务器删除失败: ${err instanceof Error ? err.message : String(err)}`);
+      useToastStore.getState().showError("删除 MCP 服务器失败");
     }
   },
   updateSetting: async (key, value) => {
@@ -506,7 +511,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         const patch: Partial<SettingsState> = {};
         for (const key of PERSIST_KEYS) {
           if (key in data) {
-            patch[key] = data[key] as SettingsState[typeof key];
+            Object.assign(patch, { [key]: data[key] });
           }
         }
         // 后端没有的字段（如 providers）保持本地值，不覆盖
@@ -514,6 +519,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       });
     } catch (err) {
       console.warn("fetchSettings failed", err);
+      useToastStore.getState().showError("加载设置失败");
     }
   },
 }));

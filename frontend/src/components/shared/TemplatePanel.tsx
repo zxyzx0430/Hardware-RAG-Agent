@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { useToastStore } from "../../stores/useToastStore";
 
 interface Template {
   name: string;
@@ -48,10 +49,16 @@ export function TemplatePanel({ onInsert, currentText }: TemplatePanelProps) {
   }, [templates]);
 
   const handleSave = useCallback(() => {
-    if (!currentText.trim()) return;
+    if (!currentText.trim()) {
+      useToastStore.getState().showWarning("内容不能为空");
+      return;
+    }
     if (saving) {
       // confirm name and save
-      if (!templateName.trim()) return;
+      if (!templateName.trim()) {
+        useToastStore.getState().showWarning("请输入模板名称");
+        return;
+      }
       setTemplates((prev) => [...prev, { name: templateName.trim(), content: currentText.trim() }]);
       setTemplateName("");
       setSaving(false);
