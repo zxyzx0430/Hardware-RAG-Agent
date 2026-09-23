@@ -46,6 +46,7 @@ interface ReadFileResponse {
   content?: string;
   is_text?: boolean;
   data_url?: string;
+  size?: number;
 }
 
 type SetFn = (fn: (state: AppState) => Partial<AppState> | AppState) => void;
@@ -66,6 +67,7 @@ function buildOpenFileItem(data: ReadFileResponse): OpenFileItem {
     pinned: false,
     is_text: data.is_text ?? true,
     data_url: data.data_url,
+    size: data.size,
   };
 }
 

@@ -3,7 +3,7 @@ import { useChatStore } from "../../stores/useChatStore";
 import { useBookmarkStore } from "../../stores/useBookmarkStore";
 import { useAppStore } from "../../stores/useAppStore";
 import { useSessionStore } from "../../stores/useSessionStore";
-import type { ContentPart, Message, SourceRef } from "../../types/session";
+import type { ActivityStep, ContentPart, SourceRef } from "../../types/session";
 import { MarkdownRenderer } from "../shared/MarkdownRenderer";
 import { copyToClipboard } from "../../utils/clipboard";
 import { useI18n } from "../../i18n";
@@ -17,7 +17,7 @@ import { EmptyState } from "./EmptyState";
 
 // 模块级常量：历史消息传这些稳定引用，避免 memo 浅比较失效。
 // 流式 props（streamingSteps 等）每 token 都变，若传给所有消息会导致所有 memo 失效。
-const EMPTY_STEPS: any[] = [];
+const EMPTY_STEPS: ActivityStep[] = [];
 const EMPTY_SOURCES: SourceRef[] = [];
 
 // 滚动相关常量（避免魔法数字）
@@ -64,7 +64,6 @@ export function ChatArea() {
   const bookmarkFolders = useBookmarkStore((s) => s.bookmarkFolders);
   const addBookmarkToFolder = useBookmarkStore((s) => s.addBookmarkToFolder);
   const addBookmarkFolder = useBookmarkStore((s) => s.addBookmarkFolder);
-  const setBookmarkTargetMsgId = useBookmarkStore((s) => s.setBookmarkTargetMsgId);
 
   const chatFontSize = useAppStore((s) => s.chatFontSize);
   const setRightPanelOpen = useAppStore((s) => s.setRightPanelOpen);
@@ -420,7 +419,7 @@ export function ChatArea() {
             bookmarkFolders={bookmarkFolders}
             // 关键：历史消息传模块级常量（引用稳定），只有流式中的消息传真实值
             streamingSteps={isCurrentlyStreaming ? streamingSteps : EMPTY_STEPS}
-            streamingStartTime={isCurrentlyStreaming ? streamingStartTime : undefined}
+            streamingStartTime={isCurrentlyStreaming ? streamingStartTime ?? undefined : undefined}
             streamingError={msg.id === lastAssistantMsgId ? streamingError : null}
             streamingSources={isCurrentlyStreaming ? streamingSources : EMPTY_SOURCES}
             t={t}

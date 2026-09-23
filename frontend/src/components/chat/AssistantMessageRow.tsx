@@ -1,5 +1,5 @@
 import { memo, useCallback } from "react";
-import type { ContentPart, Message, SourceRef } from "../../types/session";
+import type { ActivityStep, ContentPart, Message, SourceRef } from "../../types/session";
 import { useBookmarkStore } from "../../stores/useBookmarkStore";
 import { AssistantMessageContent } from "./AssistantMessageContent";
 import ActivityBlock from "./ActivityBlock";
@@ -18,7 +18,7 @@ export interface AssistantMessageRowProps {
   pickerMsgId: string | null;
   pickerNewName: string;
   bookmarkFolders: Array<{ id: string; name: string }>;
-  streamingSteps: any[];
+  streamingSteps: ActivityStep[];
   streamingStartTime?: number;
   streamingError: { code: string; message: string; detail?: string } | null;
   streamingSources: SourceRef[];
@@ -53,7 +53,6 @@ export const AssistantMessageRow = memo(function AssistantMessageRow(props: Assi
     streamingSteps,
     streamingStartTime,
     streamingError,
-    streamingSources,
     t,
     onSourceClick,
     onPushCodeToPreview,

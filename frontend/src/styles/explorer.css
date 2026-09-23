@@ -63,6 +63,8 @@
   background: transparent;
   position: relative;
   transition: background 0.2s;
+  align-self: stretch;
+  height: 100%;
 }
 
 .explorer-resizer::after {
@@ -909,6 +911,7 @@
   background: var(--bg);
   cursor: zoom-in;
   overflow: auto;
+  position: relative;
 }
 
 .editor-image-preview img {
@@ -916,10 +919,18 @@
   max-height: 100%;
   object-fit: contain;
   border-radius: var(--radius-sm);
+  transition: transform 0.05s ease-out;
 }
 
-.editor-image-preview img.zoomed {
-  max-width: none;
-  max-height: none;
-  cursor: zoom-out;
+.editor-image-zoom-label {
+  position: fixed;
+  bottom: 12px;
+  right: 12px;
+  padding: 2px 8px;
+  background: var(--bg-overlay, rgba(0, 0, 0, 0.6));
+  color: var(--text-inverse, #fff);
+  font-size: 12px;
+  border-radius: 4px;
+  pointer-events: none;
+  z-index: 10;
 }

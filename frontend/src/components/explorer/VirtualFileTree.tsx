@@ -29,6 +29,7 @@ interface RowData {
   focusedPath?: string;
   newItemPlaceholder: { file: string; folder: string };
   onToggle: (node: FileNode) => void;
+  onRetry?: (node: FileNode) => void;
   onSelect: (node: FileNode, e: React.MouseEvent, siblings: FileNode[]) => void;
   onContextMenu: (node: FileNode, e: React.MouseEvent) => void;
   onFinishRename: (path: string, newName: string) => void;
@@ -81,6 +82,7 @@ function FileTreeRow({ index, style, data }: ListChildComponentProps<RowData>) {
     focusedPath,
     newItemPlaceholder,
     onToggle,
+    onRetry,
     onSelect,
     onContextMenu,
     onFinishRename,
@@ -111,7 +113,7 @@ function FileTreeRow({ index, style, data }: ListChildComponentProps<RowData>) {
     onSelect(node, e, siblings.length > 0 ? siblings : [node]);
     if (e.ctrlKey || e.shiftKey || e.metaKey) return;
     if (isDir) onToggle(node);
-    else if (isTextFile(node.name)) void openFile(node.path);
+    else void openFile(node.path);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -126,7 +128,7 @@ function FileTreeRow({ index, style, data }: ListChildComponentProps<RowData>) {
       case " ":
         e.preventDefault();
         if (isDir) onToggle(node);
-        else if (isTextFile(node.name)) void openFile(node.path);
+        else void openFile(node.path);
         break;
       default:
         break;
@@ -221,7 +223,7 @@ function FileTreeRow({ index, style, data }: ListChildComponentProps<RowData>) {
       {isDir && isExpanded && dirError && (
         <div className="explorer-tree-error-hint" style={{ paddingLeft: indent + INDENT_PX }}>
           <span>{t("loadDirFailed", "加载失败")}: {dirError}</span>
-          <button type="button" className="explorer-tree-retry-btn" onClick={() => onToggle(node)}>
+          <button type="button" className="explorer-tree-retry-btn" onClick={() => onRetry?.(node)}>
             {t("retry", "重试")}
           </button>
         </div>
@@ -244,6 +246,7 @@ interface VirtualFileTreeProps {
   focusedPath?: string;
   newItemPlaceholder: { file: string; folder: string };
   onToggle: (node: FileNode) => void;
+  onRetry?: (node: FileNode) => void;
   onSelect: (node: FileNode, e: React.MouseEvent, siblings: FileNode[]) => void;
   onContextMenu: (node: FileNode, e: React.MouseEvent) => void;
   onFinishRename: (path: string, newName: string) => void;

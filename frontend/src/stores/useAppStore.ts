@@ -5,6 +5,8 @@ import {
   getDefaultRightPanelOpen,
   loadRightPanelWidth,
   saveRightPanelWidth,
+  loadInputBarWidth,
+  saveInputBarWidth,
   loadBoolean,
   loadNumber,
   loadStringArray,
@@ -18,7 +20,6 @@ import {
   RECENT_FOLDERS_KEY,
   DEFAULT_EXPLORER_WIDTH,
 } from "./appStore/persistence";
-import type { Theme, Lang, NavView, RightMode, WbTab, PreviewTab } from "../types";
 import type { AppState } from "./appStore/types";
 import { createExplorerActions } from "./appStore/explorerActions";
 
@@ -30,6 +31,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   rightPanelOpen: getDefaultRightPanelOpen(),
   leftPanelWidth: 280,
   rightPanelWidth: loadRightPanelWidth(),
+  inputBarWidth: loadInputBarWidth(),
   rightMode: "workbench",
   wbTab: "serial",
   workbenchUserOverride: false,
@@ -84,6 +86,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   setRightPanelWidth: (rightPanelWidth) => {
     saveRightPanelWidth(rightPanelWidth);
     set({ rightPanelWidth });
+  },
+  setInputBarWidth: (inputBarWidth) => {
+    saveInputBarWidth(inputBarWidth);
+    set({ inputBarWidth });
   },
   setRightMode: (rightMode) => set({ rightMode }),
   setWbTab: (wbTab, source = "user") =>

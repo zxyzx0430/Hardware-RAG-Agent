@@ -1,4 +1,4 @@
-import { useState, useCallback, lazy, Suspense, useEffect, memo, useMemo } from "react";
+import { useState, useCallback, lazy, Suspense, useEffect, memo, useMemo, type ComponentProps } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { copyToClipboard } from "../../utils/clipboard";
@@ -80,6 +80,7 @@ const LANG_LABELS: Record<string, string> = {
 };
 
 /** 根据 app store 中的 themeMode 与 html.dark 类判断当前是否为深色模式 */
+// eslint-disable-next-line react-refresh/only-export-components -- Shared hook is also used by the editor.
 export function useAppliedDarkMode(): boolean {
   const themeMode = useAppStore((s) => s.themeMode);
   const [isDarkClass, setIsDarkClass] = useState(() =>
@@ -240,7 +241,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
   // 缓存 components 对象，避免 ReactMarkdown 内部缓存失效
   const components = useMemo(
     () => ({
-      code({ className, children, ...props }: any) {
+      code({ className, children, ...props }: ComponentProps<"code">) {
         const match = /language-(\w+)/.exec(className || "");
         const codeStr = String(children).replace(/\n$/, "");
         // 判断是否为代码块（有语言标记或包含换行）
@@ -263,7 +264,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
         );
       },
       // 表格样式
-      table({ children }: any) {
+      table({ children }: ComponentProps<"table">) {
         return (
           <div className="table-wrapper">
             <table>{children}</table>
@@ -271,7 +272,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
         );
       },
       // 链接处理：src 引用按钮 vs 外部链接
-      a({ href, children }: any) {
+      a({ href, children }: ComponentProps<"a">) {
         if (href && href.startsWith('#src-')) {
           const n = parseInt(href.slice(5), 10);
           const relClass = srcRelevanceClass(n, sources);

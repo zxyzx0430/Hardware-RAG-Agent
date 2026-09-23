@@ -31,6 +31,9 @@ export interface OpenFileItem {
   is_text?: boolean;
   // data: URL used to render binary image previews when is_text === false.
   data_url?: string;
+  size?: number;
+  mime?: string;
+  hex_preview?: string;
 }
 
 export interface ShortcutAction {

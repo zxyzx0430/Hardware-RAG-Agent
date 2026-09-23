@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { Modal } from "../shared/Modal";
 import { useI18n } from "../../i18n";
 import type { OpenFileItem } from "../../types";
@@ -111,15 +111,45 @@ export function EditorTabItem({
   );
 }
 
+const MIN_SCALE = 0.1;
+const MAX_SCALE = 10;
+const WHEEL_ZOOM_STEP = 0.15;
+
 export function ImagePreview({ file }: { file: OpenFileItem }) {
   const { t } = useI18n();
-  const [zoomed, setZoomed] = useState(false);
+  const [scale, setScale] = useState(1);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const handleWheel = useCallback((e: React.WheelEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setScale((prev) => {
+      const delta = e.deltaY < 0 ? 1 + WHEEL_ZOOM_STEP : 1 - WHEEL_ZOOM_STEP;
+      const next = Math.round(prev * delta * 100) / 100;
+      return Math.min(MAX_SCALE, Math.max(MIN_SCALE, next));
+    });
+  }, []);
+
+  const handleClick = useCallback(() => {
+    setScale((prev) => (prev === 1 ? 2 : 1));
+  }, []);
+
   if (!file.data_url) {
     return <div className="editor-empty">{t("previewNotSupported", "此文件类型不支持预览")}</div>;
   }
   return (
-    <div className="editor-image-preview" onClick={() => setZoomed((z) => !z)}>
-      <img src={file.data_url} alt={file.name} className={zoomed ? "zoomed" : ""} />
+    <div
+      ref={containerRef}
+      className="editor-image-preview"
+      onWheel={handleWheel}
+      onClick={handleClick}
+    >
+      <img
+        src={file.data_url}
+        alt={file.name}
+        style={{ transform: `scale(${scale})`, transformOrigin: "center center" }}
+      />
+      <span className="editor-image-zoom-label">{Math.round(scale * 100)}%</span>
     </div>
   );
 }

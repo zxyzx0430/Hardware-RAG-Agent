@@ -23,8 +23,10 @@ export type { FileNode } from "./treeUtils";
 const MAX_BATCH = 500;
 // Maximum number of items that can be moved by one drag-and-drop gesture.
 const MAX_BATCH_MOVE = 50;
-// Switch to virtual scrolling when the visible tree exceeds this many nodes.
-const VIRTUAL_SCROLL_THRESHOLD = 300;
+// Virtual scroll hysteresis: enter virtual mode above ENTER, exit below EXIT.
+// This prevents flickering when the visible node count hovers around a single threshold.
+const VIRTUAL_SCROLL_ENTER = 400;
+const VIRTUAL_SCROLL_EXIT = 200;
 
 function countVisibleNodes(node: FileNode, expanded: Set<string>): number {
   let count = 1;
@@ -137,6 +139,12 @@ export function FileTree({
   const virtualListRef = useRef<{ scrollToItem: (index: number, align?: string) => void } | null>(null);
   const typeAheadRef = useRef("");
   const typeAheadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Refs that always hold the latest state — used inside async callbacks to avoid
+  // stale closures and to keep callback identities stable (no state in deps).
+  const expandedRef = useRef(expanded);
+  const loadingDirPathsRef = useRef(loadingDirPaths);
+  useEffect(() => { expandedRef.current = expanded; }, [expanded]);
+  useEffect(() => { loadingDirPathsRef.current = loadingDirPaths; }, [loadingDirPaths]);
   const { t } = useI18n();
 
   const showError = useCallback((message: string) => {
@@ -154,8 +162,7 @@ export function FileTree({
 
   const handleToggle = useCallback(async (node: FileNode) => {
     const path = node.path;
-    const isExpanded = expanded.has(path);
-    if (isExpanded) {
+    if (expandedRef.current.has(path)) {
       setExpanded((prev) => {
         const next = new Set(prev);
         next.delete(path);
@@ -163,11 +170,19 @@ export function FileTree({
       });
       return;
     }
-    if (node.type === "directory" && node.lazy && !loadingDirPaths.has(path)) {
+    if (node.type === "directory" && node.lazy && !loadingDirPathsRef.current.has(path)) {
       await onLoadNodeChildren(path);
     }
-    setExpanded((prev) => new Set([...prev, path]));
-  }, [expanded, loadingDirPaths, onLoadNodeChildren, setExpanded]);
+    // Only expand if not already expanded — user may have toggled during await.
+    setExpanded((prev) => prev.has(path) ? prev : new Set([...prev, path]));
+  }, [onLoadNodeChildren, setExpanded]);
+
+  // Retry button: re-load directory children without toggling expansion state.
+  const handleRetry = useCallback(async (node: FileNode) => {
+    if (node.type === "directory") {
+      await onLoadNodeChildren(node.path);
+    }
+  }, [onLoadNodeChildren]);
 
   const expandTo = useCallback((path: string) => {
     setExpanded((prev) => new Set([...prev, path]));
@@ -391,7 +406,16 @@ export function FileTree({
   }, [filteredTree, searchQuery]);
   const matchCount = useMemo(() => countMatches(highlightedTree ?? tree, searchQuery.trim()), [highlightedTree, tree, searchQuery]);
   const visibleCount = useMemo(() => (highlightedTree ? countVisibleNodes(highlightedTree, expanded) : 0), [highlightedTree, expanded]);
-  const useVirtual = visibleCount > VIRTUAL_SCROLL_THRESHOLD;
+  // Hysteresis: only switch virtual/normal when crossing the wide band, not on every
+  // small change around a single threshold. Prevents tree flicker/jitter.
+  const [useVirtual, setUseVirtual] = useState(false);
+  useEffect(() => {
+    setUseVirtual((prev) => {
+      if (prev && visibleCount < VIRTUAL_SCROLL_EXIT) return false;
+      if (!prev && visibleCount > VIRTUAL_SCROLL_ENTER) return true;
+      return prev;
+    });
+  }, [visibleCount]);
   const visiblePaths = useMemo(
     () => (highlightedTree ? collectVisiblePaths(highlightedTree, expanded) : []),
     [highlightedTree, expanded],
@@ -581,6 +605,7 @@ export function FileTree({
     dirErrors,
     newItemPlaceholder,
     onToggle: handleToggle,
+    onRetry: handleRetry,
     onSelect: handleSelect,
     onContextMenu: handleContextMenu,
     onFinishRename: handleRename,

@@ -34,6 +34,40 @@ function replaceNodeChildren(node: FileNode, targetPath: string, children: FileN
   };
 }
 
+/**
+ * Merge a freshly-loaded tree with the previous tree, preserving already-loaded
+ * directory children (lazy=false). This prevents watcher refreshes from resetting
+ * loaded directories back to lazy=true and losing their children.
+ */
+function mergeTreeDataFresh(prev: FileNode, fresh: FileNode): FileNode {
+  // If the fresh node is not lazy (already has children loaded on the backend side),
+  // or the previous node was already loaded, keep the loaded children.
+  if (fresh.type === "directory" && prev.type === "directory" && prev.path === fresh.path) {
+    if (fresh.lazy && !prev.lazy && prev.children) {
+      // Previous tree had loaded children; preserve them instead of resetting to lazy.
+      return {
+        ...fresh,
+        lazy: false,
+        children: prev.children.map((pc) => {
+          const freshChild = fresh.children?.find((fc) => fc.path === pc.path);
+          return freshChild ? mergeTreeDataFresh(pc, freshChild) : pc;
+        }),
+      };
+    }
+    if (!fresh.lazy && fresh.children && prev.children) {
+      // Both have children — recurse to preserve deeper loaded dirs.
+      return {
+        ...fresh,
+        children: fresh.children.map((fc) => {
+          const prevChild = prev.children!.find((pc) => pc.path === fc.path);
+          return prevChild ? mergeTreeDataFresh(prevChild, fc) : fc;
+        }),
+      };
+    }
+  }
+  return fresh;
+}
+
 const HIGHLIGHT_DURATION_MS = 3000;
 // Tree pane width bounds (px), persisted to localStorage
 const TREE_PANE_MIN = 180;
@@ -99,6 +133,15 @@ export function ExplorerPanel() {
   const expectedPathRef = useRef<string | null>(null);
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevRootRef = useRef(rootPath);
+  // Refs that always hold the latest state — used inside async callbacks to avoid
+  // stale closures and to keep callback identities stable (no state in deps).
+  const expandedRef = useRef(expanded);
+  const loadingDirPathsRef = useRef(loadingDirPaths);
+  const treeRef = useRef(tree);
+
+  useEffect(() => { expandedRef.current = expanded; }, [expanded]);
+  useEffect(() => { loadingDirPathsRef.current = loadingDirPaths; }, [loadingDirPaths]);
+  useEffect(() => { treeRef.current = tree; }, [tree]);
 
   const showError = useCallback((message: string) => {
     useToastStore.getState().showError(message);
@@ -149,15 +192,20 @@ export function ExplorerPanel() {
       if (token !== loadTokenRef.current) return;
       const first = res.tree[0];
       if (first) {
-        setTree(first);
+        // Merge with previous tree to preserve already-loaded directory children.
+        // This prevents silent refreshes from resetting lazy=false dirs back to lazy=true.
+        const prevTree = treeRef.current;
+        const merged = (silent && prevTree && prevTree.path === first.path)
+          ? mergeTreeDataFresh(prevTree, first)
+          : first;
+        setTree(merged);
         if (!silent) {
           setExplorerRootPath(first.path);
           addRecentFolder(first.path);
         }
-        // Restore previously-expanded directories on the freshly loaded tree.
-        const lazyExpanded = collectLazyExpandedPaths(first, expanded);
+        // Restore previously-expanded directories that are still lazy (not yet loaded).
+        const lazyExpanded = collectLazyExpandedPaths(merged, expandedRef.current);
         if (lazyExpanded.length > 0) {
-          // Limit concurrent directory loads to avoid overwhelming the backend.
           const CONCURRENCY = 10;
           for (let i = 0; i < lazyExpanded.length; i += CONCURRENCY) {
             if (token !== loadTokenRef.current) return;
@@ -172,7 +220,7 @@ export function ExplorerPanel() {
     } finally {
       if (token === loadTokenRef.current && !silent) setLoading(false);
     }
-  }, [addRecentFolder, setExplorerRootPath, showError, t, expanded, fetchAndReplaceChildren]);
+  }, [addRecentFolder, setExplorerRootPath, showError, t, fetchAndReplaceChildren]);
 
   const refreshTree = useCallback(async () => {
     const path = expectedPathRef.current;
@@ -181,7 +229,7 @@ export function ExplorerPanel() {
   }, [loadTree]);
 
   const loadNodeChildren = useCallback(async (path: string) => {
-    if (loadingDirPaths.has(path)) return;
+    if (loadingDirPathsRef.current.has(path)) return;
     setLoadingDirPaths((prev) => new Set([...prev, path]));
     setDirErrors((prev) => {
       const next = new Map(prev);
@@ -200,7 +248,7 @@ export function ExplorerPanel() {
         return next;
       });
     }
-  }, [loadingDirPaths, fetchAndReplaceChildren]);
+  }, [fetchAndReplaceChildren]);
 
   // Drag the vertical divider to resize the tree pane width live.
   const handleResizerMouseDown = useCallback((e: React.MouseEvent) => {
@@ -271,7 +319,11 @@ export function ExplorerPanel() {
 
   const handleWatchEvent = useCallback((event: WatchEvent) => {
     if (event.type === "heartbeat") return;
-    debouncedRefresh();
+    // Only structural events (create/delete/rename) need a tree refresh.
+    // "change" events (file content modified) don't affect the tree structure.
+    if (event.type !== "change") {
+      debouncedRefresh();
+    }
     if (event.type === "change" && event.path) {
       const state = useAppStore.getState();
       const isOpen = state.openFiles.some((f) => f.path === event.path);

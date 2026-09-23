@@ -25,6 +25,7 @@ interface TreeNodeProps {
   siblings: FileNode[];
   newItemPlaceholder: { file: string; folder: string };
   onToggle: (node: FileNode) => void;
+  onRetry?: (node: FileNode) => void;
   onSelect: (node: FileNode, e: React.MouseEvent, siblings: FileNode[]) => void;
   onContextMenu: (node: FileNode, e: React.MouseEvent) => void;
   onDragStart: (path: string) => void;
@@ -78,7 +79,7 @@ export function FileTreeNode(props: TreeNodeProps) {
   const {
     node, depth, expanded, highlightPaths, selectedPaths, renaming, creating, dragOverPath,
     draggingPaths, loadingDirPaths, dirErrors, focusedPath, siblings, newItemPlaceholder,
-    onToggle, onSelect, onContextMenu,
+    onToggle, onRetry, onSelect, onContextMenu,
     onDragStart, onDragEnd, onDragOver, onDragLeave, onDrop,
     onFinishRename, onFinishCreate, onFocusNode,
   } = props;
@@ -111,7 +112,7 @@ export function FileTreeNode(props: TreeNodeProps) {
     onSelect(node, e, siblings);
     if (e.ctrlKey || e.shiftKey || e.metaKey) return;
     if (isDir) onToggle(node);
-    else if (isTextFile(node.name)) void openFile(node.path);
+    else void openFile(node.path);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -134,7 +135,7 @@ export function FileTreeNode(props: TreeNodeProps) {
       case " ":
         e.preventDefault();
         if (isDir) onToggle(node);
-        else if (isTextFile(node.name)) void openFile(node.path);
+        else void openFile(node.path);
         break;
       default:
         break;
@@ -254,7 +255,7 @@ export function FileTreeNode(props: TreeNodeProps) {
           {dirError && (
             <div className="explorer-tree-error-hint" style={{ paddingLeft: indent + INDENT_PX }}>
               <span>{t("loadDirFailed", "加载失败")}: {dirError}</span>
-              <button type="button" className="explorer-tree-retry-btn" onClick={() => onToggle(node)}>
+              <button type="button" className="explorer-tree-retry-btn" onClick={() => onRetry?.(node)}>
                 {t("retry", "重试")}
               </button>
             </div>

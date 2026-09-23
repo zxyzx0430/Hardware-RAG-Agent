@@ -20,6 +20,7 @@ export interface AppState {
   rightPanelOpen: boolean;
   leftPanelWidth: number;
   rightPanelWidth: number;
+  inputBarWidth: number;
   rightMode: RightMode;
   // 工作台
   wbTab: WbTab;
@@ -68,6 +69,7 @@ export interface AppState {
   setRightPanelOpen: (o: boolean) => void;
   setLeftPanelWidth: (w: number) => void;
   setRightPanelWidth: (w: number) => void;
+  setInputBarWidth: (w: number) => void;
   setRightMode: (m: RightMode) => void;
   setWbTab: (t: WbTab, source?: "user" | "bridge") => void;
   setWorkbenchUserOverride: (val: boolean) => void;
