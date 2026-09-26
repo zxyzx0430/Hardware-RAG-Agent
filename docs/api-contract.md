@@ -280,9 +280,9 @@
 
 ### 2.17 SSE 连接管理
 
-- 后端设置响应超时：聊天 SSE 建议 5 分钟内无新 token 则自动断开。
-- 前端自动重连策略：聊天 SSE 断开后按 1s → 2s → 4s → 8s → 16s 指数退避重试，最长间隔 30 秒。
-- 编译、烧录 SSE 不自动重连，由用户手动触发。
+- Agent 聊天流在等待模型或工具期间每 15 秒发送一次 `heartbeat`；基础 LLM 回退流也每 15 秒发送心跳，并在 5 分钟无新数据后结束。
+- 前端聊天流在 45 秒未收到任何数据时结束等待并报告连接超时。断线后不自动重放请求，由用户决定是否重试，避免重复执行 Agent 工具。
+- 编译、烧录 SSE 的前端读超时保持 30 分钟；断开后由用户手动触发。
 - 后端主动关闭前先发送 `type: "error"` 事件再断开。
 
 ### 2.18 WebSocket 重连策略
@@ -449,6 +449,7 @@
 | `source` | RAG 检索到来源时 | `id`、`title`、`doc`、`page`、`score`、`excerpt` |
 | `todo_update` | Agent 更新任务清单（todo_write 工具） | `todos`（含 `content`/`status`/`priority`） |
 | `progress` | 长任务进度更新（编译/烧录/循环提示等） | `percent`、`message` |
+| `heartbeat` | 长时间等待模型或工具时保持连接 | 无业务字段 |
 | `done` | 流结束时 | `success`、`usage?` |
 | `error` | 出错时（含 `code` + `message`） | `code`、`message` |
 
@@ -2238,6 +2239,7 @@
 | 2026-07-08 | Explorer 接口补充：`GET /api/explorer/dir?path=` 支持目录懒加载；`FileNode` 新增 `lazy` 字段说明 | Trae |
 | 2026-09-23 | `/api/upload`：模式 2 编译成功改为非终态提示；终态 `done` 延至端口锁释放后发送，串口监视按烧录前的连接状态/端口/波特率自动恢复；明确 `verified` 状态不等于实机硬件验收 | Codex |
 | 2026-09-23 | §3.4 补充六条功能线的跨接口交接和单一写入规则；未改变 API 字段或状态 | Codex |
+| 2026-09-26 | §2.17 对齐聊天心跳、45 秒无数据报错和手动重试行为；§5.1 补充 `heartbeat` 事件 | Codex |
 
 ## 8. 包工头检查清单
 

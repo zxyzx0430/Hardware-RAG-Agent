@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 # Cap how many tool_calls from a single chunk are surfaced as SSE events.
 MAX_TOOL_CALLS_DISPLAY: int = 3
+AGENT_HEARTBEAT_INTERVAL = 15
 
 
 # ═══════════════════════════════════════════
@@ -412,7 +413,13 @@ async def _merge_agent_and_tool_events(
         agent_done = False
         queue_done = False
         while not (agent_done and queue_done):
-            item = await outgoing.get()
+            try:
+                item = await asyncio.wait_for(
+                    outgoing.get(), timeout=AGENT_HEARTBEAT_INTERVAL
+                )
+            except asyncio.TimeoutError:
+                yield {"source": "tool_event", "event": {"type": "heartbeat"}}
+                continue
             source = item.get("source")
             if source == "agent_done":
                 agent_done = True

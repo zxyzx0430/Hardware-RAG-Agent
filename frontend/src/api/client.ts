@@ -265,11 +265,11 @@ export async function apiSSE(
     if (!res.ok) throw new Error(`SSE ${res.status}: ${res.statusText}`);
 
     getLog()("info", "sse", `SSE ${path} connected`);
-    // 连接超时已过，转为读超时：30 分钟无数据则断开
-    // Agent 工具（编译/烧录/沙箱命令）可能长时间无输出，5 分钟太短
+    // Chat sends heartbeats every 15s, so a shorter idle limit detects a lost backend.
+    // Build and upload may be silent for longer and retain the existing limit.
     if (connTimer) clearTimeout(connTimer);
     idleTimer = null;
-    const IDLE_TIMEOUT = 30 * 60 * 1000;
+    const IDLE_TIMEOUT = path === "chat" ? 45_000 : 30 * 60 * 1000;
     resetIdleTimer = () => {
       if (idleTimer) clearTimeout(idleTimer);
       idleTimer = setTimeout(() => {
@@ -370,7 +370,9 @@ export async function apiSSE(
         return;
       }
       // reader.read() threw (network error, stream aborted by server, etc.)
-      const errMsg = readErr instanceof Error ? readErr.message : String(readErr);
+      const errMsg = abortedByTimeout
+        ? "连接超时，请检查网络或后端是否运行"
+        : (readErr instanceof Error ? readErr.message : String(readErr));
       getLog()("error", "sse", `SSE ${path} read error: ${errMsg}`);
       callbacks.onError?.(new Error(`SSE 读取异常: ${errMsg}`));
       return;

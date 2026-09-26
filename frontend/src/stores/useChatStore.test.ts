@@ -195,6 +195,26 @@ describe("useChatStore", () => {
     expect(store.getState().currentSseRequest).toBeNull();
   });
 
+  it("聊天连接超时时停止生成并保留已收到的回答", async () => {
+    const store = await importStore();
+    store.setState({
+      messages: [],
+      sessionMessages: {},
+      activeSessionId: "disconnect-session",
+      isStreaming: false,
+    });
+
+    store.getState().sendMessage("测试断线");
+    capturedCallbacks!.onEvent({ type: "text", content: "已收到的内容" });
+    capturedCallbacks!.onError!(new Error("连接超时，请检查网络或后端是否运行"));
+
+    expect(store.getState().isStreaming).toBe(false);
+    expect(store.getState().streamingSessionId).toBeNull();
+    expect(store.getState().currentSseRequest).toBeNull();
+    expect(store.getState().sessionMessages["disconnect-session"][1].content).toContain("已收到的内容");
+    expect(store.getState().sessionMessages["disconnect-session"][1].content).toContain("连接超时");
+  });
+
   it("stopStreaming 清理全局状态并把内容写回当前会话", async () => {
     const store = await importStore();
     store.setState({
@@ -502,11 +522,12 @@ describe("useChatStore", () => {
   });
 
   it("助手消息部分保存失败后，刷新仍可重试保存且不会重放聊天请求", async () => {
-    saveToStorage("sessions", [{ id: "s1" }]);
+    const sessionId = "retry-save-session";
+    saveToStorage("sessions", [{ id: sessionId }]);
     const serverMessages = new Map<string, Record<string, unknown>>();
     let assistantFailuresRemaining = 2;
     apiPostMock.mockImplementation(async (path: string, payload: Record<string, unknown>) => {
-      if (path !== "sessions/s1/messages") return { success: true, data: {} };
+      if (path !== `sessions/${sessionId}/messages`) return { success: true, data: {} };
       if (payload.role === "assistant" && assistantFailuresRemaining > 0) {
         assistantFailuresRemaining -= 1;
         throw new Error("503 simulated write failure");
@@ -520,7 +541,7 @@ describe("useChatStore", () => {
     store.setState({
       messages: [],
       sessionMessages: {},
-      activeSessionId: "s1",
+      activeSessionId: sessionId,
       isStreaming: false,
     });
     store.getState().sendMessage("需重试的问题");
@@ -536,36 +557,37 @@ describe("useChatStore", () => {
     });
     capturedCallbacks!.onDone!();
 
-    await vi.waitFor(() => expect(store.getState().pendingSaveBySession?.s1).toBe("pending"));
-    const [userId, assistantId] = store.getState().sessionMessages.s1.map((message) => message.id);
+    await vi.waitFor(() => expect(store.getState().pendingSaveBySession?.[sessionId]).toBe("pending"));
+    const [userId, assistantId] = store.getState().sessionMessages[sessionId].map((message) => message.id);
     expect(serverMessages.has(userId)).toBe(true);
     expect(serverMessages.has(assistantId)).toBe(false);
 
     // Simulate refresh: Zustand is recreated while localStorage remains intact.
-    saveSessionMessages("s1", store.getState().sessionMessages.s1);
+    saveSessionMessages(sessionId, store.getState().sessionMessages[sessionId]);
     vi.resetModules();
     capturedCallbacks = null;
     apiSSEPaths.length = 0;
     const refreshedStore = await importStore();
-    refreshedStore.setState({ activeSessionId: "s1" });
-    await refreshedStore.getState().fetchMessages("s1");
-    expect(refreshedStore.getState().pendingSaveBySession?.s1).toBe("pending");
+    refreshedStore.setState({ activeSessionId: sessionId });
+    await refreshedStore.getState().fetchMessages(sessionId);
+    expect(refreshedStore.getState().pendingSaveBySession?.[sessionId]).toBe("pending");
 
-    await refreshedStore.getState().retryPendingSave("s1");
+    await refreshedStore.getState().retryPendingSave(sessionId);
     expect([...serverMessages.keys()].sort()).toEqual([userId, assistantId].sort());
     expect(serverMessages.get(assistantId)?.sources).toEqual(
       expect.arrayContaining([expect.objectContaining({ id: "src-retry" })])
     );
-    expect(refreshedStore.getState().pendingSaveBySession?.s1).toBeUndefined();
+    expect(refreshedStore.getState().pendingSaveBySession?.[sessionId]).toBeUndefined();
     expect(apiSSEPaths).toEqual([]);
   });
 
   it("续跑助手部分写入失败后可刷新重试并保留来源", async () => {
-    saveToStorage("sessions", [{ id: "s1" }]);
+    const sessionId = "retry-resume-session";
+    saveToStorage("sessions", [{ id: sessionId }]);
     const serverMessages = new Map<string, Record<string, unknown>>();
     let assistantFailuresRemaining = 2;
     apiPostMock.mockImplementation(async (path: string, payload: Record<string, unknown>) => {
-      if (path !== "sessions/s1/messages") return { success: true, data: {} };
+      if (path !== `sessions/${sessionId}/messages`) return { success: true, data: {} };
       if (payload.role === "assistant" && assistantFailuresRemaining > 0) {
         assistantFailuresRemaining -= 1;
         throw new Error("503 simulated resume write failure");
@@ -585,9 +607,9 @@ describe("useChatStore", () => {
     const store = await importStore();
     store.setState({
       messages: [userMessage, assistantMessage],
-      sessionMessages: { s1: [userMessage, assistantMessage] },
-      activeSessionId: "s1",
-      streamingSessionId: "s1",
+      sessionMessages: { [sessionId]: [userMessage, assistantMessage] },
+      activeSessionId: sessionId,
+      streamingSessionId: sessionId,
       isStreaming: false,
       _lastAgentPayload: { messages: [] },
     });
@@ -605,26 +627,26 @@ describe("useChatStore", () => {
     });
     capturedCallbacks!.onDone!();
 
-    await vi.waitFor(() => expect(store.getState().pendingSaveBySession?.s1).toBe("pending"));
+    await vi.waitFor(() => expect(store.getState().pendingSaveBySession?.[sessionId]).toBe("pending"));
     expect(serverMessages.has(userMessage.id)).toBe(true);
     expect(serverMessages.has(assistantMessage.id)).toBe(false);
-    saveSessionMessages("s1", store.getState().sessionMessages.s1);
+    saveSessionMessages(sessionId, store.getState().sessionMessages[sessionId]);
     vi.resetModules();
     capturedCallbacks = null;
     apiSSEPaths.length = 0;
     const refreshedStore = await importStore();
-    refreshedStore.setState({ activeSessionId: "s1" });
-    await refreshedStore.getState().fetchMessages("s1");
-    expect(refreshedStore.getState().pendingSaveBySession?.s1).toBe("pending");
+    refreshedStore.setState({ activeSessionId: sessionId });
+    await refreshedStore.getState().fetchMessages(sessionId);
+    expect(refreshedStore.getState().pendingSaveBySession?.[sessionId]).toBe("pending");
 
-    await refreshedStore.getState().retryPendingSave("s1");
+    await refreshedStore.getState().retryPendingSave(sessionId);
 
     expect([...serverMessages.keys()].sort()).toEqual([userMessage.id, assistantMessage.id].sort());
     expect(serverMessages.get(assistantMessage.id)?.sources).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: "src-before" }),
       expect.objectContaining({ id: "src-resumed" }),
     ]));
-    expect(refreshedStore.getState().pendingSaveBySession?.s1).toBeUndefined();
+    expect(refreshedStore.getState().pendingSaveBySession?.[sessionId]).toBeUndefined();
     expect(apiSSEPaths).toEqual([]);
   });
 });

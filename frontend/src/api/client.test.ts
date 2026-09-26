@@ -59,3 +59,75 @@ describe('apiPost unwrapResponse', () => {
     expect(result.sessions).toHaveLength(1);
   });
 });
+
+describe('apiSSE connection loss', () => {
+  beforeEach(() => {
+    mockFetch.mockReset();
+  });
+
+  it('reports a stalled chat stream after heartbeats stop', async () => {
+    vi.useFakeTimers();
+    const { apiSSE } = await import('./client');
+    const externalController = new AbortController();
+    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        streamController = controller;
+      },
+    });
+    mockFetch.mockImplementationOnce((_url, options: RequestInit) => {
+      options.signal?.addEventListener('abort', () => {
+        streamController.error(new Error('aborted'));
+      });
+      return Promise.resolve({ ok: true, body });
+    });
+    const onError = vi.fn();
+    const onDone = vi.fn();
+
+    try {
+      const request = apiSSE('chat', {}, { onEvent: vi.fn(), onError, onDone }, externalController);
+      await vi.advanceTimersByTimeAsync(45_001);
+      expect(onError).toHaveBeenCalledTimes(1);
+      expect(onError.mock.calls[0][0].message).toMatch(/超时|断开/);
+      expect(onDone).not.toHaveBeenCalled();
+      await request;
+    } finally {
+      externalController.abort();
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps an active chat stream open when heartbeats arrive', async () => {
+    vi.useFakeTimers();
+    const { apiSSE } = await import('./client');
+    const externalController = new AbortController();
+    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        streamController = controller;
+      },
+    });
+    mockFetch.mockImplementationOnce((_url, options: RequestInit) => {
+      options.signal?.addEventListener('abort', () => {
+        streamController.error(new Error('aborted'));
+      });
+      return Promise.resolve({ ok: true, body });
+    });
+    const onError = vi.fn();
+    const onEvent = vi.fn();
+
+    try {
+      const request = apiSSE('chat', {}, { onEvent, onError }, externalController);
+      await vi.advanceTimersByTimeAsync(30_000);
+      streamController.enqueue(new TextEncoder().encode('event: heartbeat\ndata: {}\n\n'));
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'heartbeat' }));
+      expect(onError).not.toHaveBeenCalled();
+      externalController.abort();
+      await request;
+    } finally {
+      externalController.abort();
+      vi.useRealTimers();
+    }
+  });
+});
