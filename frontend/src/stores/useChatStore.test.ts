@@ -1,6 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { ChatSSEEvent } from "../types/api";
 import type { Session } from "../types/session";
+import { saveSessionMessages, saveToStorage } from "../utils/persistence";
+
+const { apiPostMock, apiGetMock, apiSSEPaths } = vi.hoisted(() => ({
+  apiPostMock: vi.fn(),
+  apiGetMock: vi.fn(),
+  apiSSEPaths: [] as string[],
+}));
 
 // 捕获 SSE 回调与 controller，便于测试手动驱动事件流
 let capturedCallbacks: {
@@ -10,10 +17,19 @@ let capturedCallbacks: {
 } | null = null;
 
 vi.mock("../api/client", () => ({
-  apiSSE: vi.fn((_path, _body, callbacks) => {
+  apiSSE: vi.fn((path, _body, callbacks) => {
+    apiSSEPaths.push(path);
     capturedCallbacks = callbacks;
     return Promise.resolve();
   }),
+  apiPost: apiPostMock,
+  apiGet: apiGetMock,
+  apiDelete: vi.fn(),
+}));
+
+vi.mock("../utils/broadcast", () => ({
+  post: vi.fn(),
+  on: vi.fn(() => vi.fn()),
 }));
 
 vi.mock("../stores/useSettingsStore", () => ({
@@ -79,11 +95,15 @@ describe("useChatStore", () => {
     vi.resetModules();
     capturedCallbacks = null;
     updateSessionMeta.mockClear();
+    apiPostMock.mockReset().mockResolvedValue({ success: true, data: {} });
+    apiGetMock.mockReset().mockResolvedValue({ messages: [] });
+    apiSSEPaths.length = 0;
     localStorage.clear();
     vi.setSystemTime(new Date("2026-06-20T12:00:00.000Z"));
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
     vi.useRealTimers();
   });
 
@@ -184,6 +204,7 @@ describe("useChatStore", () => {
       isStreaming: false,
     });
 
+    const firstSaveCall = apiPostMock.mock.calls.length;
     store.getState().sendMessage("hi");
     capturedCallbacks!.onEvent({ type: "text", content: "stop" });
     store.getState().stopStreaming();
@@ -196,6 +217,13 @@ describe("useChatStore", () => {
     expect(store.getState().currentSseRequest).toBeNull();
     expect(store.getState().messages[1].content).toBe("stop");
     expect(store.getState().sessionMessages["s1"][1].content).toBe("stop");
+    await vi.waitFor(() => expect(apiPostMock.mock.calls.slice(firstSaveCall)
+      .filter((call) => call[0] === "sessions/s1/messages")).toHaveLength(2));
+    await vi.waitFor(() => expect(store.getState().pendingSaveBySession?.s1).toBeUndefined());
+    const messageCalls = apiPostMock.mock.calls.slice(firstSaveCall)
+      .filter((call) => call[0] === "sessions/s1/messages");
+    expect((messageCalls[0][1] as Record<string, unknown>).id).toBe(store.getState().sessionMessages.s1[0].id);
+    expect((messageCalls[1][1] as Record<string, unknown>).id).toBe(store.getState().sessionMessages.s1[1].id);
   });
 
   it("切换会话后，SSE 内容仍写入发起请求的会话", async () => {
@@ -233,5 +261,370 @@ describe("useChatStore", () => {
       "s1",
       expect.any(Object)
     ));
+  });
+
+  it("普通回答完成后用本地消息 ID 保存回答和来源", async () => {
+    saveToStorage("sessions", [{ id: "s1" }]);
+    const store = await importStore();
+    store.setState({
+      messages: [],
+      sessionMessages: {},
+      activeSessionId: "s1",
+      isStreaming: false,
+    });
+
+    const firstSaveCall = apiPostMock.mock.calls.length;
+    store.getState().sendMessage("来源问题");
+    capturedCallbacks!.onEvent({ type: "text", content: "回答" });
+    capturedCallbacks!.onEvent({
+      type: "source",
+      id: "src-1",
+      title: "芯片手册",
+      doc: "chip.pdf",
+      page: 4,
+      score: 0.9,
+      excerpt: "相关段落",
+    });
+    capturedCallbacks!.onDone!();
+
+    await vi.waitFor(() => expect(apiPostMock.mock.calls.slice(firstSaveCall)
+      .filter((call) => call[0] === "sessions/s1/messages")).toHaveLength(2));
+    await vi.waitFor(() => expect(store.getState().pendingSaveBySession?.s1).toBeUndefined());
+    const messageCalls = apiPostMock.mock.calls.slice(firstSaveCall)
+      .filter((call) => call[0] === "sessions/s1/messages");
+    const [userRequest, assistantRequest] = messageCalls.map((call) => call[1] as Record<string, unknown>);
+    expect(userRequest.id).toBe(store.getState().messages[0].id);
+    expect(assistantRequest.id).toBe(store.getState().messages[1].id);
+    expect(assistantRequest.sources).toEqual(store.getState().messages[1].sources);
+    expect(apiSSEPaths).toEqual(["chat"]);
+  });
+
+  it("刷新时识别旧版服务端生成的消息 ID，避免重复插入已有历史", async () => {
+    saveToStorage("sessions", [{ id: "s1" }]);
+    const source = { id: "src-legacy", title: "手册", doc: "manual.pdf", page: 2, score: 0.9, excerpt: "历史来源" };
+    const userMessage = { id: "browser-user-id", role: "user" as const, content: "旧问题", timestamp: 1 };
+    const assistantMessage = {
+      id: "browser-assistant-id",
+      role: "assistant" as const,
+      content: "旧回答",
+      timestamp: 2,
+      sources: [source],
+    };
+    apiGetMock.mockResolvedValue({
+      messages: [
+        { id: "server-user-id", role: "user", content: "旧问题", sources: [], activity: null },
+        { id: "server-assistant-id", role: "assistant", content: "旧回答", sources: [source], activity: null },
+      ],
+    });
+    const store = await importStore();
+    store.setState({
+      messages: [userMessage, assistantMessage],
+      sessionMessages: { s1: [userMessage, assistantMessage] },
+      activeSessionId: "s1",
+      isStreaming: false,
+    });
+
+    await store.getState().fetchMessages("s1");
+
+    expect(apiPostMock).not.toHaveBeenCalled();
+    expect(store.getState().messages.map((message) => message.id)).toEqual(["server-user-id", "server-assistant-id"]);
+    expect(store.getState().messages[1].sources).toEqual([source]);
+  });
+
+  it("旧版续跑内容更新同一后端消息，不创建重复助手消息", async () => {
+    saveToStorage("sessions", [{ id: "s1" }]);
+    const serverMessages = new Map<string, Record<string, unknown>>([
+      ["server-user-id", { id: "server-user-id", role: "user", content: "确认问题", sources: [], activity: null }],
+      ["server-assistant-id", { id: "server-assistant-id", role: "assistant", content: "旧的部分回答", sources: [], activity: null }],
+    ]);
+    apiGetMock.mockImplementation(async () => ({ messages: [...serverMessages.values()] }));
+    apiPostMock.mockImplementation(async (path: string, payload: Record<string, unknown>) => {
+      if (path === "sessions/s1/messages") serverMessages.set(String(payload.id), payload);
+      return { success: true, data: {} };
+    });
+    const userMessage = { id: "browser-user-id", role: "user" as const, content: "确认问题", timestamp: 1 };
+    const assistantMessage = {
+      id: "browser-assistant-id",
+      role: "assistant" as const,
+      content: "续跑后的完整回答",
+      timestamp: 2,
+      sources: [{ id: "src-final", title: "手册", doc: "manual.pdf", page: 7, score: 0.9, excerpt: "续跑来源" }],
+    };
+    const store = await importStore();
+    store.setState({
+      messages: [userMessage, assistantMessage],
+      sessionMessages: { s1: [userMessage, assistantMessage] },
+      activeSessionId: "s1",
+      isStreaming: false,
+    });
+
+    await store.getState().fetchMessages("s1");
+
+    expect(apiPostMock).toHaveBeenCalledTimes(1);
+    expect(apiPostMock.mock.calls[0][1]).toMatchObject({
+      id: "server-assistant-id",
+      content: "续跑后的完整回答",
+    });
+    expect(serverMessages.size).toBe(2);
+    expect(store.getState().messages[1].content).toBe("续跑后的完整回答");
+  });
+
+  it.each(["allow", "deny", "stop"] as const)(
+    "人工确认后以相同消息 ID 保存 %s 续跑结果和来源",
+    async (decision) => {
+      saveToStorage("sessions", [{ id: "s1" }]);
+      const userMessage = { id: "user-stable", role: "user" as const, content: "继续执行", timestamp: 1 };
+      const assistantMessage = {
+        id: "assistant-stable",
+        role: "assistant" as const,
+        content: "确认前",
+        timestamp: 2,
+        sources: [{ id: "src-old", title: "旧来源", doc: "old.pdf", page: 1, score: 0.8, excerpt: "旧摘录" }],
+      };
+      const store = await importStore();
+      store.setState({
+        messages: [userMessage, assistantMessage],
+        sessionMessages: { s1: [userMessage, assistantMessage] },
+        activeSessionId: "s1",
+        streamingSessionId: "s1",
+        isStreaming: false,
+        _lastAgentPayload: { messages: [] },
+      });
+
+      const firstSaveCall = apiPostMock.mock.calls.length;
+      store.getState().resumeAgent(decision);
+      capturedCallbacks!.onEvent({ type: "text", content: "，续跑完成" });
+      capturedCallbacks!.onEvent({
+        type: "source",
+        id: "src-new",
+        title: "新来源",
+        doc: "new.pdf",
+        page: 2,
+        score: 0.95,
+        excerpt: "新摘录",
+      });
+      capturedCallbacks!.onDone!();
+
+      await vi.waitFor(() => expect(apiPostMock.mock.calls.slice(firstSaveCall)
+        .filter((call) => call[0] === "sessions/s1/messages")).toHaveLength(2));
+      await vi.waitFor(() => expect(store.getState().pendingSaveBySession?.s1).toBeUndefined());
+      const messageCalls = apiPostMock.mock.calls.slice(firstSaveCall)
+        .filter((call) => call[0] === "sessions/s1/messages");
+      const assistantRequest = messageCalls[1][1] as Record<string, unknown>;
+      expect((messageCalls[0][1] as Record<string, unknown>).id).toBe("user-stable");
+      expect(assistantRequest.id).toBe("assistant-stable");
+      expect(assistantRequest.content).toBe("确认前，续跑完成");
+      expect(assistantRequest.sources).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: "src-old" }),
+        expect.objectContaining({ id: "src-new" }),
+      ]));
+      expect(apiSSEPaths).toEqual(["agent-sandbox/resume"]);
+    }
+  );
+
+  it("续跑期间切换会话仍只更新并保存发起续跑的会话", async () => {
+    saveToStorage("sessions", [{ id: "s1" }, { id: "s2" }]);
+    const userMessage = { id: "user-resume-switch", role: "user" as const, content: "原会话问题", timestamp: 1 };
+    const assistantMessage = { id: "assistant-resume-switch", role: "assistant" as const, content: "续跑前", timestamp: 2 };
+    const otherUser = { id: "user-other", role: "user" as const, content: "另一个问题", timestamp: 3 };
+    const otherAssistant = { id: "assistant-other", role: "assistant" as const, content: "另一个回答", timestamp: 4 };
+    apiGetMock.mockImplementation(async (path: string) => path === "sessions/s2/messages"
+      ? { messages: [otherUser, otherAssistant].map((message) => ({ ...message, sources: [], activity: null })) }
+      : { messages: [] });
+    const store = await importStore();
+    store.setState({
+      messages: [userMessage, assistantMessage],
+      sessionMessages: { s1: [userMessage, assistantMessage], s2: [otherUser, otherAssistant] },
+      activeSessionId: "s1",
+      streamingSessionId: "s1",
+      isStreaming: false,
+      _lastAgentPayload: { messages: [] },
+    });
+
+    store.getState().resumeAgent("allow");
+    capturedCallbacks!.onEvent({ type: "text", content: "，续跑首段" });
+    store.getState().setActiveSession("s2");
+    await vi.waitFor(() => expect(store.getState().isLoadingMessages).toBe(false));
+    capturedCallbacks!.onEvent({ type: "text", content: "续跑末段" });
+    capturedCallbacks!.onEvent({
+      type: "source",
+      id: "src-resume-switch",
+      title: "续跑来源",
+      doc: "resume.pdf",
+      page: 5,
+      score: 0.9,
+      excerpt: "续跑摘录",
+    });
+    capturedCallbacks!.onDone!();
+
+    await vi.waitFor(() => expect(apiPostMock.mock.calls
+      .filter((call) => call[0] === "sessions/s1/messages")).toHaveLength(2));
+    await vi.waitFor(() => expect(store.getState().pendingSaveBySession?.s1).toBeUndefined());
+    const savedMessages = apiPostMock.mock.calls
+      .filter((call) => call[0] === "sessions/s1/messages")
+      .map((call) => call[1] as Record<string, unknown>);
+    expect(savedMessages.map((message) => message.id)).toEqual([userMessage.id, assistantMessage.id]);
+    expect(savedMessages[1].content).toBe("续跑前，续跑首段续跑末段");
+    expect(savedMessages[1].sources).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "src-resume-switch" }),
+    ]));
+    expect(store.getState().messages[1].content).toBe("另一个回答");
+    expect(store.getState().sessionMessages.s1[1].content).toBe("续跑前，续跑首段续跑末段");
+    expect(apiSSEPaths).toEqual(["agent-sandbox/resume"]);
+  });
+
+  it("Agent 恢复流断开时结束流状态并保存已有回答", async () => {
+    const userMessage = { id: "user-resume-error", role: "user" as const, content: "确认后继续", timestamp: 1 };
+    const assistantMessage = { id: "assistant-resume-error", role: "assistant" as const, content: "恢复前", timestamp: 2 };
+    const store = await importStore();
+    store.setState({
+      messages: [userMessage, assistantMessage],
+      sessionMessages: { s1: [userMessage, assistantMessage] },
+      activeSessionId: "s1",
+      streamingSessionId: "s1",
+      isStreaming: false,
+      _lastAgentPayload: { messages: [] },
+    });
+
+    store.getState().resumeAgent("allow");
+    capturedCallbacks!.onEvent({ type: "text", content: "部分续跑回答" });
+    capturedCallbacks!.onError!(new Error("恢复流断开"));
+
+    expect(store.getState().isStreaming).toBe(false);
+    expect(store.getState().sessionMessages.s1[1].content).toContain("部分续跑回答");
+    await vi.waitFor(() => expect(apiPostMock.mock.calls
+      .filter((call) => call[0] === "sessions/s1/messages")).toHaveLength(2));
+    await vi.waitFor(() => expect(store.getState().pendingSaveBySession?.s1).toBeUndefined());
+    const messageCalls = apiPostMock.mock.calls.filter((call) => call[0] === "sessions/s1/messages");
+    expect((messageCalls[0][1] as Record<string, unknown>).id).toBe(userMessage.id);
+    expect((messageCalls[1][1] as Record<string, unknown>).id).toBe(assistantMessage.id);
+    expect(apiSSEPaths).toEqual(["agent-sandbox/resume"]);
+  });
+
+  it("助手消息部分保存失败后，刷新仍可重试保存且不会重放聊天请求", async () => {
+    saveToStorage("sessions", [{ id: "s1" }]);
+    const serverMessages = new Map<string, Record<string, unknown>>();
+    let assistantFailuresRemaining = 2;
+    apiPostMock.mockImplementation(async (path: string, payload: Record<string, unknown>) => {
+      if (path !== "sessions/s1/messages") return { success: true, data: {} };
+      if (payload.role === "assistant" && assistantFailuresRemaining > 0) {
+        assistantFailuresRemaining -= 1;
+        throw new Error("503 simulated write failure");
+      }
+      serverMessages.set(String(payload.id), payload);
+      return { success: true, data: { id: payload.id } };
+    });
+    apiGetMock.mockImplementation(async () => ({ messages: [...serverMessages.values()] }));
+
+    const store = await importStore();
+    store.setState({
+      messages: [],
+      sessionMessages: {},
+      activeSessionId: "s1",
+      isStreaming: false,
+    });
+    store.getState().sendMessage("需重试的问题");
+    capturedCallbacks!.onEvent({ type: "text", content: "需保存的回答" });
+    capturedCallbacks!.onEvent({
+      type: "source",
+      id: "src-retry",
+      title: "保留来源",
+      doc: "retry.pdf",
+      page: 3,
+      score: 0.9,
+      excerpt: "不能丢失",
+    });
+    capturedCallbacks!.onDone!();
+
+    await vi.waitFor(() => expect(store.getState().pendingSaveBySession?.s1).toBe("pending"));
+    const [userId, assistantId] = store.getState().sessionMessages.s1.map((message) => message.id);
+    expect(serverMessages.has(userId)).toBe(true);
+    expect(serverMessages.has(assistantId)).toBe(false);
+
+    // Simulate refresh: Zustand is recreated while localStorage remains intact.
+    saveSessionMessages("s1", store.getState().sessionMessages.s1);
+    vi.resetModules();
+    capturedCallbacks = null;
+    apiSSEPaths.length = 0;
+    const refreshedStore = await importStore();
+    refreshedStore.setState({ activeSessionId: "s1" });
+    await refreshedStore.getState().fetchMessages("s1");
+    expect(refreshedStore.getState().pendingSaveBySession?.s1).toBe("pending");
+
+    await refreshedStore.getState().retryPendingSave("s1");
+    expect([...serverMessages.keys()].sort()).toEqual([userId, assistantId].sort());
+    expect(serverMessages.get(assistantId)?.sources).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: "src-retry" })])
+    );
+    expect(refreshedStore.getState().pendingSaveBySession?.s1).toBeUndefined();
+    expect(apiSSEPaths).toEqual([]);
+  });
+
+  it("续跑助手部分写入失败后可刷新重试并保留来源", async () => {
+    saveToStorage("sessions", [{ id: "s1" }]);
+    const serverMessages = new Map<string, Record<string, unknown>>();
+    let assistantFailuresRemaining = 2;
+    apiPostMock.mockImplementation(async (path: string, payload: Record<string, unknown>) => {
+      if (path !== "sessions/s1/messages") return { success: true, data: {} };
+      if (payload.role === "assistant" && assistantFailuresRemaining > 0) {
+        assistantFailuresRemaining -= 1;
+        throw new Error("503 simulated resume write failure");
+      }
+      serverMessages.set(String(payload.id), payload);
+      return { success: true, data: { id: payload.id } };
+    });
+    apiGetMock.mockImplementation(async () => ({ messages: [...serverMessages.values()] }));
+    const userMessage = { id: "user-resume-retry", role: "user" as const, content: "拒绝工具后回答", timestamp: 1 };
+    const assistantMessage = {
+      id: "assistant-resume-retry",
+      role: "assistant" as const,
+      content: "确认前的回答",
+      timestamp: 2,
+      sources: [{ id: "src-before", title: "原来源", doc: "before.pdf", page: 1, score: 0.8, excerpt: "已有来源" }],
+    };
+    const store = await importStore();
+    store.setState({
+      messages: [userMessage, assistantMessage],
+      sessionMessages: { s1: [userMessage, assistantMessage] },
+      activeSessionId: "s1",
+      streamingSessionId: "s1",
+      isStreaming: false,
+      _lastAgentPayload: { messages: [] },
+    });
+
+    store.getState().resumeAgent("deny");
+    capturedCallbacks!.onEvent({ type: "text", content: "，续跑回答" });
+    capturedCallbacks!.onEvent({
+      type: "source",
+      id: "src-resumed",
+      title: "续跑来源",
+      doc: "resumed.pdf",
+      page: 2,
+      score: 0.95,
+      excerpt: "续跑摘录",
+    });
+    capturedCallbacks!.onDone!();
+
+    await vi.waitFor(() => expect(store.getState().pendingSaveBySession?.s1).toBe("pending"));
+    expect(serverMessages.has(userMessage.id)).toBe(true);
+    expect(serverMessages.has(assistantMessage.id)).toBe(false);
+    saveSessionMessages("s1", store.getState().sessionMessages.s1);
+    vi.resetModules();
+    capturedCallbacks = null;
+    apiSSEPaths.length = 0;
+    const refreshedStore = await importStore();
+    refreshedStore.setState({ activeSessionId: "s1" });
+    await refreshedStore.getState().fetchMessages("s1");
+    expect(refreshedStore.getState().pendingSaveBySession?.s1).toBe("pending");
+
+    await refreshedStore.getState().retryPendingSave("s1");
+
+    expect([...serverMessages.keys()].sort()).toEqual([userMessage.id, assistantMessage.id].sort());
+    expect(serverMessages.get(assistantMessage.id)?.sources).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "src-before" }),
+      expect.objectContaining({ id: "src-resumed" }),
+    ]));
+    expect(refreshedStore.getState().pendingSaveBySession?.s1).toBeUndefined();
+    expect(apiSSEPaths).toEqual([]);
   });
 });

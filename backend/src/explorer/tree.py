@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import fnmatch
 from pathlib import Path
 from typing import Any
 
-from src.explorer.security import DENY_PATTERNS
+from src.explorer.security import is_denied_component
 
 
 def build_tree(path: Path) -> dict[str, Any]:
@@ -73,8 +72,4 @@ def _is_visible_name(path: Path) -> bool:
     3. DENY_PATTERNS 的文件/目录被跳过
     4. iterdir 只返回直接子项，都在根目录内
     """
-    name = path.name
-    for pat in DENY_PATTERNS:
-        if fnmatch.fnmatch(name, pat):
-            return False
-    return True
+    return not is_denied_component(path.name)

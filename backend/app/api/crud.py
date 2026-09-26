@@ -239,6 +239,9 @@ def delete_session(session_id: str, db: DBSession = Depends(get_db), user: dict 
 # ═══════════════════════════════════════════
 
 class MessageCreate(BaseModel):
+    # Optional client ID lets the frontend safely retry a write after a timeout.
+    # Older callers may omit it and keep the existing server-generated behavior.
+    id: Optional[str] = None
     role: str  # "user" | "assistant"
     content: str
     sources: Optional[list] = None
@@ -268,29 +271,34 @@ def list_messages(session_id: str, db: DBSession = Depends(get_db), user: dict =
 
 @db_router.post("/sessions/{session_id}/messages")
 def create_message(session_id: str, payload: MessageCreate, db: DBSession = Depends(get_db), user: dict = Depends(current_user_optional)) -> dict:
-    """在会话中添加一条消息。"""
+    """在会话中添加或幂等更新一条消息。"""
     s = db.query(SessionModel).filter(SessionModel.id == session_id).first()
     if not s:
         raise _fail("NOT_FOUND", f"会话不存在: {session_id}", status_code=404)
 
-    mid = f"m{uuid.uuid4().hex[:8]}"
-    msg = MessageModel(
-        id=mid,
-        session_id=session_id,
-        role=payload.role,
-        content=payload.content,
-        sources=payload.sources,
-        tool_calls=payload.tool_calls,
-        activity=payload.activity,
-    )
-    s.msg_count = (s.msg_count or 0) + 1
+    mid = payload.id or f"m{uuid.uuid4().hex[:8]}"
+    msg = db.query(MessageModel).filter(MessageModel.id == mid).first() if payload.id else None
+    if msg and msg.session_id != session_id:
+        raise _fail("CONFLICT", "消息 ID 已属于其他会话", status_code=409)
+
+    is_new = msg is None
+    if is_new:
+        msg = MessageModel(id=mid, session_id=session_id)
+        s.msg_count = (s.msg_count or 0) + 1
+
+    msg.role = payload.role
+    msg.content = payload.content
+    msg.sources = payload.sources
+    msg.tool_calls = payload.tool_calls
+    msg.activity = payload.activity
     s.updated_at = datetime.datetime.utcnow()
-    if payload.role == "user" and not s.title.startswith("对话"):
+    if is_new and payload.role == "user" and not s.title.startswith("对话"):
         # 用第一条用户消息做标题预览
         s.title = payload.content[:TITLE_PREVIEW_LENGTH] + ("..." if len(payload.content) > TITLE_PREVIEW_LENGTH else "")
 
-    logger.info("消息已保存: session=%s role=%s id=%s", session_id, payload.role, mid)
-    db.add(msg)
+    logger.info("消息已%s: session=%s role=%s id=%s", "保存" if is_new else "更新", session_id, payload.role, mid)
+    if is_new:
+        db.add(msg)
     db.commit()
     return _ok({
         "id": mid,

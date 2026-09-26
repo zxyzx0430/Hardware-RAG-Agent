@@ -1,19 +1,13 @@
 import { useEffect, useRef } from "react";
 import { apiGet } from "../../api/client";
+import { saveFileVersion } from "../../stores/appStore/persistence";
 import type { OpenFileItem } from "../../types";
+import type { ExplorerReadResponse } from "../../types/api";
 
 export interface ContextMenuPos {
   x: number;
   y: number;
   fileId: string;
-}
-
-interface ReadFileResponse {
-  name: string;
-  path: string;
-  content?: string;
-  is_text?: boolean;
-  data_url?: string;
 }
 
 // On mount, re-fetch content for files recovered from localStorage that have
@@ -33,9 +27,10 @@ export function useRestoreFileContents(
     void Promise.all(
       toRestore.map(async (f) => {
         try {
-          const data = await apiGet<ReadFileResponse>(
+          const data = await apiGet<ExplorerReadResponse>(
             `explorer/read?path=${encodeURIComponent(f.path)}`,
           );
+          if (data.version) saveFileVersion(f.path, data.version);
           if (data.is_text === false) return;
           setFileContent(f.id, data.content ?? "");
         } catch {

@@ -10,7 +10,7 @@ Used by PermissionClassifier._decide_high to grade run_command args:
 safe commands (ls/cat/grep...) auto-allow, destructive ones (rm -rf/mkfs...)
 stay HIGH and trigger HITL. file ops default to LOW (path_guard screens).
 
-Spec §2.5. PLUR constraint: V2 regex blacklist + prefix whitelist.
+Spec §2.5: V2 regex deny patterns and allowlisted command prefixes.
 """
 from __future__ import annotations
 
@@ -111,9 +111,22 @@ def _classify_command(command: str) -> str:
         return HIGH
     if any(kw in cmd_lower for kw in MEDIUM_RISK_KEYWORDS):
         return MEDIUM
+    if _has_shell_control_syntax(command):
+        return MEDIUM
     if _matches_low_prefix(cmd_lower):
         return LOW
     return MEDIUM  # unknown commands default to medium (ask)
+
+
+def _has_shell_control_syntax(command: str) -> bool:
+    """Reject allow-list auto-approval when shell composition may be present.
+
+    This deliberately errs on the side of asking: even quoted metacharacters
+    can be ambiguous across PowerShell, cmd.exe, and POSIX shells.
+    """
+    if any(char in command for char in ";|&><`(){}$\r\n"):
+        return True
+    return re.search(r"\\\r?\n", command) is not None
 
 
 def _matches_high_risk(command: str) -> bool:

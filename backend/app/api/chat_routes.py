@@ -551,21 +551,39 @@ class ResumeContext:
 
 
 async def _resume_event_generator_from_ctx(ctx: ResumeContext):
-    """Yield SSE from the resume handler; tail with done/error.
+    """Yield SSE from the resume handler and ensure only one terminal event.
 
     Reads all inputs from the ResumeContext dataclass. New call sites should
     build a ResumeContext and call this directly.
     """
     try:
         from src.agent.hitl_handler import resume_agent_after_user
+        terminal_sent = False
         async for sse in resume_agent_after_user(
             ctx.agent, ctx.config, ctx.req.decision,
             ctx.call_counter, ctx.req.payload.permission_mode,
         ):
             yield sse
-        yield sse_event("done", {"success": True, "usage": None})
+            if _is_done_sse_event(sse):
+                terminal_sent = True
+                break
+        if not terminal_sent:
+            yield sse_event("done", {"success": True, "usage": None})
     except Exception as exc:
         yield _resume_error_event(exc)
+
+
+def _is_done_sse_event(sse: str) -> bool:
+    """Return whether one serialized SSE frame is already a terminal event."""
+    for line in sse.splitlines():
+        if not line.startswith("data: "):
+            continue
+        try:
+            payload = json.loads(line[6:])
+        except json.JSONDecodeError:
+            return False
+        return isinstance(payload, dict) and payload.get("type") == "done"
+    return False
 
 
 async def _resume_event_generator(agent, config, req, call_counter, model):

@@ -324,16 +324,16 @@ def _build_llm(
 # ═══════════════════════════════════════════
 
 def build_tool_specs(payload: Any) -> list[BaseTool]:
-    """Instantiate per-request ToolSpec tools and inject ctx (NOT registered globally).
+    """Instantiate request-scoped tools, inject ctx, and keep them out of the registry.
 
     Creates fresh tool instances every call so concurrent requests never share
     ctx or per-request config (top_k / kb_ids / credentials). Per-request
     instances are NOT written to the global _TOOL_REGISTRY — that registry is
-    populated once with default instances by ensure_default_tools_registered
-    for dispatch lookup, HITL metadata, and standalone endpoints. Writing
-    per-request instances to the global registry caused ctx 串号 under
-    concurrency (last writer's ctx/config won, so session A used session B's
-    ctx). The per-request ToolContext is injected via ToolSpec._ctx PrivateAttr.
+    populated with default instances for permission/HITL metadata and legacy
+    direct-tool lookup. Agent dispatch passes the request's ToolSpec instance
+    to ToolRouter, so the configured instance is executed and audited without
+    global registration. The per-request ToolContext is injected via
+    ToolSpec._ctx PrivateAttr.
 
     Args:
         payload: ChatRequest (or compatible). Reads top_k, kb_ids,
@@ -529,8 +529,8 @@ def _inject_ctx(tools: list[BaseTool], ctx: Any) -> None:
 
     Used by build_tool_specs for the per-request Agent path so concurrent
     requests keep isolated ctx. The global _TOOL_REGISTRY stays populated
-    with default instances only (via ensure_default_tools_registered), which
-    avoids the last-writer-wins ctx 串号 under concurrency.
+    with default instances for permission/HITL metadata and legacy direct-tool
+    lookup; Agent dispatch uses the request-local tool instance instead.
     """
     for tool in tools:
         tool._ctx = ctx
@@ -562,7 +562,7 @@ def _build_local_tools() -> list[BaseTool]:
 
 
 def _build_local_file_ops_tools() -> list[BaseTool]:
-    """Instantiate all 8 file_ops tools (apply_patch disabled — see docs/pitfalls.md)."""
+    """Instantiate all 8 file_ops tools (apply_patch disabled)."""
     from src.agent.tools.groups.file_ops import (
         EditFileTool, GlobTool, GrepTool,
         ListFilesTool, MultiEditTool, ReadFileTool, UndoEditTool, WriteFileTool,

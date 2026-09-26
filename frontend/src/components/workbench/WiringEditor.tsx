@@ -3,8 +3,8 @@
 import { apiPost } from "../../api/client";
 import { useAppStore } from "../../stores/useAppStore";
 import { useLogStore } from "../../stores/useLogStore";
-import { useWiringStore, type WiringExtractData } from "../../stores/useWiringStore";
-import type { WiringResponse } from "../../types/api";
+import { useWiringStore } from "../../stores/useWiringStore";
+import type { WiringExtractResponseData, WiringRequest, WiringResponse } from "../../types/api";
 
 const WIRING_TITLE = "Hardware RAG";
 
@@ -25,8 +25,17 @@ function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-function getActiveCode(tabs: { id: string; code: string }[], activeId: string | null): string {
-  return tabs.find((t) => t.id === activeId)?.code ?? "";
+function getActiveCode(
+  openFiles: { id: string; content?: string; is_text?: boolean }[],
+  activeFileId: string | null,
+  tabs: { id: string; code: string }[],
+  activePreviewTabId: string | null,
+): string {
+  const activeFile = openFiles.find((file) => file.id === activeFileId);
+  if (activeFile) {
+    return activeFile.is_text === false ? "" : activeFile.content ?? "";
+  }
+  return tabs.find((tab) => tab.id === activePreviewTabId)?.code ?? "";
 }
 
 export function WiringEditor({ zoom, onZoomIn, onZoomOut, onReset }: WiringEditorProps) {
@@ -38,12 +47,14 @@ export function WiringEditor({ zoom, onZoomIn, onZoomOut, onReset }: WiringEdito
   const clearAll = useWiringStore((s) => s.clearAll);
   const previewTabs = useAppStore((s) => s.previewTabs);
   const activePreviewTabId = useAppStore((s) => s.activePreviewTabId);
+  const openFiles = useAppStore((s) => s.openFiles);
+  const activeFileId = useAppStore((s) => s.activeFileId);
 
   const handleExtract = async () => {
-    const code = getActiveCode(previewTabs, activePreviewTabId);
-    if (!code.trim()) { alert("当前预览页没有代码，无法提取"); return; }
+    const code = getActiveCode(openFiles, activeFileId, previewTabs, activePreviewTabId);
+    if (!code.trim()) { alert("当前打开的文件或预览页没有可提取的代码"); return; }
     try {
-      const data = await apiPost<WiringExtractData>("wiring/extract", { code });
+      const data = await apiPost<WiringExtractResponseData>("wiring/extract", { code });
       loadFromExtract(data);
       useLogStore.getState().log("ok", "wiring",
         `提取完成：${data.components.length} 器件，${data.connections.length} 连线`);
@@ -56,9 +67,8 @@ export function WiringEditor({ zoom, onZoomIn, onZoomOut, onReset }: WiringEdito
   const handleGenerate = async () => {
     if (components.length === 0) { alert("请先添加器件"); return; }
     try {
-      const res = await apiPost<WiringResponse>("wiring", {
-        title: WIRING_TITLE, components, connections,
-      });
+      const request: WiringRequest = { title: WIRING_TITLE, components, connections };
+      const res = await apiPost<WiringResponse>("wiring", request);
       setSvg(res.svg ?? "");
       if (res.bom) setBom(res.bom);
       useLogStore.getState().log("ok", "wiring", "接线图生成完成");

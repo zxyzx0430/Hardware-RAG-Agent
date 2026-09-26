@@ -262,14 +262,37 @@ export interface WiringRequest {
   components: WiringComponent[];
 }
 
+export interface WiringExtractResponseData {
+  components: WiringComponent[];
+  connections: WiringConnection[];
+  message?: string;
+}
+
+export interface WiringEndpoint {
+  component: string;
+  pin: string;
+}
+
 export interface WiringConnection {
-  from: { component: string; pin: string };
-  to: { component: string; pin: string };
+  from: WiringEndpoint;
+  to: WiringEndpoint;
   color?: string;
   label?: string;
   /** 连线类型：power=电源, signal=信号, ground=地线 */
   line_type?: "power" | "signal" | "ground";
 }
+
+/** 旧调用方仍可发送的扁平结构；后端会在 API 边界转成 WiringConnection。 */
+export type LegacyWiringConnectionPayload = {
+  to_component: string;
+  to_pin: string;
+  color?: string;
+  label?: string;
+  note?: string;
+} & (
+  | { from: string; pin: string }
+  | { from_component: string; from_pin: string }
+);
 
 export interface WiringComponent {
   name: string;
@@ -336,6 +359,68 @@ export interface BackendMessage {
   activity?: ActivityBlock | null;
   /** ISO date string from SQLAlchemy datetime.isoformat() */
   created_at?: string;
+}
+
+/** Body for POST /api/sessions/{id}/messages; id enables retry without duplicate rows. */
+export interface CreateMessageRequest {
+  id?: string;
+  role: string;
+  content: string;
+  sources?: SourceRef[] | null;
+  tool_calls?: unknown[] | null;
+  activity?: ActivityBlock | null;
+}
+
+/** Raw Explorer read payload (the legacy read route has no success/data envelope). */
+export interface ExplorerReadResponse {
+  name: string;
+  path: string;
+  is_text: boolean;
+  /** Present for editable text files; binary previews may omit it. */
+  version?: string;
+  content?: string;
+  data_url?: string;
+  size?: number;
+}
+
+export interface ExplorerWriteRequest {
+  path: string;
+  content: string;
+  expected_version: string | null;
+}
+
+export interface ExplorerWriteResponse {
+  path: string;
+  version: string;
+}
+
+export interface ExplorerDeleteResponse {
+  path: string;
+  trash_id: string;
+}
+
+export interface ExplorerTrashItem {
+  item_id: string;
+  root_path: string;
+  original_path: string;
+  name: string;
+  kind: "file" | "directory";
+  deleted_at: string;
+}
+
+export interface ExplorerTrashResponse {
+  items: ExplorerTrashItem[];
+}
+
+export interface ExplorerRestoreRequest {
+  root_path: string;
+  item_id: string;
+  target_path?: string;
+}
+
+export interface ExplorerRestoreResponse {
+  path: string;
+  item_id: string;
 }
 
 /** Raw Session shape from GET /api/sessions (and GET /api/sessions/{id}). */

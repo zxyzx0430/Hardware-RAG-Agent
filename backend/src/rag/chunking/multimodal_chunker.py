@@ -780,7 +780,7 @@ class MultimodalChunker(BaseChunker):
         """Call vision LLM with streaming + robust JSON parsing + retries.
 
         - Uses streaming to avoid nginx 60s timeout (validated in
-          AgentChunker, see pitfalls.md 2026-06-27).
+          AgentChunker).
         - First attempt uses response_format={"type":"json_object"};
           retries omit it (some proxies/models reject this param).
         - JSON parsed via 5-layer _parse_json_robust fallback.

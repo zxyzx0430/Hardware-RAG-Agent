@@ -1,4 +1,9 @@
 import type { OpenFileItem } from "../../types";
+import type {
+  ExplorerReadResponse,
+  ExplorerWriteRequest,
+  ExplorerWriteResponse,
+} from "../../types/api";
 import { apiGet, apiPost } from "../../api/client";
 import { useToastStore } from "../useToastStore";
 import { useModalStore } from "../useModalStore";
@@ -8,6 +13,8 @@ import {
   saveNumber,
   saveStringArray,
   saveOpenFiles,
+  loadFileVersion,
+  saveFileVersion,
   saveActiveFileId,
   saveExplorerRootPath,
   clearExplorerRootPath,
@@ -40,15 +47,6 @@ export interface ExplorerActions {
   closeDiffView: () => void;
 }
 
-interface ReadFileResponse {
-  name: string;
-  path: string;
-  content?: string;
-  is_text?: boolean;
-  data_url?: string;
-  size?: number;
-}
-
 type SetFn = (fn: (state: AppState) => Partial<AppState> | AppState) => void;
 type GetFn = () => AppState;
 
@@ -56,7 +54,7 @@ function fileNameFromPath(path: string): string {
   return path.split(/[\\/]/).pop() ?? path;
 }
 
-function buildOpenFileItem(data: ReadFileResponse): OpenFileItem {
+function buildOpenFileItem(data: ExplorerReadResponse): OpenFileItem {
   return {
     id: data.path,
     path: data.path,
@@ -91,12 +89,22 @@ export function createExplorerActions(set: SetFn, get: GetFn): ExplorerActions {
       return saveBufferAsFile(id, targetPath);
     }
 
+    const contentToSave = file.content ?? "";
+    const expectedVersion = loadFileVersion(file.path);
     try {
-      await apiPost("explorer/write", { path: file.path, content: file.content ?? "" });
-      // Update snapshot to current content so diff indicator works correctly
+      const write: ExplorerWriteRequest = {
+        path: file.path,
+        content: contentToSave,
+        expected_version: expectedVersion,
+      };
+      const response = await apiPost<ExplorerWriteResponse>("explorer/write", write);
+      saveFileVersion(file.path, response.version);
+      // A keystroke made while the request was pending remains a dirty draft.
       set((s) => ({
         openFiles: s.openFiles.map((f) =>
-          f.id === id ? { ...f, dirty: false, snapshot: f.content } : f,
+          f.id === id
+            ? { ...f, dirty: (f.content ?? "") !== contentToSave, snapshot: contentToSave }
+            : f,
         ),
       }));
       saveOpenFiles(get().openFiles);
@@ -109,14 +117,17 @@ export function createExplorerActions(set: SetFn, get: GetFn): ExplorerActions {
   };
 
   const reloadFileFromDisk = async (path: string): Promise<void> => {
-    const data = await apiGet<ReadFileResponse>(
+    const data = await apiGet<ExplorerReadResponse>(
       `explorer/read?path=${encodeURIComponent(path)}`,
     );
+    if (data.version) saveFileVersion(path, data.version);
+    const content = data.content ?? "";
     set((s) => ({
       openFiles: s.openFiles.map((f) =>
-        f.path === path ? { ...f, content: data.content ?? "" } : f,
+        f.path === path ? { ...f, content, snapshot: content, dirty: false } : f,
       ),
     }));
+    saveOpenFiles(get().openFiles);
   };
 
   const openCodeBuffer = (opts: { name: string; content: string; language?: string }): void => {
@@ -136,14 +147,22 @@ export function createExplorerActions(set: SetFn, get: GetFn): ExplorerActions {
       const nextFiles = [...s.openFiles, item];
       return { openFiles: nextFiles, activeFileId: id, explorerOpen: true };
     });
+    saveOpenFiles(get().openFiles);
     saveActiveFileId(id);
   };
 
   const saveBufferAsFile = async (id: string, targetPath: string): Promise<boolean> => {
     const file = get().openFiles.find((f) => f.id === id);
     if (!file) return false;
+    const contentToSave = file.content ?? "";
     try {
-      await apiPost("explorer/write", { path: targetPath, content: file.content ?? "" });
+      const write: ExplorerWriteRequest = {
+        path: targetPath,
+        content: contentToSave,
+        expected_version: null,
+      };
+      const response = await apiPost<ExplorerWriteResponse>("explorer/write", write);
+      saveFileVersion(targetPath, response.version);
       const newId = targetPath;
       const newName = fileNameFromPath(targetPath);
       set((s) => {
@@ -155,7 +174,8 @@ export function createExplorerActions(set: SetFn, get: GetFn): ExplorerActions {
                 path: targetPath,
                 name: newName,
                 isBuffer: false,
-                dirty: false,
+                dirty: (f.content ?? "") !== contentToSave,
+                snapshot: contentToSave,
               }
             : f,
         );
@@ -203,9 +223,10 @@ export function createExplorerActions(set: SetFn, get: GetFn): ExplorerActions {
         return;
       }
       try {
-        const data = await apiGet<ReadFileResponse>(
+        const data = await apiGet<ExplorerReadResponse>(
           `explorer/read?path=${encodeURIComponent(path)}`,
         );
+        if (data.version) saveFileVersion(data.path || path, data.version);
         const item = buildOpenFileItem(data);
         // Even binary files are added to openFiles so EditorPanel can decide
         // how to render them (text editor vs image preview).
@@ -228,6 +249,7 @@ export function createExplorerActions(set: SetFn, get: GetFn): ExplorerActions {
       if (file.dirty && action === "save") {
         const saved = await saveFileImpl(id);
         if (!saved) return false;
+        if (get().openFiles.find((f) => f.id === id)?.dirty) return false;
       }
       set((s) => {
         const nextFiles = s.openFiles.filter((f) => f.id !== id);
@@ -271,18 +293,22 @@ export function createExplorerActions(set: SetFn, get: GetFn): ExplorerActions {
           pinnedFileIds: s.pinnedFileIds.filter((pid) => pid !== id),
         };
       }),
-    markFileDirty: (id, dirty) =>
+    markFileDirty: (id, dirty) => {
       set((s) => ({
         openFiles: s.openFiles.map((f) =>
           f.id === id ? { ...f, dirty } : f,
         ),
-      })),
-    setFileContent: (id, content) =>
+      }));
+      saveOpenFiles(get().openFiles);
+    },
+    setFileContent: (id, content) => {
       set((s) => ({
         openFiles: s.openFiles.map((f) =>
           f.id === id ? { ...f, content } : f,
         ),
-      })),
+      }));
+      saveOpenFiles(get().openFiles);
+    },
     saveFile: saveFileImpl,
     openCodeBuffer,
     saveBufferAsFile,
@@ -326,11 +352,6 @@ export function createExplorerActions(set: SetFn, get: GetFn): ExplorerActions {
       if (!reload) return;
       try {
         await reloadFileFromDisk(path);
-        set((s) => ({
-          openFiles: s.openFiles.map((f) =>
-            f.path === path ? { ...f, dirty: false, snapshot: f.content } : f,
-          ),
-        }));
       } catch (err) {
         const detail = err instanceof Error ? err.message : String(err);
         showToastError(`${t("reloadFailed", "重新加载失败")}: ${detail}`);

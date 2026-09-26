@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 from src.agent.core.toolkit.tool_spec import RiskLevel, ToolSpec
 from src.agent.exceptions import ToolContext
 from src.agent.path_guard import validate_path
-from src.agent.tools.groups.file_ops._git_snapshot import _git_snapshot
+from src.agent.tools.groups.file_ops._git_snapshot import git_snapshot_context
 
 
 # ═══════════════════════════════════════════
@@ -74,10 +74,10 @@ class EditFileTool(ToolSpec):
 
 async def _do_edit(path: str, old_string: str, new_string: str, replace_all: bool) -> dict:
     """Edit file by string replacement."""
-    result = await asyncio.to_thread(_edit_file_sync, path, old_string, new_string, replace_all)
+    async with git_snapshot_context([path], "edit_file"):
+        result = await asyncio.to_thread(_edit_file_sync, path, old_string, new_string, replace_all)
     if isinstance(result, str):
         return {"output": f"Error: {result}", "path": path, "success": False}
-    await asyncio.to_thread(_git_snapshot, path, "edit_file")
     return {"output": f"已替换 {result} 处", "path": path, "success": True, "replacements": result}
 
 

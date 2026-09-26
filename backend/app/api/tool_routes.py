@@ -9,7 +9,18 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from src.agent.core.toolkit.permission_classifier import (
+    ALLOW,
+    ASK,
+    DENY,
+    PermissionClassifier,
+)
 from src.agent.core.toolkit.tool_router import ToolRouter, list_registered_tools
+from src.agent.core.toolkit.tool_result_envelope import (
+    ErrorDetail,
+    ResultMetadata,
+    ToolResultEnvelope,
+)
 from src.agent.exceptions import ToolContext
 from app.api.dependencies import current_user, current_user_optional, ws_auth
 from app.api.errors import sanitize_error
@@ -43,10 +54,8 @@ class ToolRequest(BaseModel):
 async def call_tool(payload: ToolRequest, user: dict = Depends(current_user)):
     """调用工具。
 
-    Delegates to the new ToolRouter.dispatch, which returns a
-    ToolResultEnvelope dict (always a dict — tool-not-found is an envelope
-    with success=False, not an exception). A default ToolContext is used
-    since this REST path is outside the Agent SSE flow.
+    Tools requiring interactive confirmation are refused here because this
+    endpoint has no HITL resume flow. Low-risk calls still use ToolRouter.
 
     Auto-registers all tools when registry is empty so the endpoint works
     standalone without a prior /api/chat Agent request.
@@ -55,6 +64,26 @@ async def call_tool(payload: ToolRequest, user: dict = Depends(current_user)):
     ctx = ToolContext()
     call_id = uuid.uuid4().hex
     try:
+        spec = next(
+            (item for item in list_registered_tools() if item.name == payload.tool),
+            None,
+        )
+        if spec is None:
+            return _tool_not_found_rejection(
+                payload.tool,
+                call_id,
+            )
+
+        decision = PermissionClassifier().check(spec, payload.args, ctx)
+        if decision in (ASK, DENY):
+            return _permission_rejection(
+                payload.tool,
+                call_id,
+                decision,
+            )
+        if decision != ALLOW:
+            return _permission_rejection(payload.tool, call_id, DENY)
+
         return await ToolRouter.get_default().dispatch(
             call_id, payload.tool, payload.args, ctx,
             decision="allow", decision_source="auto_allow",
@@ -65,6 +94,54 @@ async def call_tool(payload: ToolRequest, user: dict = Depends(current_user)):
             "success": False,
             "error": {"code": "TOOL_ERROR", "message": sanitize_error(str(e)), "details": sanitize_error(str(e))},
         }
+
+
+def _permission_rejection(tool_name: str, call_id: str, decision: str) -> dict:
+    """Return a stable envelope without dispatching tools that need HITL."""
+    if decision == ASK:
+        error_type = "PERMISSION_CONFIRMATION_REQUIRED"
+        message = f"tool '{tool_name}' requires interactive confirmation"
+        suggestion = "请在聊天流程中确认此操作；直接 API 调用不会执行需要确认的工具。"
+    else:
+        error_type = "PERMISSION_DENIED"
+        message = f"tool '{tool_name}' was denied by the permission policy"
+        suggestion = "请检查工具参数与路径权限后重试。"
+    return ToolResultEnvelope(
+        success=False,
+        output="",
+        data=None,
+        error=ErrorDetail(
+            error_type=error_type,
+            error_message=message,
+            suggestion=suggestion,
+            retryable=False,
+        ),
+        metadata=ResultMetadata(
+            tool_name=tool_name,
+            duration_ms=0,
+            call_id=call_id,
+        ),
+    ).model_dump()
+
+
+def _tool_not_found_rejection(tool_name: str, call_id: str) -> dict:
+    """Fail closed when no spec is available to classify for direct calls."""
+    return ToolResultEnvelope(
+        success=False,
+        output="",
+        data=None,
+        error=ErrorDetail(
+            error_type="TOOL_NOT_FOUND",
+            error_message=f"tool '{tool_name}' is not registered",
+            suggestion="请检查工具名和当前工具注册状态。",
+            retryable=False,
+        ),
+        metadata=ResultMetadata(
+            tool_name=tool_name,
+            duration_ms=0,
+            call_id=call_id,
+        ),
+    ).model_dump()
 
 
 def _ensure_tools() -> None:

@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from src.agent.core.toolkit.tool_spec import RiskLevel, ToolSpec
 from src.agent.exceptions import ToolContext
 from src.agent.path_guard import validate_path
-from src.agent.tools.groups.file_ops._git_snapshot import _git_snapshot
+from src.agent.tools.groups.file_ops._git_snapshot import git_snapshot_context
 
 
 # ═══════════════════════════════════════════
@@ -67,10 +67,10 @@ class MultiEditTool(ToolSpec):
 
 async def _do_multi_edit(path: str, edits: list[Any]) -> dict:
     """Run atomic edit in a worker thread; translate str error to failure."""
-    result = await asyncio.to_thread(_apply_edits_sync, path, edits)
+    async with git_snapshot_context([path], "multi_edit"):
+        result = await asyncio.to_thread(_apply_edits_sync, path, edits)
     if isinstance(result, str):
         return _fail(path, result)
-    await asyncio.to_thread(_git_snapshot, path, "multi_edit")
     return _ok(path, result)
 
 

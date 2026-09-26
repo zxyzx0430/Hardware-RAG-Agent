@@ -67,7 +67,7 @@ class ToolSpec(BaseTool):
       * implement `async def execute(self, args, ctx) -> dict`
 
     The LangGraph ToolNode invokes `_arun(**args)`; this base implementation
-    delegates to `ToolRouter.dispatch(call_id, self.name, args, self._ctx)`.
+    passes this request's ToolSpec instance to `ToolRouter.dispatch`.
     ToolRouter then calls `spec.execute(args, ctx)` — so dispatch and _arun
     do NOT recurse (dispatch calls execute, not _arun).
     """
@@ -126,7 +126,15 @@ class ToolSpec(BaseTool):
         ctx = _resolve_ctx(runtime, self._ctx)
         decision, decision_source = _derive_decision(ctx)
         router = ToolRouter.get_default()
-        return await router.dispatch(call_id, self.name, dict(kwargs), ctx, decision, decision_source)
+        return await router.dispatch(
+            call_id,
+            self.name,
+            dict(kwargs),
+            ctx,
+            decision,
+            decision_source,
+            tool_spec=self,
+        )
 
     def _run(self, **args: Any) -> dict:  # pragma: no cover - sync path unused
         """Sync fallback — not used by LangGraph async ToolNode.

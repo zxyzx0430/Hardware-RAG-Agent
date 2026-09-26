@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 from src.agent.core.toolkit.tool_spec import RiskLevel, ToolSpec
 from src.agent.exceptions import ToolContext
 from src.agent.path_guard import validate_path
-from src.agent.tools.groups.file_ops._git_snapshot import _git_snapshot
+from src.agent.tools.groups.file_ops._git_snapshot import git_snapshot_context
 
 
 # ═══════════════════════════════════════════
@@ -68,10 +68,10 @@ class WriteFileTool(ToolSpec):
 
 async def _do_write(path: str, content: str) -> dict:
     """Write content to file, creating parent dirs if needed."""
-    err = await asyncio.to_thread(_write_file_sync, path, content)
+    async with git_snapshot_context([path], "write_file"):
+        err = await asyncio.to_thread(_write_file_sync, path, content)
     if err:
         return {"output": f"Error writing file: {err}", "path": path, "success": False}
-    await asyncio.to_thread(_git_snapshot, path, "write_file")
     return {"output": f"已写入 {len(content)} 字符到 {path}", "path": path, "success": True}
 
 

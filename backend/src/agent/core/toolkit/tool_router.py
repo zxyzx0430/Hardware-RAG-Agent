@@ -135,10 +135,24 @@ class ToolRouter:
         ctx: ToolContext,
         decision: str = "allow",
         decision_source: str = "auto_allow",
+        tool_spec: ToolSpec | None = None,
     ) -> dict[str, Any]:
-        """8-step flow. Returns envelope.model_dump() — always a dict."""
+        """Run a request-scoped spec, or fall back to the registry for legacy callers.
+
+        When ``tool_spec`` is supplied, its name must match ``tool_name``;
+        mismatches fail closed instead of falling back to a global instance.
+        """
         start_ms = _now_ms()
-        spec = _TOOL_REGISTRY.get(tool_name)
+        if tool_spec is not None and tool_spec.name != tool_name:
+            logger.error(
+                "tool_spec_name_mismatch requested=%s provided=%s",
+                tool_name,
+                tool_spec.name,
+            )
+            return _spec_mismatch_envelope(
+                tool_name, tool_spec.name, call_id, start_ms
+            ).model_dump()
+        spec = tool_spec if tool_spec is not None else _TOOL_REGISTRY.get(tool_name)
         if spec is None:
             return _not_found_envelope(tool_name, call_id, start_ms).model_dump()
         state = _DispatchState(call_id, spec, args, ctx, start_ms)
@@ -304,6 +318,30 @@ def _not_found_envelope(tool_name: str, call_id: str, start_ms: int) -> ToolResu
             error_type=ERR_NOT_FOUND,
             error_message=f"tool '{tool_name}' is not registered",
             suggestion=SUGGEST_NOT_FOUND,
+            retryable=False,
+        ),
+        metadata=ResultMetadata(
+            tool_name=tool_name,
+            duration_ms=_now_ms() - start_ms,
+            call_id=call_id,
+        ),
+    )
+
+
+def _spec_mismatch_envelope(
+    tool_name: str, provided_name: str, call_id: str, start_ms: int
+) -> ToolResultEnvelope:
+    """Build a safe resolution error for a mismatched request-local spec."""
+    return ToolResultEnvelope(
+        success=False,
+        output="",
+        data=None,
+        error=ErrorDetail(
+            error_type=ERR_NOT_FOUND,
+            error_message=(
+                f"provided tool spec '{provided_name}' does not match requested tool '{tool_name}'"
+            ),
+            suggestion="Pass the matching ToolSpec instance or omit it to use the registry.",
             retryable=False,
         ),
         metadata=ResultMetadata(

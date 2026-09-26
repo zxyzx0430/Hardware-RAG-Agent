@@ -263,7 +263,7 @@ export function FileTree({
       for (const p of paths.slice(0, MAX_BATCH)) {
         await apiPost("explorer/delete", { path: p });
       }
-      showSuccess(t("deleteSuccess", "删除成功"));
+      showSuccess(t("movedToTrash", "已移至回收区，可从“已删除”恢复"));
       setSelectedPaths(new Set());
       refresh();
     } catch (err) {

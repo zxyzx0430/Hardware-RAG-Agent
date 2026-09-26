@@ -5,7 +5,7 @@ Executes shell commands with timeout.
 Migrated from tools/run_command.py (Task 1, SubTask 1.11).
 
 Spec §5 (tools), §6.2 (truncation).
-PLUR constraint: default timeout 30s, max 5min; stdout/stderr truncated.
+Default timeout 30s, max 5min; stdout/stderr truncated.
 
 industrial-tool-runtime Task 2: refactored to ToolSpec. Permission gating
 removed (PermissionClassifier handles it pre-ToolNode); audit logging
@@ -31,7 +31,7 @@ from pydantic import BaseModel, Field
 from src.agent.core.toolkit.tool_spec import RiskLevel, ToolSpec
 from src.agent.exceptions import ToolContext
 from src.agent.path_guard import validate_path
-from src.agent.tools.groups.file_ops._git_lock import get_git_lock, get_git_sync_lock
+from src.agent.tools.groups.file_ops._git_snapshot import git_snapshot_context
 from src.config.settings import ROOT_DIR
 
 logger = logging.getLogger(__name__)
@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 # ═══════════════════════════════════════════
 
 DEFAULT_TIMEOUT_MS: int = 30000
-MAX_TIMEOUT_MS: int = 300000  # 5 minutes (PLUR constraint)
+MAX_TIMEOUT_MS: int = 300000  # 5 minutes
 MAX_OUTPUT_CHARS: int = 5000
 TRUNCATE_SUFFIX: str = "...[truncated]"
 LOG_CMD_PREVIEW_CHARS: int = 100
@@ -50,8 +50,7 @@ SHELL_PREFIX_ARGS: tuple[str, ...] = ("-NoProfile", "-Command") if sys.platform 
 _IS_WINDOWS: bool = sys.platform == "win32"
 
 # Patterns that indicate the command writes to a file (bypassing write_file).
-# When detected, a git snapshot is taken after execution so undo_edit can
-# roll back the change — same safety net as write_file/edit_file.
+# Snapshotting is enabled only when a target can be parsed before execution.
 #
 # Every alternative is anchored at command start (^) or right after a command
 # separator (; & |) via (?:^|[;&|]\s*). This prevents false matches on '>'
@@ -88,11 +87,8 @@ _FILE_WRITE_RE: re.Pattern[str] = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
-# ── Write-target extraction (precise `git add -- <files>` instead of `git add -A`) ──
-# Each regex captures the file path a command writes to, so _git_snapshot_files
-# stages exactly those files. Best-effort: if extraction yields nothing, the
-# snapshot is skipped (safer than staging the whole repo and sweeping in the
-# user's own uncommitted changes).
+# ── Write-target extraction ──
+# Parsed targets are captured before the command and checked again afterward.
 _REDIRECT_FILE_RE: re.Pattern[str] = re.compile(
     r"(?:^|[;&|]\s*)\d*>+\s*(\S+)", re.IGNORECASE | re.MULTILINE,
 )
@@ -111,9 +107,6 @@ _WRITE_CMDLETS: tuple[str, ...] = (
     "Set-Content", "Add-Content", "Clear-Content", "Out-File",
     "New-Item", "Export-Csv", "Export-Clixml",
 )
-
-_AGENT_AUTHOR: str = "hardware-rag-agent <agent@local>"
-_GIT_SNAPSHOT_TIMEOUT: int = 10
 
 # Long-running command patterns that need extended timeout (smart fallback).
 # If LLM forgets to set timeout_ms and command matches these, auto-extend.
@@ -260,14 +253,11 @@ class RunCommandTool(ToolSpec):
                 f"-> {timeout_ms}ms (long command detected)"
             )
         logger.info(f"run_command cmd={_redact_command(command)[:LOG_CMD_PREVIEW_CHARS]}... timeout={timeout_ms}ms")
-        result = await _do_run(command, timeout_ms, cwd)
+        result = await _run_command_with_snapshot(command, timeout_ms, cwd)
         logger.info(
             f"run_command done exit={result.get('exit_code')} "
             f"duration={result.get('duration')}ms timed_out={result.get('timed_out')}"
         )
-        # If the command likely wrote files (>, >>, tee, Set-Content...),
-        # take a git snapshot so undo_edit can roll it back.
-        await _maybe_git_snapshot(command, result, cwd)
         return result
 
 
@@ -373,37 +363,23 @@ def _truncate(text: str) -> str:
     return text[:MAX_OUTPUT_CHARS] + TRUNCATE_SUFFIX
 
 
-async def _maybe_git_snapshot(command: str, result: dict, cwd: str) -> None:
-    """If the command wrote files, git add + commit exactly those files.
+async def _run_command_with_snapshot(command: str, timeout_ms: int, cwd: str) -> dict:
+    """Run explicit file-writing commands inside a pre/post snapshot boundary.
 
-    Detection uses _FILE_WRITE_RE (anchored to avoid false matches on '>'
-    inside strings). The actual files are extracted with _extract_write_targets
-    so we `git add -- <abs paths>` only what the command touched — never
-    `git add -A`, which would silently sweep in the user's own uncommitted
-    changes (a far more dangerous data-loss vector than missing a snapshot).
+    Commands whose write targets cannot be parsed reliably remain executable,
+    but they do not advertise undo support.
     """
-    if not _should_snapshot(command, result):
-        return
+    if not _FILE_WRITE_RE.search(command):
+        return await _do_run(command, timeout_ms, cwd)
+    if any(char in command for char in ";|&`$\r\n{}()"):
+        logger.debug("run_command snapshot skipped: compound or dynamic command")
+        return await _do_run(command, timeout_ms, cwd)
     targets = _extract_write_targets(command, cwd)
     if not targets:
-        logger.debug("run_command git snapshot skipped: no write targets parsed")
-        return
-    await _take_snapshot(targets)
-
-
-def _should_snapshot(command: str, result: dict) -> bool:
-    """True only on successful commands that look like file writes."""
-    return result.get("exit_code", -1) == 0 and bool(_FILE_WRITE_RE.search(command))
-
-
-async def _take_snapshot(targets: list[str]) -> None:
-    """Serialize via the global asyncio lock, then thread off the sync snapshot."""
-    try:
-        async with get_git_lock():
-            await asyncio.to_thread(_git_snapshot_files, targets, "run_command")
-        logger.info("run_command git snapshot taken (%d files)", len(targets))
-    except Exception as exc:
-        logger.debug("run_command git snapshot skipped: %s", exc)
+        logger.debug("run_command snapshot skipped: write targets could not be parsed")
+        return await _do_run(command, timeout_ms, cwd)
+    async with git_snapshot_context(targets, "run_command"):
+        return await _do_run(command, timeout_ms, cwd)
 
 
 # ── Write-target extraction ──
@@ -515,41 +491,3 @@ def _dedupe(items: list[str]) -> list[str]:
             seen.add(it)
             out.append(it)
     return out
-
-
-# ── Sync git snapshot (serialized by global threading lock) ──
-
-def _git_snapshot_files(file_paths: list[str], tool_name: str) -> None:
-    """git add -- <abs paths> && commit. Serialized to avoid index.lock fights."""
-    if not file_paths:
-        logger.debug("git_snapshot_files skipped: no write targets")
-        return
-    try:
-        with get_git_sync_lock():
-            if not _git_add(file_paths):
-                return
-            _commit_snapshot(tool_name)
-    except (subprocess.SubprocessError, OSError) as exc:
-        logger.debug("git_snapshot_files skipped: %s", exc)
-
-
-def _git_add(file_paths: list[str]) -> bool:
-    """Stage exactly the given absolute paths. Returns False on git failure."""
-    r = subprocess.run(
-        ["git", "add", "--", *file_paths], cwd=str(ROOT_DIR),
-        capture_output=True, text=True, timeout=_GIT_SNAPSHOT_TIMEOUT,
-    )
-    if r.returncode != 0:
-        logger.debug("git add failed for run_command snapshot: %s", r.stderr.strip())
-        return False
-    return True
-
-
-def _commit_snapshot(tool_name: str) -> None:
-    """Commit staged changes with the agent author; ignore 'nothing to commit'."""
-    r = subprocess.run(
-        ["git", "commit", "-m", f"agent edit: {tool_name}", "--author", _AGENT_AUTHOR],
-        cwd=str(ROOT_DIR), capture_output=True, text=True, timeout=_GIT_SNAPSHOT_TIMEOUT,
-    )
-    if r.returncode != 0 and "nothing to commit" not in r.stdout and "nothing to commit" not in r.stderr:
-        logger.debug("git commit for run_command snapshot: %s", r.stderr.strip())

@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import logging
 import threading
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-_AUTHORIZED_ROOTS: set[Path] = set()
+_AUTHORIZED_ROOTS: dict[str, set[Path]] = {}
 _LOCK = threading.Lock()
 
 TRAVERSAL_SEQ: str = ".."
@@ -17,8 +18,9 @@ TRAVERSAL_SEQ: str = ".."
 # Simple component patterns blocked anywhere; multi-component patterns matched
 # case-insensitively against the separator-normalized full path.
 DENY_PATTERNS: tuple[str, ...] = (
-    ".git", ".vscode", ".idea", ".claude", ".env",
-    "settings.json", "*.key", "*.pem", "*credentials*",
+    ".git", ".vscode", ".idea", ".claude", ".env*",
+    "settings.json", "*.key", "*.pem", "*.p12", "*.pfx",
+    "id_rsa*", "id_ed25519*", "*credential*", "*secret*",
 )
 
 MULTI_COMPONENT_DENY_PATTERNS: tuple[str, ...] = (
@@ -32,42 +34,65 @@ class ExplorerSecurityError(ValueError):
     """Raised when a path fails explorer security validation."""
 
 
-def authorize_root(path: str) -> Path:
-    """Resolve and register an allowed root directory."""
+def session_scope(session_id: str) -> str:
+    """Return a non-reversible in-memory scope key for a validated session token."""
+    if not session_id:
+        raise ExplorerSecurityError("Explorer session is required")
+    return hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+
+
+def authorize_root(path: str, session_id: str) -> Path:
+    """Resolve and register an allowed root directory for one Explorer session."""
     root = _resolve_directory(path)
-    _add_root(root)
+    _assert_not_system(root)
+    _assert_no_deny_pattern(root)
+    _add_root(root, session_id)
     logger.info("authorized explorer root: %s", root)
     return root
 
 
-def is_authorized(path: Path) -> bool:
-    """Check whether a resolved path lies inside any authorized root."""
+def is_authorized(path: Path, session_id: str) -> bool:
+    """Check whether a resolved path lies inside this session's authorized roots."""
     real = _safe_resolve(path)
     if real is None:
         return False
-    return _is_under_any_root(real)
+    return _is_under_any_root(real, session_id)
 
 
-# Markers that identify a project root; used for auto-reauthorization after
-# backend restarts clear the in-memory authorized-roots set.
-_PROJECT_MARKERS: tuple[str, ...] = (
-    ".git", "package.json", "pyproject.toml", "Cargo.toml",
-    "go.mod", "AGENTS.md", ".gitnexus", "platformio.ini",
-)
+def require_authorized_root(path: str, session_id: str) -> Path:
+    """Return an explicitly opened root directory; never authorize implicitly."""
+    _assert_non_empty(path)
+    _assert_no_traversal(path)
+    requested_path = Path(path)
+    _assert_no_symlink_components(requested_path)
+    requested = _safe_resolve(requested_path)
+    if requested is None:
+        raise ExplorerSecurityError("root path could not be resolved")
+    _assert_not_system(requested)
+    _assert_no_deny_pattern(requested)
+    if not requested.is_dir():
+        raise ExplorerSecurityError("root path is not a directory")
+    with _LOCK:
+        if requested not in _AUTHORIZED_ROOTS.get(session_scope(session_id), set()):
+            raise ExplorerSecurityError("directory has not been explicitly opened")
+    return requested
 
 
-def _find_project_root(path: Path) -> Path | None:
-    """Walk up from *path* to find the nearest directory containing a project marker."""
-    candidate = path if path.is_dir() else path.parent
-    for _ in range(20):
-        for marker in _PROJECT_MARKERS:
-            if (candidate / marker).exists():
-                return candidate
-        parent = candidate.parent
-        if parent == candidate:
-            break
-        candidate = parent
-    return None
+def authorized_root_for(path: Path, session_id: str) -> Path:
+    """Return the most specific explicitly opened root for this session containing *path*."""
+    real = _safe_resolve(path)
+    if real is None:
+        raise ExplorerSecurityError("path could not be resolved")
+    with _LOCK:
+        roots = sorted(
+            _AUTHORIZED_ROOTS.get(session_scope(session_id), set()),
+            key=lambda root: len(root.parts),
+            reverse=True,
+        )
+    for root in roots:
+        if _is_relative(real, root):
+            return root
+    raise ExplorerSecurityError("path is outside authorized directories")
 
 
 def validate_path(
@@ -75,25 +100,20 @@ def validate_path(
     must_exist: bool = True,
     allow_file: bool = True,
     allow_dir: bool = True,
+    *,
+    session_id: str,
 ) -> Path:
     """Validate *path* for explorer operations."""
     _assert_non_empty(path)
     _assert_no_traversal(path)
-    real = _safe_resolve(Path(path))
+    requested = Path(path)
+    _assert_no_symlink_components(requested)
+    real = _safe_resolve(requested)
     if real is None:
         raise ExplorerSecurityError("path could not be resolved")
     _assert_not_system(real)
     _assert_no_deny_pattern(real)
-    try:
-        _assert_within_root(real)
-    except ExplorerSecurityError:
-        # Backend may have restarted, clearing in-memory roots.
-        # Try to auto-reauthorize the project root.
-        root = _find_project_root(real)
-        if root is None:
-            raise
-        _add_root(root)
-        _assert_within_root(real)
+    _assert_within_root(real, session_id)
     if must_exist and not real.exists():
         raise ExplorerSecurityError("path does not exist")
     if not allow_file and real.is_file():
@@ -105,7 +125,9 @@ def validate_path(
 
 def _resolve_directory(path: str) -> Path:
     """Resolve path and require it to be an existing directory."""
-    real = _safe_resolve(Path(path))
+    requested = Path(path)
+    _assert_no_symlink_components(requested)
+    real = _safe_resolve(requested)
     if real is None:
         raise ExplorerSecurityError("root path could not be resolved")
     if not real.is_dir():
@@ -113,14 +135,16 @@ def _resolve_directory(path: str) -> Path:
     return real
 
 
-def _add_root(root: Path) -> None:
+def _add_root(root: Path, session_id: str) -> None:
+    key = session_scope(session_id)
     with _LOCK:
-        _AUTHORIZED_ROOTS.add(root)
+        _AUTHORIZED_ROOTS.setdefault(key, set()).add(root)
 
 
-def _is_under_any_root(child: Path) -> bool:
+def _is_under_any_root(child: Path, session_id: str) -> bool:
+    key = session_scope(session_id)
     with _LOCK:
-        roots = list(_AUTHORIZED_ROOTS)
+        roots = list(_AUTHORIZED_ROOTS.get(key, set()))
     return any(_is_relative(child, root) for root in roots)
 
 
@@ -145,13 +169,27 @@ def _assert_non_empty(path: str) -> None:
         raise ExplorerSecurityError("path is empty")
 
 
+def _assert_no_symlink_components(path: Path) -> None:
+    """Reject symbolic links instead of resolving Explorer requests through them."""
+    candidate = path if path.is_absolute() else Path.cwd() / path
+    current = Path(candidate.anchor)
+    parts = candidate.parts[1:] if candidate.anchor else candidate.parts
+    for part in parts:
+        current = current / part
+        try:
+            if current.is_symlink():
+                raise ExplorerSecurityError("symbolic links are not allowed")
+        except OSError as exc:
+            raise ExplorerSecurityError("path could not be inspected") from exc
+
+
 def _assert_no_traversal(path: str) -> None:
     if any(part == TRAVERSAL_SEQ for part in path.replace("\\", "/").split("/")):
         raise ExplorerSecurityError("path traversal (..) is not allowed")
 
 
-def _assert_within_root(real: Path) -> None:
-    if not _is_under_any_root(real):
+def _assert_within_root(real: Path, session_id: str) -> None:
+    if not _is_under_any_root(real, session_id):
         raise ExplorerSecurityError("path is outside authorized directories")
 
 
@@ -181,7 +219,13 @@ def _assert_no_deny_pattern(real: Path) -> None:
 
 def _matches_deny_pattern(real: Path) -> str | None:
     for part in real.parts:
-        for pat in DENY_PATTERNS:
-            if fnmatch.fnmatch(part, pat):
-                return pat
+        if is_denied_component(part):
+            for pat in DENY_PATTERNS:
+                if fnmatch.fnmatch(part.casefold(), pat.casefold()):
+                    return pat
     return None
+
+
+def is_denied_component(name: str) -> bool:
+    """Whether a path component is excluded from Explorer access/search."""
+    return any(fnmatch.fnmatch(name.casefold(), pattern.casefold()) for pattern in DENY_PATTERNS)

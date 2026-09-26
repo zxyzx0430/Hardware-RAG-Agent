@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 from src.agent.core.toolkit.tool_spec import RiskLevel, ToolSpec
 from src.agent.exceptions import ToolContext
 from src.agent.path_guard import validate_path
-from src.agent.tools.groups.file_ops._git_snapshot import _git_snapshot
+from src.agent.tools.groups.file_ops._git_snapshot import git_snapshot_context
 
 
 _HUNK_HEADER_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
@@ -66,10 +66,10 @@ class ApplyPatchTool(ToolSpec):
 
 async def _do_apply(path: str, patch: str) -> dict:
     """Run patch in a worker thread; translate str error to failure."""
-    result = await asyncio.to_thread(_apply_patch_sync, path, patch)
+    async with git_snapshot_context([path], "apply_patch"):
+        result = await asyncio.to_thread(_apply_patch_sync, path, patch)
     if isinstance(result, str):
         return _fail(path, result)
-    await asyncio.to_thread(_git_snapshot, path, "apply_patch")
     return _ok(path, result)
 
 

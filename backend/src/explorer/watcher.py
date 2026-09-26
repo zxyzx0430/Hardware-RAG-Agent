@@ -41,12 +41,24 @@ class _ExplorerEventHandler(FileSystemEventHandler):
     def _build_payload(self, event: FileSystemEvent) -> WatchEvent | None:
         if event.event_type == "modified" and event.is_directory:
             return None
-        payload: WatchEvent = {
-            "type": event.event_type,
-            "path": str(Path(event.src_path)),
+        event_types = {
+            "modified": "change",
+            "created": "create",
+            "deleted": "delete",
+            "moved": "rename",
         }
-        if event.dest_path:
-            payload["new_path"] = str(Path(event.dest_path))
+        normalized_type = event_types.get(event.event_type)
+        if normalized_type is None:
+            return None
+        source_path = str(Path(event.src_path))
+        payload: WatchEvent = {
+            "type": normalized_type,
+            "path": source_path,
+            "is_directory": event.is_directory,
+        }
+        if event.event_type == "moved" and event.dest_path:
+            payload["src_path"] = source_path
+            payload["dest_path"] = str(Path(event.dest_path))
         return payload
 
     def _broadcast(self, payload: WatchEvent) -> None:

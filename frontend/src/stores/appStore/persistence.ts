@@ -9,6 +9,7 @@ export const EXPLORER_ROOT_PATH_KEY = "hwrag_explorer_root_path";
 export const EDITOR_SHOW_TREE_KEY = "hwrag_editor_show_tree";
 export const RECENT_FOLDERS_KEY = "hwrag_recent_folders";
 export const OPEN_FILES_KEY = "hwrag_open_files";
+export const FILE_VERSIONS_KEY = "hwrag_explorer_file_versions";
 export const ACTIVE_FILE_ID_KEY = "hwrag_active_file_id";
 export const INPUT_BAR_WIDTH_KEY = "hwrag_input_bar_width";
 
@@ -24,7 +25,7 @@ export const DEFAULT_RIGHT_PANEL_WIDTH = 340;
 export const RIGHT_PANEL_MIN_WIDTH = 340;
 export const RIGHT_PANEL_MAX_WIDTH = 560;
 export const CHAT_MIN_WIDTH = 400;
-export const EXPLORER_MIN_WIDTH = 340;
+export const EXPLORER_MIN_WIDTH = 220;
 
 // Input bar width bounds (px), persisted to localStorage
 export const DEFAULT_INPUT_BAR_WIDTH = 720;
@@ -169,18 +170,32 @@ export function loadOpenFiles(): OpenFileItem[] {
     if (!Array.isArray(parsed)) return [];
     return parsed
       .filter(
-        (item): item is { id?: unknown; path?: unknown; pinned?: unknown } =>
+        (item): item is Record<string, unknown> =>
           item !== null && typeof item === "object",
       )
-      .map((item) => ({
-        id: String(item.id ?? ""),
-        path: String(item.path ?? ""),
-        name: fileNameFromPath(String(item.path ?? "")),
-        pinned: item.pinned === true,
-      }))
+      .map((item): OpenFileItem => {
+        const id = String(item.id ?? "");
+        const path = String(item.path ?? "");
+        const dirty = item.dirty === true && typeof item.content === "string";
+        return {
+          id,
+          path,
+          name: fileNameFromPath(path),
+          pinned: item.pinned === true,
+          ...(dirty
+            ? {
+                content: item.content as string,
+                snapshot: typeof item.snapshot === "string" ? item.snapshot : undefined,
+                dirty: true,
+                isBuffer: item.isBuffer === true || path.startsWith("buffer://"),
+                language: typeof item.language === "string" ? item.language : undefined,
+              }
+            : {}),
+        };
+      })
       .filter(
-        (item) =>
-          item.id !== "" && item.path !== "" && !item.path.startsWith("buffer://"),
+        (item) => item.id !== "" && item.path !== ""
+          && (!item.path.startsWith("buffer://") || item.dirty === true),
       );
   } catch {
     return [];
@@ -190,13 +205,57 @@ export function loadOpenFiles(): OpenFileItem[] {
 export function saveOpenFiles(files: OpenFileItem[]): void {
   try {
     const stash = files
-      .filter((f) => f.isBuffer !== true && !f.path.startsWith("buffer://"))
+      .filter((f) => (f.isBuffer !== true && !f.path.startsWith("buffer://")) || f.dirty === true)
       .map((f) => ({
         id: f.id,
         path: f.path,
         pinned: f.pinned ?? false,
+        ...(f.dirty === true
+          ? {
+              dirty: true,
+              content: f.content ?? "",
+              snapshot: f.snapshot,
+              isBuffer: f.isBuffer === true || f.path.startsWith("buffer://"),
+              language: f.language,
+            }
+          : {}),
       }));
     localStorage.setItem(OPEN_FILES_KEY, JSON.stringify(stash));
+  } catch {
+    // ignore
+  }
+}
+
+export function loadFileVersion(path: string): string | null {
+  try {
+    const raw = localStorage.getItem(FILE_VERSIONS_KEY);
+    if (!raw) return null;
+    const versions = JSON.parse(raw) as Record<string, unknown>;
+    const version = versions[path];
+    return typeof version === "string" ? version : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveFileVersion(path: string, version: string): void {
+  try {
+    const raw = localStorage.getItem(FILE_VERSIONS_KEY);
+    const versions = raw ? JSON.parse(raw) as Record<string, unknown> : {};
+    versions[path] = version;
+    localStorage.setItem(FILE_VERSIONS_KEY, JSON.stringify(versions));
+  } catch {
+    // The next read obtains a fresh version before any save can be attempted.
+  }
+}
+
+export function removeFileVersion(path: string): void {
+  try {
+    const raw = localStorage.getItem(FILE_VERSIONS_KEY);
+    if (!raw) return;
+    const versions = JSON.parse(raw) as Record<string, unknown>;
+    delete versions[path];
+    localStorage.setItem(FILE_VERSIONS_KEY, JSON.stringify(versions));
   } catch {
     // ignore
   }

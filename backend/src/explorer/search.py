@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from src.explorer.files import _is_text_file
-from src.explorer.security import DENY_PATTERNS
+from src.explorer.security import is_denied_component
 
 MAX_SEARCH_RESULTS = 100
 MAX_FILE_SIZE = 2 * 1024 * 1024  # 2MB
@@ -59,15 +59,12 @@ def _maybe_descend(stack: list[Path], entry: Path) -> None:
 
 def _is_denied_name(name: str) -> bool:
     """Return True if *name* matches any deny pattern."""
-    for pat in DENY_PATTERNS:
-        if fnmatch.fnmatch(name, pat):
-            return True
-    return False
+    return is_denied_component(name)
 
 
 def _is_searchable(entry: Path, include_pattern: str) -> bool:
     """Return True if *entry* is a small text file matching *include_pattern*."""
-    if entry.is_symlink() or entry.stat().st_size > MAX_FILE_SIZE:
+    if entry.is_symlink() or is_denied_component(entry.name) or entry.stat().st_size > MAX_FILE_SIZE:
         return False
     if not fnmatch.fnmatch(entry.name, include_pattern):
         return False

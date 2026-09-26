@@ -48,6 +48,8 @@ export function ChatArea() {
   const messages = useChatStore((s) => s.messages);
   const isStreaming = useChatStore((s) => s.isStreaming);
   const isLoadingMessages = useChatStore((s) => s.isLoadingMessages);
+  const pendingSaveStatus = useChatStore((s) => s.pendingSaveBySession[s.activeSessionId]);
+  const retryPendingSave = useChatStore((s) => s.retryPendingSave);
   const streamingContent = useChatStore((s) => s.streamingContent);
   const streamingSteps = useChatStore((s) => s.streamingSteps);
   const streamingStartTime = useChatStore((s) => s.streamingStartTime);
@@ -438,6 +440,22 @@ export function ChatArea() {
           />
         );
       })}
+
+      {pendingSaveStatus && (
+        <div
+          className="chat-save-status"
+          role="status"
+          aria-live="polite"
+          style={{ padding: "8px 12px", display: "flex", alignItems: "center", gap: 8 }}
+        >
+          <span>{pendingSaveStatus === "saving" ? "正在保存消息…" : "消息尚未保存到会话记录。"}</span>
+          {pendingSaveStatus === "pending" && (
+            <button type="button" onClick={() => void retryPendingSave(activeSessionId)}>
+              重试保存
+            </button>
+          )}
+        </div>
+      )}
 
       <ConfirmDialog />
     </div>

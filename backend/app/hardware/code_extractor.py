@@ -112,6 +112,11 @@ def _build_wiring(pin_uses: list[dict], buses: dict[str, bool]) -> tuple[list, l
     connections: list[dict] = []
     _add_bus_components(buses, components, connections)
     _add_pin_components(pin_uses, components, connections)
+    if connections:
+        mcu_pins = list(dict.fromkeys(
+            connection["from"]["pin"] for connection in connections
+        ))
+        components.insert(0, {"name": MCU_NAME, "type": "mcu", "pins": mcu_pins})
     return components, connections
 
 
@@ -165,7 +170,7 @@ def _guess_component_type(use: dict) -> dict | None:
         return {"name": "Analog Sensor", "type": SENSOR_TYPE, "pins": [pin_label]}
     mode = use.get("mode")
     if mode == "OUTPUT":
-        return {"name": "LED", "type": LED_TYPE, "pins": [pin_label]}
+        return {"name": "LED", "type": LED_TYPE, "pins": ["ANODE", "CATHODE"]}
     if mode in ("INPUT", "INPUT_PULLUP"):
         return {"name": "Button", "type": BUTTON_TYPE, "pins": [pin_label]}
     return None

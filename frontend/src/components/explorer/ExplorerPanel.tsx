@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAppStore } from "../../stores/useAppStore";
+import { useModalStore } from "../../stores/useModalStore";
 import { useToastStore } from "../../stores/useToastStore";
 import {
   loadExpandedPaths,
@@ -8,6 +9,12 @@ import {
   saveSelectedPaths,
 } from "../../stores/appStore/persistence";
 import { apiGet, apiPost } from "../../api/client";
+import type {
+  ExplorerRestoreRequest,
+  ExplorerRestoreResponse,
+  ExplorerTrashItem,
+  ExplorerTrashResponse,
+} from "../../types/api";
 import { useI18n } from "../../i18n";
 import { EditorPanel } from "./EditorPanel";
 import { FileTree, type FileNode } from "./FileTree";
@@ -101,6 +108,9 @@ export function ExplorerPanel() {
   const [loading, setLoading] = useState(false);
   const [showRecent, setShowRecent] = useState(false);
   const [showFolderPicker, setShowFolderPicker] = useState(false);
+  const [showTrash, setShowTrash] = useState(false);
+  const [trashItems, setTrashItems] = useState<ExplorerTrashItem[]>([]);
+  const [trashLoading, setTrashLoading] = useState(false);
   const [highlightPaths, setHighlightPaths] = useState<Set<string>>(new Set());
   // Lifted from FileTree so expanded/selected state survives loadTree refreshes
   // (which previously unmounted FileTree and lost internal state).
@@ -147,41 +157,11 @@ export function ExplorerPanel() {
     useToastStore.getState().showError(message);
   }, []);
 
-  // Re-authorization mutex: when multiple parallel dir requests fail due to
-  // backend restart, only one should re-authorize; the rest wait and retry.
-  const reauthPromiseRef = useRef<Promise<void> | null>(null);
-
-  const ensureAuthorized = useCallback(async (): Promise<void> => {
-    if (reauthPromiseRef.current) return reauthPromiseRef.current;
-    const currentRoot = expectedPathRef.current ?? rootPath;
-    if (!currentRoot) return;
-    reauthPromiseRef.current = (async () => {
-      try {
-        await apiPost<OpenResponse>("explorer/open", { path: currentRoot }, 120_000);
-      } finally {
-        reauthPromiseRef.current = null;
-      }
-    })();
-    return reauthPromiseRef.current;
-  }, [rootPath]);
-
   const fetchAndReplaceChildren = useCallback(async (path: string, token?: number) => {
-    let res: DirResponse | null = null;
-    try {
-      res = await apiGet<DirResponse>(`explorer/dir?path=${encodeURIComponent(path)}`);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes("security") || msg.includes("authorized") || msg.includes("outside") || msg.includes("EXPLORER_ERROR")) {
-        await ensureAuthorized();
-        res = await apiGet<DirResponse>(`explorer/dir?path=${encodeURIComponent(path)}`);
-      } else {
-        throw err;
-      }
-    }
-    if (res === null) return;
+    const res = await apiGet<DirResponse>(`explorer/dir?path=${encodeURIComponent(path)}`);
     if (token !== undefined && token !== loadTokenRef.current) return;
     setTree((prev) => (prev ? replaceNodeChildren(prev, path, res!.children) : prev));
-  }, [ensureAuthorized]);
+  }, []);
 
   const loadTree = useCallback(async (path: string, silent = false) => {
     const token = ++loadTokenRef.current;
@@ -222,11 +202,103 @@ export function ExplorerPanel() {
     }
   }, [addRecentFolder, setExplorerRootPath, showError, t, fetchAndReplaceChildren]);
 
+  // Read-only tree restoration and refresh never grants a new project root.
+  const loadAuthorizedTree = useCallback(async (path: string, silent = false) => {
+    const token = ++loadTokenRef.current;
+    expectedPathRef.current = path;
+    if (!silent) setLoading(true);
+    try {
+      const res = await apiGet<DirResponse>(`explorer/dir?path=${encodeURIComponent(path)}`);
+      if (token !== loadTokenRef.current) return;
+      const first: FileNode = {
+        name: fileNameFromPath(path),
+        type: "directory",
+        path,
+        children: res.children,
+        lazy: false,
+      };
+      const prevTree = treeRef.current;
+      const merged = (silent && prevTree?.path === first.path)
+        ? mergeTreeDataFresh(prevTree, first)
+        : first;
+      setTree(merged);
+      const lazyExpanded = collectLazyExpandedPaths(merged, expandedRef.current);
+      const CONCURRENCY = 10;
+      for (let i = 0; i < lazyExpanded.length; i += CONCURRENCY) {
+        if (token !== loadTokenRef.current) return;
+        const batch = lazyExpanded.slice(i, i + CONCURRENCY);
+        await Promise.allSettled(batch.map((p) => fetchAndReplaceChildren(p, token)));
+      }
+    } catch (err) {
+      if (token !== loadTokenRef.current) return;
+      if (!silent) showError(formatError(t("openFolderFailed", "打开文件夹失败"), err));
+    } finally {
+      if (token === loadTokenRef.current && !silent) setLoading(false);
+    }
+  }, [fetchAndReplaceChildren, showError, t]);
+
   const refreshTree = useCallback(async () => {
     const path = expectedPathRef.current;
     if (!path) return;
-    await loadTree(path, true);
-  }, [loadTree]);
+    await loadAuthorizedTree(path, true);
+  }, [loadAuthorizedTree]);
+
+  const loadTrash = useCallback(async () => {
+    if (!rootPath) return;
+    setTrashLoading(true);
+    try {
+      const res = await apiGet<ExplorerTrashResponse>(
+        `explorer/trash?root_path=${encodeURIComponent(rootPath)}`,
+      );
+      setTrashItems(res.items);
+    } catch (err) {
+      showError(formatError(t("trashLoadFailed", "读取已删除项目失败"), err));
+    } finally {
+      setTrashLoading(false);
+    }
+  }, [rootPath, showError, t]);
+
+  const toggleTrash = useCallback(() => {
+    setShowTrash((visible) => !visible);
+    if (!showTrash) void loadTrash();
+  }, [loadTrash, showTrash]);
+
+  const restoreTrashItem = useCallback(async (item: ExplorerTrashItem, targetPath = item.original_path) => {
+    const restore = (path: string) => {
+      const request: ExplorerRestoreRequest = {
+      root_path: item.root_path,
+      item_id: item.item_id,
+      target_path: path,
+      };
+      return apiPost<ExplorerRestoreResponse>("explorer/restore", request);
+    };
+    try {
+      await restore(targetPath);
+      useToastStore.getState().showSuccess(t("restoreSuccess", "已恢复文件"));
+      await Promise.all([refreshTree(), loadTrash()]);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.toLowerCase().includes("already exists")) {
+        const alternatePath = await useModalStore.getState().promptDialog({
+          title: t("restoreConflictTitle", "目标路径已存在，请输入项目内新的完整路径"),
+          placeholder: item.original_path,
+          defaultValue: `${item.original_path}.restored`,
+          confirmText: t("restore", "恢复"),
+        });
+        if (!alternatePath?.trim()) return;
+        try {
+          await restore(alternatePath.trim());
+          useToastStore.getState().showSuccess(t("restoreSuccess", "已恢复文件"));
+          await Promise.all([refreshTree(), loadTrash()]);
+          return;
+        } catch (retryError) {
+          showError(formatError(t("restoreFailed", "恢复失败"), retryError));
+          return;
+        }
+      }
+      showError(formatError(t("restoreFailed", "恢复失败"), err));
+    }
+  }, [loadTrash, refreshTree, showError, t]);
 
   const loadNodeChildren = useCallback(async (path: string) => {
     if (loadingDirPathsRef.current.has(path)) return;
@@ -350,7 +422,7 @@ export function ExplorerPanel() {
 
   // mount: restore tree from persisted rootPath
   useEffect(() => {
-    if (rootPath && !tree) void loadTree(rootPath);
+    if (rootPath && !tree) void loadAuthorizedTree(rootPath);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -423,12 +495,13 @@ export function ExplorerPanel() {
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
           <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
         </svg>
-        <span>{t("explorerTitle", "文件资源管理器")}</span>
+        <span className="explorer-header-title">{t("explorerTitle", "文件资源管理器")}</span>
         {rootPath ? <span className="explorer-root-hint" title={rootPath}>{rootPath}</span> : null}
         <div className="explorer-header-actions">
           <button
             className={`explorer-follow-btn${followMode ? " active" : ""}`}
             title={t("followMode", "跟随模式")}
+            aria-label={t("followMode", "跟随模式")}
             onClick={toggleFollowMode}
           >
             {followMode ? "👁" : "🚫"}
@@ -436,10 +509,16 @@ export function ExplorerPanel() {
           <div className="explorer-recent-wrapper" ref={recentDropdownRef}>
             <button
               className="explorer-recent-toggle"
+              title={t("recentFolders", "最近")}
+              aria-label={t("recentFolders", "最近")}
               onClick={() => setShowRecent((v) => !v)}
               disabled={recentItems.length === 0}
             >
-              {t("recentFolders", "最近")}
+              <svg className="explorer-header-button-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true" focusable="false">
+                <path d="M3 12a9 9 0 1 0 2.64-6.36L3 8" />
+                <path d="M3 4v4h4M12 7v5l3 2" />
+              </svg>
+              <span className="explorer-header-button-label">{t("recentFolders", "最近")}</span>
             </button>
             {showRecent && (
               <div className="explorer-recent-dropdown">
@@ -452,8 +531,46 @@ export function ExplorerPanel() {
               </div>
             )}
           </div>
-          <button className="explorer-open-btn" onClick={openFolder}>
-            {t("openFolder", "打开文件夹")}
+          <button
+            className="explorer-open-btn"
+            onClick={openFolder}
+            title={t("openFolder", "打开文件夹")}
+            aria-label={t("openFolder", "打开文件夹")}
+          >
+            <svg className="explorer-header-button-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true" focusable="false">
+              <path d="M3 20V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v12z" />
+              <path d="M12 10v6m-3-3h6" />
+            </svg>
+            <span className="explorer-header-button-label">{t("openFolder", "打开文件夹")}</span>
+          </button>
+          {rootPath && (
+            <button
+              className="explorer-recent-toggle"
+              onClick={toggleTrash}
+              aria-expanded={showTrash}
+              aria-label={showTrash ? t("closeTrash", "关闭已删除") : t("openTrash", "已删除")}
+              title={showTrash ? t("closeTrash", "关闭已删除") : t("openTrash", "已删除")}
+            >
+              <svg className="explorer-header-button-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true" focusable="false">
+                <path d="M3 6h18M8 6V4h8v2m3 0-1 14H6L5 6" />
+                <path d="M10 11v5m4-5v5" />
+              </svg>
+              <span className="explorer-header-button-label">
+                {showTrash ? t("closeTrash", "关闭已删除") : t("openTrash", "已删除")}
+              </span>
+            </button>
+          )}
+          <button
+            type="button"
+            className="explorer-collapse-btn"
+            onClick={() => setExplorerOpen(false)}
+            aria-label={t("toggleExplorerPanel")}
+            aria-expanded={explorerOpen}
+            title={t("toggleExplorerPanel")}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true" focusable="false">
+              <polyline points="15 18 9 12 15 6" />
+            </svg>
           </button>
         </div>
       </div>
@@ -495,6 +612,32 @@ export function ExplorerPanel() {
       )}
 
       <div className="explorer-body" ref={treeContainerRef}>
+        {showTrash && (
+          <section className="explorer-trash-panel" aria-label={t("openTrash", "已删除")}>
+            <div className="explorer-trash-heading">
+              <strong>{t("openTrash", "已删除")}</strong>
+              <button type="button" className="explorer-toolbar-btn" onClick={() => void loadTrash()}>
+                {t("refreshTree", "刷新")}
+              </button>
+            </div>
+            {trashLoading && <div className="explorer-loading">{t("loading", "加载中…")}</div>}
+            {!trashLoading && trashItems.length === 0 && (
+              <p className="explorer-trash-empty">{t("trashEmpty", "这里还没有可恢复的项目")}</p>
+            )}
+            {!trashLoading && trashItems.map((item) => (
+              <div className="explorer-trash-item" key={item.item_id}>
+                <div className="explorer-trash-item-info">
+                  <strong>{item.name}</strong>
+                  <span title={item.original_path}>{item.original_path}</span>
+                  <time>{new Date(item.deleted_at).toLocaleString()}</time>
+                </div>
+                <button type="button" className="explorer-toolbar-btn" onClick={() => void restoreTrashItem(item)}>
+                  {t("restore", "恢复")}
+                </button>
+              </div>
+            ))}
+          </section>
+        )}
         {loading && <div className="explorer-loading">{t("loading", "加载中…")}</div>}
         {tree && hasFiles && editorShowTree && (
           <div className="explorer-split">
@@ -518,10 +661,18 @@ export function ExplorerPanel() {
               <line x1="16" y1="17" x2="8" y2="17" />
               <polyline points="10 9 9 9 8 9" />
             </svg>
-            <p className="explorer-placeholder-title">{t("noFolderOpen", "尚未打开文件夹")}</p>
-            <button className="explorer-open-btn" onClick={openFolder}>
-              {t("openFolder", "打开文件夹")}
-            </button>
+            <p className="explorer-placeholder-title">
+              {rootPath ? t("folderNeedsReopen", "该项目尚未授权，请明确重新打开") : t("noFolderOpen", "尚未打开文件夹")}
+            </p>
+            {rootPath ? (
+              <button className="explorer-open-btn" onClick={() => void loadTree(rootPath)}>
+                {t("reopenFolder", "重新打开项目")}
+              </button>
+            ) : (
+              <button className="explorer-open-btn" onClick={openFolder}>
+                {t("openFolder", "打开文件夹")}
+              </button>
+            )}
           </div>
         )}
       </div>

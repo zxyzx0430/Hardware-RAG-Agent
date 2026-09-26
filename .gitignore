@@ -59,10 +59,39 @@ data/chat_history.db
 
 # Data
 data/agent_sessions.db
-data/benchmark/
 data/chroma/
-data/test_results/
 data/test_docs/*.docx
+
+# Local benchmark outputs. Reusable test datasets live under backend/tests.
+/data/benchmark/_tmp_first_sample.json
+/data/benchmark/chunk-baseline-eval-v*.json
+/data/benchmark/chunk-baseline-eval-v*.md
+/data/benchmark/chunk-baseline-eval-v*.log
+/data/benchmark/chunk-baseline-eval-v*.log.*
+/data/benchmark/chunk-baseline-eval-v*.checkpoint.json
+/data/benchmark/ch340g_audit_pages/
+/data/benchmark/hard_pages_render/
+/data/benchmark/inspect/
+/data/benchmark/pdf_extracts/
+/data/benchmark/*_chunks_summary.txt
+/data/benchmark/chunk_analysis_low_score.txt
+/data/benchmark/esp32_p2_chunks.txt
+/data/benchmark/hard_question_chunks_dump.txt
+
+# Generated evaluation output and retained local-only analysis material.
+/data/test_results/golden_eval_*.json
+/data/test_results/golden_eval_*.md
+/data/test_results/golden_eval_debug.log
+/data/test_results/golden_answer_extracts.json
+/data/test_results/rag_eval_*.json
+/data/test_results/rag_eval_*.md
+/data/test_results/rpt_independent_verify_*.md
+/data/test_results/rag_pdf_test_report_*.md
+/data/test_results/page_previews/
+/data/test_results/independent_pdf_analysis.json
+/data/test_results/multimodal_chunks_review.json
+/data/test_results/pdf_golden_dataset.json
+/data/test_results/golden_ref_embeddings.pkl.bak.*
 
 # Backend temp
 backend/_*.txt
@@ -83,6 +112,7 @@ backend/platformio.ini
 backend/.deepeval/
 backend/app/db/keys_store.json
 backend/app/db/keys_store.json.bak
+backend/app/db/.enc_key
 backend/hardware_rag.db
 
 # Frontend
@@ -101,7 +131,7 @@ scripts/nav_check.js
 # Screenshots (root level only, docs/screenshots/ is tracked)
 /screenshots/
 
-# Reports
+# Local-only exploratory test files. Keep on disk; they are not in the tracked suite.
 backend/tests/rag_eval/_sse_probe.py
 backend/tests/test_html_ingest.py
 backend/tests/test_ocr_parser.py
@@ -164,10 +194,10 @@ sketches/
 # Data PDFs (test data)
 data/pdfs/
 
-# Internal dev docs (not for end users) - only docs/screenshots/ is tracked
-docs/*
-!docs/screenshots/
-
-# Internal project rules & specs
-AGENTS.md
+# Local-only notes and uncurated captures. Formal project docs remain trackable.
+/docs/completed-history.local.md
+/docs/architecture/architecture-map-history.local.md
+/docs/resume-achievements.md
+/docs/plans/python-learning-roadmap.md
+/docs/demo-screenshots/
 .trae/

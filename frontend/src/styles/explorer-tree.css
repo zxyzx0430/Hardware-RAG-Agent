@@ -307,6 +307,55 @@
   cursor: not-allowed;
 }
 
+.explorer-trash-panel {
+  max-height: 38%;
+  overflow: auto;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  flex-shrink: 0;
+}
+
+.explorer-trash-heading,
+.explorer-trash-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.explorer-trash-heading {
+  position: sticky;
+  top: 0;
+  background: var(--card);
+  z-index: 1;
+  font-size: 12px;
+}
+
+.explorer-trash-item-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 3px;
+  font-size: 12px;
+}
+
+.explorer-trash-item-info span,
+.explorer-trash-item-info time {
+  overflow: hidden;
+  color: var(--muted-fg);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.explorer-trash-empty {
+  padding: 10px 12px;
+  color: var(--muted-fg);
+  font-size: 12px;
+}
+
 /* SSE watch connection status indicator. */
 .explorer-watch-dot {
   margin-left: auto;

@@ -1,21 +1,17 @@
-"""Global lock for serializing all git write operations (snapshot + reset).
+"""Global locks for serializing private Agent Git snapshots and undo.
 
-Prevents concurrent git add/commit/reset from fighting over index.lock,
-which silently drops snapshots and corrupts undo state.
+Prevents concurrent snapshot/ref updates from interleaving and corrupting the
+private undo chain. Snapshot indexes are temporary and do not use the user's
+index.lock.
 
 Two primitives are exposed:
 
-- get_git_lock(): asyncio.Lock for async call sites that dispatch git work via
-  asyncio.to_thread (run_command snapshot, undo_edit reset, git_snapshot_async).
-  Acquired with `async with get_git_lock():`.
+- get_git_lock(): asyncio.Lock held across each pre-edit/edit/post-edit snapshot
+  transaction and across undo.
 
-- get_git_sync_lock(): threading.Lock acquired inside the synchronous git
-  functions (_git_snapshot, _git_snapshot_files, _run_reset). This is the real
-  cross-thread serializer: file_ops tool callers (write_file/edit_file/
-  multi_edit/apply_patch) run _git_snapshot through their OWN asyncio.to_thread
-  and bypass any async wrapper, so an asyncio.Lock alone would not serialize
-  them. The threading.Lock covers every code path regardless of how it was
-  dispatched.
+- get_git_sync_lock(): threading.Lock acquired inside synchronous snapshot/ref
+  and undo helpers, so work dispatched through asyncio.to_thread shares the
+  same serialization point.
 """
 from __future__ import annotations
 

@@ -158,7 +158,11 @@ interface ChatState {
   /** 从后端加载会话消息（localStorage 缓存先填充，后端数据覆盖） */
   fetchMessages: (sessionId: string) => Promise<void>;
   /** 流式结束后将最后一轮 user+assistant 消息持久化到后端 */
-  persistLastTurn: (sessionId: string) => Promise<void>;
+  persistLastTurn: (sessionId: string) => Promise<boolean>;
+  /** 重试保存当前会话里尚未确认写入的消息；不会重新发起聊天或 Agent 请求 */
+  retryPendingSave: (sessionId: string) => Promise<void>;
+  /** 会话消息保存状态；缺省表示已保存 */
+  pendingSaveBySession: Record<string, "saving" | "pending">;
   quoteMessage: (msgId: string) => void;
   exportConversation: (format: "markdown" | "json") => void;
   showStats: () => void;
@@ -183,9 +187,95 @@ function getLog() {
 // Maximum number of messages retained in memory to avoid OOM on long conversations
 const MAX_MESSAGES = 200;
 
-// Track which assistant message ids have already been persisted to backend,
-// to prevent duplicate POSTs when onDone/stopStreaming could both fire.
-const persistedMsgIds = new Set<string>();
+const PENDING_SAVE_PREFIX = "hwrag_pending_save_";
+
+function _pendingSaveStorageKey(sessionId: string): string {
+  return `${PENDING_SAVE_PREFIX}${encodeURIComponent(sessionId)}`;
+}
+
+function _loadPendingSaveIds(sessionId: string): string[] {
+  try {
+    const raw = localStorage.getItem(_pendingSaveStorageKey(sessionId));
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function _storePendingSaveIds(sessionId: string, ids: string[]): void {
+  try {
+    const uniqueIds = [...new Set(ids)];
+    const key = _pendingSaveStorageKey(sessionId);
+    if (uniqueIds.length > 0) localStorage.setItem(key, JSON.stringify(uniqueIds));
+    else localStorage.removeItem(key);
+  } catch {
+    // The message shard remains the recovery source if the marker cannot be written.
+  }
+}
+
+function _rememberPendingSaveIds(sessionId: string, ids: string[]): void {
+  _storePendingSaveIds(sessionId, [..._loadPendingSaveIds(sessionId), ...ids]);
+}
+
+function _clearPendingSaveIds(sessionId: string, ids: string[]): string[] {
+  const clearing = new Set(ids);
+  const remaining = _loadPendingSaveIds(sessionId).filter((id) => !clearing.has(id));
+  _storePendingSaveIds(sessionId, remaining);
+  return remaining;
+}
+
+function _loadPendingSaveStatuses(): Record<string, "pending"> {
+  const sessions = loadFromStorage("sessions", [] as { id: string }[]);
+  if (!Array.isArray(sessions)) return {};
+  return Object.fromEntries(
+    sessions.filter((session) => _loadPendingSaveIds(session.id).length > 0)
+      .map((session) => [session.id, "pending" as const])
+  );
+}
+
+function _messageSavePayload(message: Message): Record<string, unknown> {
+  return {
+    id: message.id,
+    role: message.role,
+    content: serializeMessageContent(message.content),
+    sources: message.sources || [],
+    tool_calls: [],
+    activity: message.activity || null,
+  };
+}
+
+function _matchesBackendMessage(local: Message, backend: BackendMessage): boolean {
+  return local.role === backend.role
+    && serializeMessageContent(local.content) === serializeMessageContent(parseMessageContent(backend.content))
+    && JSON.stringify(local.sources || []) === JSON.stringify(backend.sources || [])
+    && JSON.stringify(local.activity || null) === JSON.stringify(backend.activity || null);
+}
+
+async function _postMessagesWithSessionRecovery(sessionId: string, messages: Message[]): Promise<void> {
+  const postMessages = async () => {
+    for (const message of messages) {
+      await apiPost(`sessions/${sessionId}/messages`, _messageSavePayload(message));
+    }
+  };
+
+  try {
+    await postMessages();
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    if (!errMsg.includes("404") && !errMsg.includes("NOT_FOUND")) throw err;
+
+    const session = useSessionStore.getState().sessions.find((item) => item.id === sessionId);
+    await apiPost("sessions", {
+      id: sessionId,
+      title: session?.title || "新对话",
+      model: session?.model || "",
+      project: session?.project || "",
+      context_window: session?.contextWindow || CONTEXT_WINDOW_256K,
+    });
+    await postMessages();
+  }
+}
 
 /** Trim messages array to the last MAX_MESSAGES entries (rolling window) */
 function trimMessages(msgs: Message[]): Message[] {
@@ -332,6 +422,15 @@ function mapBackendMessage(m: BackendMessage): Message {
 
 
 export const useChatStore = create<ChatState>((set, get) => {
+  function updatePendingSaveStatus(sessionId: string, status?: "saving" | "pending"): void {
+    set((state) => {
+      const next = { ...state.pendingSaveBySession };
+      if (status) next[sessionId] = status;
+      else delete next[sessionId];
+      return { pendingSaveBySession: next };
+    });
+  }
+
   /** Truncate messages to truncatedCount, sync to sessionMessages + backend, then resend.
    *  Deduplicates the truncate→apiDelete→sendMessage template shared by retryMessage and editAndResend. */
   async function truncateAndResend(
@@ -356,92 +455,126 @@ export const useChatStore = create<ChatState>((set, get) => {
   }
 
   // ── v2-T4: HITL resume helpers ──────────────────────────────
-  /** Handle SSE event during resume stream (text/thinking/source/tool_call/tool_result/confirm/error). */
-  function _handleResumeEvent(evt: ChatSSEEvent): void {
+  /** Handle SSE events against the session that owns this resume stream. */
+  function _handleResumeEvent(evt: ChatSSEEvent, sid: string, resumeSteps: ActivityStep[]): void {
     if (evt.type === "context_compressing") {
-      set({ isCompressing: true, compressingMessage: evt.message || "正在压缩上下文..." });
+      if (get().activeSessionId === sid) {
+        set({ isCompressing: true, compressingMessage: evt.message || "正在压缩上下文..." });
+      }
       return;
     }
-    if (evt.type === "text") { _appendResumeText(evt); return; }
-    if (evt.type === "thinking") { _appendResumeThinking(evt); return; }
-    if (evt.type === "source") { _appendResumeSource(evt); return; }
-    if (evt.type === "tool_call") { _appendResumeToolCall(evt); return; }
-    if (evt.type === "tool_result") { _updateResumeToolResult(evt); return; }
-    if (evt.type === "tool_confirm_required") { set({ pendingConfirm: { calls: evt.calls, count: evt.count } }); return; }
-    if (evt.type === "error") { set({ streamingError: { code: "ERROR", message: evt.message, detail: "" } }); }
+    if (evt.type === "text") { _appendResumeText(evt, sid); return; }
+    if (evt.type === "thinking") { _appendResumeThinking(evt, sid, resumeSteps); return; }
+    if (evt.type === "source") { _appendResumeSource(evt, sid); return; }
+    if (evt.type === "tool_call") { _appendResumeToolCall(evt, sid, resumeSteps); return; }
+    if (evt.type === "tool_result") { _updateResumeToolResult(evt, sid, resumeSteps); return; }
+    if (evt.type === "tool_confirm_required") {
+      if (get().activeSessionId === sid) set({ pendingConfirm: { calls: evt.calls, count: evt.count } });
+      return;
+    }
+    if (evt.type === "error" && get().streamingSessionId === sid) {
+      set({ streamingError: { code: "ERROR", message: evt.message, detail: "" } });
+    }
   }
 
-  /** Append text chunk: update both streamingContent and last assistant message content.
-   *  FIX-1.4: 改为追加到 last.content，不依赖可能被重置的 streamingContent。 */
-  function _appendResumeText(evt: Extract<ChatSSEEvent, { type: "text" }>): void {
+  /** Append resumed text to the correct session, including while it is in the background. */
+  function _appendResumeText(evt: Extract<ChatSSEEvent, { type: "text" }>, sid: string): void {
     set((s) => {
       const chunk = evt.content || "";
-      const msgs = [...s.messages];
+      const isActive = s.activeSessionId === sid;
+      const msgs = [...(isActive ? s.messages : (s.sessionMessages[sid] || []))];
       const last = msgs[msgs.length - 1];
       if (last?.role !== "assistant") {
-        return { streamingContent: s.streamingContent + chunk, messages: msgs, isCompressing: false };
+        return isActive
+          ? { streamingContent: s.streamingContent + chunk, messages: msgs, isCompressing: false }
+          : {};
       }
+      let streamingContent: string;
       if (typeof last.content === "string") {
-        // FIX-1.4: 追加到 last.content，避免 streamingContent 被重置后覆盖主流程文本
-        const newContent = (last.content || "") + chunk;
-        msgs[msgs.length - 1] = { ...last, content: newContent };
-        return { streamingContent: newContent, messages: msgs, isCompressing: false };
-      }
-      // ContentPart[] path: append text to last TextPart (preserves ImageParts)
-      const parts: ContentPart[] = [...last.content];
-      const lastTextIdx = parts.map((p) => p.type).lastIndexOf("text");
-      if (lastTextIdx >= 0) {
-        const lastText = parts[lastTextIdx] as Extract<ContentPart, { type: "text" }>;
-        parts[lastTextIdx] = { ...lastText, text: lastText.text + chunk };
+        streamingContent = (last.content || "") + chunk;
+        msgs[msgs.length - 1] = { ...last, content: streamingContent };
       } else {
-        parts.push({ type: "text", text: chunk });
-      }
-      msgs[msgs.length - 1] = { ...last, content: parts };
-      return {
-        streamingContent: parts
+        // ContentPart[] path: append text to last TextPart (preserves ImageParts)
+        const parts: ContentPart[] = [...last.content];
+        const lastTextIdx = parts.map((p) => p.type).lastIndexOf("text");
+        if (lastTextIdx >= 0) {
+          const lastText = parts[lastTextIdx] as Extract<ContentPart, { type: "text" }>;
+          parts[lastTextIdx] = { ...lastText, text: lastText.text + chunk };
+        } else {
+          parts.push({ type: "text", text: chunk });
+        }
+        msgs[msgs.length - 1] = { ...last, content: parts };
+        streamingContent = parts
           .filter((p): p is Extract<ContentPart, { type: "text" }> => p.type === "text")
           .map((p) => p.text)
-          .join("\n\n"),
-        messages: msgs,
-        isCompressing: false,
+          .join("\n\n");
+      }
+      saveSessionMessages(sid, msgs);
+      return {
+        sessionMessages: { ...s.sessionMessages, [sid]: msgs },
+        ...(isActive ? { streamingContent, messages: msgs, isCompressing: false } : {}),
       };
     });
   }
 
-  /** Append thinking chunk: reuse main-stream source-switch logic (active session only). */
-  function _appendResumeThinking(evt: Extract<ChatSSEEvent, { type: "thinking" }>): void {
-    const content = evt.content ?? "";
-    const source = evt.source;
+  function _syncResumeActivity(sid: string, resumeSteps: ActivityStep[]): void {
     set((s) => {
-      const steps = [...s.streamingSteps];
-      const last = steps[steps.length - 1];
-      if (source === "reasoning" && last?.type === "thinking" && last.source === "llm") {
-        steps[steps.length - 1] = { ...last, content, source: "reasoning" };
-        return { streamingSteps: steps };
-      }
-      if (last?.type === "thinking" && last.source === source) {
-        steps[steps.length - 1] = { ...last, content: (last.content || "") + content };
-        return { streamingSteps: steps };
-      }
-      if (last?.type === "thinking") steps[steps.length - 1] = { ...last, status: "done" };
-      steps.push({ type: "thinking", id: `h-${Date.now()}`, content, source });
-      return { streamingSteps: steps };
+      const isActive = s.activeSessionId === sid;
+      const msgs = [...(isActive ? s.messages : (s.sessionMessages[sid] || []))];
+      const last = msgs[msgs.length - 1];
+      if (last?.role !== "assistant") return isActive ? { streamingSteps: [...resumeSteps] } : {};
+      msgs[msgs.length - 1] = {
+        ...last,
+        activity: { durationMs: 0, steps: [...resumeSteps], status: "running" },
+      };
+      saveSessionMessages(sid, msgs);
+      return {
+        sessionMessages: { ...s.sessionMessages, [sid]: msgs },
+        ...(isActive ? { messages: msgs, streamingSteps: [...resumeSteps] } : {}),
+      };
     });
   }
 
-  /** Append source ref: update streamingSources and last assistant message sources. */
-  function _appendResumeSource(evt: Extract<ChatSSEEvent, { type: "source" }>): void {
+  /** Append thinking chunks to the resume stream's own activity buffer. */
+  function _appendResumeThinking(
+    evt: Extract<ChatSSEEvent, { type: "thinking" }>,
+    sid: string,
+    resumeSteps: ActivityStep[],
+  ): void {
+    const content = evt.content ?? "";
+    const source = evt.source;
+    const steps = [...resumeSteps];
+    const last = steps[steps.length - 1];
+    if (source === "reasoning" && last?.type === "thinking" && last.source === "llm") {
+      steps[steps.length - 1] = { ...last, content, source: "reasoning" };
+    } else if (last?.type === "thinking" && last.source === source) {
+      steps[steps.length - 1] = { ...last, content: (last.content || "") + content };
+    } else {
+      if (last?.type === "thinking") steps[steps.length - 1] = { ...last, status: "done" };
+      steps.push({ type: "thinking", id: `h-${Date.now()}`, content, source });
+    }
+    resumeSteps.splice(0, resumeSteps.length, ...steps);
+    _syncResumeActivity(sid, resumeSteps);
+  }
+
+  /** Append source refs to the correct resumed assistant message. */
+  function _appendResumeSource(evt: Extract<ChatSSEEvent, { type: "source" }>, sid: string): void {
     const baseSrc: SourceRef = { id: evt.id ?? `src-${Date.now()}`, title: evt.title ?? "未知来源", doc: evt.doc ?? "", page: evt.page ?? 0, chunk_index: evt.chunk_index, page_start: evt.page_start, page_end: evt.page_end, section_title: evt.section_title, source_url: evt.source_url, category: evt.category, chunk_method: evt.chunk_method, score: evt.score ?? 0, score_percentage: evt.score_percentage, relevance_level: evt.relevance_level, citation: evt.citation, excerpt: evt.excerpt ?? "", kb_id: evt.kb_id, kb_name: evt.kb_name, small_chunk_id: evt.small_chunk_id, big_chunk_id: evt.big_chunk_id, small_chunk_text: evt.small_chunk_text };
     set((s) => {
-      const msgs = [...s.messages];
+      const isActive = s.activeSessionId === sid;
+      const msgs = [...(isActive ? s.messages : (s.sessionMessages[sid] || []))];
       const last = msgs[msgs.length - 1];
       const src: SourceRef = { ...baseSrc, messageId: last?.id };
       if (last?.role === "assistant") msgs[msgs.length - 1] = { ...last, sources: [...(last.sources || []), src] };
-      return { streamingSources: [...s.streamingSources, src], sources: [...s.streamingSources, src], messages: msgs };
+      saveSessionMessages(sid, msgs);
+      return {
+        sessionMessages: { ...s.sessionMessages, [sid]: msgs },
+        ...(isActive ? { streamingSources: [...s.streamingSources, src], sources: [...s.streamingSources, src], messages: msgs } : {}),
+      };
     });
   }
 
-  function _appendResumeToolCall(evt: Extract<ChatSSEEvent, { type: "tool_call" }>): void {
+  function _appendResumeToolCall(evt: Extract<ChatSSEEvent, { type: "tool_call" }>, sid: string, resumeSteps: ActivityStep[]): void {
     const step: ActivityStep = {
       type: "tool",
       id: evt.call_id || `t-${Date.now()}`,
@@ -452,31 +585,45 @@ export const useChatStore = create<ChatState>((set, get) => {
       risk_level: evt.risk_level,
       startTime: Date.now(),
     };
-    set((s) => ({ streamingSteps: [...s.streamingSteps, step] }));
+    resumeSteps.push(step);
+    _syncResumeActivity(sid, resumeSteps);
   }
 
-  function _updateResumeToolResult(evt: Extract<ChatSSEEvent, { type: "tool_result" }>): void {
+  function _updateResumeToolResult(evt: Extract<ChatSSEEvent, { type: "tool_result" }>, sid: string, resumeSteps: ActivityStep[]): void {
     const resultText = _flattenToolResult(evt.result);
-    const status = evt.success === false ? "error" : "done";
-    set((s) => ({
-      streamingSteps: s.streamingSteps.map((step) =>
-        step.call_id === evt.call_id ? { ...step, status, result: resultText, duration: evt.duration } : step
-      ),
-    }));
+    const status: ActivityStep["status"] = evt.success === false ? "error" : "done";
+    const steps = resumeSteps.map((step) =>
+      step.call_id === evt.call_id ? { ...step, status, result: resultText, duration: evt.duration } : step
+    );
+    resumeSteps.splice(0, resumeSteps.length, ...steps);
+    _syncResumeActivity(sid, resumeSteps);
   }
 
   /** Finalize resume stream — attach activity to last assistant message.
    *  Content/sources already updated in real-time by _appendResumeText/_appendResumeSource
    *  (aligns with main stream onDone, which does NOT re-merge streamingContent). */
-  function _finalizeResume(sid: string): void {
+  function _finalizeResume(sid: string, resumeSteps: ActivityStep[], errorMessage?: string): void {
     set((s) => {
-      const msgs = [...s.messages];
+      const isActive = s.activeSessionId === sid;
+      const msgs = [...(isActive ? s.messages : (s.sessionMessages[sid] || []))];
       const last = msgs[msgs.length - 1];
       if (last?.role === "assistant") {
+        const content = errorMessage
+          ? (typeof last.content === "string"
+              ? `${last.content || ""}${last.content ? "\n\n" : ""}❌ ${errorMessage}`
+              : (() => {
+                  const existingText = last.content
+                    .filter((part): part is Extract<ContentPart, { type: "text" }> => part.type === "text")
+                    .map((part) => part.text)
+                    .join("\n\n");
+                  return _mergeTextIntoParts(last.content, `${existingText}${existingText ? "\n\n" : ""}❌ ${errorMessage}`);
+                })())
+          : last.content;
         msgs[msgs.length - 1] = {
           ...last,
-          activity: s.streamingSteps.length > 0
-            ? { durationMs: 0, steps: s.streamingSteps, status: "done" as const }
+          content,
+          activity: resumeSteps.length > 0
+            ? { durationMs: 0, steps: _finalizePendingSteps(resumeSteps), status: errorMessage ? "error" as const : "done" as const }
             : last.activity,
         };
       }
@@ -488,19 +635,42 @@ export const useChatStore = create<ChatState>((set, get) => {
         newBg = new Map(s.backgroundSseRequests);
         newBg.delete(sid);
       }
+      const isCurrentStream = s.streamingSessionId === sid;
       return {
-        messages: msgs,
         sessionMessages: newSM,
-        isStreaming: false,
-        isCompressing: false,
-        streamingContent: "",
-        streamingSteps: [],
-        streamingSources: [],
-      streamingTodos: [],
-        currentSseRequest: null,
+        ...(isActive ? { messages: msgs } : {}),
         backgroundSseRequests: newBg,
-        _lastAgentPayload: null,
+        ...(isCurrentStream ? {
+          isStreaming: false,
+          isCompressing: false,
+          streamingContent: "",
+          streamingSteps: [],
+          streamingSources: [],
+          streamingTodos: [],
+          currentSseRequest: null,
+          _lastAgentPayload: null,
+          streamingError: errorMessage ? { code: "ERROR", message: errorMessage, detail: "" } : null,
+        } : {}),
       };
+    });
+
+    // The resume stream has reached a terminal event. Save the completed
+    // user/assistant pair through the same idempotent path as ordinary chat.
+    void get().persistLastTurn(sid).then((saved) => {
+      if (!saved) return;
+      const finalMessages = get().sessionMessages[sid] || [];
+      const userMessages = finalMessages.filter((message) => message.role === "user");
+      const lastUser = userMessages[userMessages.length - 1];
+      const userText = lastUser
+        ? (typeof lastUser.content === "string"
+            ? lastUser.content
+            : lastUser.content.filter((part) => part.type === "text").map((part) => part.text).join(" "))
+        : "";
+      useSessionStore.getState().updateSessionMeta(sid, {
+        msgCount: finalMessages.filter((message) => message.role === "user" || (message.role === "assistant" && message.content)).length,
+        preview: userText.slice(0, 60) || "(图片)",
+      });
+      post("messages_changed", sid);
     });
   }
 
@@ -542,6 +712,7 @@ export const useChatStore = create<ChatState>((set, get) => {
   selectedKbIds: [],
   needsApiKey: false,
   pendingConfirm: null,
+  pendingSaveBySession: _loadPendingSaveStatuses(),
   _lastAgentPayload: null,
   // 草稿按 sessionId 隔离，仅存内存（spec 决策 4：刷新后丢失可接受）
   drafts: {},
@@ -625,10 +796,15 @@ export const useChatStore = create<ChatState>((set, get) => {
       streamingStartTime: Date.now(),
     });
     const controller = new AbortController();
+    const resumeSteps: ActivityStep[] = [];
     set({ currentSseRequest: controller });
     apiSSE("agent-sandbox/resume", { payload, decision }, {
-      onEvent: (evt) => _handleResumeEvent(evt as ChatSSEEvent),
-      onDone: () => _finalizeResume(sid),
+      onEvent: (evt) => _handleResumeEvent(evt as ChatSSEEvent, sid, resumeSteps),
+      onDone: () => _finalizeResume(sid, resumeSteps),
+      onError: (err) => {
+        getLog()("error", "chat", `Agent 恢复流错误: ${err.message}`);
+        _finalizeResume(sid, resumeSteps, err.message);
+      },
     }, controller);
   },
 
@@ -652,85 +828,102 @@ export const useChatStore = create<ChatState>((set, get) => {
     // 2. 从后端拉权威数据
     try {
       const data = await apiGet<{ messages: BackendMessage[] }>(`sessions/${sessionId}/messages`);
-      let msgs: Message[] = (data?.messages || []).map(mapBackendMessage);
+      let backendMessages = data?.messages || [];
 
-      // 懒迁移：后端空但 localStorage 有消息 → POST 到后端（修复前的旧数据）
-      if (msgs.length === 0 && cached.length > 0) {
-        getLog()("info", "chat", `懒迁移: 会话 ${sessionId} 有 ${cached.length} 条本地消息，同步到后端`);
-        try {
-          for (const m of cached) {
-            await apiPost(`sessions/${sessionId}/messages`, {
-              role: m.role,
-              content: serializeMessageContent(m.content),
-              sources: m.sources || [],
-              tool_calls: [],
-              activity: m.activity || null,
-            });
-          }
-          getLog()("ok", "chat", `懒迁移完成: ${sessionId} ${cached.length} 条消息已同步`);
-          // 迁移后重新 fetch 拿后端 ID
-          const refetch = await apiGet<{ messages: BackendMessage[] }>(`sessions/${sessionId}/messages`);
-          msgs = (refetch?.messages || []).map(mapBackendMessage);
-        } catch (migrateErr) {
-          // 404 = 会话不存在于后端，先补录会话再重试
-          const migrateMsg = migrateErr instanceof Error ? migrateErr.message : String(migrateErr);
-          if (migrateMsg.includes("404") || migrateMsg.includes("NOT_FOUND")) {
-            getLog()("info", "chat", `懒迁移遇 404: 会话 ${sessionId} 不存在，补录会话`);
-            try {
-              const session = useSessionStore.getState().sessions.find((s) => s.id === sessionId);
-              await apiPost("sessions", {
-                id: sessionId,
-                title: session?.title || "新对话",
-                model: session?.model || "",
-                project: session?.project || "",
-                context_window: session?.contextWindow || CONTEXT_WINDOW_256K,
-              });
-              for (const m of cached) {
-                await apiPost(`sessions/${sessionId}/messages`, {
-                  role: m.role,
-                  content: serializeMessageContent(m.content),
-                  sources: m.sources || [],
-                  tool_calls: [],
-                  activity: m.activity || null,
-                });
-              }
-              getLog()("ok", "chat", `补录+懒迁移完成: ${sessionId} ${cached.length} 条消息`);
-              const refetch = await apiGet<{ messages: BackendMessage[] }>(`sessions/${sessionId}/messages`);
-              msgs = (refetch?.messages || []).map(mapBackendMessage);
-            } catch {
-              getLog()("warn", "chat", `补录+懒迁移失败: ${sessionId}，使用本地缓存`);
-              msgs = cached;
-            }
-          } else {
-            getLog()("warn", "chat", `懒迁移失败: ${sessionId}，使用本地缓存`);
-            msgs = cached;
-          }
-        }
-      }
-
-      // 防止 race condition：仅当当前活跃会话仍是该会话时才更新 messages
-      // 额外守卫：如果本地缓存的消息数量 > 后端返回，说明本地更新（流式刚完成或
-      // persistLastTurn 还没完成），不覆盖，避免流式内容消失。
-      const localMsgs = get().sessionMessages[sessionId] || [];
-      // FIX-1.2: 流式中跳过 fetchMessages，避免后端空数据覆盖本地流式内容
+      // Do not persist a snapshot while a stream is still changing it.
       if (get().isStreaming && get().streamingSessionId === sessionId) {
         getLog()("info", "chat", `跳过 fetchMessages: 会话 ${sessionId} 正在流式中`);
         return;
       }
-      if (localMsgs.length > msgs.length) {
-        getLog()("info", "chat", `跳过后端覆盖: 会话 ${sessionId} 本地 ${localMsgs.length} 条 > 后端 ${msgs.length} 条`);
-        return;
-      }
-      // FIX-1.2: content-aware 守卫 — 本地末尾 assistant 有 content 而后端为空时，保留本地
-      if (localMsgs.length === msgs.length && localMsgs.length > 0) {
-        const localLast = localMsgs[localMsgs.length - 1];
-        const backendLast = msgs[msgs.length - 1];
-        if (localLast?.role === "assistant" && backendLast?.role === "assistant"
-          && _hasContent(localLast.content) && !_hasContent(backendLast.content)) {
-          getLog()("info", "chat", `跳过后端覆盖: 会话 ${sessionId} 本地末尾 assistant 有 content，后端为空`);
+
+      // The local shard is the recovery copy. Retry messages marked before an
+      // interrupted write, plus any local IDs missing from the backend. Stable
+      // IDs make this safe even if the previous request committed but lost its reply.
+      const localMessages = get().sessionMessages[sessionId] || cached;
+      const backendIds = new Set(backendMessages.map((message) => message.id));
+      const pendingIds = new Set(_loadPendingSaveIds(sessionId));
+      const legacyMatchedLocalIds = new Set<string>();
+      const legacyUpdateBackendIdByLocalId = new Map<string, string>();
+      const matchedBackendIds = new Set<string>();
+      const rolesRemainAligned = localMessages.length === backendMessages.length
+        && localMessages.every((message, index) => message.role === backendMessages[index]?.role);
+      localMessages.forEach((localMessage, index) => {
+        if (backendIds.has(localMessage.id)) {
+          matchedBackendIds.add(localMessage.id);
           return;
         }
+        if (rolesRemainAligned) {
+          const positional = backendMessages[index];
+          if (!positional || matchedBackendIds.has(positional.id)) return;
+          matchedBackendIds.add(positional.id);
+          if (_matchesBackendMessage(localMessage, positional)) {
+            legacyMatchedLocalIds.add(localMessage.id);
+          } else {
+            // For pre-stable-ID records, keep the same ordered message slot and
+            // update its server ID instead of inserting a second conversation row.
+            legacyUpdateBackendIdByLocalId.set(localMessage.id, positional.id);
+          }
+          return;
+        }
+        const atSamePosition = backendMessages[index];
+        const exactMatch = atSamePosition
+          && !matchedBackendIds.has(atSamePosition.id)
+          && _matchesBackendMessage(localMessage, atSamePosition)
+          ? atSamePosition
+          : backendMessages.find((candidate) =>
+              !matchedBackendIds.has(candidate.id) && _matchesBackendMessage(localMessage, candidate)
+            );
+        if (exactMatch) {
+          // Older clients used separate browser/server IDs. Exact content and
+          // source matches identify those records without inserting them again.
+          legacyMatchedLocalIds.add(localMessage.id);
+          matchedBackendIds.add(exactMatch.id);
+        }
+      });
+      const recoveryMessages = localMessages.filter(
+        (message) => pendingIds.has(message.id)
+          || (!backendIds.has(message.id) && !legacyMatchedLocalIds.has(message.id))
+      );
+      if (recoveryMessages.length > 0) {
+        const recoveryIds = recoveryMessages.map((message) => message.id);
+        const recoveryWrites = recoveryMessages.map((message) => {
+          const backendId = legacyUpdateBackendIdByLocalId.get(message.id);
+          return backendId ? { ...message, id: backendId } : message;
+        });
+        _rememberPendingSaveIds(sessionId, recoveryIds);
+        updatePendingSaveStatus(sessionId, "saving");
+        try {
+          await _postMessagesWithSessionRecovery(sessionId, recoveryWrites);
+          const stillPending = _clearPendingSaveIds(sessionId, recoveryIds);
+          updatePendingSaveStatus(sessionId, stillPending.length > 0 ? "pending" : undefined);
+          const refreshed = await apiGet<{ messages: BackendMessage[] }>(`sessions/${sessionId}/messages`);
+          backendMessages = refreshed?.messages || [];
+        } catch (syncErr) {
+          // Keep a durable marker so refresh can retry only the save request.
+          _rememberPendingSaveIds(sessionId, recoveryIds);
+          updatePendingSaveStatus(sessionId, "pending");
+          const syncMessage = syncErr instanceof Error ? syncErr.message : String(syncErr);
+          getLog()("warn", "chat", `恢复未保存消息失败: ${sessionId} - ${syncMessage}`);
+        }
+      } else if (pendingIds.size > 0) {
+        updatePendingSaveStatus(sessionId, "pending");
       }
+
+      let msgs: Message[] = backendMessages.map(mapBackendMessage);
+      const remainingPending = new Set(_loadPendingSaveIds(sessionId));
+      if (remainingPending.size > 0) {
+        // Keep the local version of unsaved messages, including one that shares
+        // an ID with an older partially saved Agent answer.
+        const merged = new Map(msgs.map((message) => [message.id, message]));
+        for (const message of get().sessionMessages[sessionId] || cached) {
+          if (remainingPending.has(message.id) || !merged.has(message.id)) {
+            merged.set(message.id, message);
+          }
+        }
+        msgs = [...merged.values()];
+      }
+
+      if (remainingPending.size === 0) updatePendingSaveStatus(sessionId);
       if (get().activeSessionId === sessionId) {
         set((s) => ({
           messages: msgs,
@@ -755,6 +948,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         getLog()("debug", "chat", `加载会话消息被中断: ${sessionId}，使用缓存`);
       } else {
         getLog()("warn", "chat", `加载会话消息失败: ${sessionId}，使用缓存`);
+        if (_loadPendingSaveIds(sessionId).length > 0) updatePendingSaveStatus(sessionId, "pending");
         useToastStore.getState().showError(`加载会话消息失败: ${errMsg}`);
       }
     } finally {
@@ -763,69 +957,49 @@ export const useChatStore = create<ChatState>((set, get) => {
   },
 
   persistLastTurn: async (sessionId: string) => {
-    if (!sessionId) return;
+    if (!sessionId) return false;
     const msgs = get().sessionMessages[sessionId] || [];
-    if (msgs.length < 2) return;
-    // 只持久化最后两条（user + assistant）
+    if (msgs.length < 2) return false;
     const lastTwo = msgs.slice(-2);
-    // 防重复：用 assistant 消息 id 判断是否已持久化过
-    const lastAssistant = lastTwo.find((m) => m.role === "assistant");
-    if (lastAssistant && persistedMsgIds.has(lastAssistant.id)) return;
-    // FIX-1.3: POST 前校验 — 若最后一条 assistant 消息 content 为空，跳过持久化
-    // （避免空消息覆盖后端已有数据，导致刷新后回答消失）
-    if (lastAssistant && !_hasContent(lastAssistant.content)) {
-      getLog()("warn", "chat", `跳过 persistLastTurn: 会话 ${sessionId} 最后一条 assistant 消息 content 为空`);
-      return;
-    }
-
-    const saveMessages = async () => {
-      for (const m of lastTwo) {
-        await apiPost(`sessions/${sessionId}/messages`, {
-          role: m.role,
-          content: serializeMessageContent(m.content),
-          sources: m.sources || [],
-          tool_calls: [],
-          activity: m.activity || null,
-        });
-      }
-    };
-
+    const messageIds = lastTwo.map((message) => message.id);
+    _rememberPendingSaveIds(sessionId, messageIds);
+    updatePendingSaveStatus(sessionId, "saving");
     try {
-      await saveMessages();
-      if (lastAssistant) persistedMsgIds.add(lastAssistant.id);
+      await _postMessagesWithSessionRecovery(sessionId, lastTwo);
+      const remaining = _clearPendingSaveIds(sessionId, messageIds);
+      updatePendingSaveStatus(sessionId, remaining.length > 0 ? "pending" : undefined);
       getLog()("ok", "chat", `已持久化会话 ${sessionId} 最后两条消息到后端`);
+      return true;
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
-      // 404 = 会话不存在于后端（newSession 回退到本地 ID 时），自动补录会话后重试
-      if (errMsg.includes("404") || errMsg.includes("NOT_FOUND")) {
-        getLog()("info", "chat", `会话 ${sessionId} 不存在于后端，尝试补录会话`);
-        try {
-          const session = useSessionStore.getState().sessions.find((s) => s.id === sessionId);
-          await apiPost("sessions", {
-            id: sessionId,
-            title: session?.title || "新对话",
-            model: session?.model || "",
-            project: session?.project || "",
-            context_window: session?.contextWindow || CONTEXT_WINDOW_256K,
-          });
-          getLog()("ok", "chat", `会话 ${sessionId} 已补录到后端，重试保存消息`);
-          await saveMessages();
-          if (lastAssistant) persistedMsgIds.add(lastAssistant.id);
-          getLog()("ok", "chat", `已持久化会话 ${sessionId} 最后两条消息到后端（补录后重试）`);
-          return;
-        } catch (retryErr) {
-          const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
-          getLog()("error", "chat", `补录会话失败: ${sessionId} - ${retryMsg}`);
-          useToastStore.getState().showError(`保存会话失败: 会话补录失败`);
-          return;
-        }
-      }
-      // abort 错误静默处理（快速切换导致请求被中断）
-      if (errMsg.includes("aborted") || errMsg.includes("signal is aborted")) {
-        getLog()("debug", "chat", `持久化消息被中断: ${sessionId}，下次重试`);
-        return;
-      }
+      updatePendingSaveStatus(sessionId, "pending");
       getLog()("warn", "chat", `持久化消息失败: ${sessionId}`);
+      useToastStore.getState().showError(`保存会话失败: ${errMsg}`);
+      return false;
+    }
+  },
+
+  retryPendingSave: async (sessionId: string) => {
+    if (!sessionId) return;
+    const localMessages = get().sessionMessages[sessionId] || [];
+    const pendingIds = new Set(_loadPendingSaveIds(sessionId));
+    const retryMessages = pendingIds.size > 0
+      ? localMessages.filter((message) => pendingIds.has(message.id))
+      : localMessages.slice(-2);
+    if (retryMessages.length === 0) return;
+
+    const retryIds = retryMessages.map((message) => message.id);
+    _rememberPendingSaveIds(sessionId, retryIds);
+    updatePendingSaveStatus(sessionId, "saving");
+    try {
+      await _postMessagesWithSessionRecovery(sessionId, retryMessages);
+      const remaining = _clearPendingSaveIds(sessionId, retryIds);
+      updatePendingSaveStatus(sessionId, remaining.length > 0 ? "pending" : undefined);
+      post("messages_changed", sessionId);
+    } catch (err) {
+      updatePendingSaveStatus(sessionId, "pending");
+      const errMsg = err instanceof Error ? err.message : String(err);
+      getLog()("warn", "chat", `重试保存会话失败: ${sessionId} - ${errMsg}`);
       useToastStore.getState().showError(`保存会话失败: ${errMsg}`);
     }
   },
@@ -1537,12 +1711,12 @@ export const useChatStore = create<ChatState>((set, get) => {
           }
         });
         // 先持久化到后端，完成后再更新会话元数据（消除 fetchMessages 竞态）
-        void get().persistLastTurn(requestSessionId).then(() => {
+        void get().persistLastTurn(requestSessionId).then((saved) => {
           if (pendingMetaUpdate) {
             useSessionStore.getState().updateSessionMeta(requestSessionId, pendingMetaUpdate);
           }
           // 多 tab 同步：通知其他 tab 此会话消息已变化
-          post('messages_changed', requestSessionId);
+          if (saved) post('messages_changed', requestSessionId);
         });
       },
       onError: (err) => {
@@ -1648,9 +1822,9 @@ export const useChatStore = create<ChatState>((set, get) => {
 
     // 流式停止（用户主动或错误）：将最后一轮 user+assistant 消息持久化到后端
     if (sidToPersist) {
-      void get().persistLastTurn(sidToPersist).then(() => {
+      void get().persistLastTurn(sidToPersist).then((saved) => {
         // 多 tab 同步：通知其他 tab 此会话消息已变化
-        post('messages_changed', sidToPersist);
+        if (saved) post('messages_changed', sidToPersist);
       });
     }
   },

@@ -934,3 +934,125 @@
   pointer-events: none;
   z-index: 10;
 }
+
+/* Keep the Explorer layout responsive to its own width, independent of the window. */
+.explorer-panel {
+  container-name: explorer-panel;
+  container-type: inline-size;
+}
+
+.explorer-header > svg {
+  flex: 0 0 auto;
+}
+
+.explorer-header-title {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.explorer-root-hint {
+  flex: 0 1 120px;
+  min-width: 0;
+}
+
+.explorer-header-actions {
+  flex-shrink: 0;
+}
+
+.explorer-header-button-icon {
+  display: none;
+  flex: 0 0 auto;
+}
+
+.explorer-collapse-btn {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--card-fg);
+  cursor: pointer;
+}
+
+.explorer-collapse-btn:hover {
+  background: var(--primary);
+  color: var(--primary-fg);
+  border-color: var(--primary);
+}
+
+.explorer-collapse-btn:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+@container explorer-panel (max-width: 520px) {
+  .explorer-header {
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 7px 8px;
+  }
+
+  .explorer-header-title {
+    min-width: 0;
+  }
+
+  .explorer-root-hint {
+    display: none;
+  }
+
+  .explorer-header-actions {
+    flex: 1 0 100%;
+    width: 100%;
+    justify-content: space-between;
+    gap: 4px;
+    margin-left: 0;
+  }
+
+  .explorer-header-actions > .explorer-follow-btn,
+  .explorer-header-actions > .explorer-open-btn,
+  .explorer-header-actions > .explorer-recent-toggle,
+  .explorer-header-actions > .explorer-collapse-btn,
+  .explorer-header-actions .explorer-recent-wrapper > .explorer-recent-toggle {
+    flex: 0 0 32px;
+    width: 32px;
+    height: 30px;
+    padding: 4px;
+  }
+
+  .explorer-header-button-icon {
+    display: inline-flex;
+  }
+
+  .explorer-header-button-label {
+    display: none;
+  }
+
+  /* Keep the tree and editor both usable at the minimum Explorer width. */
+  .explorer-split {
+    flex-direction: column;
+  }
+
+  .explorer-tree-pane {
+    width: 100% !important;
+    max-height: 40%;
+    min-height: 0;
+    flex: 0 1 40%;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .explorer-tree-resizer {
+    display: none;
+  }
+
+  .explorer-editor-pane {
+    min-width: 0;
+    min-height: 0;
+    flex: 1 1 60%;
+  }
+}

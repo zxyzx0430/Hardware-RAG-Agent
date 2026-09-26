@@ -6,7 +6,7 @@ langchain_classic's MultiQueryRetriever so the LangChain ecosystem can
 generate N LLM query variants, retrieve for each, and return the unique
 union.
 
-Design stance (see docs/pitfalls.md Task 28 evaluation):
+Design stance:
 - **Default off.** The Agent's autonomous query-rewriting capability
   (prompts.py L38-44: "精炼检索词 + 改写 3 次降级 + list_kb_docs 定位")
   remains the default path. This module is opt-in only — callers must

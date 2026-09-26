@@ -222,6 +222,8 @@ export function AppRoot() {
             <div
               style={{
                 width: explorerOpen ? explorerWidth : 0,
+                minWidth: explorerOpen ? EXPLORER_MIN_WIDTH : 0,
+                flexShrink: 0,
                 overflow: 'hidden',
                 display: 'flex',
                 transition: explorerOpen ? 'none' : 'width 0.2s',

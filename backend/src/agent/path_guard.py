@@ -6,7 +6,7 @@ Two layers (spec §7.2):
   2. Deny patterns: sensitive files/dirs blocked in every permission mode.
 
 Uses os.path.realpath() to resolve symlinks and ../ traversals before checks.
-PLUR constraint: sandbox tools must use absolute paths; forced deny paths.
+Sandbox tools require absolute paths; denied paths stay blocked.
 """
 from __future__ import annotations
 
