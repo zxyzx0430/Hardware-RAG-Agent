@@ -1,14 +1,15 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
 import { useAppStore } from "../../stores/useAppStore";
 import { useSettingsStore } from "../../stores/useSettingsStore";
 import { useChatStore } from "../../stores/useChatStore";
 import { useSessionStore, CONTEXT_WINDOW_256K, CONTEXT_WINDOW_1M } from "../../stores/useSessionStore";
 import { useLogStore } from "../../stores/useLogStore";
 import { useModalStore } from "../../stores/useModalStore";
-import { useToastStore } from "../../stores/useToastStore";
 import { useI18n } from "../../i18n";
 import { RagSettingsPanel } from "./RagSettingsPanel";
+import { MCPManager } from "./MCPManager";
+import { LongTermMemoryEditor } from "./LongTermMemoryEditor";
+import { SkillsManager } from "./SkillsManager";
 import { TokenUsagePanel } from "./TokenUsagePanel";
 import { AuditLogPanel } from "./AuditLogPanel";
 import { EmptyState } from "../shared/EmptyState";
@@ -17,7 +18,7 @@ function isApiKeyMissing(providers: { apiKey?: string }[]): boolean {
   return !providers.some((p) => p.apiKey?.trim());
 }
 
-const TAB_IDS = ["api", "rag", "memory", "appearance", "usage", "logs", "audit", "mcp", "skills", "about"] as const;
+const TAB_IDS = ["api", "rag", "memory", "appearance", "usage", "logs", "audit", "mcp", "tools", "skills", "about"] as const;
 
 const TOOL_ENTRIES = [
   { id: 'web_search', label: 'Web Search', icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg> },
@@ -30,14 +31,13 @@ export function SettingsPage() {
   const { setActiveNav, themeMode, setThemeMode, lang, setLang, chatFontSize, setChatFontSize } = useAppStore();
   const {
     providers, chatProviderId, chatModel, imageProviderId, imageModel, visionProviderId, visionModel,
-    temperature, topK, maxTokens, relevanceThreshold, systemPrompt, longTermMemory, skills,
-    mcpServers, webSearchConfig, showWebSearchKey, imageGenerationConfig, showImageGenerationKey,
+    temperature, topK, maxTokens, relevanceThreshold, systemPrompt, longTermMemory, skills: tools,
+    webSearchConfig, showWebSearchKey, imageGenerationConfig, showImageGenerationKey,
     addProvider, removeProvider, updateProvider, verifyProvider, fetchProviderModels,
     setChatModel, setImageModel, setVisionModel,
-    updateSetting, toggleSkill,
+    updateSetting, saveLongTermMemory, toggleSkill,
     setWebSearchKey, setWebSearchBaseUrl, toggleShowWebSearchKey,
     setImageGenerationKey, setImageGenerationBaseUrl, setImageGenerationModel, toggleShowImageGenerationKey,
-    fetchMCPServers, startMCPServer, stopMCPServer, addMCPServer, removeMCPServer,
     fetchTools,
   } = useSettingsStore();
   const { buffer, filter, setFilter, clear, getFiltered } = useLogStore();
@@ -49,10 +49,6 @@ export function SettingsPage() {
     s.sessions.find((x) => x.id === activeSessionId)?.contextWindow ?? CONTEXT_WINDOW_256K
   );
   const [tab, setTab] = useState<(typeof TAB_IDS)[number]>("api");
-  const [showMcpForm, setShowMcpForm] = useState(false);
-  const [mcpFormName, setMcpFormName] = useState("");
-  const [mcpFormCommand, setMcpFormCommand] = useState("");
-  const [mcpLoading, setMcpLoading] = useState<string | null>(null);
   const [logRefreshKey, setLogRefreshKey] = useState(0);
   const [savedField, setSavedField] = useState<string | null>(null);
   const savedTimerRef = useRef<number | null>(null);
@@ -73,9 +69,9 @@ export function SettingsPage() {
       }
     };
   }, []);
-  // 切换到 skills tab 时拉取后端真实工具列表
+  // 工具开关来自 /api/tools；Markdown Skills 有独立接口和状态。
   useEffect(() => {
-    if (tab === 'skills') {
+    if (tab === 'tools') {
       fetchTools();
     }
   }, [tab, fetchTools]);
@@ -100,21 +96,6 @@ export function SettingsPage() {
     () => providers.filter((p) => p.verified),
     [providers]
   );
-
-  // MCP 服务器列表从 API 拉取
-  useQuery({
-    queryKey: ["mcpServers"],
-    queryFn: async () => {
-      try {
-        await fetchMCPServers();
-        return true;
-      } catch {
-        return false;
-      }
-    },
-    staleTime: 10 * 1000,
-    refetchInterval: 15000,
-  });
 
   const TIME_RANGE_OPTIONS = [
     { value: 0, label: t('allTime') },
@@ -175,22 +156,6 @@ export function SettingsPage() {
     setSelectedProviderId("");
   }, [selectedProvider, removeProvider, lang, confirmDialog]);
 
-  const handleAddMcpServer = async () => {
-    if (!mcpFormName.trim() || !mcpFormCommand.trim()) {
-      useToastStore.getState().showWarning("请填写名称和命令");
-      return;
-    }
-    const id = mcpFormName.trim().toLowerCase().replace(/\s+/g, '-');
-    await addMCPServer({
-      id,
-      name: mcpFormName.trim(),
-      command: mcpFormCommand.trim(),
-    });
-    setMcpFormName("");
-    setMcpFormCommand("");
-    setShowMcpForm(false);
-  };
-
   // Close settings on Esc and expose a real close button instead of a giant clickable overlay
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -222,7 +187,7 @@ export function SettingsPage() {
                 const tabLabelMap: Record<string, string> = {
                   api: t('apiConfig'), rag: t('ragParams'), memory: t('memory'),
                   appearance: t('appearance'), usage: t('usage'), logs: t('logs'),
-                  audit: '工具审计', mcp: t('mcpService'), skills: t('skills'), about: t('about'),
+                  audit: '工具审计', mcp: t('mcpService'), tools: t('tools'), skills: t('skills'), about: t('about'),
                 };
                 return (
                   <button key={id} className={`settings-tab${tab === id ? " active" : ""}`} onClick={() => setTab(id)}>{tabLabelMap[id]}</button>
@@ -664,13 +629,13 @@ export function SettingsPage() {
                   <div className="char-count">{systemPrompt.length} {t('chars')} · ~{Math.ceil(systemPrompt.length / 4)} tokens</div>
                   {savedField === 'systemPrompt' && <span className="saved-feedback">{savedLabel}</span>}
                 </div>
-                <div style={{ marginBottom: 24 }}>
-                  <label htmlFor="longTermMemory" className="field-label">{t('longTermMemory')}</label>
-                  <p style={{ fontSize:12,color:'var(--muted-fg)',marginBottom:8 }}>{t('ltmDesc')}</p>
-                  <textarea id="longTermMemory" className="settings-textarea" rows={5} value={longTermMemory} onChange={(e) => updateSetting('longTermMemory', e.target.value)} onBlur={() => triggerSaved('longTermMemory')} />
-                  <div className="char-count">{longTermMemory.length} {t('chars')} · ~{Math.ceil(longTermMemory.length / 4)} tokens</div>
-                  {savedField === 'longTermMemory' && <span className="saved-feedback">{savedLabel}</span>}
-                </div>
+                <LongTermMemoryEditor
+                  value={longTermMemory}
+                  lang={lang}
+                  label={t('longTermMemory')}
+                  description={t('ltmDesc')}
+                  onSave={saveLongTermMemory}
+                />
               </div>
             )}
 
@@ -713,81 +678,29 @@ export function SettingsPage() {
               <AuditLogPanel />
             )}
 
-            {tab === 'mcp' && (
-              <div className="settings-section">
-                <h3>{t('mcpService')}</h3>
-                <p style={{ fontSize:13,color:'var(--muted-fg)',marginBottom:12 }}>{t('mcpDesc')}</p>
-                {mcpServers.map((srv) => (
-                  <div className="mcp-card" key={srv.id}>
-                    <div className="mcp-row">
-                      <div className="mcp-left">
-                        <span className={`mcp-dot ${srv.status}`}></span>
-                        <span className="mcp-name">{srv.name}</span>
-                        <span className="mcp-badge">{srv.tools} tools</span>
-                      </div>
-                      <div style={{ display: 'flex', gap: 6 }}>
-                        <button
-                          className={`verify-btn ${srv.status === 'running' ? 'danger' : 'primary'}`}
-                          onClick={async () => {
-                            setMcpLoading(srv.id);
-                            try {
-                              if (srv.status === 'running') { await stopMCPServer(srv.id); }
-                              else { await startMCPServer(srv.id); }
-                            } finally { setMcpLoading(null); }
-                          }}
-                          disabled={mcpLoading === srv.id}
-                        >
-                          {mcpLoading === srv.id ? '...' : srv.status === 'running' ? t('stopServer') : t('start')}
-                        </button>
-                        <button
-                          className="verify-btn danger"
-                          onClick={() => removeMCPServer(srv.id)}
-                          title={t('delete')}
-                          style={{ minWidth: 36, padding: '0 8px', fontSize: 14 }}
-                        >
-                          ✕
-                        </button>
-                      </div>
-                    </div>
-                    <div className="mcp-command">{srv.command}</div>
-                  </div>
-                ))}
-                {showMcpForm ? (
-                  <div style={{ marginTop: 12, padding: '16px', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--thinking-bg)' }}>
-                    <div className="field-label">{t('nameLabel')}</div>
-                    <input className="form-input" value={mcpFormName} onChange={(e) => setMcpFormName(e.target.value)} placeholder={t('serverNamePlaceholder')} />
-                    <div className="field-label" style={{ marginTop: 8 }}>{t('commandLabel')}</div>
-                    <input className="form-input" value={mcpFormCommand} onChange={(e) => setMcpFormCommand(e.target.value)} placeholder="npx @modelcontextprotocol/server-xxx" />
-                    <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
-                      <button className="verify-btn primary" onClick={handleAddMcpServer} disabled={!mcpFormName.trim() || !mcpFormCommand.trim()}>{t('add')}</button>
-                      <button className="verify-btn" onClick={() => { setShowMcpForm(false); setMcpFormName(""); setMcpFormCommand(""); }}>{t('cancel')}</button>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="mcp-add" style={{ cursor: 'pointer' }} onClick={() => setShowMcpForm(true)}>+ {t('addMcpServer')}</div>
-                )}
-              </div>
-            )}
+            {tab === 'mcp' && <MCPManager lang={lang} />}
 
-            {tab === 'skills' && (
+            {tab === 'tools' && (
               <div className="settings-section">
-                <h3>{t('skills')}</h3>
-                <p style={{ fontSize:13,color:'var(--muted-fg)',marginBottom:12 }}>{t('skillsDesc')}</p>
-                {skills.length === 0 ? (
-                  <EmptyState size="md" title={lang === 'zh' ? '暂无技能' : 'No skills yet'} desc={lang === 'zh' ? '请在 API 配置页添加并验证服务商后刷新' : 'Add and verify a provider on the API tab, then refresh'} icon={<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M13 2L3 14h9l-1 8 10-12h-9z" strokeLinejoin="round" /></svg>} />
-                ) : skills.map((skill) => (
-                  <div key={skill.name} style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'12px 0', borderBottom:'1px solid var(--border)' }}>
+                <h3>{t('tools')}</h3>
+                <p style={{ fontSize:13,color:'var(--muted-fg)',marginBottom:12 }}>{lang === 'zh' ? '启用或停用 Agent 当前可调用的工具。' : 'Enable or disable tools currently available to the Agent.'}</p>
+                {tools.length === 0 ? (
+                  <EmptyState size="md" title={lang === 'zh' ? '暂无可用工具' : 'No tools available'} desc={lang === 'zh' ? '后端工具列表为空或暂时无法读取。' : 'The backend tool list is empty or temporarily unavailable.'} icon={<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M13 2L3 14h9l-1 8 10-12h-9z" strokeLinejoin="round" /></svg>} />
+                ) : tools.map((tool) => (
+                  <div key={tool.name} style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'12px 0', borderBottom:'1px solid var(--border)' }}>
                     <div>
-                      <p style={{ fontSize:13,fontFamily:'var(--font-mono)',fontWeight:500 }}>{skill.name}</p>
-                      <p style={{ fontSize:12,color:'var(--muted-fg)',marginTop:2 }}>{skill.desc}</p>
+                      <p style={{ fontSize:13,fontFamily:'var(--font-mono)',fontWeight:500 }}>{tool.name}</p>
+                      <p style={{ fontSize:12,color:'var(--muted-fg)',marginTop:2 }}>{tool.desc}</p>
                     </div>
-                    <button className={`mini-toggle ${skill.enabled ? 'on' : 'off'}`} onClick={() => toggleSkill(skill.name)}>
+                    <button className={`mini-toggle ${tool.enabled ? 'on' : 'off'}`} aria-label={`${tool.enabled ? (lang === 'zh' ? '停用工具' : 'Disable tool') : (lang === 'zh' ? '启用工具' : 'Enable tool')}: ${tool.name}`} aria-pressed={tool.enabled} onClick={() => toggleSkill(tool.name)}>
                       <span className="mini-toggle-knob"></span>
                     </button>
                   </div>
                 ))}
               </div>
             )}
+
+            {tab === 'skills' && <SkillsManager lang={lang} />}
 
             {tab === 'about' && (
               <div className="settings-section">

@@ -25,6 +25,7 @@ if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
 from src.config.settings import settings
+from src.config.local_network import validate_local_bind_host
 from src.llm.client import LLMClient, ChatMessage
 
 # ─── 默认系统提示词 ───
@@ -156,8 +157,14 @@ def main():
 
     if args.web:
         # ── Web 模式 ──
+        try:
+            host = validate_local_bind_host(
+                args.host if args.host is not None else settings.host
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
+
         import uvicorn
-        host = args.host or settings.host
         port = args.port or settings.port
         print(f"[Web] 启动 Web 服务: http://{host}:{port}")
         print(f"[Web] API 文档: http://{host}:{port}/docs")

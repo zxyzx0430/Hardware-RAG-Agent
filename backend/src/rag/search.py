@@ -8,6 +8,7 @@ Hardware RAG Agent — 文档检索核心逻辑。
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from collections import OrderedDict
 from typing import Any
@@ -18,9 +19,10 @@ logger = logging.getLogger(__name__)
 # ═══════════════════════════════════════════
 # LRU cache for search results (spec: 5 min TTL, 256 entries)
 # ═══════════════════════════════════════════
-# Key = (query, sorted kb_ids, top_k, threshold). OrderedDict implements LRU
-# via move_to_end on hit + popitem(last=False) on eviction.
+# Key = (query, scope, top_k, threshold, doc_filter, freshness signature).
+# OrderedDict implements LRU via move_to_end on hit + popitem(last=False).
 _SEARCH_CACHE: "OrderedDict[tuple, tuple[list, float]]" = OrderedDict()
+_SEARCH_CACHE_LOCK = threading.RLock()
 _CACHE_TTL_SECONDS: int = 300
 _CACHE_MAX_SIZE: int = 256
 
@@ -49,21 +51,23 @@ def _cache_key(query: str, kb_ids: list[str] | None, top_k: int, threshold: floa
 
 def _get_cached(key: tuple) -> list | None:
     """Return cached results if within TTL, else None. Updates LRU order on hit."""
-    if key in _SEARCH_CACHE:
-        results, ts = _SEARCH_CACHE[key]
-        if time.time() - ts < _CACHE_TTL_SECONDS:
-            _SEARCH_CACHE.move_to_end(key)
-            return results
-        del _SEARCH_CACHE[key]
-    return None
+    with _SEARCH_CACHE_LOCK:
+        if key in _SEARCH_CACHE:
+            results, ts = _SEARCH_CACHE[key]
+            if time.time() - ts < _CACHE_TTL_SECONDS:
+                _SEARCH_CACHE.move_to_end(key)
+                return results
+            del _SEARCH_CACHE[key]
+        return None
 
 
 def _set_cached(key: tuple, results: list) -> None:
     """Store results in cache; evict oldest entries beyond _CACHE_MAX_SIZE."""
-    _SEARCH_CACHE[key] = (results, time.time())
-    _SEARCH_CACHE.move_to_end(key)
-    while len(_SEARCH_CACHE) > _CACHE_MAX_SIZE:
-        _SEARCH_CACHE.popitem(last=False)
+    with _SEARCH_CACHE_LOCK:
+        _SEARCH_CACHE[key] = (results, time.time())
+        _SEARCH_CACHE.move_to_end(key)
+        while len(_SEARCH_CACHE) > _CACHE_MAX_SIZE:
+            _SEARCH_CACHE.popitem(last=False)
 
 
 async def search_docs_core(
@@ -95,26 +99,39 @@ async def search_docs_core(
     # Record start time at entry, before any cache work
     start_time = time.perf_counter()
 
-    # LRU cache: short-circuit if this query was seen recently
-    key = _cache_key(query, kb_ids, top_k, threshold, doc_filter)
-    cached = _get_cached(key)
-    if cached is not None:
-        elapsed_ms = int((time.perf_counter() - start_time) * _MS_PER_SECOND)
-        elapsed_seconds = elapsed_ms / _MS_PER_SECOND
-        logger.info(
-            f"[search_docs_core] cache hit query='{query[:60]}' top_k={top_k} "
-            f"threshold={threshold:.2f} doc_filter='{doc_filter}'"
-        )
-        logger.info(
-            "search_docs_core cache_hit=true total_ms=%d result_count=%d query=%r",
-            elapsed_ms, len(cached), query[:_LOG_QUERY_TRUNCATE],
-        )
-        _observe_rag_retrieval(elapsed_seconds)
-        return cached
-
     try:
         from src.rag.kb_manager import get_kb_manager
         kb_manager = get_kb_manager()
+
+        # A cache hit is valid only when the manager can verify the current KB
+        # scope and its process-local content revision. Unknown signatures fail
+        # closed: retrieve normally, but do not read or populate the cache.
+        signature = None
+        signature_provider = getattr(kb_manager, "get_search_cache_signature", None)
+        if callable(signature_provider):
+            try:
+                signature = signature_provider(kb_ids)
+                hash(signature)
+            except Exception:
+                signature = None
+
+        key = _cache_key(query, kb_ids, top_k, threshold, doc_filter) + (signature,)
+        if signature is not None:
+            cached = _get_cached(key)
+            if cached is not None:
+                elapsed_ms = int((time.perf_counter() - start_time) * _MS_PER_SECOND)
+                elapsed_seconds = elapsed_ms / _MS_PER_SECOND
+                logger.info(
+                    f"[search_docs_core] cache hit query='{query[:60]}' top_k={top_k} "
+                    f"threshold={threshold:.2f} doc_filter='{doc_filter}'"
+                )
+                logger.info(
+                    "search_docs_core cache_hit=true total_ms=%d result_count=%d query=%r",
+                    elapsed_ms, len(cached), query[:_LOG_QUERY_TRUNCATE],
+                )
+                _observe_rag_retrieval(elapsed_seconds)
+                return cached
+
         results = await kb_manager.search_all_enabled(
             query, k=top_k, kb_ids=kb_ids, score_threshold=threshold,
             doc_filter=doc_filter,
@@ -124,7 +141,12 @@ async def search_docs_core(
             f"threshold={threshold:.2f} doc_filter='{doc_filter}' "
             f"found={len(results)}"
         )
-        _set_cached(key, results)
+        if signature is not None:
+            try:
+                if kb_manager.get_search_cache_signature(kb_ids) == signature:
+                    _set_cached(key, results)
+            except Exception:
+                logger.debug("[search_docs_core] cache write skipped: signature unavailable")
         elapsed_ms = int((time.perf_counter() - start_time) * _MS_PER_SECOND)
         elapsed_seconds = elapsed_ms / _MS_PER_SECOND
         logger.info(

@@ -26,13 +26,16 @@ STM32H7 系列采用 Cortex-M7 内核，主频高达 480 MHz，远超 STM32F4。
 
 ### 2.1 ESP32-S3 引脚与 Strapping
 
-ESP32-S3 是乐鑫最新一代 Wi-Fi + BLE SoC，双核 Xtensa LX7 @ 240 MHz。Strapping 引脚决定启动模式：
+ESP32-S3 是乐鑫最新一代 Wi-Fi + BLE SoC，双核 Xtensa LX7 @ 240 MHz。
 
-- GPIO0：Boot 模式（高=正常启动，低=下载模式）
-- GPIO46：VDD_SPI 电压选择
-- GPIO45：芯片内核电压
+ESP32-S3 的 Strapping 引脚：GPIO0、GPIO3、GPIO45 和 GPIO46；启动模式由 GPIO0 与 GPIO46 的组合决定：
 
-启动时这些引脚必须有确定的电平，否则 ESP32-S3 可能进入意外模式。典型做法是用 10kΩ 上拉电阻把 GPIO0 拉高。
+| 启动模式 | GPIO0 | GPIO46 |
+|----------|-------|--------|
+| SPI 启动（默认） | 1 | 任意 |
+| 联合下载启动 | 0 | 0 |
+
+官方 [ESP32-S3 schematic checklist](https://docs.espressif.com/projects/esp-hardware-design-guidelines/en/latest/esp32s3/schematic-checklist.html) 建议 GPIO0 上拉。GPIO45 与 eFuse 配置共同参与 VDD_SPI 设置；GPIO46 不是 VDD_SPI 电压选择脚。具体 strap 采样、电平与板级偏置应按所用器件和原理图核对。引脚集合与上述启动/电源配置另见 [ESP32-S3 datasheet](https://www.espressif.com/sites/default/files/documentation/esp32-s3_datasheet_en.pdf)。
 
 ### 2.2 ESP32-C3 RISC-V 架构
 

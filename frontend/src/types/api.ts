@@ -26,12 +26,20 @@ export interface ChatRequest {
   temperature?: number;
   max_tokens?: number;
   top_k?: number;
+  relevance_threshold?: number;
   system_prompt?: string;
   long_term_memory?: string;
   provider?: string;
   api_key?: string;
   base_url?: string;
   attachments?: Attachment[];
+  kb_ids?: string[];
+  session_id?: string;
+  use_agent?: boolean;
+  skills_mode?: 'off' | 'auto' | 'manual';
+  skill_ids?: string[];
+  permission_mode?: string;
+  tool_keys?: Record<string, string>;
 }
 
 export interface TokenUsageSSE {
@@ -130,12 +138,18 @@ export interface SourceSSEEvent {
 export interface DoneSSEEvent {
   type: 'done';
   success: boolean;
+  /** Whether an answer completed, distinct from a paused HITL request. */
+  completed?: boolean;
+  /** True when the stream ended while awaiting an explicit tool confirmation. */
+  awaiting_confirmation?: boolean;
   usage?: TokenUsageSSE;
 }
 
 export interface ErrorSSEEvent {
   type: 'error';
+  code?: string;
   message: string;
+  detail?: string;
 }
 
 export interface ProgressSSEEvent {

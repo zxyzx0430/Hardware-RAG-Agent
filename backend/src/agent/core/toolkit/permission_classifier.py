@@ -73,6 +73,8 @@ class PermissionClassifier:
 
     def check(self, spec: ToolSpec, args: dict[str, Any], ctx: ToolContext) -> str:
         """Return allow/ask/deny for a tool call. Pure, no side effects."""
+        if spec.mcp_info is not None:
+            return ASK
         mode = ctx.permission_mode
         if mode == BYPASS_MODE:
             return ALLOW

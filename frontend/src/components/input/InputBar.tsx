@@ -6,7 +6,9 @@ import { useSettingsStore } from "../../stores/useSettingsStore";
 import { useAppStore } from "../../stores/useAppStore";
 import { useToastStore } from "../../stores/useToastStore";
 import { useSessionStore } from "../../stores/useSessionStore";
+import { useSkillsStore } from "../../stores/useSkillsStore";
 import { TemplatePanel } from "../shared/TemplatePanel";
+import { SkillModeSelector } from "./SkillModeSelector";
 import { useI18n } from "../../i18n";
 import type { Attachment } from "../../types/api";
 
@@ -42,7 +44,7 @@ function mergeUniqueAttachments(current: Attachment[], incoming: Attachment[]): 
   return merged;
 }
 export function InputBar() {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const [showModelDropdown, setShowModelDropdown] = useState(false);
   const [showPermissionDropdown, setShowPermissionDropdown] = useState(false);
   const [attachError, setAttachError] = useState<string | null>(null);
@@ -179,10 +181,23 @@ export function InputBar() {
       return;
     }  // 防止重入
     if (!text.trim() && attachments.length === 0) return;
+    const skillsState = useSkillsStore.getState();
+    const skillSelection = skillsState.chatSkillSelections[activeSessionId] ?? { mode: "off" as const, skillIds: [] };
+    const enabledSkillIds = new Set(skillsState.skills.filter((skill) => skill.enabled).map((skill) => skill.id));
+    const selectedSkillIds = skillSelection.mode === "manual"
+      ? [...new Set(skillSelection.skillIds.filter((id) => enabledSkillIds.has(id)))].slice(0, 3)
+      : [];
+    if (skillSelection.mode === "manual" && selectedSkillIds.length === 0) {
+      useToastStore.getState().showWarning(lang === "zh" ? "手动 Skills 模式至少需要一个仍处于启用状态的技能" : "Manual Skills mode needs at least one enabled skill");
+      return;
+    }
     sendingRef.current = true;
     const attachmentsCopy = attachments.length > 0 ? attachments : undefined;
     const quoted = useAppStore.getState().quotedMsg;  // 读取引用消息（用 getState 避免闭包陈旧值）
-    sendMessage(text.trim() || "", attachmentsCopy, quoted ?? undefined);
+    sendMessage(text.trim() || "", attachmentsCopy, quoted ?? undefined, {
+      mode: skillSelection.mode,
+      skillIds: selectedSkillIds,
+    });
     clearDraft(activeSessionId);
     clearSessionAttachments(activeSessionId);
     setAttachError(null);
@@ -442,6 +457,7 @@ export function InputBar() {
                   <polyline points="6 9 12 15 18 9" />
                 </svg>
               </div>
+              <SkillModeSelector sessionId={activeSessionId} lang={lang} />
             </div>
 
             <div className="input-right">

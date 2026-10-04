@@ -84,6 +84,10 @@ def test_search_docs_core_cache_hit():
     call_count = 0
 
     class FakeKBManager:
+        def get_search_cache_signature(self, kb_ids=None):
+            # This fake has immutable, deterministic search state across instances.
+            return (0, tuple(sorted(kb_ids or [])))
+
         async def search_all_enabled(
             self, query, k=3, kb_ids=None, score_threshold=0.0, doc_filter: str = "",
         ):

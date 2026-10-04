@@ -358,6 +358,15 @@ def update_settings(payload: dict, db: DBSession = Depends(get_db), user: dict =
             "INVALID_SETTINGS_KEY",
             f"不允许的设置键: {', '.join(sorted(invalid_keys))}",
         )
+    # Validate before changing any rows; memory is explicit user-authored text.
+    if "longTermMemory" in payload:
+        memory = payload["longTermMemory"]
+        if not isinstance(memory, str) or len(memory) > 4000:
+            raise _fail(
+                "INVALID_LONG_TERM_MEMORY",
+                "Long-term memory must be a string of at most 4000 characters.",
+                status_code=422,
+            )
     now = datetime.datetime.utcnow()
     for key, value in payload.items():
         existing = db.query(SettingsModel).filter(SettingsModel.key == key).first()

@@ -19,6 +19,7 @@
 - 本地后端默认服务地址为 `http://127.0.0.1:58080`。
 - WebSocket 地址为 `ws://127.0.0.1:58080/api`。
 - 前端通过代理把 `/api` 转发到后端，避免在页面中写死多个地址。
+- 本轮安全收口限定为单机本地运行：受支持的启动入口只允许环回监听地址；非环回地址应在启动前明确报错。它不是局域网或公网部署方案，也不等于已完成多用户认证或操作系统沙箱。
 
 ### 2.2 API 版本化
 
@@ -450,7 +451,7 @@
 | `todo_update` | Agent 更新任务清单（todo_write 工具） | `todos`（含 `content`/`status`/`priority`） |
 | `progress` | 长任务进度更新（编译/烧录/循环提示等） | `percent`、`message` |
 | `heartbeat` | 长时间等待模型或工具时保持连接 | 无业务字段 |
-| `done` | 流结束时 | `success`、`usage?` |
+| `done` | 流结束时 | `success`、`completed?`、`awaiting_confirmation?`、`usage?` |
 | `error` | 出错时（含 `code` + `message`） | `code`、`message` |
 
 - 字段说明：
@@ -459,14 +460,21 @@
   - `use_agent`（可选，默认 `false`）：是否走 LangGraph ReAct Agent 主路径；`true` 时后端优先用 Agent，失败降级为基础 LLM 流。
   - `permission_mode`（可选，默认 `"default"`）：Agent 工具调用门控模式，枚举 `"bypassPermissions"`（全放行）/`"default"`（每次询问）/`"acceptEdits"`（低风险自动放行）。
   - `tool_keys`（可选，默认 `{}`）：Agent 工具所需 API Key 注入，目前支持 `tavily`（联网搜索 API Key）和 `tavily_base_url`（可选，Tavily 兼容端点 Base URL，留空时使用官方 Tavily 服务）。
+  - 本轮已约定、正在实施：`skills_mode` 枚举 `off` / `auto` / `manual`，默认 `off`，不改变旧客户端普通 Agent 行为；`skill_ids` 为手动模式的已启用技能 ID 列表，1～3 个且不重复。自动模式仅提供元数据，再按需加载正文和参考资料；手动模式明确加载所选技能。
+  - Skills 初版是服务器限制的只读模式，只提供技能加载、技能资料读取和已启用的 KB 检索工具。即使 `permission_mode=bypassPermissions` 也不能写文件、执行命令、访问外部 MCP 或操作硬件；不支持工具调用的模型明确失败，不声称已使用技能。
+  - 已实现记忆语义：`long_term_memory` 最多 4,000 字符，省略时读取已保存设置，显式 `""` 表示本次不使用；普通聊天、Agent 与确认续跑使用同一请求快照，注入一次。记忆是偏好背景，不是权限；验证边界见 testing.md。
   - `thinking` 的 `content` 为人类可读思考文本；`source` 枚举 `rag` / `llm` / `reasoning`，标识思考来源。
   - `source` 的 `id` 为文档片段唯一标识；`doc` 为所属文档 ID；`page` 为可选页码/位置；`score` 为相似度得分；`excerpt` 为命中片段摘要。
   - `tool` 的 `icon` 为前端展示图标名；`args` 为结构化调用参数；`result` 为工具执行结果字符串（聊天流中可空，完成后再填充）。
   - `tool_call` 的 `call_id` 为工具调用唯一标识，用于和 `tool_result` / `tool_confirm_required` 关联；`step_index` 为 Agent 执行步骤序号。
   - `tool_result` 的 `duration` 为工具执行耗时（毫秒）；`success` 为布尔值。
+  - `webfetch` 失败沿用工具失败封套：HTTP 错误、被拒绝的重定向、连接异常和空正文返回 `success=false`、`data=null`、`error.error_type=EXEC_ERROR`；超时为 `TIMEOUT`。错误信息不含原始 URL、用户凭据或查询串。重定向不自动跟随；成功载荷仍为 `url/content/prompt/truncated`，不把普通工具数据中的 `error` 字段一律解释成失败。
+  - WebFetch 请求期间的 HTTPX URL 日志另做请求范围脱敏，保留状态诊断；不改变上述载荷或授权语义，也不承诺所有工具、依赖或调用参数审计均已脱敏。
   - `tool_confirm_required` 触发时前端弹出 `ConfirmDialog`，用户决策后调 `POST /api/agent-sandbox/resume` 恢复；`risk_level` 枚举 `low` / `medium` / `high`。
   - `error` 的 `code` 枚举新增：`RECURSION_LIMIT`（Agent 轮次上限）、`CONTEXT_LIMIT`（累积 token 超限）、`AGENT_TIMEOUT`（执行超时）、`AGENT_FALLBACK`（Agent 失败降级）、`AGENT_ERROR`（Agent 运行异常）。
   - `done` 的 `usage` 可选，包含本次请求的 token 统计：`prompt_tokens`、`completion_tokens`、`total_tokens`。
+  - `/api/chat` 终态区分传输结束与回答完成：正常回答为 `success=true, completed=true`；等待人工确认为 `success=true, completed=false, awaiting_confirmation=true`；失败为 `success=false, completed=false`。旧记录和普通 resume 成功 fallback 可能没有新字段，但显式 `completed=false` 不能解释为完整回答。人工确认等待必须保留待确认调用与请求快照，不计为成功 RAG 样本。
+  - 模型流正常结束却只有推理或空白正文时，以及精确已知的上游零输出报文，使用 `MODEL_EMPTY_RESPONSE`，不是网络超时。Agent 连续 300 秒没有可见正文/推理或有效工具/状态进展时使用 `TIMEOUT`；自身心跳和空 chunk 不刷新进展计时，活动工具仍受原工具超时限制。通用异常仍可为 `INTERNAL_ERROR`。保留已输出正文，不自动重放整次 Agent 或已执行工具。
 
 - SSE 示例：
 
@@ -483,7 +491,7 @@
 - 约束：
   - `messages` 至少包含一条用户消息。
   - `type` 枚举只允许：`thinking`、`text`、`tool`、`source`、`progress`、`done`、`error`。
-  - `done` 事件和 `error` 事件是终态事件，发送后流结束。
+  - `done` 结束当前流。聊天失败可先发送一次 `error`，再发送一次失败 `done`；前端不得因后者或流关闭把错误覆盖成“回答完成”。等待人工确认后的流关闭也不能清除续跑所需信息。这些约束不改变编译、烧录接口各自的 `done` 载荷。
   - 除 `messages` 外，其余字段均非必填，后端有默认值。
 
 - Mock 规则：前端先使用固定 `thinking → text → done` 三段流占位。
@@ -569,6 +577,8 @@
 ```
 
 - 说明：上传后立即返回 `status: "indexing"`，后台异步入库。前端可通过 `GET /api/kb/list` 轮询文档状态（`indexing` → `indexed` / `error`）。
+- 状态约束：`indexed` 只能表示本次入库成功且生成了有效向量；零有效分块、零向量或入库异常应进入 `error`，并提供非空 `error_message`。HTTP 上传成功仅表示已接受后台任务，不代表索引成功。
+- 前端约束：只在 `indexing` 时持续轮询；`indexed` / `error` 都是终态。失败原因应可见，不得将失败文档展示为可检索成功。
 
 - 错误响应：
 
@@ -1086,12 +1096,12 @@
   "data": null,
   "error": {
     "error_type": "PERMISSION_CONFIRMATION_REQUIRED",
-    "error_message": "tool 'audit_pins' requires interactive confirmation",
+    "error_message": "tool 'flash_firmware' requires interactive confirmation",
     "suggestion": "请在聊天流程中确认此操作；直接 API 调用不会执行需要确认的工具。",
     "retryable": false
   },
   "metadata": {
-    "tool_name": "audit_pins",
+    "tool_name": "flash_firmware",
     "duration_ms": 0,
     "call_id": "abc123",
     "timestamp": "2026-09-24T12:00:00+00:00",
@@ -1295,16 +1305,19 @@
 
 ### 5.18 `GET /api/settings`
 
-- 状态：`agreed`
+- 状态：`implemented`
 - 用途：获取所有设置键值对。
 - 成功响应：
 
 ```json
 {
-  "settings": {
-    "theme": "dark",
-    "lang": "zh",
-    "activeProvider": "openai"
+  "success": true,
+  "data": {
+    "settings": {
+      "themeMode": "dark",
+      "lang": "zh",
+      "longTermMemory": ""
+    }
   }
 }
 ```
@@ -1313,18 +1326,27 @@
 
 ### 5.19 `PUT /api/settings`
 
-- 状态：`agreed`
+手动记忆补充（2026-10-03，后端 `implemented`，界面联调待验证）：
+
+- 沿用 `longTermMemory` 键；值必须是字符串，最多 4,000 个字符。`""` 表示清空，省略该键表示不修改。
+- 错误类型（含 `null`）或超限返回 `422`，`detail.error.code` 为 `INVALID_LONG_TERM_MEMORY`；整批更新不改变此前保存值。
+- 成功仍返回 `success: true, data: {updated: true}`；`GET /api/settings` 的 `data.settings.longTermMemory` 是服务器保存值，包含空字符串。
+- 前端明确保存并等待成功，保存失败保留编辑草稿，不以本地缓存更新冒称服务器保存成功。
+- 记忆会随聊天发送给配置的模型；本接口不进行自动提取或聊天历史搜索，也不将记忆作为执行授权。
+
+- 状态：`implemented`
 - 用途：批量保存设置键值对。
 - 请求体：
 
 ```json
 {
-  "theme": "dark",
-  "lang": "zh"
+  "themeMode": "dark",
+  "lang": "zh",
+  "longTermMemory": ""
 }
 ```
 
-- 成功响应：`{ "success": true }`
+- 成功响应：`{ "success": true, "data": { "updated": true } }`
 ### 5.20 `POST /api/diagnose`
 
 - 状态：`implemented`
@@ -1541,25 +1563,32 @@
 
 - 状态：`implemented`
 - 用途：HITL（Human-In-The-Loop）场景下，用户在 `ConfirmDialog` 做出决策后恢复 Agent 执行。
-- 前端入口：`apiSSE('agent-sandbox/resume', { payload, decision })`
+- 前端入口：`apiSSE('agent-sandbox/resume', { payload, decision, call_id })`
 - 请求体：
 
 ```json
 {
   "payload": { "...": "原 ChatRequest 体（完整保留）" },
-  "decision": "allow"
+  "decision": "allow",
+  "call_id": "具体待确认调用的 ID"
 }
 ```
 
 - 字段说明：
   - `payload` 为触发 `tool_confirm_required` 的原始 `ChatRequest`（前端缓存 `_lastAgentPayload`）。
-  - `decision` 枚举 `"allow"`（允许本次/永久允许）/`"deny"`（拒绝该工具调用）/`"stop"`（拒绝并停止 Agent）。
+  - `decision` 枚举 `"allow"`（允许本次）/`"deny"`（拒绝该工具调用）/`"stop"`（拒绝并停止 Agent）。不存在 MCP 永久授权。
+  - `call_id` 可选严格字符串（1–256 字符），前端从当前确认卡读取。含 MCP 的请求对 allow/deny 必须提供当前 ID；缺失、重复或过期确认返回 409，不能批准下一张确认卡。旧内置工具客户端可省略。
+- 请求校验：`decision` 必填且只接受上述三个精确值。非法字符串、空值或错误类型返回 HTTP `422`（默认 `detail` 格式），不恢复 Agent，也不执行待确认工具。
 - SSE 事件类型：同 §5.1（`text` / `tool_call` / `tool_result` / `done` / `error`），复用 Agent 流式协议。
 - 后端约束：
-  - `allow` → `agent.astream(None, config)` 恢复执行，全局 `MemorySaver` 单例保持 checkpoint。
-  - `deny` → 注入拒绝 ToolMessage，Agent 继续推理。
-  - `stop` → yield `done` 事件结束流。
-- 更新时间：2026-07-01
+  - 请求快照在本机内存保存 30 分钟、最多 128 个；续跑使用原记忆、Skills、权限和工具连接，丢失后返回 `HITL_REQUEST_SNAPSHOT_UNAVAILABLE` 409，不接受客户端替代原快照。
+  - MCP 批次逐个确认，全部决定完成后才恢复 ToolNode。授权绑定调用 ID、工具、参数及确切连接实例，只能消费一次；拒绝的调用在 Router 返回失败，不触及远端。停止撤销未消费授权，但不能撤回已执行的远端动作。
+  - 普通内置工具保留原确认路径；MCP 不写入全局工具注册表，不由客户端的 decision_source 或 bypass 标记授权。
+  - 等待下一次确认时，fallback `done` 为 `success=true, completed=false, awaiting_confirmation=true`；前端保留当前确认及续跑 payload。普通成功 fallback 仍兼容 `success=true, usage=null` 的旧形状。
+  - 续跑异常发送 `error` 后接一次 `done(success=false, completed=false)`，前端保留错误及部分正文，不在流关闭后覆盖成完成。
+  - `stop` → 保留 `done(success=false, reason="user stopped")` 结束流。只有当前用户决定为 `stop` 且 reason 精确匹配时，前端按主动停止处理，不显示恢复异常，清除待确认和续跑 payload；不能把任意失败当成主动停止。
+  - 底层续跑函数也必须防御非法决策；只有精确的 `allow` 可以批准执行，不将未知值当作允许。
+- 更新时间：2026-10-02
 
 ### 5.28 `GET /api/tools`
 
@@ -1730,14 +1759,14 @@
 - 状态：`implemented`
 - 用途：管理 MCP (Model Context Protocol) Server 配置与生命周期，让 Agent 可调用外部 MCP 工具。
 - 前端入口：`apiPost('mcp/servers', ...)` / `apiGet('mcp/servers')` 等。
-- 依赖：所有端点依赖 `current_user`。
+- 依赖：列表/工具读取为 `current_user_optional`，变更为 `current_user`，沿用单机认证语义。
 - 端点清单：
 
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
 | `POST` | `/api/mcp/servers` | 添加 MCP Server 配置（id/name/command/args/env） |
 | `GET` | `/api/mcp/servers` | 列出所有 MCP Server 及运行状态 |
-| `POST` | `/api/mcp/servers/{server_id}/start` | 启动指定 Server，失败返回 500 |
+| `POST` | `/api/mcp/servers/{server_id}/start` | 启动指定 Server，失败返回 502 |
 | `POST` | `/api/mcp/servers/{server_id}/stop` | 停止指定 Server |
 | `GET` | `/api/mcp/servers/{server_id}/tools` | 列出该 Server 提供的工具（name/description/input_schema） |
 | `DELETE` | `/api/mcp/servers/{server_id}` | 删除配置（先 stop 再 remove） |
@@ -1746,10 +1775,10 @@
 
 ```json
 {
-  "id": "filesystem",
-  "name": "Filesystem MCP",
-  "command": "npx",
-  "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+  "id": "fixture",
+  "name": "Safe test fixture",
+  "command": "C:/path/to/python.exe",
+  "args": ["C:/path/to/agent/backend/tests/fixtures/mcp_stdio_server.py"],
   "env": {}
 }
 ```
@@ -1767,8 +1796,12 @@
 }
 ```
 
-- 后端约束：Server 未启动或无 client 时 `tools` 返回空数组。启动失败抛 `HTTPException(500)`。
-- 更新时间：2026-07-01
+- 成功体为 `{success:true,data:...}`；业务错误为 `{success:false,data:{error:{code,message}}}`。重复配置 409；非法配置 422；未知服务 404；启动失败 502。不返回原始进程错误、env 或密钥。
+- 配置只驻留后端内存，不写入设置/localStorage；后端重启需重加。command 必须是现有程序的绝对路径，Windows 接受 `.exe/.com`；args 为字符串数组，env 为字符串映射，不拆命令、不自动安装。启动本机进程不受系统沙箱隔离。
+- 已知服务未启动时 tools 返回空数组。连接/初始化/分页发现合计 60 秒限时，前端启动请求 70 秒；单次 RPC 30 秒，通知最多 16 条、列表最多 32 页/128 工具、消息最多 64 KiB。受限 JSON Schema 不支持的关键字、远端引用或非法参数明确失败，不降级为宽松校验。
+- 已连接工具加入普通 Agent 的请求快照，HIGH、每次确认且不自动重试；只读 Skills 不开放 MCP。停止/重启不会把旧快照转到新进程。长名称或歧义名称映射为不超过 64 字符的带摘要名称，保留 server/tool 来源字段。
+- 子进程只继承必要环境变量及用户显式填写的 env；服务错误、断连和超时是真正失败，外部调用审计省略参数原文。结果仍会发给当前模型服务，用户应自行判断数据敏感性。
+- 更新时间：2026-10-03
 
 ### 5.33 `/api/feedback/*` — 消息反馈
 
@@ -2192,6 +2225,37 @@
 
 - 更新时间：2026-09-24
 
+### 5.37 `/api/skills/*` — Markdown Skills 与 GitHub 导入
+
+- 状态：`implemented`（2026-10-03 工作区；自动化、实网和浏览器证据分别见 testing.md）。
+- `/api/tools` 仍管理内置工具开关；本节管理独立的 Markdown 技能包，不互相冒称。
+- 列表和详情沿用 `current_user_optional`，写入、编辑、删除、开关及 GitHub 操作沿用 `current_user`；凭据为空的本地开发兼容行为不因本轮变化。
+- JSON 成功体沿用 `success/data`；业务失败直接使用 `{success:false,error:{code,message}}`，没有 detail 外壳。422 自动校验保持 FastAPI 格式；聊天端创建技能快照的错误仍使用 HTTPException 的 detail。
+
+| 方法 | 路径 | 请求 / 响应 `data` |
+| --- | --- | --- |
+| GET | `/api/skills` | `{skills: SkillInfo[]}`；旧 `content` 字段保留 |
+| POST | `/api/skills` | `{content:string}`；返回旧格式技能详情，保持原创建兼容行为 |
+| GET | `/api/skills/{id}` | `SkillInfo`，包括说明和资源清单 |
+| PATCH | `/api/skills/{id}` | `{content?:string,enabled?:boolean}`，至少一个；返回更新后的详情 |
+| PATCH | `/api/skills/{id}/toggle` | 保留旧开关接口；返回 `{id,enabled}` |
+| DELETE | `/api/skills/{id}` | 仅删除已校验的单个技能目录，旧成功格式保留 |
+| POST | `/api/skills/github/preview` | `{url:string,ref?:string|null,path?:string|null}` → `{source,candidates}` |
+| POST | `/api/skills/github/import` | `{source,paths:string[]}` → `{skills:SkillInfo[]}`，新导入技能默认停用 |
+
+`SkillInfo` 保留 `id/name/description/content/enabled`，增加 `format`、`compatibility_status`、`issues`、`content_hash`、`source`、`locally_modified`、`metadata` 和 `resources`。`content` 是含 frontmatter 的原始说明；Agent 加载时读取正文，不预先把列表里的所有说明注入模型。
+
+- `format`：`standard` / `legacy` / `invalid`。
+- `compatibility_status`：`supported`（基础说明能力支持）、`partial`（部分支持，须查看缺项）、`review_required`（错误或不安全包，不可启用）。诊断不能证明自然语言描述的所有步骤都可执行。
+- `issues`：`[{code,severity,message}]`；`severity` 为 `warning` / `error`。
+- `resources`：`[{path,size,supported}]`。仅 `references/`、`assets/` 下白名单 UTF-8 文本可加载；脚本与二进制可以保存，但不能执行。
+- GitHub `source`：预览/导入用 `{owner,repo,commit_sha,path}`，其中 SHA 为完整 40 位提交；安装后的来源额外含 provider、导入时间及摘要。本地编辑标为 `locally_modified`，外部包编辑自动停用，需单独确认启用，不能同一请求边改边启用。
+- `candidates` 包含仓库相对目录 `path`、技能名称、描述、兼容状态及 issues；`paths` 必须选该固定提交下的实际技能目录。树截断、恶意路径、链接、重复包和超限明确失败，不覆盖本机已有包。
+- 初版只读公共 GitHub 仓库。逐文件读取固定 SHA，树条目最多 5,000，累计下载最多 20 MiB、总时限 60 秒；每个包最多 128 个文件/10 MiB、单文件最多 2 MiB；不 clone、不解压 ZIP、不安装依赖。
+- 典型业务错误：`SKILL_NOT_FOUND` 404、`SKILL_EXISTS` 409、`SKILL_DISABLED` / `SKILL_REVIEW_REQUIRED` / `SKILL_VERSION_CHANGED` 409、格式/路径错误 400、大小超限 413、GitHub 下载失败 502；精确错误码随已实现测试核对。
+
+聊天运行字段见 §5.1。请求期技能快照绑定版本；只读硬限制与正文/资料隐私由运行时验收，不由导入成功代替。
+
 ## 6. 新增接口模板
 
 ```md
@@ -2217,6 +2281,12 @@
 ## 7. 变更日志
 
 | 日期 | 变更内容 | 变更人 |
+| --- | --- | --- |
+| 2026-10-04 | §5.1 对齐 webfetch 失败封套、空回答/idle 超时、完成/等待字段；§5.27 对齐续跑错误、等待和主动停止。定向自动化结果见 testing.md，不代表真实网络或全部 RAG 质量验收 | 00 主控 |
+| 2026-10-03 | Skills 管理与记忆字段已实现；MCP 改为 RAM 配置和严格 stdio，确认逐调用绑定 call_id、参数与连接实例，失败不重放；验证边界见 testing.md | 00 主控 |
+| 2026-10-03 | §5.37 约定 Markdown Skills 管理、固定 SHA 的 GitHub 预览/导入及适配诊断；§5.1 登记只读技能模式和记忆快照字段，正在实施，未宣称联调通过 | 00 主控 |
+| 2026-10-03 | §5.19 手动记忆保存严格校验：字符串最多 4,000 字符，空串清空，非法值 422 且整批不写入；界面联调状态另行记录 | 00 主控 |
+| 2026-10-02 | 日期 1–3 实施契约：§2.1 明确受支持启动入口仅本机环回监听；§5.3 明确零向量/入库失败进入 error、终态停止轮询；§5.27 明确非法 decision 返回 422 且不执行工具。实际验证记录另见 testing.md，不因本行登记宣称验收通过 | 00 主控 |
 | 2026-09-24 | §5.5/§5.30 对齐接线图端到端软件实现：规范连接改为嵌套 `from/to` 端点，保留两种旧扁平请求格式；补充 MCU/LED 引脚、端点校验 422、提取结果可直接送入生成接口及验证边界 | 00 主控 |
 | 2026-09-24 | §5.16 消息保存增加可选稳定 ID、同会话更新与跨会话 409；§5.36 Explorer 对齐 Bearer session、文件版本冲突和可恢复删除/恢复接口，并修正旧版 `open/read` 响应包装说明 | 00 主控 |
 | 2026-09-24 | §5.9 对齐 `/api/tool` 的原始 ToolResultEnvelope 与权限门禁：补充 `PERMISSION_CONFIRMATION_REQUIRED` / `PERMISSION_DENIED`，确认 `ask`/`deny` 时 HTTP 200 且不执行工具；记录通用前端客户端尚未适配 | 00 主控 |

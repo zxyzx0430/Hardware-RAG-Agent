@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import uuid
 from abc import abstractmethod
+from contextvars import ContextVar
 from enum import Enum
 from typing import Any
 
@@ -35,6 +36,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT_SECONDS: int = 300
 DEFAULT_MAX_RETRIES: int = 1
+_ACTIVE_CALL_ID: ContextVar[str] = ContextVar("active_tool_call_id", default="")
 
 
 class RiskLevel(str, Enum):
@@ -96,6 +98,15 @@ class ToolSpec(BaseTool):
     _ctx: ToolContext | None = PrivateAttr(default=None)
     _current_call_id: str = PrivateAttr(default="")
 
+    async def ainvoke(self, input: Any, config: Any = None, **kwargs: Any) -> Any:
+        """Keep the actual ToolNode call ID task-local, including parallel calls."""
+        call_id = input.get("id", "") if isinstance(input, dict) and input.get("type") == "tool_call" else ""
+        token = _ACTIVE_CALL_ID.set(call_id if isinstance(call_id, str) else "")
+        try:
+            return await super().ainvoke(input, config, **kwargs)
+        finally:
+            _ACTIVE_CALL_ID.reset(token)
+
     @abstractmethod
     async def execute(self, args: dict[str, Any], ctx: ToolContext) -> dict:
         """Subclasses MUST implement tool business logic.
@@ -122,7 +133,7 @@ class ToolSpec(BaseTool):
         from src.agent.core.toolkit.tool_router import ToolRouter
 
         runtime = kwargs.pop("runtime", None)
-        call_id = self._current_call_id or _new_call_id()
+        call_id = _ACTIVE_CALL_ID.get() or self._current_call_id or _new_call_id()
         ctx = _resolve_ctx(runtime, self._ctx)
         decision, decision_source = _derive_decision(ctx)
         router = ToolRouter.get_default()

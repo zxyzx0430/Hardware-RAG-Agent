@@ -91,16 +91,20 @@ interface SettingsState {
   removeMCPServer: (id: string) => Promise<void>;
   /** 从后端 /api/tools 拉取真实工具列表，覆盖本地 skills */
   fetchTools: () => Promise<void>;
-  /** 从后端 /api/settings 拉取持久化设置，merge 到本地（不覆盖后端没有的字段） */
+  /** 从后端 /api/settings 读取权威的长期记忆值 */
   fetchSettings: () => Promise<void>;
+  /** 仅在服务器确认后更新手动维护的长期记忆 */
+  saveLongTermMemory: (value: string) => Promise<boolean>;
   updateSetting: <K extends keyof SettingsState>(k: K, v: SettingsState[K]) => Promise<void>;
 }
+
+const LONG_TERM_MEMORY_MAX_CHARS = 4000;
 
 // 需要持久化的字段
 const PERSIST_KEYS: (keyof SettingsState)[] = [
   "providers", "chatProviderId", "chatModel", "imageProviderId", "imageModel",
   "visionProviderId", "visionModel",
-  "temperature", "topK", "maxTokens", "relevanceThreshold", "systemPrompt", "longTermMemory",
+  "temperature", "topK", "maxTokens", "relevanceThreshold", "systemPrompt",
   "skills", "mcpServers", "webSearchConfig", "imageGenerationConfig", "chatFontSize", "themeMode", "lang",
   "embeddingDefaultModel", "embeddingDefaultBaseUrl", "embeddingDefaultApiKey",
   "agentChunkerDefaultModel", "agentChunkerDefaultBaseUrl", "agentChunkerDefaultApiKey",
@@ -166,6 +170,9 @@ function persist(state: SettingsState) {
   }
   saveToStorage("settings", data);
 }
+
+// Prevent a settings GET started before a successful save from overwriting it.
+let longTermMemoryWriteVersion = 0;
 
 /** 生成简单唯一 ID */
 function genId(): string {
@@ -481,6 +488,21 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     });
   },
 
+  saveLongTermMemory: async (value) => {
+    if (typeof value !== "string" || Array.from(value).length > LONG_TERM_MEMORY_MAX_CHARS) {
+      return false;
+    }
+    try {
+      await apiPut("settings", { longTermMemory: value });
+      longTermMemoryWriteVersion += 1;
+      set({ longTermMemory: value });
+      return true;
+    } catch {
+      // Keep the last server-confirmed value unchanged; the editor owns the draft/error UI.
+      return false;
+    }
+  },
+
   fetchTools: async () => {
     try {
       const data = await apiGet<{
@@ -504,19 +526,17 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   },
 
   fetchSettings: async () => {
+    const writeVersionAtStart = longTermMemoryWriteVersion;
     try {
-      const data = await apiGet<Record<string, unknown>>("settings");
-      if (!data) return;
-      set((s) => {
-        const patch: Partial<SettingsState> = {};
-        for (const key of PERSIST_KEYS) {
-          if (key in data) {
-            Object.assign(patch, { [key]: data[key] });
-          }
-        }
-        // 后端没有的字段（如 providers）保持本地值，不覆盖
-        return { ...s, ...patch };
-      });
+      const data = await apiGet<{ settings?: Record<string, unknown> }>("settings");
+      const serverSettings = data?.settings;
+      if (!serverSettings || typeof serverSettings !== "object" || Array.isArray(serverSettings)) return;
+      const serverMemory = typeof serverSettings.longTermMemory === "string"
+        ? serverSettings.longTermMemory
+        : "";
+      if (writeVersionAtStart === longTermMemoryWriteVersion) {
+        set({ longTermMemory: serverMemory });
+      }
     } catch (err) {
       console.warn("fetchSettings failed", err);
       useToastStore.getState().showError("加载设置失败");
@@ -529,5 +549,5 @@ useSettingsStore.subscribe((state) => {
   persist(state);
 });
 
-// 初始化：拉取后端持久化的 settings，merge 到本地（后端没有的字段保持本地值）
+// 初始化：从后端恢复手动长期记忆；不从浏览器缓存读取记忆内容
 useSettingsStore.getState().fetchSettings();

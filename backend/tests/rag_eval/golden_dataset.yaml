@@ -31,21 +31,22 @@ samples:
   # ═══════════════════════════════════════
 
   - id: G001
-    question: "STM32 的 GPIO 引脚可以配置为哪四种工作模式？每种模式对应的 MODER 寄存器值是什么？"
+    question: "对于采用 MODER 型 GPIO 的 STM32F4，GPIO 引脚可配置为哪四种工作模式？MODER 两位编码分别是什么？"
     standard_answer: |
-      STM32 的 GPIO 有四种工作模式，由 MODER 寄存器控制：
+      对采用 GPIOx_MODER 寄存器的 STM32F4 GPIO：
       1. 输入模式（MODER=00）：引脚配置为数字输入
       2. 输出模式（MODER=01）：引脚配置为数字输出
       3. 复用功能模式（MODER=10）：引脚交给外设（如 SPI/I2C/UART）控制
       4. 模拟模式（MODER=11）：引脚配置为模拟输入（ADC/DAC）
+      STM32F1 使用 GPIOx_CRL/CRH，不适用上述 MODER 编码。
     reference_chunks:
-      - "STM32 GPIO 工作模式由 MODER 寄存器控制：输入模式 MODER=00、输出模式 MODER=01、复用功能模式 MODER=10、模拟模式 MODER=11。"
-      - "GPIOx_MODER 寄存器配置：00=输入模式、01=输出模式、10=复用功能(AF)、11=模拟模式。"
+      - "STM32F4 的 GPIOx_MODER 配置：00=输入模式、01=输出模式、10=复用功能(AF)、11=模拟模式。"
+      - "STM32F1 GPIO 使用 GPIOx_CRL/CRH；GPIOx_MODER 编码不适用于 F1。"
     difficulty: 简单
     category: GPIO
     target_doc: 01-stm32-gpio.md
-    tags: [STM32, GPIO, MODER, 寄存器]
-    notes: ""
+    tags: [STM32F4, GPIO, MODER, 寄存器]
+    notes: "适用性由官方参考手册确认：STM32F4 GPIOx_MODER 见 https://www.st.com/resource/en/reference_manual/dm00031020-stm32f405-415-stm32f407-417-stm32f427-437-and-stm32f429-439-advanced-arm-based-32-bit-mcus-stmicroelectronics.pdf；STM32F1 GPIOx_CRL/CRH 见 https://www.st.com/resource/en/reference_manual/rm0008-stm32f101xx-stm32f102xx-stm32f103xx-stm32f105xx-and-stm32f107xx-advanced-armbased-32-bit-mcus-stmicroelectronics.pdf。"
 
   - id: G002
     question: "STM32 GPIO 的输出速度有哪几个等级？在什么场景下应该选择不同的速度？"
@@ -301,19 +302,20 @@ samples:
   # ═══════════════════════════════════════
 
   - id: G016
-    question: "Cortex-M3 的 NVIC 优先级分组如何配置？如果 USART1 抢占优先级为 1、TIM2 抢占优先级为 2，当中断同时到达时谁先执行？"
+    question: "对于实现 4 位优先级的 STM32 设备（以 STM32F4 HAL 为例），NVIC 优先级分组如何配置？如果 USART1 抢占优先级为 1、TIM2 抢占优先级为 2，当中断同时到达时谁先执行？"
     standard_answer: |
       通过 SCB->AIRCR 寄存器的 PRIGROUP 字段配置分组：
-      - STM32F4 实现 4 位优先级（16 级），推荐 NVIC_PRIORITYGROUP_4（PRIGROUP=7）：16 个抢占优先级、0 个子优先级
+      - 对这类 4 位实现，STM32F4 HAL 的 NVIC_PRIORITYGROUP_4 编码为 PRIGROUP=3（3 << 8）：16 个抢占优先级、0 个子优先级。
+      - NVIC_PRIORITYGROUP_0 编码为 PRIGROUP=7（7 << 8）：0 个抢占优先级、4 个子优先级。
       - 数值小 = 优先级高
       - USART1 抢占优先级 1 < TIM2 抢占优先级 2，所以 USART1 先执行并能抢占 TIM2
     reference_chunks:
-      - "NVIC 优先级分组通过 AIRCR PRIGROUP 配置。STM32F4 推荐 NVIC_PRIORITYGROUP_4(PRIGROUP=7)：16 抢占/0 子。数值小=优先级高。USART1 优先级 1 < TIM2 优先级 2，USART1 先执行。"
+      - "对实现 4 位优先级的 STM32F4 HAL：NVIC_PRIORITYGROUP_4 编码 PRIGROUP=3，为 16 抢占/0 子；NVIC_PRIORITYGROUP_0 编码 PRIGROUP=7，为 0 抢占/16 子。数值小=优先级高。"
     difficulty: 难
     category: 中断
     target_doc: 04-cortexm-interrupt.md
-    tags: [Cortex-M, NVIC, 优先级, PRIGROUP, AIRCR]
-    notes: ""
+    tags: [STM32F4, NVIC, 优先级, PRIGROUP, AIRCR]
+    notes: "本题限定实现 4 位优先级的 STM32，并以 STM32F4 HAL 映射为准；宏值见 ST 官方头文件 https://raw.githubusercontent.com/STMicroelectronics/stm32f4xx-hal-driver/master/Inc/stm32f4xx_hal_cortex.h。"
 
   - id: G017
     question: "Cortex-M4 的中断延迟是多少个时钟周期？尾链（Tail-Chaining）和迟来（Late-Arrival）技术分别如何降低延迟？"
@@ -413,20 +415,19 @@ samples:
     notes: ""
 
   - id: G023
-    question: "STM32 波特率如何计算？fck=72MHz、目标 115200bps 时 USARTDIV 和 BRR 的值是多少？"
+    question: "STM32F103 USART1 的时钟 fCK=72MHz、OVER8=0 时，目标 115200bps 如何计算 USARTDIV 和 BRR？标称波特率误差是多少？"
     standard_answer: |
-      波特率公式：波特率 = fck / (16 × USARTDIV)（OVER8=0）
-      - USARTDIV = fck / (16 × 波特率) = 72000000 / (16 × 115200) = 39.0625
-      - BRR = USARTDIV × 16 = 625 = 0x0271
-      - 实际波特率 = 72000000 / (16 × 39.0625) = 115384.6 bps
-      - 误差 = (115384.6 - 115200) / 115200 = +0.16%（在 ±2.5% 容限内）
+      在理想 fCK=72MHz、OVER8=0 下，USARTDIV 理想值 = 72000000 / (16 × 115200) = 39.0625。
+      - BRR = USARTDIV × 16 = 625 = 0x0271；这里恰好可由 BRR 精确表示。
+      - 量化后的标称波特率 = 72000000 / 625 = 115200 bps，标称分频误差 = 0%。
+      - 0% 仅指理想时钟下的 BRR 分频误差，不包含晶振/振荡器的物理频率误差。
     reference_chunks:
-      - "STM32 波特率公式：波特率=fck/(16×USARTDIV)。fck=72MHz 目标 115200：USARTDIV=39.0625，BRR=0x0271，实际 115384.6，误差 +0.16%。"
+      - "STM32F103 USART1，fCK=72MHz、OVER8=0，目标 115200：理想 USARTDIV=39.0625，BRR=625=0x0271，理想标称波特率 115200，BRR 分频误差 0%。"
     difficulty: 中等
     category: UART
     target_doc: 05-uart-serial.md
-    tags: [UART, 波特率, USARTDIV, BRR, 计算]
-    notes: ""
+    tags: [STM32F103, UART, 波特率, USARTDIV, BRR, 计算]
+    notes: "RM0008 说明 STM32F1 USART 的 BRR 分频规则；F4 表格时钟限制参见 RM0090，H7 扩展表参见 RM0433。公式及量化值已按理想源时钟复算，未把物理振荡器容差当作 BRR 分频误差。官方手册：https://www.st.com/resource/en/reference_manual/rm0008-stm32f101xx-stm32f102xx-stm32f103xx-stm32f105xx-and-stm32f107xx-advanced-armbased-32-bit-mcus-stmicroelectronics.pdf ; https://www.st.com/resource/en/reference_manual/rm0090-stm32f407-advanced-armbased-32bit-mcus-stmicroelectronics.pdf ; https://www.st.com/resource/en/reference_manual/rm0433-stm32h742-stm32h743-753-and-stm32h750-value-line-advanced-armbased-32-bit-mcus-stmicroelectronics.pdf。"
 
   - id: G024
     question: "STM32 UART 配置 8 位字长 + 偶校验（Even Parity）时，实际数据位是几位？要 8 位数据 + 偶校验应该怎么配？"
@@ -465,18 +466,18 @@ samples:
   - id: G026
     question: "ESP32-S3 的 Strapping 引脚有哪些？正常启动需要什么电平？"
     standard_answer: |
-      ESP32-S3 的 Strapping 引脚：
-      - GPIO0：控制启动模式。高电平=正常工作模式，低电平=下载模式。用 10kΩ 上拉电阻确保正常启动
-      - GPIO46：控制 Flash 电压。低电平=3.3V（默认），高电平=1.8V
-      - GPIO45：控制内核电压（VDD_SPI）
-      上电瞬间这些引脚的电平决定芯片工作模式，必须用电阻固定到期望电平。
+      ESP32-S3 的 strapping 引脚是 GPIO0、GPIO3、GPIO45、GPIO46。
+      - SPI 启动（默认）：GPIO0=1；GPIO46 为任意电平。
+      - 联合下载启动：GPIO0=0 且 GPIO46=0。
+      - GPIO45 与 eFuse 配置共同影响 VDD_SPI；GPIO46 不用于选择 VDD_SPI 电压。GPIO0 建议按官方硬件指南配置上拉。
+      strap 状态在启动采样时参与配置；其他 strap 功能及板级电阻应核对具体设计和官方指南。
     reference_chunks:
-      - "ESP32-S3 Strapping 引脚：GPIO0 控制启动模式(高=正常,低=下载,用 10kΩ 上拉)；GPIO46 控制 Flash 电压(低=3.3V,高=1.8V)；GPIO45 控制内核电压。"
+      - "ESP32-S3 strapping pins 为 GPIO0/GPIO3/GPIO45/GPIO46。SPI 启动：GPIO0=1、GPIO46 任意；联合下载：GPIO0=0、GPIO46=0。GPIO45 与 eFuse 参与 VDD_SPI 配置。"
     difficulty: 中等
     category: 启动配置
     target_doc: 06-hardware-terms-glossary.md
     tags: [ESP32-S3, strapping, GPIO0, 启动, 上拉]
-    notes: ""
+    notes: "引脚集合、启动组合及 VDD_SPI 控制来源以 Espressif 官方 ESP32-S3 schematic checklist 和 datasheet 为准：https://docs.espressif.com/projects/esp-hardware-design-guidelines/en/latest/esp32s3/schematic-checklist.html ; https://www.espressif.com/sites/default/files/documentation/esp32-s3_datasheet_en.pdf。"
 
   - id: G027
     question: "MPU6050 的 I2C 地址怎么选择？AD0 引脚的作用是什么？"

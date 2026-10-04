@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass
@@ -19,6 +20,12 @@ class ToolContext:
     kb_coverage_counter: dict[str, int] = field(default_factory=dict)
     source_counter: int = 0
     decision_source: str = "auto_allow"
+    skills_mode: str = "off"
+    skills_runtime: Any = None
+    skills_allowed_tools: frozenset[str] = field(default_factory=frozenset)
+    kb_scope: tuple[str, ...] | None = None
+    request_tools: dict[str, Any] = field(default_factory=dict, repr=False)
+    mcp_authorization: Any = field(default=None, repr=False)
 
 
 class PermissionAskError(Exception):
@@ -67,3 +74,14 @@ class AgentTimeoutError(Exception):
         super().__init__(f"agent timeout: {elapsed:.1f}s > {limit}s")
 
 
+class AgentStreamIdleTimeoutError(TimeoutError):
+    """Raised when neither the model nor a tool makes progress for too long."""
+
+    def __init__(self, elapsed: float, limit: float):
+        self.elapsed = elapsed
+        self.limit = limit
+        super().__init__(f"agent stream idle: {elapsed:.1f}s without progress > {limit}s")
+
+
+class ModelEmptyResponseError(Exception):
+    """Raised only when a provider stream drains without visible answer text."""

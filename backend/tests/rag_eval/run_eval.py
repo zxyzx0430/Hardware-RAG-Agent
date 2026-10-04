@@ -26,7 +26,9 @@ RAG Evaluation Runner — 量化测试 chunk 策略的优化程度
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
+import math
 import time
 import re
 import sys
@@ -53,6 +55,47 @@ from tests.rag_eval.config import (
     TOP_K, RELEVANCE_THRESHOLD, SCORE_WEIGHTS,
     QUESTIONS, STRATEGIES, StrategyVariant, TestQuestion,
 )
+from tests.rag_eval.chat_evidence import (
+    count_evidence_statuses,
+    extract_agent_context,
+    summarize_chat_evidence,
+)
+
+CHAT_DEADLINE_SECONDS = 300.0
+CHAT_READ_TIMEOUT_SECONDS = 45.0
+_HTTPX_SYNC_CLIENT_CLASS = httpx.Client
+
+
+def _chat_exception_code(exc: Exception) -> str:
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
+        return "answer_deadline"
+    if isinstance(exc, httpx.ConnectTimeout):
+        return "answer_connect_timeout"
+    if isinstance(exc, httpx.ReadTimeout):
+        return "answer_read_timeout"
+    if isinstance(exc, httpx.TimeoutException):
+        return "answer_transport_timeout"
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"answer_http_error_{exc.response.status_code}"
+    if isinstance(exc, httpx.HTTPError):
+        return "answer_transport_error"
+    return "answer_client_error"
+
+
+def _safe_strategy_error(exc: Exception) -> str:
+    message = str(exc).strip()
+    sensitive_markers = ("api_key", "authorization", "bearer ", "secret", "password", "token")
+    if (
+        not message
+        or len(message) > 200
+        or any(marker in message.lower() for marker in sensitive_markers)
+        or "{" in message
+        or "}" in message
+        or "http://" in message.lower()
+        or "https://" in message.lower()
+    ):
+        return f"strategy_failure_{type(exc).__name__}"
+    return message
 
 
 def _fetch_builtin_embedding_config() -> dict:
@@ -86,7 +129,7 @@ def _fetch_builtin_embedding_config() -> dict:
         print(f"  Reusing builtin-001 embedding: {config['embedding_model']} @ {config['embedding_base_url']}")
         return config
     except Exception as e:
-        print(f"  ⚠ Failed to read builtin embedding config: {e}")
+        print(f"  ⚠ Failed to read builtin embedding config: {type(e).__name__}")
         return {}
 
 
@@ -98,7 +141,9 @@ class RAGTestClient:
 
     def __init__(self, api_key: str, model: str, base_url: str,
                  embedding_key: str, embedding_model: str, embedding_base_url: str,
-                 builtin_embedding: Optional[dict] = None):
+                 builtin_embedding: Optional[dict] = None, use_agent: bool = True,
+                 chat_deadline_seconds: float = CHAT_DEADLINE_SECONDS,
+                 chat_read_timeout_seconds: float = CHAT_READ_TIMEOUT_SECONDS):
         self.api_key = api_key
         self.model = model
         self.base_url = base_url
@@ -109,7 +154,11 @@ class RAGTestClient:
         # (used when the LLM proxy doesn't support embeddings — we reuse the
         # builtin-001 KB's DashScope config instead).
         self.builtin_embedding = builtin_embedding or {}
+        self.use_agent = use_agent
         self.client = httpx.Client(timeout=120.0)
+        self.chat_deadline_seconds = chat_deadline_seconds
+        self.chat_read_timeout_seconds = chat_read_timeout_seconds
+        self._sync_test_transport_injected = httpx.Client is not _HTTPX_SYNC_CLIENT_CLASS
 
     def _headers(self) -> dict:
         return {
@@ -190,7 +239,7 @@ class RAGTestClient:
     def chat(self, question: str, kb_ids: list[str]) -> dict:
         """Send a chat question and collect SSE events.
 
-        Returns dict with: answer, sources, thinking, tools, error
+        Preserve partial evidence if the total request deadline expires.
         """
         payload = {
             "messages": [{"role": "user", "content": question}],
@@ -198,56 +247,139 @@ class RAGTestClient:
             "top_k": TOP_K,
             "relevance_threshold": RELEVANCE_THRESHOLD,
             "kb_ids": kb_ids,
+            "use_agent": self.use_agent,
         }
+        state = {
+            "answer_parts": [], "sources": [], "thinking_parts": [], "tools": [],
+            "evidence_events": [], "error": "",
+        }
+        if self._sync_test_transport_injected:
+            self._receive_chat_sync_test_transport(payload, state)
+        else:
+            try:
+                asyncio.run(self._receive_chat_async(payload, state))
+            except Exception as exc:
+                state["error"] = state["error"] or _chat_exception_code(exc)
 
-        answer_parts = []
-        sources = []
-        thinking_parts = []
-        tools = []
-        error_msg = None
-
-        with self.client.stream(
-            "POST", f"{API_BASE_URL}/chat",
-            json=payload,
-            headers=self._headers(),
-            timeout=180.0,
-        ) as resp:
-            for line in resp.iter_lines():
-                if not line:
-                    continue
-                # Backend SSE format: "data: {\"type\": \"...\", ...}\n\n"
-                # The event type is embedded in the JSON payload's "type" field,
-                # NOT in a separate "event:" line.
-                if not line.startswith("data:"):
-                    continue
-                raw = line[5:].strip()
-                if not raw or not raw.startswith("{"):
-                    continue
-                try:
-                    evt = json.loads(raw)
-                except json.JSONDecodeError:
-                    continue
-                event_type = evt.get("type", "")
-                if event_type == "text":
-                    answer_parts.append(evt.get("content", ""))
-                elif event_type == "source":
-                    sources.append(evt)
-                elif event_type == "thinking":
-                    # Only save non-reasoning thinking content (skip "reasoning" source)
-                    if evt.get("source") != "reasoning":
-                        thinking_parts.append(evt.get("content", ""))
-                elif event_type == "tool":
-                    tools.append(evt)
-                elif event_type == "error":
-                    error_msg = evt.get("message", "Unknown error")
-
+        answer = "".join(state["answer_parts"])
+        contexts, quality_input_status, parent_metadata = extract_agent_context(
+            state["evidence_events"], state["sources"],
+        )
+        evidence = summarize_chat_evidence(state["evidence_events"], answer, self.use_agent)
+        if evidence["status"] == "awaiting_confirmation":
+            state["error"] = state["error"] or "awaiting_confirmation"
+        elif not evidence["done_succeeded"]:
+            state["error"] = state["error"] or "answer_incomplete"
+        safe_source_fields = (
+            "id", "title", "doc", "page", "pages", "chunk_index", "page_start",
+            "page_end", "section_title", "score", "kb_id", "kb_name",
+            "small_chunk_id", "big_chunk_id", "excerpt",
+        )
+        source_evidence = [
+            *[
+                {key: event[key] for key in safe_source_fields if key in event}
+                for event in state["sources"]
+            ],
+            *[{"origin": "search_docs_tool_result", **row} for row in parent_metadata],
+        ]
+        evidence.update({
+            "answer_error": state["error"],
+            "quality_input_status": quality_input_status,
+            "quality_input_count": len(contexts) if quality_input_status == "complete" else 0,
+            "source_evidence": source_evidence,
+        })
         return {
-            "answer": "".join(answer_parts),
-            "sources": sources,
-            "thinking": "".join(thinking_parts),
-            "tools": tools,
-            "error": error_msg,
+            "answer": answer,
+            "sources": state["sources"],
+            "agent_context": contexts,
+            "quality_input_status": quality_input_status,
+            "source_evidence": source_evidence,
+            "thinking": "".join(state["thinking_parts"]),
+            "tools": state["tools"],
+            "error": state["error"],
+            "path_evidence": evidence,
         }
+
+    @staticmethod
+    def _consume_chat_line(line: str, state: dict) -> None:
+        if not line or not line.startswith("data:"):
+            return
+        raw = line[5:].strip()
+        if not raw:
+            return
+        try:
+            event = json.loads(raw)
+        except json.JSONDecodeError:
+            state["error"] = state["error"] or "answer_stream_format"
+            return
+        if not isinstance(event, dict):
+            state["error"] = state["error"] or "answer_stream_format"
+            return
+        event_type = event.get("type", "")
+        if event_type in (
+            "source", "tool_call", "tool_result", "tool", "tool_confirm",
+            "tool_confirm_required", "awaiting_confirmation", "error", "done",
+        ):
+            state["evidence_events"].append(event)
+        if event_type == "text":
+            content = event.get("content")
+            if isinstance(content, str):
+                state["answer_parts"].append(content)
+        elif event_type == "source":
+            state["sources"].append(event)
+        elif event_type == "thinking" and event.get("source") != "reasoning":
+            content = event.get("content")
+            if isinstance(content, str):
+                state["thinking_parts"].append(content)
+        elif event_type == "tool":
+            state["tools"].append(event)
+        elif event_type == "error":
+            state["error"] = state["error"] or "answer_stream_error"
+
+    def _receive_chat_sync_test_transport(self, payload: dict, state: dict) -> None:
+        timeout = httpx.Timeout(
+            connect=15.0, read=self.chat_read_timeout_seconds,
+            write=15.0, pool=15.0,
+        )
+        deadline = time.monotonic() + self.chat_deadline_seconds
+        try:
+            with self.client.stream(
+                "POST", f"{API_BASE_URL}/chat", json=payload,
+                headers=self._headers(), timeout=timeout,
+            ) as response:
+                response.raise_for_status()
+                for line in response.iter_lines():
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("chat deadline")
+                    self._consume_chat_line(line, state)
+        except Exception as exc:
+            state["error"] = state["error"] or _chat_exception_code(exc)
+
+    async def _receive_chat_async(self, payload: dict, state: dict) -> None:
+        timeout = httpx.Timeout(
+            connect=15.0, read=self.chat_read_timeout_seconds,
+            write=15.0, pool=15.0,
+        )
+        deadline = time.monotonic() + self.chat_deadline_seconds
+
+        async def receive() -> None:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                async with client.stream(
+                    "POST", f"{API_BASE_URL}/chat", json=payload,
+                    headers=self._headers(),
+                ) as response:
+                    response.raise_for_status()
+                    async for line in response.aiter_lines():
+                        if time.monotonic() >= deadline:
+                            raise TimeoutError("chat deadline")
+                        self._consume_chat_line(line, state)
+
+        try:
+            await asyncio.wait_for(receive(), timeout=self.chat_deadline_seconds)
+        except (asyncio.TimeoutError, TimeoutError):
+            state["error"] = state["error"] or "answer_deadline"
+        except Exception as exc:
+            state["error"] = state["error"] or _chat_exception_code(exc)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -301,16 +433,19 @@ class Evaluator:
             "answer_preview": answer[:500] if answer else "(empty)",
             "sources_count": len(sources),
             "source_titles": [s.get("title", "") for s in sources[:5]],
-            # P0: Save full sources (with excerpt) so chunk_boundary can be
-            # re-scored later without re-running the LLM. Truncate excerpt to
-            # 2000 chars to keep JSON size reasonable (each source ~2KB, 5 sources
-            # = 10KB per question, 10 questions = 100KB per strategy — acceptable).
+            # Preserve the entire captured excerpt; hidden clipping changes the
+            # evidence used by the diagnostic and prevents faithful rescoring.
             "sources_full": [
                 {
-                    "title": s.get("title", ""),
-                    "excerpt": (s.get("excerpt", "") or s.get("content", ""))[:2000],
-                    "doc_id": s.get("doc_id", ""),
-                    "chunk_id": s.get("chunk_id", "") or s.get("id", ""),
+                    key: s[key]
+                    for key in (
+                        "id", "title", "doc", "page", "pages", "page_start", "page_end",
+                        "section_title", "chunk_index", "score", "kb_id", "kb_name",
+                        "big_chunk_id", "small_chunk_id", "doc_id", "chunk_id",
+                    )
+                    if key in s
+                } | {
+                    "excerpt": s.get("excerpt", "") or s.get("content", ""),
                 }
                 for s in sources
             ],
@@ -585,6 +720,8 @@ class Reporter:
         lines.append(f"# RAG 评估报告")
         lines.append(f"\n> 生成时间: {results['timestamp']}")
         lines.append(f"> 测试问题: {results['total_questions']} 个")
+        lines.append(f"> 聊天模式: {results['chat_mode']}（仅 agent 模式的有效样本可代表 Agent RAG）")
+        lines.append(f"> 评测协议: {results.get('evaluation_kind', 'rule_based_diagnostic')}（非 DeepEval 标准质量评分）")
         lines.append(f"> 评分权重: 召回({results['weights']['recall']}) + 回答覆盖({results['weights']['answer_coverage']}) + chunk完整性({results['weights']['chunk_completeness']}) + 边界({results['weights']['chunk_boundary']}) + 跨章节({results['weights']['cross_section']})\n")
 
         # Strategy comparison table
@@ -593,21 +730,37 @@ class Reporter:
             lines.append("| 策略 | 总分 | 召回 | 回答覆盖 | chunk完整性 | 边界 | 跨章节 |")
             lines.append("|------|------|------|----------|------------|------|--------|")
             for strat in results["strategies"]:
-                lines.append(f"| {strat['name']} | {strat['total_score']:.1f}/{strat['max_score']} | {strat['dimension_scores']['recall']:.1f} | {strat['dimension_scores']['answer_coverage']:.1f} | {strat['dimension_scores']['chunk_completeness']:.1f} | {strat['dimension_scores']['chunk_boundary']:.1f} | {strat['dimension_scores']['cross_section']:.1f} |")
+                if strat.get("scored_count", 0) == 0:
+                    lines.append(f"| {strat['name']} | 未计分 | - | - | - | - | - |")
+                else:
+                    lines.append(f"| {strat['name']} | {strat['total_score']:.1f}/{strat['max_score']} | {strat['dimension_scores']['recall']:.1f} | {strat['dimension_scores']['answer_coverage']:.1f} | {strat['dimension_scores']['chunk_completeness']:.1f} | {strat['dimension_scores']['chunk_boundary']:.1f} | {strat['dimension_scores']['cross_section']:.1f} |")
             lines.append("")
 
         # Detailed results per strategy
         for strat in results.get("strategies", []):
             lines.append(f"\n## 策略: {strat['name']}")
             lines.append(f"\n**描述**: {strat['description']}")
-            lines.append(f"**总分**: {strat['total_score']:.1f} / {strat['max_score']}")
-            lines.append(f"**平均分**: {strat['total_score'] / strat['max_score'] * 100:.1f}%\n")
+            planned_count = strat.get("planned_count", len(strat.get("question_results", [])))
+            attempted_count = strat.get("attempted_count", len(strat.get("question_results", [])))
+            lines.append(f"**可计分题数**: {strat.get('scored_count', 0)}/{planned_count}")
+            lines.append(f"**已尝试题数**: {attempted_count}/{planned_count}")
+            lines.append(f"**路径状态**: {strat.get('path_status_counts', {})}")
+            if strat.get("error"):
+                lines.append(f"**失败原因**: {strat['error']}")
+            if strat.get("scored_count", 0):
+                lines.append(f"**总分**: {strat['total_score']:.1f} / {strat['max_score']}")
+                lines.append(f"**平均分**: {strat['total_score'] / strat['max_score'] * 100:.1f}%\n")
+            else:
+                lines.append("**总分**: 未计分\n")
 
             # Per-question breakdown
             lines.append("### 逐题得分\n")
             lines.append("| 题目 | 难度 | 召回 | 回答覆盖 | chunk完整性 | 边界 | 跨章节 | 总分 |")
             lines.append("|------|------|------|----------|------------|------|--------|------|")
             for q_result in strat["question_results"]:
+                if q_result.get("not_scored"):
+                    lines.append(f"| {q_result['question_id']} | {q_result['difficulty']} | 未计分：{q_result['path_evidence']['status']} | - | - | - | - | - |")
+                    continue
                 s = q_result["scores"]
                 lines.append(
                     f"| {q_result['question_id']} | {q_result['difficulty']} | "
@@ -626,6 +779,9 @@ class Reporter:
                 lines.append(f"\n#### {q_result['question_id']} ({q_result['difficulty']})")
                 lines.append(f"**问题**: {q_result['question']}")
                 lines.append(f"**目标文档**: `{q_result['target_doc']}`")
+                if q_result.get("not_scored"):
+                    lines.append(f"**未计分**: {q_result['path_evidence']['status']}；{q_result.get('error', '')}")
+                    continue
                 lines.append(f"**得分**: {q_result['total_score']:.1f} / {q_result['max_score']}")
                 lines.append(f"**引用来源数**: {q_result['sources_count']}")
                 lines.append(f"**来源**: {', '.join(q_result['source_titles'][:3])}")
@@ -652,17 +808,31 @@ def run_evaluation(
     embedding_base_url: str,
     keep_kb: bool = False,
     strategies: list = None,
+    use_agent: bool = True,
+    questions: list[TestQuestion] | None = None,
+    doc_files: list[str] | None = None,
+    chat_deadline_seconds: float = CHAT_DEADLINE_SECONDS,
+    chat_read_timeout_seconds: float = CHAT_READ_TIMEOUT_SECONDS,
 ) -> dict:
     """Run full RAG evaluation across all strategies."""
     strategies = strategies or STRATEGIES
+    questions = QUESTIONS if questions is None else questions
+    doc_files = TEST_DOC_FILES if doc_files is None else doc_files
+    if (
+        not math.isfinite(chat_deadline_seconds)
+        or not math.isfinite(chat_read_timeout_seconds)
+        or chat_deadline_seconds <= 0
+        or chat_read_timeout_seconds <= 0
+    ):
+        raise ValueError("chat deadline and read timeout must be finite positive numbers")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     print(f"\n{'='*60}")
     print(f"RAG Evaluation Started — {timestamp}")
     print(f"{'='*60}")
     print(f"Model: {model}")
     print(f"Strategies: {len(strategies)}")
-    print(f"Questions: {len(QUESTIONS)}")
-    print(f"Documents: {len(TEST_DOC_FILES)}")
+    print(f"Questions: {len(questions)}")
+    print(f"Documents: {len(doc_files)}")
 
     # Fetch builtin-001 embedding config (proxy doesn't support embeddings,
     # so we reuse the working DashScope config from builtin-001).
@@ -673,6 +843,9 @@ def run_evaluation(
         embedding_key=embedding_key, embedding_model=embedding_model,
         embedding_base_url=embedding_base_url,
         builtin_embedding=builtin_emb,
+        use_agent=use_agent,
+        chat_deadline_seconds=chat_deadline_seconds,
+        chat_read_timeout_seconds=chat_read_timeout_seconds,
     )
     evaluator = Evaluator(SCORE_WEIGHTS)
     reporter = Reporter(OUTPUT_DIR)
@@ -687,6 +860,9 @@ def run_evaluation(
         print(f"{'─'*60}")
 
         kb_id = None
+        question_results = []
+        attempted_count = 0
+        request_in_progress = False
         try:
             # Step 1: Create KB
             print("  [1/4] Creating knowledge base...")
@@ -697,7 +873,7 @@ def run_evaluation(
             # Step 2: Upload documents
             print("  [2/4] Uploading test documents...")
             doc_id_map = {}  # filename -> doc_id
-            for doc_file in TEST_DOC_FILES:
+            for doc_file in doc_files:
                 doc_path = TEST_DOCS_DIR / doc_file
                 if not doc_path.exists():
                     print(f"        ⚠ Skip (not found): {doc_file}")
@@ -734,46 +910,89 @@ def run_evaluation(
                             break
                     if not done:
                         print(f"TIMEOUT after {waited}s", flush=True)
+                        raise RuntimeError(f"Indexing timeout for {doc_file}")
+                docs = client.list_docs(kb_id)
+                current = next((d for d in docs if d.get("doc_id") == doc_id), {})
+                if current.get("status") != "indexed":
+                    raise RuntimeError(
+                        f"Indexing failed for {doc_file}: {current.get('status', 'missing')} "
+                        f"{current.get('error_message', '')}"
+                    )
 
             # Step 3: Fetch all chunks for each document (for chunk quality evaluation)
             print("  [3/4] Fetching chunks for evaluation...")
             chunks_by_doc = {}  # filename -> list of chunk dicts
             for doc_file, doc_id in doc_id_map.items():
                 chunks = client.get_doc_chunks(doc_id)
+                if not chunks:
+                    raise RuntimeError(f"Indexed document has no retrievable chunks: {doc_file}")
                 chunks_by_doc[doc_file] = chunks
                 print(f"        {doc_file}: {len(chunks)} chunks")
 
             # Step 4: Run questions
             print("  [4/4] Running test questions...")
-            question_results = []
-            for q_idx, q in enumerate(QUESTIONS):
+            for q_idx, q in enumerate(questions):
                 print(f"\n    {q.id} ({q.difficulty}): {q.question[:60]}...")
                 print(f"       Asking LLM...", end=" ", flush=True)
+                attempted_count += 1
+                request_in_progress = True
                 chat_result = client.chat(q.question, [kb_id])
-                if chat_result["error"]:
+                request_in_progress = False
+                evidence = chat_result["path_evidence"]
+                if chat_result.get("error"):
                     print(f"ERROR: {chat_result['error']}")
                 else:
                     print(f"done ({len(chat_result['answer'])} chars, {len(chat_result['sources'])} sources)")
 
                 # Evaluate
-                q_result = evaluator.evaluate_question(
-                    q, chat_result["answer"], chat_result["sources"], chunks_by_doc
-                )
+                if chat_result.get("error") or (
+                    use_agent and evidence["status"] != "verified_source_path"
+                ):
+                    q_result = {
+                        "question_id": q.id, "question": q.question,
+                        "difficulty": q.difficulty, "target_doc": q.target_doc,
+                        "not_scored": True, "path_evidence": evidence,
+                        "error": chat_result.get("error") or evidence["status"],
+                        "actual_output": chat_result.get("answer", ""),
+                        "answer_preview": chat_result.get("answer", "")[:500],
+                        "sources_count": len(chat_result.get("sources", [])),
+                        "sources_full": chat_result.get("sources", []),
+                        "agent_context": chat_result.get("agent_context", []),
+                        "quality_input_status": chat_result.get("quality_input_status", "unavailable"),
+                        "source_evidence": chat_result.get("source_evidence", []),
+                    }
+                else:
+                    q_result = evaluator.evaluate_question(
+                        q, chat_result["answer"], chat_result["sources"], chunks_by_doc
+                    )
+                    q_result["path_evidence"] = evidence
+                    q_result["actual_output"] = chat_result.get("answer", "")
+                    q_result["agent_context"] = chat_result.get("agent_context", [])
+                    q_result["quality_input_status"] = chat_result.get("quality_input_status", "unavailable")
+                    q_result["source_evidence"] = chat_result.get("source_evidence", [])
                 question_results.append(q_result)
 
                 # Print score
-                print(f"       Score: {q_result['total_score']:.1f}/{q_result['max_score']}")
-                for dim_name, dim_data in q_result["scores"].items():
-                    print(f"         {dim_name}: {dim_data['score']:.1f}/{dim_data['max']} — {dim_data['detail'][:80]}")
+                if q_result.get("not_scored"):
+                    print(f"       Not scored: {evidence['status']}")
+                else:
+                    print(f"       Score: {q_result['total_score']:.1f}/{q_result['max_score']}")
+                    for dim_name, dim_data in q_result["scores"].items():
+                        print(f"         {dim_name}: {dim_data['score']:.1f}/{dim_data['max']} — {dim_data['detail'][:80]}")
 
             # Aggregate scores
-            total_score = sum(qr["total_score"] for qr in question_results)
-            max_score = sum(qr["max_score"] for qr in question_results)
+            scored_results = [qr for qr in question_results if not qr.get("not_scored")]
+            total_score = sum(qr["total_score"] for qr in scored_results) if scored_results else None
+            max_score = sum(qr["max_score"] for qr in scored_results) if scored_results else None
             dim_scores = {}
             for dim in SCORE_WEIGHTS:
-                dim_scores[dim] = sum(qr["scores"][dim]["score"] for qr in question_results)
+                dim_scores[dim] = (
+                    sum(qr["scores"][dim]["score"] for qr in scored_results)
+                    if scored_results else None
+                )
 
             strategy_result = {
+                "evaluation_kind": "rule_based_diagnostic",
                 "name": strategy.name,
                 "description": strategy.description,
                 "chunk_method": strategy.chunk_method,
@@ -782,21 +1001,50 @@ def run_evaluation(
                 "max_score": max_score,
                 "dimension_scores": dim_scores,
                 "question_results": question_results,
+                "scored_count": len(scored_results),
+                "eligible_count": len(scored_results),
+                "planned_count": len(questions),
+                "attempted_count": attempted_count,
+                "path_status_counts": count_evidence_statuses([
+                    qr["path_evidence"] for qr in question_results
+                ]),
             }
             all_strategy_results.append(strategy_result)
 
-            print(f"\n  Strategy total: {total_score:.1f}/{max_score} ({total_score/max_score*100:.1f}%)")
+            if scored_results:
+                print(f"\n  Strategy total: {total_score:.1f}/{max_score} ({total_score/max_score*100:.1f}%)")
+            else:
+                print("\n  Strategy total: not scored (no verified Agent RAG path)")
 
         except Exception as e:
-            print(f"\n  ✗ Strategy failed: {e}")
+            error_code = _safe_strategy_error(e)
+            print(f"\n  ✗ Strategy failed: {error_code}")
             import traceback
             traceback.print_exc()
+            path_status_counts = count_evidence_statuses([
+                qr["path_evidence"] for qr in question_results
+            ])
+            unfinished_attempts = attempted_count - len(question_results)
+            if unfinished_attempts:
+                status = "request_failed" if request_in_progress else "strategy_failed"
+                path_status_counts[status] = path_status_counts.get(status, 0) + unfinished_attempts
+            not_attempted = len(questions) - attempted_count
+            if not_attempted:
+                path_status_counts["not_attempted"] = not_attempted
             all_strategy_results.append({
+                "evaluation_kind": "rule_based_diagnostic",
                 "name": strategy.name,
                 "description": strategy.description,
-                "error": str(e),
-                "total_score": 0,
-                "max_score": sum(SCORE_WEIGHTS.values()) * len(QUESTIONS),
+                "error": error_code,
+                "total_score": None,
+                "max_score": None,
+                "scored_count": 0,
+                "eligible_count": 0,
+                "planned_count": len(questions),
+                "attempted_count": attempted_count,
+                "path_status_counts": path_status_counts,
+                "question_results": question_results,
+                "dimension_scores": {dim: None for dim in SCORE_WEIGHTS},
             })
         finally:
             if kb_id and not keep_kb:
@@ -807,7 +1055,9 @@ def run_evaluation(
     final_results = {
         "timestamp": timestamp,
         "model": model,
-        "total_questions": len(QUESTIONS),
+        "total_questions": len(questions),
+        "chat_mode": "agent" if use_agent else "legacy",
+        "evaluation_kind": "rule_based_diagnostic",
         "weights": SCORE_WEIGHTS,
         "strategies": all_strategy_results,
     }
@@ -827,7 +1077,10 @@ def run_evaluation(
         if "error" in strat:
             print(f"  {strat['name']}: FAILED ({strat['error']})")
         else:
-            print(f"  {strat['name']}: {strat['total_score']:.1f}/{strat['max_score']} ({strat['total_score']/strat['max_score']*100:.1f}%)")
+            if strat.get("scored_count", 0):
+                print(f"  {strat['name']}: {strat['total_score']:.1f}/{strat['max_score']} ({strat['total_score']/strat['max_score']*100:.1f}%)")
+            else:
+                print(f"  {strat['name']}: not scored")
 
     return final_results
 
@@ -845,6 +1098,12 @@ def main():
     parser.add_argument("--embedding-base-url", default=DEFAULT_EMBEDDING_BASE_URL, help="Embedding base URL")
     parser.add_argument("--keep-kb", action="store_true", help="Keep KB after test (for debugging)")
     parser.add_argument("--strategies", default="", help="Comma-separated strategy names to run (default: all). e.g. 'agent-deepseek,hybrid-800'")
+    parser.add_argument("--legacy-chat", action="store_true", help="Use non-Agent chat; scores are not Agent RAG quality")
+    parser.add_argument("--smoke", action="store_true", help="One fixed Markdown document and its first two questions")
+    parser.add_argument("--chat-deadline", type=float, default=CHAT_DEADLINE_SECONDS,
+                        help="Overall SSE chat request deadline in seconds")
+    parser.add_argument("--chat-read-timeout", type=float, default=CHAT_READ_TIMEOUT_SECONDS,
+                        help="Timeout between SSE reads in seconds")
     args = parser.parse_args()
 
     embedding_key = args.embedding_key or args.api_key
@@ -867,6 +1126,11 @@ def main():
         embedding_base_url=args.embedding_base_url,
         keep_kb=args.keep_kb,
         strategies=strategies,
+        use_agent=not args.legacy_chat,
+        questions=QUESTIONS[:2] if args.smoke else None,
+        doc_files=["01-stm32-gpio.md"] if args.smoke else None,
+        chat_deadline_seconds=args.chat_deadline,
+        chat_read_timeout_seconds=args.chat_read_timeout,
     )
 
 

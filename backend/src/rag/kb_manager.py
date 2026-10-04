@@ -16,6 +16,7 @@ import pickle
 import asyncio
 import logging
 import math
+import threading
 from pathlib import Path
 from typing import Optional
 from dataclasses import dataclass
@@ -68,6 +69,8 @@ _BM25_ONLY_PENALTY: float = 0.85
 # Soft-normalize factor for BM25 scores: top-1 → ~0.87 instead of 1.0, so
 # BM25 scores stay comparable to cosine similarity (0-1 absolute) in RRF fusion.
 _BM25_NORM_FACTOR: float = 1.15
+_SEARCH_CACHE_REVISION = 0
+_SEARCH_CACHE_REVISION_LOCK = threading.Lock()
 
 
 def validate_small_chunk_size(size: int) -> bool:
@@ -467,6 +470,43 @@ class KnowledgeBaseManager:
         self._bm25_indices: dict[str, BM25Index] = {}  # kb_id → BM25
         self._bm25_stale: set[str] = set()  # kb_ids needing BM25 rebuild
 
+    def invalidate_search_cache(self) -> None:
+        """Advance the local search-content revision after a mutation."""
+        global _SEARCH_CACHE_REVISION
+        with _SEARCH_CACHE_REVISION_LOCK:
+            _SEARCH_CACHE_REVISION += 1
+
+    def get_search_cache_signature(self, kb_ids: Optional[list[str]] = None) -> tuple:
+        """Return a validated, process-local signature for cached search results."""
+        db = self._db_factory()
+        try:
+            if kb_ids:
+                requested_ids = sorted(set(kb_ids))
+                rows = (
+                    db.query(KnowledgeBase.id, KnowledgeBase.enabled, KnowledgeBase.name)
+                    .filter(KnowledgeBase.id.in_(requested_ids))
+                    .all()
+                )
+                by_id = {row.id: (bool(row.enabled), row.name) for row in rows}
+                scope = tuple(
+                    (kb_id, *by_id.get(kb_id, (False, None)))
+                    for kb_id in requested_ids
+                )
+            else:
+                rows = (
+                    db.query(KnowledgeBase.id, KnowledgeBase.name)
+                    .filter(KnowledgeBase.enabled == True)
+                    .order_by(KnowledgeBase.id)
+                    .all()
+                )
+                scope = tuple((row.id, row.name) for row in rows)
+        finally:
+            db.close()
+
+        with _SEARCH_CACHE_REVISION_LOCK:
+            revision = _SEARCH_CACHE_REVISION
+        return revision, scope
+
     # ═══════════════════════════════════════
     # KB CRUD
     # ═══════════════════════════════════════
@@ -518,6 +558,7 @@ class KnowledgeBaseManager:
             db.add(kb)
             db.commit()
             db.refresh(kb)
+            self.invalidate_search_cache()
             logger.info(f"Created KB: {kb_id} ({name})")
             return kb
         finally:
@@ -592,6 +633,7 @@ class KnowledgeBaseManager:
             self._stores.pop(kb_id, None)
             # Note: BM25 index is not invalidated here because BM25 only depends
             # on the text corpus (not embedding config), which hasn't changed.
+            self.invalidate_search_cache()
 
             logger.info(f"Updated KB config: {kb_id} (cache invalidated)")
             return kb
@@ -680,12 +722,16 @@ class KnowledgeBaseManager:
     def delete_kb(self, kb_id: str) -> bool:
         """Delete KB: DB record + ChromaDB collection + BM25 index."""
         db = self._db_factory()
+        mutation_started = False
         try:
             kb = db.query(KnowledgeBase).filter(KnowledgeBase.id == kb_id).first()
             if not kb:
                 return False
             if kb.is_builtin:
                 raise ValueError("Cannot delete builtin knowledge base")
+
+            self.invalidate_search_cache()
+            mutation_started = True
 
             # Delete ChromaDB collection
             store = self._get_store(kb)
@@ -714,6 +760,8 @@ class KnowledgeBaseManager:
             logger.info(f"Deleted KB: {kb_id}")
             return True
         finally:
+            if mutation_started:
+                self.invalidate_search_cache()
             db.close()
 
     def _delete_big_chunks_by_kb(self, kb_id: str) -> None:
@@ -742,6 +790,7 @@ class KnowledgeBaseManager:
                 return False
             kb.enabled = enabled
             db.commit()
+            self.invalidate_search_cache()
             logger.info(f"KB {kb_id} enabled={enabled}")
             return True
         finally:
@@ -800,23 +849,27 @@ class KnowledgeBaseManager:
             )
         chunks = unique_chunks
 
-        # Delegate to store's ingest_chunks (handles embeddings check + metadata)
-        ingested = store.ingest_chunks(chunks, doc_id)
+        self.invalidate_search_cache()
+        try:
+            # Delegate to store's ingest_chunks (handles embeddings check + metadata)
+            ingested = store.ingest_chunks(chunks, doc_id)
 
-        # P2-3: Eagerly rebuild BM25 so search doesn't block on rebuild later.
-        # Only rebuild if chunks were actually vectorized (ingested > 0). If
-        # embedding is not configured, BM25 would be empty anyway.
-        if ingested > 0:
-            try:
-                self._rebuild_bm25(kb_id)
-                self._bm25_stale.discard(kb_id)
-            except Exception:
-                # Fallback: mark stale so search rebuilds lazily
-                self._bm25_stale.add(kb_id)
-                logger.warning(f"BM25 eager rebuild failed for KB {kb_id}, will rebuild on next search")
+            # P2-3: Eagerly rebuild BM25 so search doesn't block on rebuild later.
+            # Only rebuild if chunks were actually vectorized (ingested > 0). If
+            # embedding is not configured, BM25 would be empty anyway.
+            if ingested > 0:
+                try:
+                    self._rebuild_bm25(kb_id)
+                    self._bm25_stale.discard(kb_id)
+                except Exception:
+                    # Fallback: mark stale so search rebuilds lazily
+                    self._bm25_stale.add(kb_id)
+                    logger.warning(f"BM25 eager rebuild failed for KB {kb_id}, will rebuild on next search")
 
-        logger.info(f"Ingested {ingested} chunks into KB {kb_id}")
-        return ingested
+            logger.info(f"Ingested {ingested} chunks into KB {kb_id}")
+            return ingested
+        finally:
+            self.invalidate_search_cache()
 
     def get_doc_chunks(self, kb_id: str, doc_id: str) -> list[dict]:
         """Get all chunks for a specific document in a KB."""
@@ -885,21 +938,25 @@ class KnowledgeBaseManager:
             raise ValueError(f"Store not available for KB {kb_id}")
 
         data = export_data.get("data", {})
-        imported = store.import_data(data)
+        self.invalidate_search_cache()
+        try:
+            imported = store.import_data(data)
 
-        # P2-3: Eagerly rebuild BM25 instead of marking stale.
-        if imported > 0:
-            # Invalidate store cache to force reload
-            self._stores.pop(kb_id, None)
-            try:
-                self._rebuild_bm25(kb_id)
-                self._bm25_stale.discard(kb_id)
-            except Exception:
-                self._bm25_stale.add(kb_id)
-                logger.warning(f"BM25 eager rebuild failed for KB {kb_id}, will rebuild on next search")
+            # P2-3: Eagerly rebuild BM25 instead of marking stale.
+            if imported > 0:
+                # Invalidate store cache to force reload
+                self._stores.pop(kb_id, None)
+                try:
+                    self._rebuild_bm25(kb_id)
+                    self._bm25_stale.discard(kb_id)
+                except Exception:
+                    self._bm25_stale.add(kb_id)
+                    logger.warning(f"BM25 eager rebuild failed for KB {kb_id}, will rebuild on next search")
 
-        logger.info(f"Imported {imported} chunks into KB {kb_id}")
-        return imported
+            logger.info(f"Imported {imported} chunks into KB {kb_id}")
+            return imported
+        finally:
+            self.invalidate_search_cache()
 
     # ═══════════════════════════════════════
     # Search

@@ -25,8 +25,9 @@ def evaluate_pending(pending: list[dict], permission_mode: str) -> str:
     """
     from src.agent.core.toolkit.permission_classifier import PermissionClassifier
     from src.agent.exceptions import ToolContext
+    from src.agent.request_context import active_tool_context
     classifier = PermissionClassifier()
-    ctx = ToolContext(permission_mode=permission_mode)
+    ctx = active_tool_context() or ToolContext(permission_mode=permission_mode)
     has_ask = False
     for tc in pending:
         decision = _classify_one_call(classifier, tc, ctx)
@@ -39,7 +40,9 @@ def evaluate_pending(pending: list[dict], permission_mode: str) -> str:
 def _classify_one_call(classifier: Any, tc: dict, ctx: Any) -> str:
     """Classify a single pending tool_call. Unknown tools are denied."""
     from src.agent.core.toolkit.tool_router import _TOOL_REGISTRY
-    spec = _TOOL_REGISTRY.get(tc["name"])
+    from src.agent.request_context import active_tool_context
+    active = active_tool_context()
+    spec = (active.request_tools if active is not None else _TOOL_REGISTRY).get(tc["name"])
     if spec is None:
         logger.warning("permission_unknown_tool tool=%s -> deny", tc["name"])
         return DECISION_DENY
@@ -63,7 +66,9 @@ def _summarize_call(tc: dict) -> dict:
     permission_gate/risk_classifier pair.
     """
     from src.agent.core.toolkit.tool_router import _TOOL_REGISTRY
-    spec = _TOOL_REGISTRY.get(tc["name"])
+    from src.agent.request_context import active_tool_context
+    active = active_tool_context()
+    spec = (active.request_tools if active is not None else _TOOL_REGISTRY).get(tc["name"])
     risk = spec.risk_level.value if spec else "unknown"
     return {
         "name": tc["name"],

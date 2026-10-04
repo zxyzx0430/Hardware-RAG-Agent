@@ -255,30 +255,17 @@ void NVIC_SetPriorityGrouping_raw(uint32_t group) {
 
 ### 2.3 优先级分组完整对照表
 
-设实现位数为 N（如 STM32F4 的 N=4），PRIGROUP 取值 0-7 对应的分组关系：
+对 STM32F4 HAL 的 4 位优先级实现，HAL 宏名表示抢占优先级位数；宏写入 AIRCR 的 PRIGROUP 编码并不等于宏后缀。下表按 ST 的 [STM32F4 HAL 定义](https://raw.githubusercontent.com/STMicroelectronics/stm32f4xx-hal-driver/master/Inc/stm32f4xx_hal_cortex.h)：
 
-| PRIGROUP | 抢占优先级位数 | 子优先级位数 | 抢占级数 | 子优先级数 |
-|----------|--------------|-------------|---------|-----------|
-| 0 | N-0 | 0 | 2^N | 1 |
-| 1 | N-1 | 1 | 2^(N-1) | 2 |
-| 2 | N-2 | 2 | 2^(N-2) | 4 |
-| 3 | N-3 | 3 | 2^(N-3) | 8 |
-| 4 | N-4 | 4 | 2^(N-4) | 16 |
-| 5 | N-5 | 5 | 2^(N-5) | 32 |
-| 6 | N-6 | 6 | 2^(N-6) | 64 |
-| 7 | N-7 | 7 | 2^(N-7) | 128 |
+| HAL 宏 | PRIGROUP | 抢占位数 | 子优先级位数 | 抢占级数 | 子优先级数 |
+|--------|----------|---------|------------|---------|-----------|
+| NVIC_PRIORITYGROUP_0 | 7 | 0 | 4 | 1 | 16 |
+| NVIC_PRIORITYGROUP_1 | 6 | 1 | 3 | 2 | 8 |
+| NVIC_PRIORITYGROUP_2 | 5 | 2 | 2 | 4 | 4 |
+| NVIC_PRIORITYGROUP_3 | 4 | 3 | 1 | 8 | 2 |
+| NVIC_PRIORITYGROUP_4 | 3 | 4 | 0 | 16 | 1 |
 
-对 STM32F4（N=4）：
-
-| PRIGROUP | 抢占位数 | 子优先级位数 | 抢占级数 | 子级数 | HAL 宏 |
-|----------|--------|------------|---------|-------|--------|
-| 3 | 1 | 3 | 2 | 8 | GROUP_0 |
-| 4 | 2 | 2 | 4 | 4 | GROUP_1 |
-| 5 | 3 | 1 | 8 | 2 | GROUP_2 |
-| 6 | 4 | 0 | 16 | 1 | GROUP_3 |
-| 7 | 4 | 0 | 16 | 1 | GROUP_4 |
-
-注意：当 PRIGROUP >= 6 时（对 N=4），子优先级位数为 0，所有位都用于抢占优先级。这就是为什么 `NVIC_PRIORITYGROUP_4`（HAL）等价于 PRIGROUP=3（因为 HAL 宏名中的数字表示抢占位数，而非 PRIGROUP 值）。
+例如，`NVIC_PRIORITYGROUP_4` 写入 PRIGROUP=3（`3 << 8`），提供 4 位抢占优先级和 0 位子优先级；`NVIC_PRIORITYGROUP_0` 写入 PRIGROUP=7（`7 << 8`），提供 0 位抢占优先级和 4 位子优先级。其他 STM32 器件的实现位数及 HAL 版本应以其对应 CMSIS/HAL 定义为准。
 
 ### 2.4 抢占优先级与子优先级的实战选择
 
@@ -5731,6 +5718,5 @@ GCC `__attribute__((interrupt))` 在 Cortex-M 上**不推荐使用**，因为它
 - **附录 Q-U**：异常向量表完整列表、NVIC 寄存器位域表、汇编中断处理模板（PendSV/SVC）、CMSIS API 速查、编译器中断属性对比
 
 扩展后文档覆盖了 PRIGROUP 优先级分组、12 周期中断延迟、尾链（Tail-Chaining）与迟来（Late-Arrival）优化、抢占优先级与子优先级设计等核心概念，并包含大量可直接复用的 C 代码与汇编示例，适合作为嵌入式实时系统中断开发的完整参考手册。
-
 
 

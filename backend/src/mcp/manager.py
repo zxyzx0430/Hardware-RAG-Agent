@@ -1,102 +1,141 @@
-"""MCP Server 进程管理器"""
+"""In-memory lifecycle manager for local MCP stdio servers."""
+
+from __future__ import annotations
+
 import asyncio
 import logging
-from typing import Optional
-from .client import MCPClient
+from typing import TYPE_CHECKING, Any
+
+from .client import MCPClient, MCPConfigError, normalize_server_config
+
+if TYPE_CHECKING:
+    from src.agent.core.toolkit.mcp_tool_adapter import MCPToolSpec
 
 logger = logging.getLogger(__name__)
+CONNECTION_DEADLINE_SECONDS = 60.0
+
+
+class MCPManagerError(MCPConfigError):
+    """Safe manager error identified by a stable machine-readable code."""
+
 
 class MCPServerManager:
-    """管理多个 MCP Server 的生命周期"""
+    """Manage configured child processes without global tool registration."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._servers: dict[str, MCPClient] = {}
-        self._configs: dict[str, dict] = {}
+        self._configs: dict[str, dict[str, Any]] = {}
+        self._lifecycle_locks: dict[str, asyncio.Lock] = {}
 
-    def register_config(self, server_id: str, config: dict):
-        """注册 MCP Server 配置"""
-        self._configs[server_id] = config
+    def register_config(self, server_id: str, config: dict[str, Any]) -> None:
+        normalized = normalize_server_config(config)
+        if server_id != normalized["id"]:
+            raise MCPConfigError()
+        if server_id in self._configs:
+            raise MCPManagerError("duplicate_config")
+        self._configs[server_id] = normalized
 
-    def remove_config(self, server_id: str):
-        """移除 MCP Server 配置"""
-        self._configs.pop(server_id, None)
+    async def remove_config(self, server_id: str) -> bool:
+        if server_id not in self._configs and server_id not in self._servers:
+            return False
+        async with self._lock_for(server_id):
+            client = self._servers.pop(server_id, None)
+            if client is not None:
+                await client.disconnect()
+            return self._configs.pop(server_id, None) is not None
+
+    def has_config(self, server_id: str) -> bool:
+        return server_id in self._configs
 
     async def start(self, server_id: str) -> bool:
-        """启动 MCP Server 并注册工具到 _REGISTRY"""
-        if server_id in self._servers and self._servers[server_id].connected:
-            return True
-
-        config = self._configs.get(server_id)
-        if not config:
-            logger.error(f"MCP Server 配置不存在: {server_id}")
+        """Start one configured server; only explicit calls can create a process."""
+        if server_id not in self._configs:
             return False
+        async with self._lock_for(server_id):
+            config = self._configs.get(server_id)
+            if config is None:
+                return False
+            existing = self._servers.get(server_id)
+            if existing is not None and existing.connected:
+                return True
+            if existing is not None:
+                self._servers.pop(server_id, None)
+                await existing.disconnect()
 
-        client = MCPClient(config)
-        success = await client.connect()
-
-        if success:
+            client = MCPClient(config)
+            try:
+                started = await asyncio.wait_for(client.connect(), timeout=CONNECTION_DEADLINE_SECONDS)
+            except asyncio.CancelledError:
+                await client.disconnect()
+                raise
+            except Exception:
+                started = False
+            if not started or not client.connected:
+                await client.disconnect()
+                logger.warning("MCP server start failed id=%s", server_id)
+                return False
             self._servers[server_id] = client
-            # Adapt MCP tools to ToolSpec and register to new ToolRouter
-            # (spec v2 §4.3 — MCP tools join the unified runtime).
-            self._register_tools(server_id, client.tools)
             return True
 
-        return False
+    async def stop(self, server_id: str) -> None:
+        if server_id not in self._configs and server_id not in self._servers:
+            return
+        async with self._lock_for(server_id):
+            client = self._servers.pop(server_id, None)
+            if client is not None:
+                await client.disconnect()
 
-    async def stop(self, server_id: str):
-        """停止 MCP Server 并从 ToolRouter 注销工具"""
-        client = self._servers.pop(server_id, None)
-        if client:
-            # Unregister from new ToolRouter before tearing down the client
-            # (client.tools is cleared on disconnect, so unregister first).
-            self._unregister_tools(server_id, client.tools)
-            await client.disconnect()
+    async def shutdown(self) -> None:
+        """Stop every managed child for application lifespan shutdown."""
+        for server_id in tuple(self._servers):
+            await self.stop(server_id)
 
-    def _register_tools(self, server_id: str, tools: list) -> None:
-        """Adapt MCP tools to ToolSpec and register to new ToolRouter."""
+    def connected_tool_specs_snapshot(self) -> tuple[MCPToolSpec, ...]:
+        """Return fresh request specs bound to each currently connected client."""
         from src.agent.core.toolkit.mcp_tool_adapter import adapt_mcp_tools
-        from src.agent.core.toolkit.tool_router import register
 
-        for spec in adapt_mcp_tools(server_id, tools):
-            register(spec)
-
-    def _unregister_tools(self, server_id: str, tools: list) -> None:
-        """Unregister a server's MCP tools from new ToolRouter."""
-        from src.agent.core.toolkit.mcp_tool_adapter import mcp_tool_name
-        from src.agent.core.toolkit.tool_router import unregister
-
-        for tool in tools:
-            unregister(mcp_tool_name(server_id, tool.name))
+        specs = []
+        for server_id, client in tuple(self._servers.items()):
+            if client.connected:
+                specs.extend(adapt_mcp_tools(server_id, client, client.tools))
+        return tuple(specs)
 
     async def health_check(self) -> dict[str, str]:
-        """检查所有 MCP Server 的状态"""
-        status = {}
-        for sid, client in self._servers.items():
-            status[sid] = "running" if client.connected else "stopped"
-        for sid in self._configs:
-            if sid not in status:
-                status[sid] = "stopped"
-        return status
+        return {
+            server_id: "running" if client.connected else "stopped"
+            for server_id, client in self._servers.items()
+        } | {
+            server_id: "stopped"
+            for server_id in self._configs
+            if server_id not in self._servers
+        }
 
-    def get_client(self, server_id: str) -> Optional[MCPClient]:
+    def get_client(self, server_id: str) -> MCPClient | None:
         return self._servers.get(server_id)
 
-    def list_servers(self) -> list[dict]:
-        """列出所有 MCP Server 及状态"""
+    def list_servers(self) -> list[dict[str, Any]]:
         result = []
-        for sid, config in self._configs.items():
-            client = self._servers.get(sid)
+        for server_id, config in self._configs.items():
+            client = self._servers.get(server_id)
             result.append({
-                "id": sid,
-                "name": config.get("name", sid),
-                "command": config.get("command", ""),
-                "status": "running" if client and client.connected else "stopped",
-                "tools_count": len(client.tools) if client else 0,
+                "id": server_id,
+                "name": config["name"],
+                "command": config["command"],
+                "status": "running" if client is not None and client.connected else "stopped",
+                "tools_count": len(client.tools) if client is not None and client.connected else 0,
             })
         return result
 
-# 全局单例
-_manager: Optional[MCPServerManager] = None
+    def _lock_for(self, server_id: str) -> asyncio.Lock:
+        lock = self._lifecycle_locks.get(server_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._lifecycle_locks[server_id] = lock
+        return lock
+
+
+_manager: MCPServerManager | None = None
+
 
 def get_mcp_manager() -> MCPServerManager:
     global _manager

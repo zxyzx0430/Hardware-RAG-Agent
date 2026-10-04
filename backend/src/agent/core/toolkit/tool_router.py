@@ -1,4 +1,4 @@
-"""ToolRouter — unified dispatch entry point (NO permission checks).
+"""ToolRouter — unified dispatch entry point with a Skills-mode hard boundary.
 
 Dispatch flow per call:
   1. find tool in registry           -> TOOL_NOT_FOUND envelope on miss
@@ -15,11 +15,10 @@ Dispatch flow per call:
   8. return envelope.model_dump()
 
 Loop detection was removed (v2 suggestion 3: converged to the streaming
-layer in sse_helpers). Permission is checked UPSTREAM by
-PermissionClassifier at the pre-ToolNode stage.
-
-Permission is checked UPSTREAM by PermissionClassifier at the pre-ToolNode
-stage — this router does not gate. ToolSpec._arun delegates here; dispatch
+layer in sse_helpers). General permission is checked UPSTREAM by
+PermissionClassifier at the pre-ToolNode stage. When Skills mode is active,
+this router also enforces the request-local read-only tool allowlist and
+knowledge-base scope before execution. ToolSpec._arun delegates here; dispatch
 calls spec.execute (NOT _arun) so there is no recursion.
 
 Spec: industrial-tool-runtime §ADDED Requirements (ToolRouter).
@@ -52,6 +51,7 @@ ERR_INVALID_ARGS: str = "INVALID_ARGS"
 ERR_TIMEOUT: str = "TIMEOUT"
 ERR_EXEC: str = "EXEC_ERROR"
 ERR_OUTPUT_SCHEMA: str = "OUTPUT_SCHEMA_VIOLATION"
+ERR_SKILLS_READ_ONLY: str = "SKILLS_READ_ONLY_BLOCKED"
 
 SUGGEST_INVALID_ARGS: str = "请检查参数类型与必填字段。"
 SUGGEST_TIMEOUT: str = "请缩小查询范围或拆分任务后重试。"
@@ -110,7 +110,7 @@ class _DispatchState:
 
 
 class ToolRouter:
-    """Unified dispatch entry point. Does NOT check permissions."""
+    """Dispatch tools; HITL permissions stay upstream, Skills limits stay here."""
 
     def __init__(self, audit_recorder: AuditRecorder) -> None:
         self.audit_recorder = audit_recorder
@@ -155,10 +155,27 @@ class ToolRouter:
         spec = tool_spec if tool_spec is not None else _TOOL_REGISTRY.get(tool_name)
         if spec is None:
             return _not_found_envelope(tool_name, call_id, start_ms).model_dump()
+        if ctx.skills_mode != "off" and not _skills_mode_allows(spec, ctx):
+            envelope = _skills_read_only_envelope(spec, call_id, start_ms)
+            self.audit_recorder.record(
+                AuditRecord(call_id, spec, args, envelope, "deny", "skills_read_only", ctx)
+            )
+            return envelope.model_dump()
         state = _DispatchState(call_id, spec, args, ctx, start_ms)
+        external = spec.mcp_info is not None
+        authorization = ctx.mcp_authorization
+        audit_args = {"mcp_arguments": "omitted"} if external else args
+        if external or authorization is not None:
+            granted, source = authorization.dispatch_decision(call_id, spec, args) if authorization is not None else (False, "mcp_confirmation_required")
+            if not granted:
+                envelope = _error_envelope(state, "PERMISSION_DENIED", "This exact tool call is not authorized.", "请确认当前工具和参数，或重新发送请求。")
+                self.audit_recorder.record(AuditRecord(call_id, spec, audit_args, envelope, "deny", source, ctx))
+                return envelope.model_dump()
+            if external or source != "auto_allow":
+                decision, decision_source = "allow", source
         envelope = await self._run_pipeline(state)
         self.audit_recorder.record(
-            AuditRecord(call_id, spec, args, envelope, decision, decision_source, ctx)
+            AuditRecord(call_id, spec, audit_args, envelope, decision, decision_source, ctx)
         )
         return envelope.model_dump()
 
@@ -183,7 +200,8 @@ class ToolRouter:
         """
         timeout = state.spec.timeout_seconds
         last_exc: Exception | None = None
-        for _ in range(state.spec.max_retries + 1):
+        retries = 0 if state.spec.mcp_info is not None else state.spec.max_retries
+        for _ in range(retries + 1):
             try:
                 result = await asyncio.wait_for(
                     state.spec.execute(state.args, state.ctx),
@@ -246,9 +264,15 @@ def _validate_args(state: _DispatchState) -> ToolResultEnvelope | None:
     if schema is None:
         return None
     try:
-        schema(**state.args)
+        if isinstance(schema, dict):
+            from src.mcp.client import compile_input_schema, validate_tool_arguments
+            validate_tool_arguments(compile_input_schema(schema), state.args)
+        else:
+            schema(**state.args)
         return None
     except Exception as exc:  # noqa: BLE001 — surface as INVALID_ARGS envelope
+        if state.spec.mcp_info is not None:
+            return _error_envelope(state, ERR_INVALID_ARGS, "Invalid external tool arguments.", SUGGEST_INVALID_ARGS)
         logger.info("invalid_args tool=%s err=%s", state.spec.name, exc)
         return _error_envelope(state, ERR_INVALID_ARGS, str(exc), SUGGEST_INVALID_ARGS)
 
@@ -261,6 +285,12 @@ def _build_envelope(
     """Wrap execute result or error into a ToolResultEnvelope."""
     if error is not None:
         tag, exc = error
+        if state.spec.mcp_info is not None:
+            from src.mcp.client import MCPCallError
+            if isinstance(exc, MCPCallError):
+                message = str(exc) + ("; execution outcome is unknown" if exc.unknown_result else "")
+                return _error_envelope(state, "MCP_" + exc.code.upper(), message, "请检查 MCP 服务状态；结果不确定时不要自动重试。")
+            return _error_envelope(state, "MCP_EXEC_ERROR", "External tool execution failed; its result may be unknown.", "请检查 MCP 服务状态，不要自动重复执行。")
         return _error_envelope(state, tag, str(exc), _suggestion_for(tag))
     return _success_envelope(state, result or {})
 
@@ -293,7 +323,7 @@ def _error_envelope(
     suggestion: str,
 ) -> ToolResultEnvelope:
     """Build a failure envelope. output is empty so the LLM is not confused."""
-    retryable = error_type in (ERR_TIMEOUT, ERR_EXEC)
+    retryable = state.spec.mcp_info is None and error_type in (ERR_TIMEOUT, ERR_EXEC)
     return ToolResultEnvelope(
         success=False,
         output="",
@@ -371,3 +401,48 @@ def _suggestion_for(tag: str) -> str:
         ERR_NOT_FOUND: SUGGEST_NOT_FOUND,
     }
     return mapping.get(tag, SUGGEST_EXEC)
+
+
+def _skills_mode_allows(spec: ToolSpec, ctx: ToolContext) -> bool:
+    """Enforce request-local Skills allowlist after model/HITL permission checks."""
+    runtime = ctx.skills_runtime
+    if ctx.skills_mode not in {"auto", "manual"} or runtime is None:
+        return False
+    if getattr(runtime, "mode", None) != ctx.skills_mode:
+        return False
+    if spec.name not in ctx.skills_allowed_tools:
+        return False
+    try:
+        if not runtime.allows_tool(spec.name, mcp_info=getattr(spec, "mcp_info", None)):
+            return False
+    except Exception:
+        return False
+    if spec.name in {"search_docs", "list_kb_docs"}:
+        configured_scope = getattr(spec, "_kb_ids", None)
+        configured_scope = tuple(configured_scope) if configured_scope else None
+        request_scope = tuple(ctx.kb_scope) if ctx.kb_scope else None
+        if configured_scope != request_scope:
+            return False
+    return True
+
+
+def _skills_read_only_envelope(
+    spec: ToolSpec, call_id: str, start_ms: int,
+) -> ToolResultEnvelope:
+    """Return a content-free denial envelope for a tool outside Skills mode."""
+    return ToolResultEnvelope(
+        success=False,
+        output="",
+        data=None,
+        error=ErrorDetail(
+            error_type=ERR_SKILLS_READ_ONLY,
+            error_message="Tool is outside the request's read-only Skills scope.",
+            suggestion="Use only enabled Skills and in-scope knowledge-base tools.",
+            retryable=False,
+        ),
+        metadata=ResultMetadata(
+            tool_name=spec.name,
+            duration_ms=_now_ms() - start_ms,
+            call_id=call_id,
+        ),
+    )

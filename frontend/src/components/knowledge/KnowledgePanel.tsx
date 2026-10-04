@@ -83,6 +83,7 @@ export function KnowledgePanel() {
       handleFiles(pendingFiles, method);
       setPendingFiles(null);
     }
+    if (inputRef.current) inputRef.current.value = "";
   };
 
   const handleCancelChunkMethod = () => {
@@ -116,7 +117,7 @@ export function KnowledgePanel() {
         setUploadProgress((prev) => ({ ...prev, [progressKey]: { phase: 'uploading', percent: 0, chunks: 0, abort } }));
         const res = await promise;
         const docId = res.doc_id ?? `kb-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-        const docStatus = (res.status ?? "indexed") as "indexed" | "indexing" | "error";
+        const docStatus = (res.status ?? "indexing") as "indexed" | "indexing" | "error";
         addItem({
           id: docId,
           name: res.filename ?? file.name,
@@ -131,7 +132,7 @@ export function KnowledgePanel() {
           chunk_method_used: res.chunk_method_used ?? effectiveChunkMethod,
         });
         // 上传完成:切换到 indexing 阶段或清理 progress
-        if (res.status === "indexing") {
+        if (docStatus === "indexing") {
           setUploadProgress((prev) => ({ ...prev, [progressKey]: { phase: 'indexing', percent: 100, chunks: res.chunks ?? 0 } }));
           pollIndexingStatus(docId, progressKey);
         } else {

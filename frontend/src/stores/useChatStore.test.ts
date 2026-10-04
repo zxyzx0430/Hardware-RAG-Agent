@@ -3,10 +3,11 @@ import type { ChatSSEEvent } from "../types/api";
 import type { Session } from "../types/session";
 import { saveSessionMessages, saveToStorage } from "../utils/persistence";
 
-const { apiPostMock, apiGetMock, apiSSEPaths } = vi.hoisted(() => ({
+const { apiPostMock, apiGetMock, apiSSEPaths, apiSSEBodies } = vi.hoisted(() => ({
   apiPostMock: vi.fn(),
   apiGetMock: vi.fn(),
   apiSSEPaths: [] as string[],
+  apiSSEBodies: [] as unknown[],
 }));
 
 // 捕获 SSE 回调与 controller，便于测试手动驱动事件流
@@ -17,8 +18,9 @@ let capturedCallbacks: {
 } | null = null;
 
 vi.mock("../api/client", () => ({
-  apiSSE: vi.fn((path, _body, callbacks) => {
+  apiSSE: vi.fn((path, body, callbacks) => {
     apiSSEPaths.push(path);
+    apiSSEBodies.push(body);
     capturedCallbacks = callbacks;
     return Promise.resolve();
   }),
@@ -81,6 +83,7 @@ vi.mock("../stores/useAppStore", () => ({
       addPreviewTab: vi.fn(),
       setQuotedMsg: vi.fn(),
       setActiveSession: vi.fn(),
+      resetWorkbenchOverride: vi.fn(),
     }),
   },
 }));
@@ -91,6 +94,13 @@ async function importStore() {
 }
 
 describe("useChatStore", () => {
+  it("sends the exact pending call ID before clearing the confirmation", async () => {
+    const store = await importStore();
+    store.setState({ activeSessionId: "s1", _lastAgentPayload: { messages: [] }, pendingConfirm: { count: 1, calls: [{ name: "mcp__fixture__echo", args: { text: "synthetic" }, call_id: "exact-call", risk_level: "high" }] } });
+    store.getState().resumeAgent("allow");
+    expect(apiSSEBodies.at(-1)).toMatchObject({ decision: "allow", call_id: "exact-call" });
+    expect(store.getState().pendingConfirm).toBeNull();
+  });
   beforeEach(() => {
     vi.resetModules();
     capturedCallbacks = null;
@@ -98,6 +108,7 @@ describe("useChatStore", () => {
     apiPostMock.mockReset().mockResolvedValue({ success: true, data: {} });
     apiGetMock.mockReset().mockResolvedValue({ messages: [] });
     apiSSEPaths.length = 0;
+    apiSSEBodies.length = 0;
     localStorage.clear();
     vi.setSystemTime(new Date("2026-06-20T12:00:00.000Z"));
   });
@@ -117,6 +128,8 @@ describe("useChatStore", () => {
     });
 
     store.getState().sendMessage("你好");
+    expect(apiSSEBodies[0]).toMatchObject({ skills_mode: "off" });
+    expect((apiSSEBodies[0] as Record<string, unknown>).skill_ids).toBeUndefined();
     expect(store.getState().isStreaming).toBe(true);
     expect(store.getState().streamingSessionId).toBe("s1");
     expect(capturedCallbacks).toBeTruthy();
@@ -176,6 +189,31 @@ describe("useChatStore", () => {
     ));
   });
 
+  it("把手动 Skills 快照放进聊天请求并原样带入 HITL 续跑", async () => {
+    const store = await importStore();
+    store.setState({ messages: [], sessionMessages: {}, activeSessionId: "s1", isStreaming: false });
+
+    store.getState().sendMessage("请检查", undefined, undefined, {
+      mode: "manual",
+      skillIds: ["review", "datasheet", "review", "checklist", "ignored"],
+    });
+    const request = apiSSEBodies[0] as Record<string, unknown>;
+    expect(request.skills_mode).toBe("manual");
+    expect(request.skill_ids).toEqual(["review", "datasheet", "checklist"]);
+    expect(store.getState()._lastAgentPayload).toMatchObject({
+      skills_mode: "manual",
+      skill_ids: ["review", "datasheet", "checklist"],
+    });
+
+    capturedCallbacks!.onEvent({ type: "tool_confirm_required", calls: [], count: 0 });
+    store.getState().resumeAgent("allow");
+    expect(apiSSEPaths).toEqual(["chat", "agent-sandbox/resume"]);
+    expect(apiSSEBodies[1]).toMatchObject({
+      decision: "allow",
+      payload: { skills_mode: "manual", skill_ids: ["review", "datasheet", "checklist"] },
+    });
+  });
+
   it("error 事件触发 stopStreaming 并在消息中追加错误", async () => {
     const store = await importStore();
     store.setState({
@@ -193,6 +231,68 @@ describe("useChatStore", () => {
     expect(store.getState().messages[1].content).toContain("模型调用失败");
     expect(store.getState().streamingContent).toBe("");
     expect(store.getState().currentSseRequest).toBeNull();
+  });
+
+  it("同一流中的 error 后 done(false) 不会把部分回答标为完成", async () => {
+    const store = await importStore();
+    store.setState({ messages: [], sessionMessages: {}, activeSessionId: "s1", isStreaming: false });
+
+    store.getState().sendMessage("部分回答失败");
+    capturedCallbacks!.onEvent({ type: "thinking", content: "正在处理", source: "reasoning" });
+    capturedCallbacks!.onEvent({ type: "text", content: "已输出部分" });
+    capturedCallbacks!.onEvent({ type: "error", code: "INTERNAL_ERROR", message: "生成失败" });
+    capturedCallbacks!.onEvent({ type: "done", success: false });
+    capturedCallbacks!.onDone!();
+
+    expect(store.getState().messages[1].content).toContain("已输出部分");
+    expect(store.getState().messages[1].content).toContain("生成失败");
+    expect(store.getState().messages[1].activity?.status).toBe("error");
+    expect(store.getState().isStreaming).toBe(false);
+  });
+
+  it("done(false) 单独结束流时保留部分回答并标记失败", async () => {
+    const store = await importStore();
+    store.setState({ messages: [], sessionMessages: {}, activeSessionId: "s1", isStreaming: false });
+
+    store.getState().sendMessage("无终态错误事件");
+    capturedCallbacks!.onEvent({ type: "thinking", content: "正在处理", source: "reasoning" });
+    capturedCallbacks!.onEvent({ type: "text", content: "仍需保留" });
+    capturedCallbacks!.onEvent({ type: "done", success: false });
+    capturedCallbacks!.onDone!();
+
+    expect(store.getState().messages[1].content).toContain("仍需保留");
+    expect(store.getState().messages[1].content).toContain("回答未能完成");
+    expect(store.getState().messages[1].activity?.status).toBe("error");
+    expect(store.getState().isStreaming).toBe(false);
+  });
+
+  it("HITL 确认后的 done 保留待确认 activity 和续跑快照", async () => {
+    const store = await importStore();
+    store.setState({ messages: [], sessionMessages: {}, activeSessionId: "s1", isStreaming: false });
+
+    store.getState().sendMessage("需授权的操作");
+    capturedCallbacks!.onEvent({
+      type: "tool_call", call_id: "confirm-me", tool: "write_file", args: { path: "out.txt" },
+    });
+    capturedCallbacks!.onEvent({
+      type: "tool_confirm_required",
+      calls: [{ name: "write_file", args: { path: "out.txt" }, call_id: "confirm-me", risk_level: "high" }],
+      count: 1,
+    });
+    capturedCallbacks!.onEvent({
+      type: "done", success: true, completed: false, awaiting_confirmation: true,
+    } as ChatSSEEvent);
+    capturedCallbacks!.onDone!();
+
+    expect(store.getState().isStreaming).toBe(false);
+    expect(store.getState().messages[1].activity?.status).toBe("running");
+    expect(store.getState().messages[1].activity?.steps).toEqual(
+      expect.arrayContaining([expect.objectContaining({ call_id: "confirm-me", status: "pending" })]),
+    );
+    expect(store.getState().pendingConfirm?.calls[0]?.call_id).toBe("confirm-me");
+    expect(store.getState()._lastAgentPayload?.messages).toEqual(
+      expect.arrayContaining([expect.objectContaining({ content: "需授权的操作" })]),
+    );
   });
 
   it("聊天连接超时时停止生成并保留已收到的回答", async () => {
@@ -518,6 +618,132 @@ describe("useChatStore", () => {
     const messageCalls = apiPostMock.mock.calls.filter((call) => call[0] === "sessions/s1/messages");
     expect((messageCalls[0][1] as Record<string, unknown>).id).toBe(userMessage.id);
     expect((messageCalls[1][1] as Record<string, unknown>).id).toBe(assistantMessage.id);
+    expect(apiSSEPaths).toEqual(["agent-sandbox/resume"]);
+  });
+
+  it("resume error 后即使同流 done(true) 也保留错误且不把待执行步骤标为完成", async () => {
+    const userMessage = { id: "user-resume-terminal-error", role: "user" as const, content: "继续", timestamp: 1 };
+    const assistantMessage = {
+      id: "assistant-resume-terminal-error",
+      role: "assistant" as const,
+      content: "续跑前",
+      timestamp: 2,
+      activity: {
+        durationMs: 0,
+        status: "running" as const,
+        steps: [{ type: "tool" as const, id: "pending-tool", name: "write_file", status: "pending" as const }],
+      },
+    };
+    const store = await importStore();
+    store.setState({
+      messages: [userMessage, assistantMessage],
+      sessionMessages: { s1: [userMessage, assistantMessage] },
+      activeSessionId: "s1",
+      streamingSessionId: "s1",
+      isStreaming: true,
+      _lastAgentPayload: { messages: [] },
+    });
+
+    store.getState().resumeAgent("allow");
+    capturedCallbacks!.onEvent({ type: "text", content: "部分续跑" });
+    capturedCallbacks!.onEvent({ type: "error", code: "AGENT_RESUME_FAILED", message: "续跑失败" });
+    capturedCallbacks!.onEvent({ type: "done", success: true, completed: true });
+    capturedCallbacks!.onDone!();
+
+    expect(store.getState().isStreaming).toBe(false);
+    expect(store.getState().streamingError).toMatchObject({ code: "AGENT_RESUME_FAILED", message: "续跑失败" });
+    expect(store.getState().messages[1].content).toContain("续跑失败");
+    expect(store.getState().messages[1].activity?.status).toBe("error");
+    expect(store.getState().messages[1].activity?.steps[0].status).toBe("error");
+  });
+
+  it("resume done(false) 单独到达时也作为失败终态保留已有回答", async () => {
+    const userMessage = { id: "user-resume-done-false", role: "user" as const, content: "继续", timestamp: 1 };
+    const assistantMessage = { id: "assistant-resume-done-false", role: "assistant" as const, content: "恢复前" , timestamp: 2 };
+    const store = await importStore();
+    store.setState({
+      messages: [userMessage, assistantMessage],
+      sessionMessages: { s1: [userMessage, assistantMessage] },
+      activeSessionId: "s1",
+      streamingSessionId: "s1",
+      isStreaming: true,
+      _lastAgentPayload: { messages: [] },
+    });
+
+    store.getState().resumeAgent("deny");
+    capturedCallbacks!.onEvent({ type: "text", content: "部分续跑回答" });
+    capturedCallbacks!.onEvent({ type: "done", success: false, completed: false });
+    capturedCallbacks!.onDone!();
+
+    expect(store.getState().messages[1].content).toContain("部分续跑回答");
+    expect(store.getState().messages[1].activity?.status).toBe("error");
+    expect(store.getState().streamingError?.message).toContain("未能完成");
+    expect(store.getState().isStreaming).toBe(false);
+  });
+
+  it("resume 二次确认的 done 保留 payload、pendingConfirm 和未完成工具步骤", async () => {
+    const userMessage = { id: "user-resume-confirm-again", role: "user" as const, content: "继续确认", timestamp: 1 };
+    const assistantMessage = { id: "assistant-resume-confirm-again", role: "assistant" as const, content: "确认前", timestamp: 2 };
+    const payload = { messages: [] };
+    const store = await importStore();
+    store.setState({
+      messages: [userMessage, assistantMessage],
+      sessionMessages: { s1: [userMessage, assistantMessage] },
+      activeSessionId: "s1",
+      streamingSessionId: "s1",
+      isStreaming: true,
+      _lastAgentPayload: payload,
+    });
+
+    store.getState().resumeAgent("allow");
+    capturedCallbacks!.onEvent({
+      type: "tool_call", call_id: "second-confirm", tool: "write_file", args: { path: "out.txt" },
+    });
+    capturedCallbacks!.onEvent({
+      type: "tool_confirm_required",
+      calls: [{ name: "write_file", args: { path: "out.txt" }, call_id: "second-confirm", risk_level: "high" }],
+      count: 1,
+    });
+    capturedCallbacks!.onEvent({
+      type: "done", success: true, completed: false, awaiting_confirmation: true,
+    });
+    capturedCallbacks!.onDone!();
+
+    expect(store.getState().isStreaming).toBe(false);
+    expect(store.getState()._lastAgentPayload).toBe(payload);
+    expect(store.getState().pendingConfirm?.calls[0]?.call_id).toBe("second-confirm");
+    expect(store.getState().messages[1].activity?.status).toBe("running");
+    expect(store.getState().messages[1].activity?.steps).toEqual(
+      expect.arrayContaining([expect.objectContaining({ call_id: "second-confirm", status: "pending" })]),
+    );
+  });
+
+  it("resume stop 的既有 user-stopped 终态不报异常并清理续跑状态", async () => {
+    const userMessage = { id: "user-resume-stop", role: "user" as const, content: "停止", timestamp: 1 };
+    const assistantMessage = { id: "assistant-resume-stop", role: "assistant" as const, content: "停止前的回答", timestamp: 2 };
+    const store = await importStore();
+    store.setState({
+      messages: [userMessage, assistantMessage],
+      sessionMessages: { s1: [userMessage, assistantMessage] },
+      activeSessionId: "s1",
+      streamingSessionId: "s1",
+      isStreaming: false,
+      pendingConfirm: { count: 1, calls: [{ name: "write_file", args: {}, call_id: "stop-call", risk_level: "high" }] },
+      _lastAgentPayload: { messages: [{ role: "user", content: "停止" }] },
+    });
+
+    store.getState().resumeAgent("stop");
+    capturedCallbacks!.onEvent({
+      type: "done", success: false, reason: "user stopped",
+    } as ChatSSEEvent);
+    capturedCallbacks!.onDone!();
+
+    expect(store.getState().messages[1].content).toBe("停止前的回答");
+    expect(store.getState().messages[1].activity?.status).toBe("done");
+    expect(store.getState().streamingError).toBeNull();
+    expect(store.getState().pendingConfirm).toBeNull();
+    expect(store.getState()._lastAgentPayload).toBeNull();
+    expect(store.getState().isStreaming).toBe(false);
     expect(apiSSEPaths).toEqual(["agent-sandbox/resume"]);
   });
 

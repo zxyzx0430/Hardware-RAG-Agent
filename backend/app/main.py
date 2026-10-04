@@ -42,6 +42,7 @@ from app.api.skill_routes import router as skill_router
 from app.api.explorer_routes import router as explorer_router
 from prometheus_client import Counter, Histogram, make_asgi_app
 from src.config.settings import settings
+from src.config.local_network import validate_local_bind_host
 from app.db.database import init_db
 
 # 请求体大小限制（默认 20MB，可通过环境变量 MAX_BODY_SIZE 覆盖）
@@ -411,6 +412,12 @@ def create_app() -> FastAPI:
         # 4. Start hourly temp file cleanup (>24h build tmp + sandbox)
         asyncio.create_task(_periodic_cleanup())
 
+    @app.on_event("shutdown")
+    async def _shutdown_mcp_servers():
+        """Terminate only child processes explicitly started by the MCP manager."""
+        from src.mcp.manager import get_mcp_manager
+        await get_mcp_manager().shutdown()
+
     @app.get("/")
     async def root():
         return {"status": "ok", "message": "Hardware RAG Agent API", "version": "0.2.0"}
@@ -426,7 +433,7 @@ app = create_app()
 
 
 def main():
-    host = settings.host
+    host = validate_local_bind_host(settings.host)
     port = settings.port
     _LOGGER.info("启动 Hardware RAG Agent API: http://%s:%s", host, port)
     _LOGGER.info("API 文档: http://%s:%s/docs", host, port)

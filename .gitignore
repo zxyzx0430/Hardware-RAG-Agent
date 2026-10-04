@@ -5,6 +5,10 @@ __pycache__/
 *.so
 .Python
 .venv/
+.venv-eval/
+# Local credentials are never public fixtures.
+.env
+.env.local
 .pytest_cache/
 
 # Build

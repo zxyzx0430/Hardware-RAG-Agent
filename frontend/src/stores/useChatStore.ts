@@ -49,7 +49,7 @@
 // 前置条件：补齐 useChatStore 单元测试（streaming / resume / persist 三条主路径）后再动手
 import { create } from "zustand";
 import type { Message, SourceRef, ActivityStep, Session, ContentPart, TodoItem } from "../types/session";
-import type { ChatSSEEvent, Attachment, BackendMessage } from "../types/api";
+import type { ChatRequest, ChatSSEEvent, Attachment, BackendMessage } from "../types/api";
 import { loadFromStorage, saveToStorage, saveSessionMessages, loadSessionMessages, removeSessionMessages, migrateMessagesToShards } from "../utils/persistence";
 import { post, on } from "../utils/broadcast";
 import { useAppStore } from "./useAppStore";
@@ -128,7 +128,7 @@ interface ChatState {
   /** HITL pending confirm: when set, ConfirmDialog shows (v2-T4) */
   pendingConfirm: PendingConfirm | null;
   /** Last agent request body, cached for resume API (v2-T4) */
-  _lastAgentPayload: Record<string, unknown> | null;
+  _lastAgentPayload: ChatRequest | null;
   /** Resume agent after HITL decision (allow/deny/stop) */
   resumeAgent: (decision: "allow" | "deny" | "stop") => void;
   /** Clear pending confirm without resuming (e.g. dialog dismissed) (v2-T4) */
@@ -146,7 +146,7 @@ interface ChatState {
   /** 删除会话时清理对应来源查看器状态 */
   cleanupSessionSourceState: (sessionId: string) => void;
 
-  sendMessage: (content: string, attachments?: Attachment[], quoted?: Message) => void;
+  sendMessage: (content: string, attachments?: Attachment[], quoted?: Message, skills?: ChatSkillsRequest) => void;
   stopStreaming: (errorMessage?: string) => void;
   retryMessage: (msgId: string) => void;
   editAndResend: (msgId: string, newContent: string) => void;
@@ -178,6 +178,11 @@ interface PendingConfirm {
     risk_level: "low" | "medium" | "high";
   }>;
   count: number;
+}
+
+export interface ChatSkillsRequest {
+  mode: NonNullable<ChatRequest["skills_mode"]>;
+  skillIds: string[];
 }
 
 function getLog() {
@@ -473,7 +478,7 @@ export const useChatStore = create<ChatState>((set, get) => {
       return;
     }
     if (evt.type === "error" && get().streamingSessionId === sid) {
-      set({ streamingError: { code: "ERROR", message: evt.message, detail: "" } });
+      set({ streamingError: { code: evt.code ?? "ERROR", message: evt.message, detail: evt.detail ?? "" } });
     }
   }
 
@@ -602,13 +607,18 @@ export const useChatStore = create<ChatState>((set, get) => {
   /** Finalize resume stream — attach activity to last assistant message.
    *  Content/sources already updated in real-time by _appendResumeText/_appendResumeSource
    *  (aligns with main stream onDone, which does NOT re-merge streamingContent). */
-  function _finalizeResume(sid: string, resumeSteps: ActivityStep[], errorMessage?: string): void {
+  function _finalizeResume(
+    sid: string,
+    resumeSteps: ActivityStep[],
+    outcome: "success" | "error" | "awaiting_confirmation" | "stopped" = "success",
+    errorMessage?: string,
+  ): void {
     set((s) => {
       const isActive = s.activeSessionId === sid;
       const msgs = [...(isActive ? s.messages : (s.sessionMessages[sid] || []))];
       const last = msgs[msgs.length - 1];
       if (last?.role === "assistant") {
-        const content = errorMessage
+        const content = outcome === "error"
           ? (typeof last.content === "string"
               ? `${last.content || ""}${last.content ? "\n\n" : ""}❌ ${errorMessage}`
               : (() => {
@@ -619,12 +629,32 @@ export const useChatStore = create<ChatState>((set, get) => {
                   return _mergeTextIntoParts(last.content, `${existingText}${existingText ? "\n\n" : ""}❌ ${errorMessage}`);
                 })())
           : last.content;
+        const existingSteps = last.activity?.steps || [];
+        const steps = resumeSteps.length > 0 ? resumeSteps : existingSteps;
+        const shouldUpdateActivity = resumeSteps.length > 0 || outcome !== "success";
+        const finalSteps = outcome === "awaiting_confirmation"
+          ? [...steps]
+          : outcome === "error"
+            ? steps.map((step) => step.status === "pending"
+                ? {
+                    ...step,
+                    status: "error" as const,
+                    duration: step.startTime ? Date.now() - step.startTime : step.duration,
+                  }
+                : step)
+            : _finalizePendingSteps(steps);
         msgs[msgs.length - 1] = {
           ...last,
-          content,
-          activity: resumeSteps.length > 0
-            ? { durationMs: 0, steps: _finalizePendingSteps(resumeSteps), status: errorMessage ? "error" as const : "done" as const }
-            : last.activity,
+          ...(outcome === "error" ? { content } : {}),
+          ...(shouldUpdateActivity
+            ? {
+                activity: {
+                  durationMs: 0,
+                  steps: finalSteps,
+                  status: outcome === "error" ? "error" as const : outcome === "awaiting_confirmation" ? "running" as const : "done" as const,
+                },
+              }
+            : {}),
         };
       }
       const newSM = { ...s.sessionMessages, [sid]: msgs };
@@ -648,8 +678,10 @@ export const useChatStore = create<ChatState>((set, get) => {
           streamingSources: [],
           streamingTodos: [],
           currentSseRequest: null,
-          _lastAgentPayload: null,
-          streamingError: errorMessage ? { code: "ERROR", message: errorMessage, detail: "" } : null,
+          _lastAgentPayload: outcome === "awaiting_confirmation" ? s._lastAgentPayload : null,
+          streamingError: outcome === "error"
+            ? (s.streamingError ?? { code: "ERROR", message: errorMessage || "Agent 恢复未能完成", detail: "" })
+            : outcome === "success" || outcome === "stopped" ? null : s.streamingError,
         } : {}),
       };
     });
@@ -777,6 +809,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 
   resumeAgent: (decision) => {
     const payload = get()._lastAgentPayload;
+    const callId = get().pendingConfirm?.calls[0]?.call_id;
     if (!payload) {
       getLog()("warn", "chat", "resumeAgent: no cached payload, ignoring");
       useToastStore.getState().showWarning("没有可继续的 Agent 会话");
@@ -797,13 +830,45 @@ export const useChatStore = create<ChatState>((set, get) => {
     });
     const controller = new AbortController();
     const resumeSteps: ActivityStep[] = [];
+    let resumeOutcome: "running" | "error" | "awaiting_confirmation" | "success" | "stopped" = "running";
+    let resumeErrorMessage: string | undefined;
     set({ currentSseRequest: controller });
-    apiSSE("agent-sandbox/resume", { payload, decision }, {
-      onEvent: (evt) => _handleResumeEvent(evt as ChatSSEEvent, sid, resumeSteps),
-      onDone: () => _finalizeResume(sid, resumeSteps),
+    apiSSE("agent-sandbox/resume", { payload, decision, ...(callId ? { call_id: callId } : {}) }, {
+      onEvent: (event) => {
+        const evt = event as ChatSSEEvent;
+        if (evt.type === "error") {
+          resumeOutcome = "error";
+          resumeErrorMessage = evt.message;
+        } else if (evt.type === "tool_confirm_required") {
+          if (resumeOutcome !== "error") resumeOutcome = "awaiting_confirmation";
+        } else if (evt.type === "done" && resumeOutcome !== "error") {
+          if (
+            decision === "stop" && evt.success === false &&
+            (evt as typeof evt & { reason?: string }).reason === "user stopped"
+          ) {
+            resumeOutcome = "stopped";
+          } else if (evt.success === false && !evt.awaiting_confirmation) {
+            resumeOutcome = "error";
+            resumeErrorMessage = "Agent 恢复未能完成";
+          } else if (evt.awaiting_confirmation || evt.completed === false) {
+            resumeOutcome = "awaiting_confirmation";
+          } else if (resumeOutcome !== "awaiting_confirmation") {
+            resumeOutcome = "success";
+          }
+        }
+        _handleResumeEvent(evt, sid, resumeSteps);
+      },
+      onDone: () => _finalizeResume(
+        sid,
+        resumeSteps,
+        resumeOutcome === "running" ? "success" : resumeOutcome,
+        resumeErrorMessage,
+      ),
       onError: (err) => {
+        resumeOutcome = "error";
+        resumeErrorMessage = err.message;
         getLog()("error", "chat", `Agent 恢复流错误: ${err.message}`);
-        _finalizeResume(sid, resumeSteps, err.message);
+        _finalizeResume(sid, resumeSteps, "error", err.message);
       },
     }, controller);
   },
@@ -1099,11 +1164,20 @@ export const useChatStore = create<ChatState>((set, get) => {
     void get().fetchMessages(id);
   },
 
-  sendMessage: async (content, attachments, quoted) => {
+  sendMessage: async (content, attachments, quoted, skills) => {
     const { messages, isStreaming, activeSessionId, backgroundSseRequests } = get();
     // 允许只有附件没有文字（如只发图片）
     if (isStreaming) {
       useToastStore.getState().showWarning("正在生成中，请先停止当前回答");
+      return;
+    }
+    if (!content.trim() && (!attachments || attachments.length === 0)) return;
+    const skillsMode = skills?.mode ?? "off";
+    const skillIds = skillsMode === "manual"
+      ? [...new Set((skills?.skillIds ?? []).filter((id) => typeof id === "string" && id))].slice(0, 3)
+      : [];
+    if (skillsMode === "manual" && skillIds.length === 0) {
+      useToastStore.getState().showWarning("手动 Skills 模式至少需要一个技能");
       return;
     }
     // SubTask 8.4: abort 后台 SSE（避免两个流并发导致消息损坏）
@@ -1115,7 +1189,6 @@ export const useChatStore = create<ChatState>((set, get) => {
       set({ backgroundSseRequests: newBg });
       getLog()("warn", "chat", `会话 ${activeSessionId} 有后台 SSE，已中止以避免并发`);
     }
-    if (!content.trim() && (!attachments || attachments.length === 0)) return;
     const imgCount = attachments?.filter((a) => a.type.startsWith("image/")).length ?? 0;
     console.info('[ChatStore] sendMessage session=%s prompt_len=%d', activeSessionId, content.length);
     getLog()("info", "chat", `发送消息: ${content.slice(0, 50) || "(仅附件)"}... attachments=${attachments?.length ?? 0} images=${imgCount}`);
@@ -1191,7 +1264,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     const quotedContext = quoted
       ? [{ role: "system" as const, content: `用户引用了之前的对话内容：\n> ${typeof quoted.content === "string" ? quoted.content : ""}` }]
       : [];
-    const requestBody = {
+    const requestBody: ChatRequest = {
       messages: [...history, ...quotedContext, newMsg],
       top_k: topK,
       relevance_threshold: relevanceThreshold > 0 ? relevanceThreshold / 100 : 0,
@@ -1210,6 +1283,8 @@ export const useChatStore = create<ChatState>((set, get) => {
       session_id: activeSessionId || undefined,
       // Agent mode (v1-T6): enable LangGraph ReAct Agent by default
       use_agent: true,
+      skills_mode: skillsMode,
+      ...(skillsMode === "manual" ? { skill_ids: skillIds } : {}),
       permission_mode: permissionMode,
       tool_keys: {
         tavily: webSearchConfig.apiKey || "",
@@ -1228,7 +1303,9 @@ export const useChatStore = create<ChatState>((set, get) => {
     // ★ 关键：捕获发起请求时的 sessionId，回调中始终使用此 ID
     const requestSessionId = activeSessionId;
     // v2-T4: cache payload for the resume API (HITL confirm flow)
-    set({ _lastAgentPayload: requestBody as Record<string, unknown> });
+    set({ _lastAgentPayload: requestBody });
+    let terminalOutcome: "running" | "error" | "awaiting_confirmation" | "success" = "running";
+    let terminalErrorMessage = "回答未能完成";
 
     const controller = new AbortController();
     set({ currentSseRequest: controller });
@@ -1236,6 +1313,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     apiSSE("chat", requestBody, {
       onEvent: (event) => {
         if (event.type === "error") {
+          terminalOutcome = "error";
           const errPayload = event as { type: "error"; code?: string; message: string; detail?: string };
           const code = errPayload.code ?? "UNKNOWN";
           getLog()("error", "chat", `SSE 错误: ${errPayload.message}`);
@@ -1244,6 +1322,7 @@ export const useChatStore = create<ChatState>((set, get) => {
           const friendlyMessage = code === "MODEL_NOT_FOUND" && !errPayload.message
             ? "模型不存在，请在设置中检查模型名"
             : (errPayload.message ?? "未知错误");
+          terminalErrorMessage = friendlyMessage;
           set({
             streamingError: {
               code,
@@ -1253,6 +1332,9 @@ export const useChatStore = create<ChatState>((set, get) => {
           });
           get().stopStreaming(friendlyMessage);
           return;
+        }
+        if (event.type === "tool_confirm_required" && terminalOutcome !== "error") {
+          terminalOutcome = "awaiting_confirmation";
         }
         const sse = event as ChatSSEEvent;
         // ★ 始终写入发起请求时的会话，而非当前活跃会话
@@ -1559,6 +1641,18 @@ export const useChatStore = create<ChatState>((set, get) => {
             }
 
             case "done": {
+              if (terminalOutcome !== "error") {
+                if (sse.success === false) {
+                  terminalOutcome = "error";
+                } else if (sse.awaiting_confirmation || sse.completed === false) {
+                  terminalOutcome = "awaiting_confirmation";
+                } else {
+                  terminalOutcome = "success";
+                }
+                if (terminalOutcome === "error") {
+                  terminalErrorMessage = "回答未能完成";
+                }
+              }
               if (!("usage" in sse)) return { isCompressing: false };
               const usage = sse.usage;
               if (usage) {
@@ -1596,11 +1690,32 @@ export const useChatStore = create<ChatState>((set, get) => {
         });
       },
       onDone: () => {
+        if (terminalOutcome === "error") {
+          if (!get().streamingError) {
+            set({
+              streamingError: {
+                code: "INTERNAL_ERROR",
+                message: terminalErrorMessage,
+                detail: "",
+              },
+            });
+          }
+          if (get().isStreaming || get().streamingSessionId || get().currentSseRequest) {
+            get().stopStreaming(terminalErrorMessage);
+          }
+          return;
+        }
+
+        const awaitingConfirmation = terminalOutcome === "awaiting_confirmation";
         const durationMs = Date.now() - startTime;
         const usage = get()._pendingUsage;
         const finalMsgId = get().messages[get().messages.length - 1]?.id ?? '';
         console.info('[ChatStore] stream_done session=%s msg_id=%s', requestSessionId, finalMsgId);
-        getLog()("ok", "chat", `回答完成 (${(durationMs / 1000).toFixed(1)}s)${usage ? ` tokens=${usage.totalTokens}` : ''}`);
+        if (awaitingConfirmation) {
+          getLog()("info", "chat", "Agent 等待工具操作确认");
+        } else {
+          getLog()("ok", "chat", `回答完成 (${(durationMs / 1000).toFixed(1)}s)${usage ? ` tokens=${usage.totalTokens}` : ''}`);
+        }
 
         // 提前计算 metaUpdate 参数；updateSessionMeta 延迟到 persistLastTurn 完成后执行，
         // 避免 updateSessionMeta 触发 AppRoot useEffect → fetchMessages 在 persistLastTurn
@@ -1631,9 +1746,18 @@ export const useChatStore = create<ChatState>((set, get) => {
             }
             // FIX-3.1: 修复 pending steps 耗时无限累计（活跃用 streamingSteps，后台用 m.activity.steps）
             const baseActivity = isActive && s.streamingSteps.length > 0
-              ? { durationMs, steps: _finalizePendingSteps(s.streamingSteps), status: "done" as const }
+              ? {
+                  durationMs,
+                  steps: awaitingConfirmation ? s.streamingSteps : _finalizePendingSteps(s.streamingSteps),
+                  status: awaitingConfirmation ? "running" as const : "done" as const,
+                }
               : (!isActive && m.activity
-                  ? { ...m.activity, durationMs, steps: _finalizePendingSteps(m.activity.steps || []), status: "done" as const }
+                  ? {
+                      ...m.activity,
+                      durationMs,
+                      steps: awaitingConfirmation ? (m.activity.steps || []) : _finalizePendingSteps(m.activity.steps || []),
+                      status: awaitingConfirmation ? "running" as const : "done" as const,
+                    }
                   : null);
             return {
               ...m,
@@ -1720,6 +1844,8 @@ export const useChatStore = create<ChatState>((set, get) => {
         });
       },
       onError: (err) => {
+        terminalOutcome = "error";
+        terminalErrorMessage = err.message;
         console.warn('[ChatStore] stream_error session=%s error=%s', requestSessionId, err.message);
         getLog()("error", "chat", `SSE 连接错误: ${err.message}`);
         // SubTask 8.5: 清理 backgroundSseRequests 对应条目（后台流错误也要清理）

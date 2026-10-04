@@ -26,6 +26,8 @@ from langchain_core.tools import BaseTool
 from src.agent.prompts import (
     FUNCTION_CALLING_MODELS,
     MAX_RECURSION,
+    append_long_term_memory,
+    append_skills_context,
     build_system_prompt,
 )
 from src.llm.client import LLMClient
@@ -74,6 +76,10 @@ class AgentConfig:
     temperature: float = 0.7
     max_tokens: int = 4096
     enable_hitl: bool = False
+    long_term_memory: str = ""
+    skills_mode: str = "off"
+    skills_catalog: list[dict] = field(default_factory=list)
+    skills_context: list[dict] = field(default_factory=list)
 
 
 # ═══════════════════════════════════════════
@@ -108,7 +114,12 @@ async def create_hardware_agent_from_config(config: AgentConfig) -> Any:
         agent = create_agent(
             model=llm,
             tools=config.tools,
-            system_prompt=build_system_prompt(),
+            system_prompt=append_skills_context(
+                append_long_term_memory(build_system_prompt(), config.long_term_memory),
+                config.skills_mode,
+                catalog=config.skills_catalog,
+                manual_skills=config.skills_context,
+            ),
             middleware=(_TOKEN_MIDDLEWARE,),
             context_schema=ToolContext,
             checkpointer=await _get_checkpointer(),
@@ -136,6 +147,10 @@ async def create_hardware_agent(
     temperature: float = 0.7,
     max_tokens: int = 4096,
     enable_hitl: bool = False,
+    long_term_memory: str = "",
+    skills_mode: str = "off",
+    skills_catalog: list[dict] | None = None,
+    skills_context: list[dict] | None = None,
 ) -> Any:
     """Backward-compat shim around create_hardware_agent_from_config (P2-I-1).
 
@@ -146,6 +161,10 @@ async def create_hardware_agent(
     config = AgentConfig(
         model=model, api_key=api_key, base_url=base_url, tools=tools,
         temperature=temperature, max_tokens=max_tokens, enable_hitl=enable_hitl,
+        long_term_memory=long_term_memory,
+        skills_mode=skills_mode,
+        skills_catalog=skills_catalog or [],
+        skills_context=skills_context or [],
     )
     return await create_hardware_agent_from_config(config)
 
@@ -323,7 +342,7 @@ def _build_llm(
 # Tool list assembly (per-request)
 # ═══════════════════════════════════════════
 
-def build_tool_specs(payload: Any) -> list[BaseTool]:
+def build_tool_specs(payload: Any, *, skills_runtime: Any = None, mcp_tools: tuple = (), tool_context: ToolContext | None = None) -> list[BaseTool]:
     """Instantiate request-scoped tools, inject ctx, and keep them out of the registry.
 
     Creates fresh tool instances every call so concurrent requests never share
@@ -340,8 +359,35 @@ def build_tool_specs(payload: Any) -> list[BaseTool]:
             relevance_threshold, tool_keys.tavily, permission_mode, session_id.
     """
     ensure_default_tools_registered()
-    ctx = _build_tool_ctx(payload)
+    skills_mode = getattr(payload, "skills_mode", "off") or "off"
+    if skills_mode == "off":
+        if skills_runtime is not None and getattr(skills_runtime, "mode", "off") != "off":
+            raise ValueError("Skills runtime does not match request mode")
+    elif skills_runtime is None or getattr(skills_runtime, "mode", None) != skills_mode:
+        raise ValueError("Skills mode requires its matching request runtime")
+    ctx = tool_context or _build_tool_ctx(payload, skills_runtime)
     tool_list = _assemble_all_tools(payload)
+    if skills_mode == "off":
+        existing_names = {tool.name for tool in tool_list}
+        if any(tool.name in existing_names or tool.mcp_info is None for tool in mcp_tools):
+            raise ValueError("Invalid external tool snapshot")
+        tool_list.extend(_filter_disabled_tools(list(mcp_tools)))
+    if skills_runtime is not None and skills_mode != "off":
+        from src.agent.skill_runtime import LoadSkillTool, ReadSkillResourceTool
+        tool_list = [
+            tool for tool in tool_list
+            if skills_runtime.allows_tool(tool.name, mcp_info=getattr(tool, "mcp_info", None))
+        ]
+        tool_list.extend([
+            LoadSkillTool(skills_runtime), ReadSkillResourceTool(skills_runtime),
+        ])
+        tool_list = _filter_disabled_tools(tool_list)
+        required_skill_tools = {"load_skill", "read_skill_resource"}
+        missing_skill_tools = required_skill_tools - {tool.name for tool in tool_list}
+        if missing_skill_tools:
+            raise ValueError("Required Skills tools are disabled")
+    ctx.skills_allowed_tools = frozenset(tool.name for tool in tool_list)
+    ctx.request_tools = {tool.name: tool for tool in tool_list}
     _inject_ctx(tool_list, ctx)
     logger.info(
         "build_tool_specs done count=%s names=%s",
@@ -548,12 +594,21 @@ def _inject_ctx_and_register(tools: list[BaseTool], ctx: Any, register: Any) -> 
         register(tool)
 
 
-def _build_tool_ctx(payload: Any) -> ToolContext:
+def _build_tool_ctx(payload: Any, skills_runtime: Any = None) -> ToolContext:
     """Build ToolContext from payload's permission_mode + session_id."""
     from src.agent.exceptions import ToolContext
     mode = getattr(payload, "permission_mode", "default") or "default"
     session_id = getattr(payload, "session_id", "default") or "default"
-    return ToolContext(permission_mode=mode, session_id=session_id)
+    kb_ids = getattr(payload, "kb_ids", None)
+    kb_scope = tuple(kb_ids) if kb_ids else None
+    skills_mode = getattr(payload, "skills_mode", "off") or "off"
+    return ToolContext(
+        permission_mode=mode,
+        session_id=session_id,
+        skills_mode=skills_mode,
+        skills_runtime=skills_runtime,
+        kb_scope=kb_scope,
+    )
 
 
 def _build_local_tools() -> list[BaseTool]:

@@ -19,6 +19,54 @@ cd E:\Desktop\agent\backend
 python -m tests.rag_eval.run_golden_eval --validate-only
 ```
 
+这只校验 YAML 格式，不上传文档、不调用 Agent，也不产生质量分数。
+
+### 固定文档、小题集烟雾测试
+
+先在**隔离知识库**上传 `data/test_docs/01-stm32-gpio.md`，确认文档状态为
+`indexed` 且实际检索可命中，再用返回的 KB ID 运行：
+
+```bash
+python -m tests.rag_eval.run_golden_eval --ids G001,G002 --kb-id KB_ID --api-key YOUR_KEY
+```
+
+另一套策略评测可用
+`python -m tests.rag_eval.run_eval --smoke --strategies hybrid-800 --api-key YOUR_KEY`；
+它会创建临时 KB、上传上述固定文档并测试前两题，结束时默认删除该 KB。
+两套脚本默认发送 `use_agent=true`。`--legacy-chat` 才使用旧的非 Agent 路径，
+其分数不得解释为 Agent RAG 质量。运行需要已启动的本地后端和可用的聊天及
+Embedding 模型，可能产生 API 费用。不要把私人手册用于公开或共享的报告。
+
+每题必须有成功的 `search_docs` 工具结果、知识库 `source` 事件、成功的 `done`
+终态，而且回答实际引用本次 KB 来源，才计入 Agent RAG 分数。未调用检索、
+无命中、请求或工具失败、模型不支持工具、非法引用都单独记录。报告包含
+`scored_sample_count` / `scored_count` 分母、`path_status_counts` 和失败样本；
+零个有效样本时显示“未计分”，不显示虚假的 0 分质量结论。隔离自动化中的
+固定 Embedding 与构造回答只验证软件链路，不是模型质量分数。
+
+标准分只由四项 DeepEval 指标产生；`run_eval` 的关键词、来源和 chunk 规则分
+属于 `rule_based_diagnostic`，不得解释为 DeepEval 或 faithfulness 质量分。标准
+评测要求 Python 3.10–3.12 与 `deepeval==1.5.5`。版本预检在任何聊天、Embedding
+或 judge 请求前执行；不支持时显示“not scored”并退出，不会自动降级或切换评分
+协议。Windows 可在 `backend` 目录建立隔离环境：
+
+```powershell
+py -3.12 -m venv .venv-eval
+.\.venv-eval\Scripts\python.exe -m pip install -r requirements-eval.txt
+```
+
+每个 DeepEval 指标默认只有一次异步尝试，单项 deadline 为 90 秒，可用
+`--metric-timeout` 调整；SSE 单次读取默认 45 秒，可用 `--chat-read-timeout`
+调整；独立的整次聊天单调时钟 deadline 默认 300 秒，可用 `--chat-deadline`
+调整。单次读取超时不会重置或替代整次 deadline。报告只评分从成功的
+`search_docs` 工具结果中捕获、与来源对应的完整父级上下文；仅有 source excerpt
+时会记录为 `excerpt_only` 并排除标准评分，不会静默截断上下文。
+
+新终态契约要求 `done.success=true, completed=true` 才表示完成；人工确认等待
+（`tool_confirm_required` 或 `awaiting_confirmation`，包括 `completed=false`）
+即使已有正文和引用也不算完成。为读取旧记录，缺少 `completed` 的历史
+`done.success=true` 仍兼容；`completed=false` 一律不视为成功。
+
 ### 2. 运行评测（需要后端运行中 + API Key）
 
 ```bash
@@ -214,4 +262,4 @@ python -m tests.rag_eval.dataset_builder
 | `dataset_builder.py` | 从 config.py 生成骨架的辅助工具 |
 | `GOLDEN_EVAL_README.md` | 本文档 |
 
-**不动的文件**：`config.py`、`run_eval.py`、`rescore.py` — 现有规则评分体系完全保留。
+`config.py` 与 `rescore.py` 的既有规则保持不变。`run_eval.py` 保留规则评分维度，但已对齐 Agent 请求与来源证据门槛；旧路径结果不得混称为 Agent RAG 质量。

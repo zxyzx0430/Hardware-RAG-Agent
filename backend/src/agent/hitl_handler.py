@@ -64,6 +64,17 @@ async def handle_auto_resume(
             return
         tool_name = pending[0].get("name", "?") if pending else "?"
         logger.info("hitl_auto_resume session=%s tool=%s", session_id, tool_name)
+        ctx = _get_tool_ctx()
+        authorization = getattr(ctx, "mcp_authorization", None)
+        if authorization is not None:
+            from src.agent.core.toolkit.permission_classifier import PermissionClassifier
+            confirmation = authorization.next_confirmation(pending, ctx.request_tools, PermissionClassifier(), ctx)
+            if confirmation is not None:
+                yield build_confirm_required_event([confirmation])
+                return
+            async for sse in _iter_agent_sse(agent, _RESUME_ALLOW, config, call_counter, call_start_time, state):
+                yield sse
+            continue
         decision = evaluate_pending(pending, permission_mode)
         if decision == DECISION_ASK:
             yield build_confirm_required_event(pending)
@@ -82,14 +93,37 @@ async def handle_auto_resume(
 async def resume_agent_after_user(
     agent: Any, config: dict, decision: str,
     call_counter: Counter, permission_mode: str,
+    *, confirmed_call_id: str | None = None, confirmation_resolved: bool = False,
 ) -> AsyncIterator[str]:
     """Resume agent after user confirms/denies/stops via the resume API."""
+    if not isinstance(decision, str) or decision not in {
+        DECISION_ALLOW,
+        DECISION_DENY,
+        USER_DECISION_STOP,
+    }:
+        raise ValueError("Invalid HITL decision; expected allow, deny, or stop")
+
     from src.agent.sse_adapter import _iter_agent_sse
     from src.agent.sse_helpers import init_stream_state
     session_id = config.get("configurable", {}).get("thread_id", "?")
     logger.info("hitl_user_resume session=%s decision=%s", session_id, decision)
     call_start_time: dict[str, float] = {}
     state: dict = init_stream_state(config, "")
+    ctx = _get_tool_ctx()
+    authorization = getattr(ctx, "mcp_authorization", None)
+    if authorization is not None:
+        if decision == USER_DECISION_STOP:
+            authorization.revoke()
+            yield sse_event("done", {"success": False, "reason": "user stopped"})
+            return
+        if not confirmation_resolved:
+            pending = await _detect_tools_interrupt(agent, config)
+            if not authorization.validate_confirmation(confirmed_call_id, pending):
+                raise ValueError("Confirmation no longer matches the pending call")
+            authorization.resolve_confirmation(confirmed_call_id, decision)
+        async for sse in handle_auto_resume(agent, config, permission_mode, call_counter, call_start_time, state):
+            yield sse
+        return
     if decision == USER_DECISION_STOP:
         pending = await _detect_tools_interrupt(agent, config)
         tool_name = pending[0].get("name", "?") if pending else "?"
@@ -226,6 +260,10 @@ def _get_tool_ctx() -> Any:
     All tools for a request are injected with the same ctx object, so grabbing
     the first registered spec's _ctx is sufficient for HITL bookkeeping.
     """
+    from src.agent.request_context import active_tool_context
+    active = active_tool_context()
+    if active is not None:
+        return active
     from src.agent.core.toolkit.tool_router import _TOOL_REGISTRY
     for spec in _TOOL_REGISTRY.values():
         ctx = getattr(spec, "_ctx", None)

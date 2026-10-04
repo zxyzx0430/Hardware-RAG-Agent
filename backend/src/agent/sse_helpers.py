@@ -265,13 +265,58 @@ def _assemble_tool_result_events(
     events.append(sse_event("tool_result", {
         "call_id": call_id,
         "tool": tool_name,
-        "result": envelope,
+        "result": _safe_skill_result_for_sse(tool_name, envelope),
         "duration": duration_ms,  # field name aligns with frontend (value in ms)
         "success": success,
         "step_index": RESULT_STEP_INDEX,
         "end_timestamp": time.time(),
     }))
     return events
+
+
+_SKILL_BODY_TOOL_NAMES = frozenset({"load_skill", "read_skill_resource"})
+_SKILL_SAFE_RESULT_FIELDS = frozenset({
+    "skill_id", "content_hash", "path", "stage", "success",
+})
+
+
+def _safe_skill_result_for_sse(tool_name: str, envelope: dict) -> dict:
+    """Strip instruction/resource bodies from client-visible skill tool events."""
+    if tool_name not in _SKILL_BODY_TOOL_NAMES:
+        return envelope
+    source_data = envelope.get("data")
+    safe_data = None
+    if isinstance(source_data, dict):
+        selected = {
+            key: source_data[key]
+            for key in _SKILL_SAFE_RESULT_FIELDS
+            if key in source_data
+        }
+        safe_data = selected or None
+    success = bool(envelope.get("success"))
+    stage = safe_data.get("stage") if safe_data else None
+    if success and stage == "instructions":
+        output = "Skill instructions loaded"
+    elif success and stage == "resource":
+        output = "Skill resource loaded"
+    else:
+        output = "Skill operation completed" if success else "Skill operation failed"
+    error = envelope.get("error")
+    safe_error = None
+    if not success:
+        error_type = error.get("error_type") if isinstance(error, dict) else None
+        safe_error = {
+            "error_type": error_type if isinstance(error_type, str) else "SKILL_READ_FAILED",
+            "error_message": "Skill content could not be loaded",
+            "suggestion": "Check that the selected skill is enabled and unchanged.",
+            "retryable": bool(error.get("retryable")) if isinstance(error, dict) else False,
+        }
+    return {
+        **envelope,
+        "output": output,
+        "data": safe_data,
+        "error": safe_error,
+    }
 
 
 def _maybe_emit_todo_update(events: list[str], envelope: dict) -> None:

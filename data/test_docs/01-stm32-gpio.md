@@ -131,7 +131,9 @@ STM32 的 GPIO 端口按字母命名：GPIOA、GPIOB、GPIOC……每个端口�
 
 ## 2. GPIO 工作模式详解
 
-STM32 的 GPIO 共有 8 种工作模式，由 MODER 寄存器的 2 位字段决定大类，再由 PUPDR、OTYPER 等寄存器细分。MODER 寄存器的 2 位编码如下：
+本节的 `GPIOx_MODER` 编码限定于 STM32F4 的 MODER 型 GPIO 实现，依据 [RM0090（STM32F405/407/427/429 等）](https://www.st.com/resource/en/reference_manual/dm00031020-stm32f405-415-stm32f407-417-stm32f427-437-and-stm32f429-439-advanced-arm-based-32-bit-mcus-stmicroelectronics.pdf)。不要将该寄存器模型套用于 STM32F1：F1 使用 `GPIOx_CRL/CRH`，参见 [RM0008（STM32F1）](https://www.st.com/resource/en/reference_manual/rm0008-stm32f101xx-stm32f102xx-stm32f103xx-stm32f105xx-and-stm32f107xx-advanced-armbased-32-bit-mcus-stmicroelectronics.pdf)。具体器件仍应以其对应参考手册为准。
+
+在这一适用范围内，GPIO 模式由 MODER 寄存器的 2 位字段决定大类，再由 PUPDR、OTYPER 等寄存器细分：
 
 | MODER[1:0] | 模式大类 | 细分模式 |
 |------------|----------|----------|

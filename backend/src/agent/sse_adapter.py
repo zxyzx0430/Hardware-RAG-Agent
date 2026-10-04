@@ -11,6 +11,7 @@ dispatch only.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from collections import Counter
@@ -20,7 +21,11 @@ from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 
 from app.api.sse import sse_event
 from src.agent.context_guard import _CUMULATIVE_TOKENS, accumulate_tokens, reset_token_counter
-from src.agent.exceptions import AgentTimeoutError, ContextLimitError
+from src.agent.exceptions import (
+    AgentStreamIdleTimeoutError,
+    AgentTimeoutError,
+    ContextLimitError,
+)
 from src.agent.sse_helpers import (
     check_active_tool_timeouts,
     convert_tool_message_to_sse,
@@ -34,6 +39,7 @@ logger = logging.getLogger(__name__)
 # Cap how many tool_calls from a single chunk are surfaced as SSE events.
 MAX_TOOL_CALLS_DISPLAY: int = 3
 AGENT_HEARTBEAT_INTERVAL = 15
+AGENT_STREAM_IDLE_TIMEOUT_S = 300
 
 
 # ═══════════════════════════════════════════
@@ -67,13 +73,23 @@ async def stream_agent_to_sse(
     register_queue(session_id, state["tool_event_queue"])
     reset_token_counter()
     try:
-        async for sse in _iter_agent_sse(agent, events, config, call_counter, call_start_time, state):
-            yield sse
+        agent_stream = _iter_agent_sse(
+            agent, events, config, call_counter, call_start_time, state,
+        )
+        try:
+            async for sse in agent_stream:
+                yield sse
+        finally:
+            await agent_stream.aclose()
         from src.agent.hitl_handler import handle_auto_resume
-        async for sse in handle_auto_resume(
+        resume_stream = handle_auto_resume(
             agent, config, permission_mode, call_counter, call_start_time, state,
-        ):
-            yield sse
+        )
+        try:
+            async for sse in resume_stream:
+                yield sse
+        finally:
+            await resume_stream.aclose()
     finally:
         unregister_queue(session_id)
     logger.info("stream_agent_to_sse done total_steps=%s", state.get("step_index", 0))
@@ -90,41 +106,126 @@ async def _iter_agent_sse(
     are merged into the stream in real time.
     """
     tool_event_queue: asyncio.Queue | None = state.get("tool_event_queue")
+
+    async def _direct_agent_items():
+        async for mode, chunk in agent.astream(
+            events, config=config, stream_mode=["messages", "updates"],
+        ):
+            yield {"source": "agent", "mode": mode, "chunk": chunk}
+
+    source = (
+        _merge_agent_and_tool_events(agent, events, config, tool_event_queue)
+        if tool_event_queue is not None
+        else _direct_agent_items()
+    )
+    iterator = source.__aiter__()
+    last_progress_at = time.monotonic()
+    next_item_task: asyncio.Task | None = None
+    had_error = False
     try:
-        if tool_event_queue is not None:
-            merged = _merge_agent_and_tool_events(agent, events, config, tool_event_queue)
-            async for item in merged:
+        while True:
+            if next_item_task is None:
+                next_item_task = asyncio.create_task(iterator.__anext__())
+
+            active_tool_call = bool(call_start_time)
+            if active_tool_call:
+                wait_seconds = AGENT_HEARTBEAT_INTERVAL
+            else:
+                elapsed = time.monotonic() - last_progress_at
+                remaining = AGENT_STREAM_IDLE_TIMEOUT_S - elapsed
+                if remaining <= 0:
+                    raise AgentStreamIdleTimeoutError(elapsed, AGENT_STREAM_IDLE_TIMEOUT_S)
+                wait_seconds = min(AGENT_HEARTBEAT_INTERVAL, remaining)
+
+            ready, _ = await asyncio.wait({next_item_task}, timeout=wait_seconds)
+            if not ready:
                 check_active_tool_timeouts(call_start_time)
-                if item["source"] == "agent":
-                    sse = await _convert_chunk_to_sse(
-                        item["mode"], item["chunk"], call_counter, call_start_time, state,
-                    )
-                else:
-                    sse = _convert_tool_event_to_sse(item["event"])
-                if sse:
-                    yield sse
-        else:
-            async for mode, chunk in agent.astream(
-                events, config=config, stream_mode=["messages", "updates"],
-            ):
-                check_active_tool_timeouts(call_start_time)
-                sse = await _convert_chunk_to_sse(mode, chunk, call_counter, call_start_time, state)
-                if sse:
-                    yield sse
+                if not call_start_time:
+                    elapsed = time.monotonic() - last_progress_at
+                    if elapsed >= AGENT_STREAM_IDLE_TIMEOUT_S:
+                        raise AgentStreamIdleTimeoutError(elapsed, AGENT_STREAM_IDLE_TIMEOUT_S)
+                continue
+
+            try:
+                item = next_item_task.result()
+            except StopAsyncIteration:
+                break
+            next_item_task = None
+            check_active_tool_timeouts(call_start_time)
+
+            if item["source"] == "agent":
+                sse = await _convert_chunk_to_sse(
+                    item["mode"], item["chunk"], call_counter, call_start_time, state,
+                )
+            else:
+                sse = _convert_tool_event_to_sse(item["event"])
+            if sse:
+                if _sse_indicates_progress(sse):
+                    last_progress_at = time.monotonic()
+                yield sse
+
         final_text = state.pop("text_buffer", "")
         if final_text:
             yield sse_event("text", {"content": final_text})
     except ContextLimitError as exc:
+        had_error = True
         logger.warning("context_limit_exceeded tokens=%s limit=%s", exc.cumulative, exc.limit)
         raise
     except AgentTimeoutError as exc:
+        had_error = True
         logger.warning("agent_timeout elapsed=%.1fs limit=%ss", exc.elapsed, exc.limit)
         raise
-
-
+    except BaseException:
+        had_error = True
+        raise
+    finally:
+        if next_item_task is not None and not next_item_task.done():
+            next_item_task.cancel()
+            await asyncio.gather(next_item_task, return_exceptions=True)
+        closer = getattr(iterator, "aclose", None)
+        if closer is not None:
+            try:
+                await closer()
+            except BaseException:
+                if not had_error:
+                    raise
 # ═══════════════════════════════════════════
 # Chunk dispatch
 # ═══════════════════════════════════════════
+
+def _sse_indicates_progress(serialized_events: str) -> bool:
+    """Only visible answer/reasoning or useful tool/status events renew idle time."""
+    for line in serialized_events.splitlines():
+        if not line.startswith("data: "):
+            continue
+        try:
+            payload = json.loads(line[6:])
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+
+        event_type = payload.get("type")
+        if event_type in {"text", "thinking", "compile_log"}:
+            value = payload.get("content") if event_type != "compile_log" else payload.get("line")
+            if isinstance(value, str) and value.strip():
+                return True
+        elif event_type == "progress":
+            if payload.get("percent") is not None or (isinstance(payload.get("message"), str) and payload["message"].strip()):
+                return True
+        elif event_type in {"tool_call", "tool_result"}:
+            if payload.get("call_id") or payload.get("tool"):
+                return True
+        elif event_type == "source":
+            if any(isinstance(payload.get(key), str) and payload[key].strip() for key in ("id", "title", "doc", "excerpt")):
+                return True
+        elif event_type == "todo_update":
+            if payload.get("todos"):
+                return True
+        elif event_type in {"context_compressing", "tool_confirm_required"}:
+            if payload.get("message") or payload.get("calls") or payload.get("count"):
+                return True
+    return False
 
 async def _convert_chunk_to_sse(
     mode: str, chunk: Any,
@@ -260,12 +361,15 @@ def _emit_tool_call(
     state.setdefault("pending_call_args", {})[call_id] = call_entry
     state.setdefault("pending_tool_calls", set()).add(call_id)
     logger.info("tool_call step=%s tool=%s call_id=%s", state['step_index'], name, call_id)
-    risk_level = next(
-        (s.risk_level.value for s in list_registered_tools() if s.name == name),
-        None,
-    )
+    from src.agent.request_context import active_tool_context
+    ctx = active_tool_context()
+    specs = ctx.request_tools.values() if ctx is not None else list_registered_tools()
+    spec = next((item for item in specs if item.name == name), None)
+    risk_level = spec.risk_level.value if spec is not None else None
     perm_mode = state.get("permission_mode", "bypassPermissions")
     decision_source = "mode_bypass" if perm_mode == "bypassPermissions" else "auto_allow"
+    if spec is not None and spec.mcp_info is not None:
+        decision_source = "confirmation_required"
     parts.append(sse_event("tool_call", {
         "tool": tc.get("name", ""),
         "args": tc.get("args", {}),
@@ -401,7 +505,7 @@ async def _merge_agent_and_tool_events(
                     break
                 await outgoing.put({"source": "tool_event", "event": event})
         except asyncio.CancelledError:
-            pass
+            raise
         finally:
             await outgoing.put({"source": "queue_done"})
 
@@ -427,21 +531,17 @@ async def _merge_agent_and_tool_events(
                 queue_done = True
             else:
                 yield item
-    finally:
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for result in results:
+            if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
+                raise result
+    except BaseException:
         for task in tasks:
-            if task.cancelled():
-                # Cancelled tasks must skip the normal cleanup path — calling
-                # task.exception() on a cancelled task raises CancelledError.
-                continue
             if not task.done():
                 task.cancel()
-            else:
-                # Propagate exceptions from background tasks so the caller
-                # can surface an SSE error event instead of silently returning
-                # a successful "done".
-                exc = task.exception()
-                if exc is not None:
-                    raise exc
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        raise
 
 
 def _convert_tool_event_to_sse(event: dict[str, Any]) -> str | None:

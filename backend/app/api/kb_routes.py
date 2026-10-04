@@ -5,7 +5,9 @@
 """
 
 import asyncio
+import contextvars
 import logging
+import threading
 import uuid
 from functools import wraps
 from pathlib import Path
@@ -42,6 +44,176 @@ MAX_CHUNK_SIZE = 10000
 # be collected mid-execution, raising CancelledError (BaseException) that
 # escapes the `except Exception` handler and leaves doc status stuck at "indexing".
 _bg_tasks: set = set()
+_INDEX_CONCURRENCY_LIMIT = 2
+_INDEX_SEMAPHORE = asyncio.Semaphore(_INDEX_CONCURRENCY_LIMIT)
+_INDEX_MUTATION_LOCK = threading.Lock()
+_ACTIVE_INDEX_DOC_IDS: set[str] = set()
+_ACTIVE_INDEX_LOCK = threading.Lock()
+
+
+def _invalidate_manager_search_cache(kb_manager) -> None:
+    """Invalidate process-local search results after a direct route mutation."""
+    invalidate = getattr(kb_manager, "invalidate_search_cache", None)
+    if callable(invalidate):
+        invalidate()
+
+
+def _is_index_task_active(doc_id: str) -> bool:
+    with _ACTIVE_INDEX_LOCK:
+        return doc_id in _ACTIVE_INDEX_DOC_IDS
+
+
+def _finish_index_task(task: asyncio.Task, doc_id: str) -> None:
+    _bg_tasks.discard(task)
+    with _ACTIVE_INDEX_LOCK:
+        _ACTIVE_INDEX_DOC_IDS.discard(doc_id)
+
+
+async def _run_index_worker(func, *args):
+    """Run blocking work without letting task shutdown abandon its thread."""
+    loop = asyncio.get_running_loop()
+    context = contextvars.copy_context()
+    worker = loop.run_in_executor(None, context.run, func, *args)
+    cancellation_requested = False
+    while True:
+        try:
+            return await asyncio.shield(worker), cancellation_requested
+        except asyncio.CancelledError:
+            cancellation_requested = True
+            if worker.done():
+                return worker.result(), cancellation_requested
+
+
+def _load_index_target_kb(kb_id: str, doc_id: str):
+    """Load a detached KB only while its KB and document records still exist."""
+    with get_db_ctx() as db:
+        document_exists = db.query(KnowledgeDoc.doc_id).filter(
+            KnowledgeDoc.doc_id == doc_id,
+            KnowledgeDoc.kb_id == kb_id,
+        ).first() is not None
+        kb_exists = db.query(KnowledgeBase.id).filter(
+            KnowledgeBase.id == kb_id,
+        ).first() is not None
+    if not document_exists or not kb_exists:
+        return None
+    return _get_kb_manager().get_kb(kb_id)
+
+
+def _ingest_if_document_exists(kb_id: str, doc_id: str, chunks: list):
+    """Serialize final existence check with deletion and perform ingest in a worker."""
+    with _INDEX_MUTATION_LOCK:
+        with get_db_ctx() as db:
+            document_exists = db.query(KnowledgeDoc.doc_id).filter(
+                KnowledgeDoc.doc_id == doc_id,
+                KnowledgeDoc.kb_id == kb_id,
+            ).first() is not None
+            kb_exists = db.query(KnowledgeBase.id).filter(
+                KnowledgeBase.id == kb_id,
+            ).first() is not None
+        if not document_exists or not kb_exists:
+            return None
+
+        kb_manager = _get_kb_manager()
+        ingested = kb_manager.ingest_chunks(kb_id, chunks, doc_id)
+        missing_embedding = False
+        if ingested == 0:
+            kb = kb_manager.get_kb(kb_id)
+            store = kb_manager._get_store(kb) if kb else None
+            missing_embedding = (
+                store is not None and getattr(store, "embeddings", object()) is None
+            )
+        return ingested, missing_embedding
+
+
+def _cleanup_orphaned_upload(kb_manager, kb_id: str, doc_id: str) -> None:
+    """Remove stale document/vector state without racing an active ingest."""
+    with _INDEX_MUTATION_LOCK:
+        _invalidate_manager_search_cache(kb_manager)
+        try:
+            with get_db_ctx() as db:
+                record = db.query(KnowledgeDoc).filter(
+                    KnowledgeDoc.doc_id == doc_id
+                ).first()
+                if record:
+                    db.delete(record)
+
+            try:
+                kb = kb_manager.get_kb(kb_id)
+                store = kb_manager._get_store(kb) if kb else None
+                if store:
+                    store.delete_document(doc_id)
+            except Exception:
+                logger.warning(f"清理孤儿向量失败（不影响继续上传）: {doc_id}")
+
+            try:
+                kb_manager._rebuild_bm25(kb_id)
+                kb_manager._bm25_stale.discard(kb_id)
+            except Exception:
+                kb_manager._bm25_stale.add(kb_id)
+                logger.warning(f"BM25 eager rebuild failed for KB {kb_id} after orphan cleanup")
+
+            for orphan_ext in ALLOWED_EXTENSIONS:
+                orphan_path = UPLOAD_DIR / f"{doc_id}{orphan_ext}"
+                if orphan_path.exists():
+                    try:
+                        orphan_path.unlink()
+                    except Exception:
+                        logger.warning(f"清理孤儿文件失败: {orphan_path}")
+                    break
+        finally:
+            _invalidate_manager_search_cache(kb_manager)
+
+
+def _import_kb_and_document_records(kb_manager, kb_id: str, export_data: dict) -> int:
+    """Import vectors and matching document rows atomically against deletion."""
+    with _INDEX_MUTATION_LOCK:
+        imported = kb_manager.import_kb(kb_id, export_data)
+        if imported <= 0:
+            return imported
+
+        metadatas = export_data.get("data", {}).get("metadatas", []) or []
+        source_name = export_data.get("name", "未知")
+        chunk_method = export_data.get("chunk_method", "hybrid")
+        # Keep each source doc_id aligned with the IDs already stored in vectors.
+        doc_groups: dict[str, dict] = {}
+        for meta in metadatas:
+            if not isinstance(meta, dict):
+                continue
+            src_doc_id = meta.get("doc_id", "")
+            if not src_doc_id:
+                continue
+            if src_doc_id not in doc_groups:
+                doc_groups[src_doc_id] = {
+                    "title": meta.get("title") or f"[导入] {source_name}",
+                    "count": 0,
+                }
+            doc_groups[src_doc_id]["count"] += 1
+
+        with get_db_ctx() as db:
+            for src_doc_id, info in doc_groups.items():
+                existing = db.query(KnowledgeDoc).filter(
+                    KnowledgeDoc.kb_id == kb_id,
+                    KnowledgeDoc.doc_id == src_doc_id,
+                ).first()
+                if existing:
+                    existing.title = info["title"]
+                    existing.chunk_count = info["count"]
+                    existing.chunk_method_used = chunk_method
+                    existing.status = "indexed"
+                    existing.error_message = None
+                else:
+                    db.add(KnowledgeDoc(
+                        doc_id=src_doc_id,
+                        kb_id=kb_id,
+                        title=info["title"],
+                        category="imported",
+                        file_type="json",
+                        file_size=0,
+                        chunk_count=info["count"],
+                        chunk_method_used=chunk_method,
+                        status="indexed",
+                    ))
+        return imported
 
 
 # ═══════════════════════════════════════════
@@ -273,6 +445,15 @@ async def kb_upload(
         existing_status = existing.status if existing else None
         existing_error_message = existing.error_message if existing else None
     if existing_doc_id:
+        if existing_status == "indexing" and _is_index_task_active(existing_doc_id):
+            return {
+                "success": False,
+                "error": {
+                    "code": "DUPLICATE_FILE",
+                    "message": f"知识库中文件仍在索引中: {file.filename}，请等待当前索引完成",
+                    "details": {"existing_doc_id": existing_doc_id, "existing_status": existing_status},
+                },
+            }
         # Auto-reclaim orphan records left by failed uploads (error), crashed
         # indexing tasks (stale "indexing" status), or "indexed but not vectorized"
         # (status=indexed with error_message — e.g. embedding not configured).
@@ -284,37 +465,9 @@ async def kb_upload(
         if is_broken:
             logger.info(f"清理孤儿记录 {existing_doc_id} (status={existing_status}) 以便重新上传 {file.filename}")
             try:
-                with get_db_ctx() as db:
-                    rec = db.query(KnowledgeDoc).filter(KnowledgeDoc.doc_id == existing_doc_id).first()
-                    if rec:
-                        kb_id_of_rec = rec.kb_id
-                        db.delete(rec)
-                # Best-effort vector cleanup
-                try:
-                    kb_existing = kb_manager.get_kb(kb_id)
-                    if kb_existing:
-                        store = kb_manager._get_store(kb_existing)
-                        if store:
-                            store.delete_document(existing_doc_id)
-                except Exception:
-                    logger.warning(f"清理孤儿向量失败（不影响继续上传）: {existing_doc_id}")
-                # P2-3: Eagerly rebuild BM25 after vector cleanup so search doesn't block later
-                if kb_id:
-                    try:
-                        kb_manager._rebuild_bm25(kb_id)
-                        kb_manager._bm25_stale.discard(kb_id)
-                    except Exception:
-                        kb_manager._bm25_stale.add(kb_id)
-                        logger.warning(f"BM25 eager rebuild failed for KB {kb_id} after orphan cleanup")
-                # Best-effort file cleanup
-                for orphan_ext in ALLOWED_EXTENSIONS:
-                    orphan_path = UPLOAD_DIR / f"{existing_doc_id}{orphan_ext}"
-                    if orphan_path.exists():
-                        try:
-                            orphan_path.unlink()
-                        except Exception:
-                            logger.warning(f"清理孤儿文件失败: {orphan_path}")
-                        break
+                await asyncio.to_thread(
+                    _cleanup_orphaned_upload, kb_manager, kb_id, existing_doc_id,
+                )
             except Exception:
                 logger.exception(f"清理孤儿记录失败: {existing_doc_id}")
                 return {
@@ -382,9 +535,29 @@ async def kb_upload(
 
     # Background indexing
     async def _index_document():
+        acquired_slot = False
+        try:
+            async with _INDEX_SEMAPHORE:
+                acquired_slot = True
+                await _run_document_indexing()
+        except asyncio.CancelledError:
+            if not acquired_slot:
+                _update_doc_status(doc_id, "error", error_message="索引任务被取消")
+            raise
+
+    async def _run_document_indexing():
+        index_stage = "parse"
+        cancellation_status_recorded = False
         try:
             # Parse file
-            text_content, total_pages = _parse_file(ext, content_bytes, save_path)
+            parsed, parser_cancelled = await _run_index_worker(
+                _parse_file, ext, content_bytes, save_path,
+            )
+            text_content, total_pages = parsed
+            if parser_cancelled:
+                _update_doc_status(doc_id, "error", error_message="索引任务被取消")
+                cancellation_status_recorded = True
+                raise asyncio.CancelledError
             if not text_content.strip():
                 _update_doc_status(doc_id, "error", error_message="文件解析后内容为空")
                 return
@@ -393,14 +566,20 @@ async def kb_upload(
             _update_doc_status(doc_id, "indexing", error_message="文件解析完成，正在分块...")
 
             # Get chunker (re-fetch KB to avoid detached session)
-            kb_bg = kb_manager.get_kb(kb_id)
+            kb_bg, lookup_cancelled = await _run_index_worker(
+                _load_index_target_kb, kb_id, doc_id,
+            )
+            if lookup_cancelled:
+                _update_doc_status(doc_id, "error", error_message="索引任务被取消")
+                cancellation_status_recorded = True
+                raise asyncio.CancelledError
             if not kb_bg:
-                _update_doc_status(doc_id, "error", error_message="知识库不存在")
                 return
 
             chunker = _get_kb_chunker(kb_bg, chunk_method_override=effective_method, chunk_size=chunk_size, small_chunk_size=effective_small_chunk_size)
 
             # Run chunking — with fallback to HybridChunker if agent/multimodal fails
+            index_stage = "chunk"
             metadata = {
                 "doc_id": doc_id,
                 "title": file.filename,
@@ -497,7 +676,13 @@ async def kb_upload(
             )
 
             # Ingest into KB
-            ingested = kb_manager.ingest_chunks(kb_id, chunks, doc_id)
+            index_stage = "ingest"
+            ingest_result, ingest_cancelled = await _run_index_worker(
+                _ingest_if_document_exists, kb_id, doc_id, chunks,
+            )
+            if ingest_result is None:
+                return
+            ingested, missing_embedding = ingest_result
 
             # Verify page coverage
             from src.rag.chunking import verify_page_coverage
@@ -507,12 +692,17 @@ async def kb_upload(
             actual_chunk_count = len(chunks)
 
             if ingested == 0:
-                # Embedding not configured — chunks were created but not vectorized
+                error_message = (
+                    "未配置 Embedding 模型，文档已分块但不可检索。配置后请重新上传。"
+                    if missing_embedding else
+                    "未写入任何可检索向量。请检查文档内容、Embedding 服务和知识库配置后重新上传。"
+                )
                 _update_doc_status(
                     doc_id,
-                    "indexed",
+                    "error",
                     chunk_count=actual_chunk_count,
-                    error_message="未配置 Embedding 模型，已分块但未向量化。配置 Embedding 后请删除重新上传。",
+                    coverage=coverage,
+                    error_message=error_message,
                 )
             else:
                 _update_doc_status(
@@ -523,10 +713,14 @@ async def kb_upload(
                     error_message="",
                 )
             logger.info(f"文档入库完成: {doc_id} → {actual_chunk_count} chunks (向量化: {ingested}, method={effective_method})")
+            if ingest_cancelled:
+                cancellation_status_recorded = True
+                raise asyncio.CancelledError
 
         except asyncio.CancelledError:
             logger.warning(f"后台索引被取消: {doc_id}")
-            _update_doc_status(doc_id, "error", error_message="索引任务被取消")
+            if not cancellation_status_recorded:
+                _update_doc_status(doc_id, "error", error_message="索引任务被取消")
             raise
         except Exception as e:
             logger.exception(f"后台索引失败: {doc_id}")
@@ -535,11 +729,17 @@ async def kb_upload(
                     save_path.unlink()
                 except Exception as cleanup_err:
                     logger.warning(f"save_path cleanup failed after indexing error: {cleanup_err}")
-            _update_doc_status(doc_id, "error", error_message=sanitize_error(str(e)))
+            error_message = (
+                "向量化入库失败。请检查 Embedding 服务和知识库存储后重新上传。"
+                if index_stage == "ingest" else sanitize_error(str(e))
+            )
+            _update_doc_status(doc_id, "error", error_message=error_message)
 
+    with _ACTIVE_INDEX_LOCK:
+        _ACTIVE_INDEX_DOC_IDS.add(doc_id)
     task = asyncio.create_task(_index_document())
     _bg_tasks.add(task)
-    task.add_done_callback(_bg_tasks.discard)
+    task.add_done_callback(lambda done: _finish_index_task(done, doc_id))
 
     return {
         "success": True,
@@ -625,49 +825,75 @@ async def kb_delete(payload: KbDeleteRequest, user: dict = Depends(current_user_
     文件删除放在事务外，避免 Windows 文件锁导致 unlink 失败时整个事务回滚、
     DB 记录删不掉的死循环。文件删不掉只记日志，不影响 DB 一致性。
     """
+    return await asyncio.to_thread(_delete_document_sync, payload.doc_id)
+
+
+def _delete_document_sync(requested_doc_id: str) -> dict:
     actual_doc_id = None
     kb_id = None
     deleted_chunks = 0
+    cache_manager = None
+    mutation_started = False
 
     # ── Phase 1: Delete vectors + DB record in transaction ──
     try:
-        with get_db_ctx() as db:
-            record = db.query(KnowledgeDoc).filter(KnowledgeDoc.doc_id == payload.doc_id).first()
-            if not record:
-                return {
-                    "success": False,
-                    "error": {"code": "DOC_NOT_FOUND", "message": f"文档不存在: {payload.doc_id}", "details": None},
-                }
-
-            kb_id = record.kb_id
-            actual_doc_id = record.doc_id
-            kb_manager = _get_kb_manager()
-
-            # Step 1: Delete vectors from ChromaDB
-            kb = kb_manager.get_kb(kb_id) if kb_id else None
-            if kb:
-                store = kb_manager._get_store(kb)
-                if store:
-                    try:
-                        deleted_chunks = store.delete_document(actual_doc_id)
-                    except Exception:
-                        logger.exception(f"删除向量失败: {actual_doc_id}")
+        with _INDEX_MUTATION_LOCK:
+            try:
+                with get_db_ctx() as db:
+                    record = db.query(KnowledgeDoc).filter(
+                        KnowledgeDoc.doc_id == requested_doc_id
+                    ).first()
+                    if not record:
                         return {
                             "success": False,
-                            "error": {"code": "VECTOR_DELETE_FAILED", "message": "向量删除失败，DB 记录已保留以便重试", "details": None},
+                            "error": {
+                                "code": "DOC_NOT_FOUND",
+                                "message": f"文档不存在: {requested_doc_id}",
+                                "details": None,
+                            },
                         }
 
-            # Step 2: Delete DB record (vectors already cleaned)
-            db.delete(record)
+                    kb_id = record.kb_id
+                    actual_doc_id = record.doc_id
+                    kb_manager = _get_kb_manager()
+                    cache_manager = kb_manager
+                    _invalidate_manager_search_cache(kb_manager)
+                    mutation_started = True
 
-            # P2-3: Eagerly rebuild BM25 after vector deletion so search doesn't block later
-            if kb_id:
-                try:
-                    kb_manager._rebuild_bm25(kb_id)
-                    kb_manager._bm25_stale.discard(kb_id)
-                except Exception:
-                    kb_manager._bm25_stale.add(kb_id)
-                    logger.warning(f"BM25 eager rebuild failed for KB {kb_id} after doc deletion")
+                    # Step 1: Delete vectors from ChromaDB.
+                    kb = kb_manager.get_kb(kb_id) if kb_id else None
+                    if kb:
+                        store = kb_manager._get_store(kb)
+                        if store:
+                            try:
+                                deleted_chunks = store.delete_document(actual_doc_id)
+                            except Exception:
+                                logger.exception(f"删除向量失败: {actual_doc_id}")
+                                return {
+                                    "success": False,
+                                    "error": {
+                                        "code": "VECTOR_DELETE_FAILED",
+                                        "message": "向量删除失败，DB 记录已保留以便重试",
+                                        "details": None,
+                                    },
+                                }
+
+                    # Step 2: Delete DB record (vectors already cleaned).
+                    db.delete(record)
+
+                    # Rebuild BM25 before releasing the mutation lock.
+                    if kb_id:
+                        try:
+                            kb_manager._rebuild_bm25(kb_id)
+                            kb_manager._bm25_stale.discard(kb_id)
+                        except Exception:
+                            kb_manager._bm25_stale.add(kb_id)
+                            logger.warning(
+                                f"BM25 eager rebuild failed for KB {kb_id} after doc deletion"
+                            )
+            finally:
+                if mutation_started:
+                    _invalidate_manager_search_cache(cache_manager)
     except Exception as e:
         logger.exception("删除知识库文档失败")
         return {
@@ -847,7 +1073,8 @@ def delete_collection(kb_id: str):
                 "error": {"code": "KB_NOT_DELETABLE", "message": "内置知识库不可删除", "details": None},
             }
 
-        deleted = kb_manager.delete_kb(kb_id)
+        with _INDEX_MUTATION_LOCK:
+            deleted = kb_manager.delete_kb(kb_id)
         if not deleted:
             return {
                 "success": False,
@@ -920,6 +1147,7 @@ def rename_collection(kb_id: str, payload: RenameKBRequest, user: dict = Depends
                     "success": False,
                     "error": {"code": "INVALID_REQUEST", "message": "名称不能为空", "details": None},
                 }
+            _get_kb_manager().invalidate_search_cache()
             return {"success": True, "data": {"kb_id": kb_id, "old_name": old_name, "new_name": kb.name}}
     except Exception as e:
         logger.exception("重命名知识库失败")
@@ -1340,64 +1568,12 @@ async def kb_import(
                 f"Embedding model mismatch: source={source_model}, target={kb.embedding_model}"
             )
 
-        imported = kb_manager.import_kb(kb_id, export_data)
-
-        # Create KnowledgeDoc records keyed by the SOURCE doc_id stored in
-        # each chunk's metadata. This is critical: ChromaDB stores vectors
-        # with the original doc_id, so the DB record's doc_id MUST match for
-        # delete to actually remove vectors. Previously we generated a new
-        # uuid here, which meant imports could never be cleaned up.
-        if imported > 0:
-            metadatas = export_data.get("data", {}).get("metadatas", []) or []
-            source_name = export_data.get("name", "未知")
-            chunk_method = export_data.get("chunk_method", "hybrid")
-
-            # Group chunks by source doc_id → (title, count)
-            doc_groups: dict[str, dict] = {}
-            for meta in metadatas:
-                if not isinstance(meta, dict):
-                    continue
-                src_doc_id = meta.get("doc_id", "")
-                if not src_doc_id:
-                    continue
-                if src_doc_id not in doc_groups:
-                    doc_groups[src_doc_id] = {
-                        "title": meta.get("title") or f"[导入] {source_name}",
-                        "count": 0,
-                    }
-                doc_groups[src_doc_id]["count"] += 1
-
-            with get_db_ctx() as db:
-                for src_doc_id, info in doc_groups.items():
-                    # If a record with this doc_id already exists in the
-                    # target KB (e.g. re-import), update it instead of
-                    # raising a unique constraint violation.
-                    # Filter by kb_id too: doc_id is globally unique, so
-                    # without kb_id we'd match records in OTHER knowledge
-                    # bases and silently reassign them to the target KB.
-                    existing = db.query(KnowledgeDoc).filter(
-                        KnowledgeDoc.kb_id == kb_id,
-                        KnowledgeDoc.doc_id == src_doc_id
-                    ).first()
-                    if existing:
-                        existing.kb_id = kb_id
-                        existing.title = info["title"]
-                        existing.chunk_count = info["count"]
-                        existing.chunk_method_used = chunk_method
-                        existing.status = "indexed"
-                        existing.error_message = None
-                    else:
-                        db.add(KnowledgeDoc(
-                            doc_id=src_doc_id,
-                            kb_id=kb_id,
-                            title=info["title"],
-                            category="imported",
-                            file_type="json",
-                            file_size=0,
-                            chunk_count=info["count"],
-                            chunk_method_used=chunk_method,
-                            status="indexed",
-                        ))
+        async with _INDEX_SEMAPHORE:
+            (imported, import_cancelled) = await _run_index_worker(
+                _import_kb_and_document_records, kb_manager, kb_id, export_data,
+            )
+        if import_cancelled:
+            raise asyncio.CancelledError
 
         return {
             "success": True,

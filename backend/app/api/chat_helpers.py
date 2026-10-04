@@ -20,7 +20,8 @@ from typing import Any
 
 from app.api.common import get_db_ctx, DEFAULT_SYSTEM_PROMPT
 from app.api.attachments import extract_attachment_text
-from app.db.models import TokenUsage
+from app.db.models import Settings as SettingsModel, TokenUsage
+from src.agent.prompts import append_long_term_memory
 from src.config.settings import settings
 from src.llm.client import ChatMessage
 
@@ -28,6 +29,34 @@ logger = logging.getLogger(__name__)
 
 # 附件文本最大字符数（超过则截断）
 _MAX_ATTACHMENT_CHARS_DEFAULT = 8000
+MAX_LONG_TERM_MEMORY_CHARS = 4000
+
+
+def resolve_long_term_memory(payload: Any) -> str:
+    """Return this request's explicit memory or the saved memory when omitted."""
+    fields_set = getattr(payload, "model_fields_set", set())
+    if "long_term_memory" in fields_set:
+        value = getattr(payload, "long_term_memory", None)
+        if not isinstance(value, str):
+            raise ValueError("long_term_memory must be a string when provided")
+        return value
+    return _read_saved_long_term_memory()
+
+
+def _read_saved_long_term_memory() -> str:
+    """Read the saved memory setting without logging its contents."""
+    with get_db_ctx() as db:
+        row = db.query(SettingsModel).filter(
+            SettingsModel.key == "longTermMemory"
+        ).first()
+        value = row.value if row is not None else ""
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError("saved long-term memory is not a string")
+    if len(value) > MAX_LONG_TERM_MEMORY_CHARS:
+        raise ValueError("saved long-term memory exceeds 4000 characters")
+    return value
 
 
 def _classify_relevance(score: float) -> str:
@@ -96,7 +125,12 @@ def _build_chat_history(msgs: Any) -> tuple[list[ChatMessage], str | list[dict]]
     return history, last_user_msg
 
 
-def _build_system_prompt(payload: Any, attachment_texts: list[str], rag_context: str) -> str:
+def _build_system_prompt(
+    payload: Any,
+    attachment_texts: list[str],
+    rag_context: str,
+    long_term_memory: str | None = None,
+) -> str:
     """构建 system_prompt：用户自定义 or 默认 + 附件 + RAG context。"""
     system_prompt = payload.system_prompt if payload.system_prompt is not None else DEFAULT_SYSTEM_PROMPT
     prompt_len = len(payload.system_prompt) if payload.system_prompt else 0
@@ -105,7 +139,10 @@ def _build_system_prompt(payload: Any, attachment_texts: list[str], rag_context:
         system_prompt += "\n\n## 用户附件\n以下内容来自用户上传的附件：\n" + "\n---\n".join(attachment_texts)
     if rag_context:
         system_prompt += f"\n\n## 参考文档片段\n以下内容来自知识库检索，请优先引用：\n{rag_context}"
-    return system_prompt
+    memory = long_term_memory
+    if memory is None:
+        memory = getattr(payload, "long_term_memory", None)
+    return append_long_term_memory(system_prompt, memory)
 
 
 def _build_source_event(r: Any, i: int) -> dict:
