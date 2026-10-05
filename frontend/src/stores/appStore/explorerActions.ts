@@ -74,6 +74,8 @@ function showToastError(message: string): void {
 }
 
 export function createExplorerActions(set: SetFn, get: GetFn): ExplorerActions {
+  const pendingOpenByPath = new Map<string, Promise<void>>();
+
   const saveFileImpl = async (id: string): Promise<boolean> => {
     const file = get().openFiles.find((f) => f.id === id);
     if (!file || !file.dirty) return true;
@@ -222,23 +224,46 @@ export function createExplorerActions(set: SetFn, get: GetFn): ExplorerActions {
         set(() => ({ activeFileId: existing.id }));
         return;
       }
+      const pending = pendingOpenByPath.get(path);
+      if (pending) {
+        await pending;
+        return;
+      }
+
+      const openRequest = (async () => {
+        try {
+          const data = await apiGet<ExplorerReadResponse>(
+            `explorer/read?path=${encodeURIComponent(path)}`,
+          );
+          const item = buildOpenFileItem(data);
+          let added = false;
+          // Recheck in the store update in case another path spelling resolved
+          // to this same server-returned path while the read was pending.
+          set((s) => {
+            const alreadyOpen = s.openFiles.find((file) => file.path === item.path);
+            if (alreadyOpen) {
+              saveActiveFileId(alreadyOpen.id);
+              return { activeFileId: alreadyOpen.id };
+            }
+            const nextFiles = [...s.openFiles, item];
+            saveOpenFiles(nextFiles);
+            saveActiveFileId(item.id);
+            added = true;
+            return { openFiles: nextFiles, activeFileId: item.id };
+          });
+          if (added && data.version) saveFileVersion(data.path || path, data.version);
+        } catch (err) {
+          const detail = err instanceof Error ? err.message : String(err);
+          showToastError(`${t("openFileFailed", "打开文件失败")}: ${detail}`);
+        }
+      })();
+      pendingOpenByPath.set(path, openRequest);
       try {
-        const data = await apiGet<ExplorerReadResponse>(
-          `explorer/read?path=${encodeURIComponent(path)}`,
-        );
-        if (data.version) saveFileVersion(data.path || path, data.version);
-        const item = buildOpenFileItem(data);
-        // Even binary files are added to openFiles so EditorPanel can decide
-        // how to render them (text editor vs image preview).
-        set((s) => {
-          const nextFiles = [...s.openFiles, item];
-          saveOpenFiles(nextFiles);
-          saveActiveFileId(item.id);
-          return { openFiles: nextFiles, activeFileId: item.id };
-        });
-      } catch (err) {
-        const detail = err instanceof Error ? err.message : String(err);
-        showToastError(`${t("openFileFailed", "打开文件失败")}: ${detail}`);
+        await openRequest;
+      } finally {
+        if (pendingOpenByPath.get(path) === openRequest) {
+          pendingOpenByPath.delete(path);
+        }
       }
     },
     closeFile: async (id, action) => {

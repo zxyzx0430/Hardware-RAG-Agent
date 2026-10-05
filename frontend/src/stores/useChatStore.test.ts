@@ -1,13 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { ChatSSEEvent } from "../types/api";
 import type { Session } from "../types/session";
-import { saveSessionMessages, saveToStorage } from "../utils/persistence";
+import { saveToStorage } from "../utils/persistence";
 
-const { apiPostMock, apiGetMock, apiSSEPaths, apiSSEBodies } = vi.hoisted(() => ({
+const { apiPostMock, apiGetMock, apiSSEPaths, apiSSEBodies, settingsValues } = vi.hoisted(() => ({
   apiPostMock: vi.fn(),
   apiGetMock: vi.fn(),
   apiSSEPaths: [] as string[],
   apiSSEBodies: [] as unknown[],
+  settingsValues: { topK: 5, relevanceThreshold: 0 },
 }));
 
 // 捕获 SSE 回调与 controller，便于测试手动驱动事件流
@@ -37,7 +38,7 @@ vi.mock("../utils/broadcast", () => ({
 vi.mock("../stores/useSettingsStore", () => ({
   useSettingsStore: {
     getState: () => ({
-      topK: 5,
+      ...settingsValues,
       temperature: 0.2,
       systemPrompt: "",
       longTermMemory: "",
@@ -107,6 +108,8 @@ describe("useChatStore", () => {
     updateSessionMeta.mockClear();
     apiPostMock.mockReset().mockResolvedValue({ success: true, data: {} });
     apiGetMock.mockReset().mockResolvedValue({ messages: [] });
+    settingsValues.topK = 5;
+    settingsValues.relevanceThreshold = 0;
     apiSSEPaths.length = 0;
     apiSSEBodies.length = 0;
     localStorage.clear();
@@ -116,6 +119,142 @@ describe("useChatStore", () => {
   afterEach(async () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     vi.useRealTimers();
+  });
+
+  it("sends the per-request Top-K and normalized vector threshold from settings", async () => {
+    settingsValues.topK = 7;
+    settingsValues.relevanceThreshold = 50;
+    const store = await importStore();
+    store.setState({ activeSessionId: "s1", messages: [], sessionMessages: {} });
+
+    await store.getState().sendMessage("配置请求参数");
+
+    expect(apiSSEBodies.at(-1)).toMatchObject({ top_k: 7, relevance_threshold: 0.5 });
+  });
+
+  it("restores knowledge-base scope independently for each session and after store reload", async () => {
+    const store = await importStore();
+
+    store.getState().setActiveSession("scope-session-a");
+    store.getState().setSelectedKbIds(["kb-a"]);
+    store.getState().setActiveSession("scope-session-b");
+    expect(store.getState().selectedKbIds).toEqual([]);
+    store.getState().setSelectedKbIds(["kb-b"]);
+    store.getState().setActiveSession("scope-session-a");
+    expect(store.getState().selectedKbIds).toEqual(["kb-a"]);
+
+    vi.resetModules();
+    const refreshedStore = await importStore();
+    expect(refreshedStore.getState().activeSessionId).toBe("scope-session-a");
+    expect(refreshedStore.getState().selectedKbIds).toEqual(["kb-a"]);
+  });
+
+  it("blocks a corrupt saved scope until the user explicitly chooses all enabled KBs", async () => {
+    const sessionId = "corrupt-scope-session";
+    localStorage.setItem("hwrag_active_session", JSON.stringify(sessionId));
+    localStorage.setItem(`hwrag_chat_kb_scope_v1_${encodeURIComponent(sessionId)}`, "{broken");
+    const store = await importStore();
+    store.setState({ messages: [], sessionMessages: {} });
+
+    expect(store.getState().kbScopeIssue).toBe("corrupt");
+    await store.getState().sendMessage("不能默默扩大范围");
+    expect(apiSSEPaths).toEqual([]);
+
+    store.getState().setSelectedKbIds([]);
+    expect(store.getState().kbScopeIssue).toBeNull();
+    await store.getState().sendMessage("明确选择全部");
+    expect(apiSSEPaths).toEqual(["chat"]);
+    const allEnabledScope = (apiSSEBodies.at(-1) as { kb_ids?: string[] }).kb_ids;
+    expect(allEnabledScope === undefined || allEnabledScope.length === 0).toBe(true);
+  });
+
+  it("blocks deleted or disabled KB IDs and permits an explicit scope repair", async () => {
+    apiGetMock.mockImplementation(async (path: string) => {
+      if (path === "kb/collections") {
+        return { collections: [{ id: "kb-a", enabled: true }, { id: "kb-b", enabled: false }] };
+      }
+      return { messages: [] };
+    });
+    const store = await importStore();
+    store.setState({ activeSessionId: "scope-validation-session", messages: [], sessionMessages: {} });
+    store.getState().setSelectedKbIds(["kb-a", "kb-b", "kb-deleted"]);
+
+    await store.getState().sendMessage("范围含有不可用 KB");
+
+    expect(store.getState().kbScopeIssue).toBe("unavailable");
+    expect(apiSSEPaths).toEqual([]);
+
+    store.getState().beginKbScopeRepair();
+    expect(store.getState().kbScopeIssue).toBe("repair");
+    store.getState().toggleKbSelection("kb-a");
+    expect(store.getState().kbScopeIssue).toBeNull();
+    await store.getState().sendMessage("重新选择可用 KB");
+
+    await vi.waitFor(() => expect(apiSSEPaths).toEqual(["chat"]));
+    expect(apiSSEBodies.at(-1)).toMatchObject({ kb_ids: ["kb-a"] });
+  });
+
+  it("同一知识库验证等待期间的重复发送只发起一个聊天请求", async () => {
+    const resolvers: Array<(value: { collections: Array<{ id: string; enabled: boolean }> }) => void> = [];
+    apiGetMock.mockImplementation((path: string) => path === "kb/collections"
+      ? new Promise<{ collections: Array<{ id: string; enabled: boolean }> }>((resolve) => resolvers.push(resolve))
+      : Promise.resolve({ messages: [] }));
+    const store = await importStore();
+    store.setState({ activeSessionId: "race-session", messages: [], sessionMessages: {}, selectedKbIds: ["kb-a"], isStreaming: false });
+
+    const first = store.getState().sendMessage("第一条模拟发送");
+    const second = store.getState().sendMessage("重复的模拟发送");
+    expect(resolvers).toHaveLength(1);
+    resolvers[0]({ collections: [{ id: "kb-a", enabled: true }] });
+    await Promise.all([first, second]);
+
+    expect(apiSSEPaths).toEqual(["chat"]);
+    expect(apiSSEBodies).toHaveLength(1);
+  });
+
+  it("知识库验证等待期间切换会话后，请求仍归属原会话并按后台流恢复", async () => {
+    let resolveScope: ((value: { collections: Array<{ id: string; enabled: boolean }> }) => void) | undefined;
+    apiGetMock.mockImplementation((path: string) => path === "kb/collections"
+      ? new Promise<{ collections: Array<{ id: string; enabled: boolean }> }>((resolve) => { resolveScope = resolve; })
+      : Promise.resolve({ messages: [] }));
+    const store = await importStore();
+    store.setState({ activeSessionId: "race-old-session", messages: [], sessionMessages: {}, selectedKbIds: ["kb-a"], isStreaming: false });
+
+    const sending = store.getState().sendMessage("原会话模拟提问");
+    await vi.waitFor(() => expect(resolveScope).toBeTypeOf("function"));
+    store.getState().setActiveSession("race-new-session");
+    resolveScope?.({ collections: [{ id: "kb-a", enabled: true }] });
+    await sending;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(store.getState().activeSessionId).toBe("race-new-session");
+    expect(store.getState().messages).toEqual([]);
+    expect(store.getState().isStreaming).toBe(false);
+    expect(store.getState().backgroundSseRequests.has("race-old-session")).toBe(true);
+    expect(apiSSEBodies[0]).toMatchObject({ session_id: "race-old-session", kb_ids: ["kb-a"] });
+
+    store.getState().setActiveSession("race-old-session");
+    expect(store.getState().isStreaming).toBe(true);
+    expect(store.getState().streamingSessionId).toBe("race-old-session");
+    expect(store.getState().messages[0].content).toBe("原会话模拟提问");
+  });
+
+  it("验证等待期间知识库选择变化时仍只发送已验证的范围快照", async () => {
+    let resolveScope: ((value: { collections: Array<{ id: string; enabled: boolean }> }) => void) | undefined;
+    apiGetMock.mockImplementation((path: string) => path === "kb/collections"
+      ? new Promise<{ collections: Array<{ id: string; enabled: boolean }> }>((resolve) => { resolveScope = resolve; })
+      : Promise.resolve({ messages: [] }));
+    const store = await importStore();
+    store.setState({ activeSessionId: "race-scope-session", messages: [], sessionMessages: {}, selectedKbIds: ["kb-a"], isStreaming: false });
+
+    const sending = store.getState().sendMessage("知识库范围模拟提问");
+    await vi.waitFor(() => expect(resolveScope).toBeTypeOf("function"));
+    store.getState().setSelectedKbIds(["kb-b"]);
+    resolveScope?.({ collections: [{ id: "kb-a", enabled: true }, { id: "kb-b", enabled: true }] });
+    await sending;
+
+    expect(store.getState().selectedKbIds).toEqual(["kb-b"]);
+    expect(apiSSEBodies[0]).toMatchObject({ kb_ids: ["kb-a"] });
   });
 
   it("处理 thinking / text / source / done 事件并更新消息", async () => {
@@ -720,7 +859,13 @@ describe("useChatStore", () => {
 
   it("resume stop 的既有 user-stopped 终态不报异常并清理续跑状态", async () => {
     const userMessage = { id: "user-resume-stop", role: "user" as const, content: "停止", timestamp: 1 };
-    const assistantMessage = { id: "assistant-resume-stop", role: "assistant" as const, content: "停止前的回答", timestamp: 2 };
+    const assistantMessage = {
+      id: "assistant-resume-stop",
+      role: "assistant" as const,
+      content: "停止前的回答",
+      timestamp: 2,
+      sources: [{ id: "src-stop", title: "停止前来源", doc: "stop.pdf", page: 1, score: 0.8, excerpt: "保留引用" }],
+    };
     const store = await importStore();
     store.setState({
       messages: [userMessage, assistantMessage],
@@ -737,6 +882,16 @@ describe("useChatStore", () => {
       type: "done", success: false, reason: "user stopped",
     } as ChatSSEEvent);
     capturedCallbacks!.onDone!();
+
+    await vi.waitFor(() => expect(apiPostMock.mock.calls
+      .filter((call) => call[0] === "sessions/s1/messages")).toHaveLength(2));
+    const persistedMessages = apiPostMock.mock.calls
+      .filter((call) => call[0] === "sessions/s1/messages")
+      .map((call) => call[1] as Record<string, unknown>);
+    expect(persistedMessages.map((message) => message.id)).toEqual([userMessage.id, assistantMessage.id]);
+    expect(persistedMessages[1].sources).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "src-stop" }),
+    ]));
 
     expect(store.getState().messages[1].content).toBe("停止前的回答");
     expect(store.getState().messages[1].activity?.status).toBe("done");
@@ -789,7 +944,6 @@ describe("useChatStore", () => {
     expect(serverMessages.has(assistantId)).toBe(false);
 
     // Simulate refresh: Zustand is recreated while localStorage remains intact.
-    saveSessionMessages(sessionId, store.getState().sessionMessages[sessionId]);
     vi.resetModules();
     capturedCallbacks = null;
     apiSSEPaths.length = 0;
@@ -856,7 +1010,6 @@ describe("useChatStore", () => {
     await vi.waitFor(() => expect(store.getState().pendingSaveBySession?.[sessionId]).toBe("pending"));
     expect(serverMessages.has(userMessage.id)).toBe(true);
     expect(serverMessages.has(assistantMessage.id)).toBe(false);
-    saveSessionMessages(sessionId, store.getState().sessionMessages[sessionId]);
     vi.resetModules();
     capturedCallbacks = null;
     apiSSEPaths.length = 0;
@@ -874,5 +1027,91 @@ describe("useChatStore", () => {
     ]));
     expect(refreshedStore.getState().pendingSaveBySession?.[sessionId]).toBeUndefined();
     expect(apiSSEPaths).toEqual([]);
+  });
+
+  it("确认续跑的保存等待首轮写入完成，避免旧回答覆盖新回答", async () => {
+    const sessionId = "racing-confirmation-save-session";
+    saveToStorage("sessions", [{ id: sessionId }]);
+    const serverMessages = new Map<string, Record<string, unknown>>();
+    let assistantWriteCount = 0;
+    let releaseInitialAssistant: (() => void) | undefined;
+    let notifyInitialAssistantStarted: (() => void) | undefined;
+    const initialAssistantStarted = new Promise<void>((resolve) => {
+      notifyInitialAssistantStarted = resolve;
+    });
+    const initialAssistantGate = new Promise<void>((resolve) => {
+      releaseInitialAssistant = resolve;
+    });
+    apiPostMock.mockImplementation(async (path: string, payload: Record<string, unknown>) => {
+      if (path !== `sessions/${sessionId}/messages`) return { success: true, data: {} };
+      if (payload.role === "assistant" && assistantWriteCount++ === 0) {
+        notifyInitialAssistantStarted?.();
+        await initialAssistantGate;
+      }
+      serverMessages.set(String(payload.id), { ...payload });
+      return { success: true, data: { id: payload.id } };
+    });
+
+    const store = await importStore();
+    store.setState({
+      messages: [],
+      sessionMessages: {},
+      activeSessionId: sessionId,
+      isStreaming: false,
+    });
+    store.getState().sendMessage("需要确认的操作");
+    capturedCallbacks!.onEvent({ type: "text", content: "确认前回答" });
+    capturedCallbacks!.onEvent({
+      type: "source",
+      id: "src-before-confirm",
+      title: "确认前来源",
+      doc: "before.pdf",
+      page: 1,
+      score: 0.8,
+      excerpt: "首轮来源",
+    });
+    capturedCallbacks!.onEvent({
+      type: "tool_confirm_required",
+      calls: [{ name: "write_file", args: { path: "out.txt" }, call_id: "confirm-save", risk_level: "high" }],
+      count: 1,
+    });
+    capturedCallbacks!.onEvent({
+      type: "done",
+      success: true,
+      completed: false,
+      awaiting_confirmation: true,
+    } as ChatSSEEvent);
+    capturedCallbacks!.onDone!();
+    await initialAssistantStarted;
+
+    const [userId, assistantId] = store.getState().sessionMessages[sessionId].map((message) => message.id);
+    store.getState().resumeAgent("allow");
+    capturedCallbacks!.onEvent({ type: "text", content: "，续跑完成" });
+    capturedCallbacks!.onEvent({
+      type: "source",
+      id: "src-after-confirm",
+      title: "续跑来源",
+      doc: "after.pdf",
+      page: 2,
+      score: 0.95,
+      excerpt: "续跑来源",
+    });
+    capturedCallbacks!.onEvent({ type: "done", success: true, completed: true });
+    capturedCallbacks!.onDone!();
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const writesBeforeInitialSaveSettles = apiPostMock.mock.calls
+      .filter((call) => call[0] === `sessions/${sessionId}/messages`).length;
+    releaseInitialAssistant?.();
+    await vi.waitFor(() => expect(store.getState().pendingSaveBySession?.[sessionId]).toBeUndefined());
+
+    expect([...serverMessages.keys()].sort()).toEqual([userId, assistantId].sort());
+    expect(serverMessages.get(assistantId)?.content).toBe("确认前回答，续跑完成");
+    expect(writesBeforeInitialSaveSettles).toBe(2);
+    expect(serverMessages.get(assistantId)?.sources).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "src-before-confirm" }),
+      expect.objectContaining({ id: "src-after-confirm" }),
+    ]));
+    expect(apiSSEPaths).toEqual(["chat", "agent-sandbox/resume"]);
   });
 });

@@ -15,6 +15,7 @@ called by sse_adapter when the needs_compact flag is set.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from dataclasses import dataclass
@@ -111,11 +112,30 @@ async def _call_summarizer(early: list, llm_client: Any) -> str:
     if llm_client is None:
         return ""
     text = _format_early_for_summary(early)
-    response = await llm_client.chat(
-        _SUMMARIZER_PROMPT + text,
-        system_prompt=_SUMMARIZER_SYSTEM,
-    )
-    return _extract_response_text(response)
+    from src.agent.telemetry import current_agent_timing
+    timing = current_agent_timing()
+    run_id = object()
+    if timing is not None:
+        timing.begin_model_call(run_id, kind="compaction_summarizer")
+    try:
+        response = await llm_client.chat(
+            _SUMMARIZER_PROMPT + text,
+            system_prompt=_SUMMARIZER_SYSTEM,
+        )
+    except asyncio.CancelledError:
+        if timing is not None:
+            timing.end_model_call(run_id, "cancelled")
+        raise
+    except Exception:
+        if timing is not None:
+            timing.end_model_call(run_id, "error")
+        raise
+    summary = _extract_response_text(response)
+    if timing is not None:
+        if summary.strip():
+            timing.first_model_output(run_id, source="response_complete")
+        timing.end_model_call(run_id, "complete")
+    return summary
 
 
 def _extract_response_text(response: Any) -> str:

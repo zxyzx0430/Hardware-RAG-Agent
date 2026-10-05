@@ -18,6 +18,7 @@ from collections import Counter
 from typing import Any, AsyncIterator
 
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
+from langchain_core.runnables.config import merge_configs
 
 from app.api.sse import sse_event
 from src.agent.context_guard import _CUMULATIVE_TOKENS, accumulate_tokens, reset_token_counter
@@ -33,6 +34,12 @@ from src.agent.sse_helpers import (
 )
 from src.agent.streaming_event_bus import register_queue, unregister_queue
 from src.agent.core.toolkit.tool_router import list_registered_tools
+from src.agent.telemetry import (
+    AgentRequestTiming,
+    AgentTimingCallback,
+    get_agent_instance_id,
+    use_agent_timing,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -60,38 +67,58 @@ async def stream_agent_to_sse(
     + auto-resume.
     """
     session_id = config.get("configurable", {}).get("thread_id", "?")
-    logger.info(
-        "stream_agent_to_sse start session=%s",
-        session_id,
-    )
-    call_start_time: dict[str, float] = {}
-    state: dict = init_stream_state(config, model)
-    state["tool_event_queue"] = asyncio.Queue()
-    state["permission_mode"] = permission_mode
-    state["agent"] = agent
-    state["config"] = config
-    register_queue(session_id, state["tool_event_queue"])
-    reset_token_counter()
+    timing = AgentRequestTiming(get_agent_instance_id(agent))
     try:
+        stream_config = merge_configs(config, {"callbacks": [AgentTimingCallback(timing)]})
+    except Exception as exc:
+        timing.mark_model_observation_unavailable(type(exc).__name__)
+        stream_config = dict(config)
+    call_start_time: dict[str, float] = {}
+    state: dict = {}
+    queue_registered = False
+    outcome = "error"
+    error_type: str | None = None
+    try:
+        state = init_stream_state(stream_config, model)
+        state["agent_timing"] = timing
+        state["tool_event_queue"] = asyncio.Queue()
+        state["permission_mode"] = permission_mode
+        state["agent"] = agent
+        state["config"] = stream_config
+        register_queue(session_id, state["tool_event_queue"])
+        queue_registered = True
+        reset_token_counter()
         agent_stream = _iter_agent_sse(
-            agent, events, config, call_counter, call_start_time, state,
+            agent, events, stream_config, call_counter, call_start_time, state,
         )
         try:
             async for sse in agent_stream:
+                timing.observe_sse(sse)
                 yield sse
         finally:
             await agent_stream.aclose()
         from src.agent.hitl_handler import handle_auto_resume
         resume_stream = handle_auto_resume(
-            agent, config, permission_mode, call_counter, call_start_time, state,
+            agent, stream_config, permission_mode, call_counter, call_start_time, state,
         )
         try:
             async for sse in resume_stream:
+                timing.observe_sse(sse)
                 yield sse
         finally:
             await resume_stream.aclose()
+        outcome = timing.completion_outcome()
+    except (asyncio.CancelledError, GeneratorExit):
+        outcome = "cancelled"
+        raise
+    except BaseException as exc:
+        outcome = "error"
+        error_type = type(exc).__name__
+        raise
     finally:
-        unregister_queue(session_id)
+        if queue_registered:
+            unregister_queue(session_id)
+        timing.finish(outcome, error_type=error_type)
     logger.info("stream_agent_to_sse done total_steps=%s", state.get("step_index", 0))
 
 
@@ -333,6 +360,9 @@ def _handle_tool_message(
     sse = convert_tool_message_to_sse(msg, call_start_time, state)
     if sse:
         parts.append(sse)
+    timing = state.get("agent_timing")
+    if timing is not None:
+        timing.finish_tool_call(msg.tool_call_id)
     if _should_compact(state):
         state["needs_compact"] = True
 
@@ -342,6 +372,9 @@ def _emit_tool_calls_from_message(
     call_counter: Counter, call_start_time: dict[str, float], state: dict,
 ) -> None:
     """Emit tool_call SSE events from a complete AIMessage's tool_calls."""
+    timing = state.get("agent_timing")
+    if timing is not None:
+        timing.begin_tool_batch([tc.get("id") for tc in msg.tool_calls])
     for tc in msg.tool_calls[:MAX_TOOL_CALLS_DISPLAY]:
         _emit_tool_call(parts, tc, call_counter, call_start_time, state)
 
@@ -436,16 +469,30 @@ async def _compact_and_apply(
 ) -> bool:
     """Run autocompact, update agent state, reset token counter."""
     from src.agent.compact.autocompact import _make_summary_client, autocompact_messages
-    llm_client = _make_summary_client()
-    compacted = await autocompact_messages(messages, llm_client, context_window)
-    # autocompact_messages returns the same list object when no compaction
-    # happened (should_autocompact False or too few messages). A new list
-    # means compaction ran — apply it even if message count is unchanged
-    # (e.g., 11 msgs → 1 summary + 10 recent = 11, but tokens decreased).
-    if compacted is messages:
-        return False
-    await _apply_compacted(state, compacted)
-    return True
+    timing = state.get("agent_timing")
+    compaction = timing.begin_compaction() if timing is not None else None
+    status = "error"
+    try:
+        with use_agent_timing(timing):
+            llm_client = _make_summary_client()
+            compacted = await autocompact_messages(messages, llm_client, context_window)
+            # The same list means no work was needed. A new list can have the
+            # same length while replacing older messages with a shorter summary.
+            if compacted is messages:
+                status = "no_change"
+                return False
+            await _apply_compacted(state, compacted)
+        status = "applied"
+        return True
+    except asyncio.CancelledError:
+        status = "cancelled"
+        raise
+    except BaseException:
+        status = "error"
+        raise
+    finally:
+        if timing is not None:
+            timing.end_compaction(compaction, status)
 
 
 async def _apply_compacted(state: dict, compacted: list) -> None:

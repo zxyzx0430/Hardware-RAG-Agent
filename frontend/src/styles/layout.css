@@ -37,6 +37,11 @@
 .left-panel-wrap { width: 280px; }
 .right-panel-wrap { width: 100%; }
 
+.app-root #leftPanelWrap {
+  width: var(--layout-left-panel-width, 0px) !important;
+  min-width: var(--layout-left-panel-width, 0px) !important;
+}
+
 .panel-btn-strip {
   display: flex; flex-shrink: 0; align-items: center; justify-content: center;
   width: 18px; position: relative; background: var(--bg);

@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,12 @@ from src.agent.prompts import (
     build_system_prompt,
 )
 from src.llm.client import LLMClient
+from src.agent.telemetry import (
+    AGENT_INSTANCE_ID_ATTR,
+    emit_agent_timing,
+    new_agent_instance_id,
+    utc_timestamp,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -103,40 +110,70 @@ async def create_hardware_agent_from_config(config: AgentConfig) -> Any:
         "create_hardware_agent model=%s enable_hitl=%s tools_count=%s",
         config.model, config.enable_hitl, len(config.tools) if config.tools else 0,
     )
-    llm = _build_llm(
-        config.model, config.api_key, config.base_url,
-        config.temperature, config.max_tokens,
+    agent_instance_id = new_agent_instance_id()
+    build_started_ns = time.perf_counter_ns()
+    build_started_at = utc_timestamp()
+    build_status = "error"
+    instance_id_attached: bool | None = None
+    emit_agent_timing(
+        "agent_build_start",
+        agent_instance_id=agent_instance_id,
+        started_at=build_started_at,
     )
-    interrupt_before = ["tools"] if config.enable_hitl else []
     try:
-        from langchain.agents import create_agent
-        from src.agent.exceptions import ToolContext
-        agent = create_agent(
-            model=llm,
-            tools=config.tools,
-            system_prompt=append_skills_context(
-                append_long_term_memory(build_system_prompt(), config.long_term_memory),
-                config.skills_mode,
-                catalog=config.skills_catalog,
-                manual_skills=config.skills_context,
-            ),
-            middleware=(_TOKEN_MIDDLEWARE,),
-            context_schema=ToolContext,
-            checkpointer=await _get_checkpointer(),
-            interrupt_before=interrupt_before,
+        llm = _build_llm(
+            config.model, config.api_key, config.base_url,
+            config.temperature, config.max_tokens,
         )
+        interrupt_before = ["tools"] if config.enable_hitl else []
+        try:
+            from langchain.agents import create_agent
+            from src.agent.exceptions import ToolContext
+            agent = create_agent(
+                model=llm,
+                tools=config.tools,
+                system_prompt=append_skills_context(
+                    append_long_term_memory(build_system_prompt(), config.long_term_memory),
+                    config.skills_mode,
+                    catalog=config.skills_catalog,
+                    manual_skills=config.skills_context,
+                ),
+                middleware=(_TOKEN_MIDDLEWARE,),
+                context_schema=ToolContext,
+                checkpointer=await _get_checkpointer(),
+                interrupt_before=interrupt_before,
+            )
+        except ImportError as exc:
+            logger.error("langchain.agents import failed: %s", exc)
+            raise
+        except Exception as exc:
+            # bind_tools errors (model lacks function calling) surface here.
+            logger.error("create_agent failed (model may not support tools): %s", exc)
+            raise
+        try:
+            setattr(agent, AGENT_INSTANCE_ID_ATTR, agent_instance_id)
+            instance_id_attached = True
+        except Exception:
+            instance_id_attached = False
         logger.info(
             "hardware_agent_created model=%s hitl=%s recursion_limit=%s",
             config.model, config.enable_hitl, MAX_RECURSION,
         )
+        build_status = "complete"
         return agent
-    except ImportError as exc:
-        logger.error("langchain.agents import failed: %s", exc)
+    except asyncio.CancelledError:
+        build_status = "cancelled"
         raise
-    except Exception as exc:
-        # bind_tools errors (model lacks function calling) surface here.
-        logger.error("create_agent failed (model may not support tools): %s", exc)
-        raise
+    finally:
+        emit_agent_timing(
+            "agent_build_end",
+            agent_instance_id=agent_instance_id,
+            started_at=build_started_at,
+            ended_at=utc_timestamp(),
+            duration_ms=round(max(time.perf_counter_ns() - build_started_ns, 0) / 1_000_000, 3),
+            status=build_status,
+            instance_id_attached=instance_id_attached,
+        )
 
 
 async def create_hardware_agent(
@@ -597,6 +634,7 @@ def _inject_ctx_and_register(tools: list[BaseTool], ctx: Any, register: Any) -> 
 def _build_tool_ctx(payload: Any, skills_runtime: Any = None) -> ToolContext:
     """Build ToolContext from payload's permission_mode + session_id."""
     from src.agent.exceptions import ToolContext
+    from src.agent.tools.groups.retrieval.source_registry import RagSourceRegistry
     mode = getattr(payload, "permission_mode", "default") or "default"
     session_id = getattr(payload, "session_id", "default") or "default"
     kb_ids = getattr(payload, "kb_ids", None)
@@ -608,6 +646,7 @@ def _build_tool_ctx(payload: Any, skills_runtime: Any = None) -> ToolContext:
         skills_mode=skills_mode,
         skills_runtime=skills_runtime,
         kb_scope=kb_scope,
+        rag_source_registry=RagSourceRegistry(),
     )
 
 

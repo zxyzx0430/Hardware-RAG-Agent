@@ -133,6 +133,7 @@ class SearchResult:
     metadata: dict
     score: float
     doc_id: str
+    rank_score: float | None = None
 
 
 class HardwareVectorStore:

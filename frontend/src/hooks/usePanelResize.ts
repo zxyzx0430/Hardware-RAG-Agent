@@ -23,7 +23,12 @@ export function usePanelResize(
   unit: "px" | "pct" = "px",
   getReservedWidth?: () => number
 ) {
-  const startInfo = useRef({ x: 0, w: 0, containerW: 0 });
+  const startInfo = useRef({
+    x: 0,
+    w: 0,
+    containerW: 0,
+    container: null as HTMLElement | null,
+  });
   // Keep latest width in a ref so onMouseDown (stable callback) reads fresh value
   const widthRef = useRef(currentWidth);
   widthRef.current = currentWidth;
@@ -35,18 +40,19 @@ export function usePanelResize(
     (e: React.MouseEvent) => {
       e.preventDefault();
       // Always get parent container width (needed for both pct and px dynamic max)
-      const containerW =
-        (e.currentTarget.parentElement as HTMLElement | null)?.offsetWidth || 1;
-      startInfo.current = { x: e.clientX, w: widthRef.current, containerW };
-      const { x: startX, w: startW, containerW: cw } = startInfo.current;
+      const container = e.currentTarget.parentElement as HTMLElement | null;
+      const containerW = container?.offsetWidth || 1;
+      startInfo.current = { x: e.clientX, w: widthRef.current, containerW, container };
+      const { x: startX, w: startW, containerW: startContainerW } = startInfo.current;
 
       const onMove = (ev: MouseEvent) => {
         const delta = direction === "left" ? ev.clientX - startX : startX - ev.clientX;
         if (unit === "pct") {
-          const deltaPct = (delta / cw) * 100;
+          const deltaPct = (delta / startContainerW) * 100;
           const newPct = Math.min(maxWidth, Math.max(minWidth, startW + deltaPct));
           if (setWidth) setWidth(newPct);
         } else {
+          const cw = startInfo.current.container?.offsetWidth || startContainerW;
           let effectiveMax = maxWidth;
           if (reservedRef.current) {
             const reserved = reservedRef.current();

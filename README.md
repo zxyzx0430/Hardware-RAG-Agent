@@ -58,6 +58,8 @@ RAG 回答里的 `[src1]`、`[src2]` 不是装饰，每个角标都对应知识�
 - 回答末尾汇总所有来源，优先展示 cross-encoder 重排后的高相关片段。
 - 没有匹配到手册的问题，模型会明确说 "我不确定"，而不是硬编。
 
+来源标记有助于核对，但尚未完成全量质量验收，个别回答可能遗漏关键限制或引用依据；采用管脚、电压和烧录参数前，请对照原始手册。未发送的聊天草稿只保存在当前页面内存中，切换会话后切回仍可恢复，刷新页面不会恢复；这与已发送消息的保存流程不同。
+
 ### 4. Vision-LLM 多模态 PDF 切分
 
 上传芯片手册 PDF 后，系统会把每页渲染成图片让 Vision-LLM「看图识章」，再从原始 PDF 抽取真实文本做 embedding：
@@ -94,6 +96,8 @@ RAG 回答里的 `[src1]`、`[src2]` 不是装饰，每个角标都对应知识�
 
 工作台的软件功能已经接入，真实开发板上的串口连接、日志接收和断开已验证。固件烧录及烧录后的自动重连仍需实机验收。
 
+窄屏展开或调整面板时，布局过渡期间可能短暂裁切工作台控件；等待布局稳定，或先折叠其他面板再操作。
+
 Agent 不只会写代码，还能真的和板子交互：
 
 - **串口扫描**：代码通过 pyserial 枚举可用串口。
@@ -115,22 +119,40 @@ Agent 不只会写代码，还能真的和板子交互：
 
 ## 快速开始
 
-需要 Python 3.10+、Node.js 20+。以下命令会把 Python 依赖装进项目自己的隔离环境，不会弄乱电脑里其他 Python 项目。
+需要 Python 3.10+、Node.js 20+。
+
+### 新环境：首次安装依赖
+
+以下命令会把 Python 依赖装进项目自己的隔离环境，不会弄乱电脑里其他 Python 项目。
 
 ```powershell
 # 后端
 cd backend
 python -m venv .venv
 .\.venv\Scripts\python -m pip install -r requirements.txt
-.\.venv\Scripts\python main.py --web --port 58080
+.\.venv\Scripts\python main.py --web --host 127.0.0.1 --port 58080
 
 # 前端（新终端）
 cd frontend
 npm ci
-npx vite --port 5173
+npx vite --host 127.0.0.1 --port 5173
 ```
 
 macOS / Linux 请把 `.\.venv\Scripts\python` 换成 `./.venv/bin/python`。
+
+### 已准备好的环境：直接启动
+
+如果 Python 环境已经安装 `backend/requirements.txt` 中的依赖，且 `frontend/node_modules` 已存在，可跳过虚拟环境创建、`pip install` 和 `npm ci`。Windows 下从各自目录运行：
+
+```powershell
+# 后端，在 backend/ 目录
+python main.py --web --host 127.0.0.1 --port 58080
+
+# 前端，在 frontend/ 目录
+.\node_modules\.bin\vite.cmd --host 127.0.0.1 --port 5173
+```
+
+新电脑或依赖未准备好的环境仍按上面的首次安装步骤操作。前端固定使用 5173，后端固定使用 58080；启动前先确认端口未被其他进程占用。
 
 浏览器打开 http://127.0.0.1:5173，Vite 会自动把 `/api/*` 代理到后端的 58080。
 首次使用请在界面中创建知识库并上传自己的芯片手册 PDF。预构建的内置知识库尚未发布，不是启动必需项。
@@ -164,7 +186,7 @@ macOS / Linux 请把 `.\.venv\Scripts\python` 换成 `./.venv/bin/python`。
 ## 首次使用提示
 
 - 首次编译 ESP32 固件时 PlatformIO 会自动下载工具链（约 200-500MB，需 5-10 分钟）。
-- 首次启动后端时后台会自动下载 Reranker 模型（约 280MB，用于提升检索质量）。国内用户可设置 `HF_ENDPOINT=https://hf-mirror.com` 加速。
+- 联网启动后端时会后台尝试下载 Reranker 模型（约 280MB，用于提升检索排序）。如果进程设置了 `HF_HUB_OFFLINE=1` 和 `TRANSFORMERS_OFFLINE=1`，而本机又没有缓存该模型，检索会保留融合检索的原排序；这表示 Reranker 不可用，不能视作重排已验证。国内用户可设置 `HF_ENDPOINT=https://hf-mirror.com` 加速。
 
 ---
 
@@ -202,14 +224,14 @@ python -m venv .venv
 ```bash
 # 终端 1：后端（在 backend/ 目录下）
 # Windows
-.\.venv\Scripts\python main.py --web --port 58080
+.\.venv\Scripts\python main.py --web --host 127.0.0.1 --port 58080
 # macOS / Linux
-# ./.venv/bin/python main.py --web --port 58080
+# ./.venv/bin/python main.py --web --host 127.0.0.1 --port 58080
 
 # 终端 2：前端（在项目根目录下）
 cd frontend
 npm ci
-npx vite --port 5173
+npx vite --host 127.0.0.1 --port 5173
 ```
 
 ### 步骤 5：验证
@@ -220,7 +242,7 @@ npx vite --port 5173
 
 > 📢 以下内容请 Agent 在部署完成后，用大白话告诉用户：
 
-- **首次提问会慢一点**：后端正在后台下载 Reranker 模型（280MB），下完后检索质量会更好，耐心等第一次就好。
+- **首次检索会尝试准备 Reranker**：联网时后端会尝试下载模型（约 280MB）；离线且没有本地缓存时会继续使用未经过 Reranker 重排的结果。
 - **首次点"编译"会卡 5-10 分钟**：PlatformIO 在下载 ESP32 工具链（200-500MB），这是正常的，下完后续编译就快了。
 - **硬件工作台需要插板子**：烧录和串口监视需要 ESP32 通过 USB 连到电脑，没插板子这两个功能用不了。
 - **API Key 在设置页可以换**：如果默认 Key 不够用，前端右上角设置页可以添加自己的模型供应商。
@@ -237,9 +259,11 @@ npx vite --port 5173
 .\scripts\dev.ps1
 
 # 或手动
-cd backend  && python main.py --web --port 58080
-cd frontend && npx vite --port 5173
+cd backend  && python main.py --web --host 127.0.0.1 --port 58080
+cd frontend && npx vite --host 127.0.0.1 --port 5173
 ```
+
+`scripts/dev.ps1` 会在 58080 或 5173 已占用时强制结束对应端口的进程。运行前先确认端口占用者；归属不明时不要运行该脚本，先查清并处理端口冲突。
 
 ### 测试命令
 

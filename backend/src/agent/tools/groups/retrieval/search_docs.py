@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field, PrivateAttr
 
 from src.agent.core.toolkit.tool_spec import RiskLevel, ToolSpec
 from src.agent.exceptions import ToolContext
+from src.agent.tools.groups.retrieval.source_registry import get_context_source_registry
 
 logger = logging.getLogger(__name__)
 
@@ -130,15 +131,39 @@ class SearchDocsTool(ToolSpec):
 def _build_search_result(results: list, ctx: ToolContext) -> dict:
     """Build result dict + manage coverage counter on ctx (per-request).
 
-    Source IDs are assigned globally across all search_docs calls within the
-    same request (ctx.source_counter) so src1/src2/... do not collide when the
-    Agent calls search_docs multiple times. The counter advances by the number
-    of small-chunk entries produced (>= FusedResult count after big-chunk merge).
+    The request-local registry reuses IDs for identical evidence and emits each
+    full source entry only once. Its IDs share the request registry allocator
+    with other source-producing tools.
     """
-    start_idx = ctx.source_counter + 1
-    entries, truncated = _build_result_dicts(results, start_idx)
-    ctx.source_counter += len(entries)
-    output_dict = _format_output_from_entries(entries, truncated)
+    candidate_entries, truncated = _build_result_dicts(results, 1)
+    registry = get_context_source_registry(ctx)
+    identity_entries = [
+        {
+            "kb_id": entry.get("kb_id"),
+            "doc_id": entry.get("doc"),
+            "big_chunk_id": entry.get("big_chunk_id"),
+            "small_chunk_id": entry.get("small_chunk_id"),
+            "chunk_index": entry.get("chunk_index"),
+            "content": entry.get("_identity_content", entry.get("content")),
+            "small_chunk_text": entry.get("small_chunk_text"),
+        }
+        for entry in candidate_entries
+    ]
+    for entry in candidate_entries:
+        entry.pop("_identity_content", None)
+    registrations = registry.register_many(identity_entries, context=ctx)
+    entries: list[dict] = []
+    reused_ids: list[str] = []
+    for entry, registration in zip(candidate_entries, registrations):
+        entry["id"] = registration.source_id
+        if registration.is_new:
+            entries.append(entry)
+        else:
+            reused_ids.append(registration.source_id)
+
+    output_dict = _format_output_from_entries(
+        entries, truncated and bool(entries), reused_ids,
+    )
     max_score = _extract_max_score(results)
     hint = _update_coverage_counter(ctx, max_score)
     output_dict["kb_coverage_hint"] = hint
@@ -157,11 +182,22 @@ def _update_coverage_counter(ctx: ToolContext, max_score: float) -> str | None:
     return None
 
 
-def _format_output_from_entries(entries: list[dict], truncated: bool) -> dict:
+def _format_output_from_entries(
+    entries: list[dict], truncated: bool, reused_ids: list[str] | None = None,
+) -> dict:
     """Build the dict returned by SearchDocsTool: summary + full-source entries."""
-    if not entries:
+    reused_ids = reused_ids or []
+    if not entries and not reused_ids:
         return {"output": "未找到相关文档片段。", "results": [], "truncated": False}
-    summary = _build_search_summary(entries, len(entries))
+    if entries:
+        summary = _build_search_summary(entries, len(entries), reused_ids)
+    else:
+        references = ", ".join(f"[{source_id}]" for source_id in reused_ids)
+        summary = (
+            f"本轮前序搜索已包含相同证据：{references}。"
+            "本次省略重复正文和来源卡片；需要时复用原引用。"
+            "\n回答时必须用 [srcN] 格式引用已返回的来源。"
+        )
     return {"output": summary, "results": entries, "truncated": truncated}
 
 
@@ -177,8 +213,9 @@ def _build_result_dicts(results: list, start_idx: int = 1) -> tuple[list[dict], 
 
     Each FusedResult yields 1..N entries: one per small chunk when the result
     was merged from a big chunk (content = big-chunk text shared across the
-    group), or a single entry for standalone results. [srcN] ids are continuous
-    across all small chunks in FusedResult order then small_chunks order.
+    group), or a single entry for standalone results. Candidate order follows
+    FusedResult order then small_chunks order; the source registry assigns the
+    final [srcN] IDs afterward.
     """
     out: list[dict] = []
     did_truncate = False
@@ -194,8 +231,9 @@ def _build_result_dicts(results: list, start_idx: int = 1) -> tuple[list[dict], 
 def _expand_result_entries(r: Any, start: int) -> tuple[list[dict], bool, int]:
     """Expand one FusedResult into 1..N small-chunk entries; return (entries, truncated, next_idx)."""
     chunks = _get_small_chunks(r) or [_standalone_chunk_info(r)]
-    content, truncated = _truncate_chunk_content(getattr(r, "content", "") or "")
-    base = _entry_base(r, content)
+    full_content = getattr(r, "content", "") or ""
+    content, truncated = _truncate_chunk_content(full_content)
+    base = _entry_base(r, content, full_content)
     entries = [_overlay_small_chunk(base, sc, start + i) for i, sc in enumerate(chunks)]
     return entries, truncated, start + len(chunks)
 
@@ -218,12 +256,13 @@ def _standalone_chunk_info(r: Any) -> dict:
     }
 
 
-def _entry_base(r: Any, content: str) -> dict:
+def _entry_base(r: Any, content: str, identity_content: str) -> dict:
     """Build shared fields (from FusedResult + metadata) for all entries in a group."""
     meta = getattr(r, "metadata", {}) or {}
     return {
         "doc": getattr(r, "doc_id", "") or meta.get("doc_id", ""),
         "content": content,
+        "_identity_content": identity_content,
         "title": meta.get("title", "未知来源"),
         "page_start": meta.get("page_start"),
         "page_end": meta.get("page_end"),
@@ -258,7 +297,9 @@ def _truncate_chunk_content(full: str) -> tuple[str, bool]:
     return full[:MAX_CHUNK_CHARS] + TRUNCATE_SUFFIX, True
 
 
-def _build_search_summary(simplified: list[dict], total: int) -> str:
+def _build_search_summary(
+    simplified: list[dict], total: int, reused_ids: list[str] | None = None,
+) -> str:
     """Render summary with doc_id §section pXX so LLM can detect wrong-document fast."""
     lines = [f"找到 {total} 条相关片段："]
     for r in simplified[:SUMMARY_TOP_N]:
@@ -267,6 +308,12 @@ def _build_search_summary(simplified: list[dict], total: int) -> str:
         lines.append(f"  [{sid}] {_format_summary_header(r)} (相关度 {score_pct}%)")
     if total > SUMMARY_TOP_N:
         lines.append(f"  ...共 {total} 条，当前显示前 {SUMMARY_TOP_N} 条。")
+    if reused_ids:
+        references = ", ".join(f"[{source_id}]" for source_id in reused_ids)
+        lines.append(
+            f"本轮前序搜索已有相同证据：{references}。"
+            "已省略重复正文和来源卡片；需要时复用原引用。"
+        )
     lines.append("回答时必须用 [srcN] 格式引用上述片段，N 对应 src1/src2/...")
     return "\n".join(lines)
 

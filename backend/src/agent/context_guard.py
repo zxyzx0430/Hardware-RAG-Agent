@@ -13,7 +13,6 @@ import time
 from contextvars import ContextVar
 from typing import Any
 
-from app.api.sse import sse_event
 from src.agent.exceptions import AgentTimeoutError, ContextLimitError
 from src.agent.prompts import MAX_TOKEN_RATIO, TOOL_CALL_TIMEOUT_S
 from src.llm.client import LLMClient
@@ -77,6 +76,8 @@ def check_tool_timeout(call_start_time: dict[str, float], call_id: str) -> None:
 
 def context_limit_event(exc: ContextLimitError) -> str:
     """Build the SSE error event for cumulative-token overflow."""
+    from app.api.sse import sse_event
+
     return sse_event("error", {
         "code": "CONTEXT_LIMIT",
         "message": f"上下文超长（{exc.cumulative} > {exc.limit}），降级为基础模式",
@@ -85,6 +86,8 @@ def context_limit_event(exc: ContextLimitError) -> str:
 
 def timeout_event(exc: AgentTimeoutError) -> str:
     """Build the SSE error event for wall-clock timeout."""
+    from app.api.sse import sse_event
+
     return sse_event("error", {
         "code": "AGENT_TIMEOUT",
         "message": f"Agent 执行超时（{exc.elapsed:.0f}s > {exc.limit}s），降级为基础模式",

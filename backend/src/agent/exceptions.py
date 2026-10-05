@@ -26,6 +26,7 @@ class ToolContext:
     kb_scope: tuple[str, ...] | None = None
     request_tools: dict[str, Any] = field(default_factory=dict, repr=False)
     mcp_authorization: Any = field(default=None, repr=False)
+    rag_source_registry: Any = field(default=None, repr=False, compare=False)
 
 
 class PermissionAskError(Exception):

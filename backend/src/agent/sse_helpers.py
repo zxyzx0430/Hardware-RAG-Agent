@@ -86,9 +86,8 @@ def build_source_events(result: dict) -> list[str]:
 
     Prefers ToolResultEnvelope shape (result["data"]["results"]); falls back
     to legacy shape (result["results"]) for tools not yet migrated.
-    Source IDs are taken from the result dict (assigned globally by
-    SearchDocsTool via ToolContext.source_counter) so multiple search_docs
-    calls in one request do not collide.
+    Source IDs are taken from the result dict after request-registry allocation,
+    so RAG and web_search results share one collision-free sequence.
     """
     if not isinstance(result, dict):
         return []

@@ -128,7 +128,11 @@ async def test_chat_agent_builder_forwards_the_resolved_memory(
     marker = "Use the board's default I2C pins."
     captured: dict[str, object] = {}
 
-    monkeypatch.setattr(chat_routes, "build_tools", lambda _payload: [])
+    def fake_build_tools(_payload, **kwargs):
+        captured["tool_context"] = kwargs["tool_context"]
+        return []
+
+    monkeypatch.setattr(chat_routes, "build_tools", fake_build_tools)
 
     async def fake_create_hardware_agent(**kwargs):
         captured.update(kwargs)
@@ -144,6 +148,7 @@ async def test_chat_agent_builder_forwards_the_resolved_memory(
     )
 
     assert captured["long_term_memory"] == marker
+    assert captured["tool_context"].rag_source_registry is not None
 
 
 @pytest.mark.asyncio

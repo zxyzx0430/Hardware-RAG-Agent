@@ -6,11 +6,13 @@
 
 ## 快速开始
 
-DeepEval 是开发评测工具，不是启动项目的必需依赖。请使用 Python 3.10-3.12，在已安装后端依赖的环境中额外执行：
+DeepEval 是开发评测工具，不是启动项目的必需依赖。请使用独立的 Python 3.10-3.12 判分环境安装下列依赖；后端在原运行环境单独启动，不把现代后端依赖与固定 DeepEval 的旧依赖 API 混装：
 
 ```bash
 python -m pip install -r requirements-eval.txt
 ```
+
+`requirements-eval.txt` 仅安装评测所需依赖，不再递归安装 `requirements.txt`。这不是后端启动环境：它通过 HTTP 访问已经启动的后端，或读取已保存的答案离线准备、在线判分。2026-10-04 实际配置使用 Python 3.12.14 / DeepEval 1.5.5，完整依赖版本与本机重现记录见 `docs/testing.md`；其他 Python 版本尚未在这轮验收。
 
 ### 1. 仅校验数据集格式（不调用 API）
 
@@ -54,6 +56,10 @@ Embedding 模型，可能产生 API 费用。不要把私人手册用于公开�
 py -3.12 -m venv .venv-eval
 .\.venv-eval\Scripts\python.exe -m pip install -r requirements-eval.txt
 ```
+
+未安装 `py` 启动器时，使用实际 Python 3.12 可执行文件的绝对路径替换 `py -3.12`。评测环境不要覆盖后端的 `.venv`；完整模型兼容与判分成功需另验收，安装成功或数据集校验通过本身不会产生质量分数。
+
+本机 `Text` 接口需要自定义 `DeepEvalBaseLLM` 适配器：DeepEval 1.5.5 的字符串模型白名单不能直接接受 `--judge-model Text`。2026-10-04 的受限验证包装器和依赖锁保留在项目外 `E:/Desktop/agent-acceptance-artifacts/20261004-release-deepeval/`；输入及提交经过冻结，不是任意新版本的默认评测入口。真实指标仍有格式/服务失败，详细分母与边界见 [测试记录](../../../docs/testing.md#2026-10-04-独立-deepeval-环境)及 [质量报告第 9 节](../../../docs/rag-quality-baseline.md#9-2026-10-04-发布与独立-deepeval-验收)。
 
 每个 DeepEval 指标默认只有一次异步尝试，单项 deadline 为 90 秒，可用
 `--metric-timeout` 调整；SSE 单次读取默认 45 秒，可用 `--chat-read-timeout`

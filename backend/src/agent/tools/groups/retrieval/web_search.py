@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field, PrivateAttr
 from src.agent.core.toolkit.tool_spec import RiskLevel, ToolSpec
 from src.agent.exceptions import ToolContext
 from src.agent.tools.groups.retrieval.search_docs import build_source_event_from_dict
+from src.agent.tools.groups.retrieval.source_registry import get_context_source_registry
 
 logger = logging.getLogger(__name__)
 
@@ -135,11 +136,11 @@ def _extract_results(raw: Any) -> list[dict]:
 
 
 def _simplify_results(results: list[dict], ctx: ToolContext) -> list[dict]:
-    """Truncate each result and assign global srcN IDs via ToolContext.source_counter."""
+    """Truncate results and allocate request-global IDs without RAG deduplication."""
     out: list[dict] = []
-    for r in results:
-        ctx.source_counter += 1
-        src_id = f"src{ctx.source_counter}"
+    registry = get_context_source_registry(ctx)
+    source_ids = registry.allocate_ids(len(results), context=ctx)
+    for r, src_id in zip(results, source_ids):
         score = _clamp_score(r.get("score", 0.0))
         content = (r.get("content") or "")[:MAX_RESULT_CHARS]
         title = (r.get("title", "") or "(untitled)")[:_TITLE_MAX_CHARS]

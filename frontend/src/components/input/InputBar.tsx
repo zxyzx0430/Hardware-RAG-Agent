@@ -419,16 +419,18 @@ export function InputBar() {
           <div className="input-actions">
             <div className="input-left">
               <button
-                className={`input-btn${templatePanelOpen ? " active" : ""}`}
+                className={`input-btn input-btn-labeled${templatePanelOpen ? " active" : ""}`}
                 title={t('templateBtn')}
                 onClick={() => setTemplatePanelOpen(!templatePanelOpen)}
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                <span className="input-btn-label">{t('templateBtn')}</span>
               </button>
-              <button className="input-btn" title={t('attachBtn')} onClick={() => fileInputRef.current?.click()}>
+              <button className="input-btn input-btn-labeled" title={t('attachBtn')} onClick={() => fileInputRef.current?.click()}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
                 </svg>
+                <span className="input-btn-label">{t('attachBtn')}</span>
               </button>
 
               <div className="model-selector" id="modelSelector" ref={dropdownRef} onClick={() => setShowModelDropdown((v) => !v)}>

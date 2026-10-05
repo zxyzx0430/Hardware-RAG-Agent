@@ -256,8 +256,9 @@ async def test_chat_agent_builder_reuses_runtime_and_passes_only_expected_contex
     )
     captured: dict[str, object] = {}
 
-    def fake_build_tools(_payload, *, skills_runtime=None):
+    def fake_build_tools(_payload, *, skills_runtime=None, mcp_tools=(), tool_context=None):
         captured["tool_runtime"] = skills_runtime
+        captured["tool_context"] = tool_context
         return []
 
     async def fake_create_hardware_agent(**kwargs):
@@ -273,6 +274,8 @@ async def test_chat_agent_builder_reuses_runtime_and_passes_only_expected_contex
     )
 
     assert captured["tool_runtime"] is runtime
+    assert captured["tool_context"].skills_runtime is runtime
+    assert captured["tool_context"].rag_source_registry is not None
     assert captured["skills_mode"] == mode
     assert captured["enable_hitl"] is False
     if mode == "auto":
@@ -334,6 +337,14 @@ async def test_resume_restores_original_skills_runtime_and_permission_snapshot(
         skills_context=({"skill_id": "synthetic-safe", "instructions": "Synthetic guidance"},),
     )
     session_id = "synthetic-skills-resume-session"
+    snapshot = chat_routes._ensure_request_tool_context(
+        snapshot,
+        ChatRequest(
+            messages=_messages(), session_id=session_id,
+            skills_mode="manual", skill_ids=["synthetic-safe"],
+        ),
+        session_id,
+    )
     chat_routes._clear_pending_request_snapshot(session_id)
     chat_routes._store_pending_request_snapshot(session_id, snapshot)
     monkeypatch.setattr(chat_routes, "_AGENT_PATH_AVAILABLE", True)
@@ -386,7 +397,9 @@ async def test_resume_restores_original_skills_runtime_and_permission_snapshot(
     assert captured["payload"].relevance_threshold == 0.35
     assert captured["payload"].skills_mode == "manual"
     assert captured["payload"].skill_ids == ["synthetic-safe"]
-    assert captured["snapshot"] is snapshot
+    assert captured["snapshot"] is not snapshot
+    assert captured["snapshot"].tool_context is snapshot.tool_context
+    assert captured["snapshot"].rag_source_registry_snapshot["next_id"] == 1
     assert captured["snapshot"].skills_runtime is runtime
     assert chat_routes._get_pending_request_snapshot(session_id) is None
 

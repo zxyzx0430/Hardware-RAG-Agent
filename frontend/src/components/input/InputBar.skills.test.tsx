@@ -30,6 +30,8 @@ beforeEach(() => {
   chatState.sendMessage.mockReset();
   chatState.clearDraft.mockReset();
   chatState.clearSessionAttachments.mockReset();
+  appState.setTemplatePanelOpen.mockReset();
+  appState.templatePanelOpen = false;
   warningMock.mockReset();
   useSkillsStore.setState({
     skills: [
@@ -64,5 +66,22 @@ describe("InputBar Skills request wiring", () => {
     expect(chatState.sendMessage).not.toHaveBeenCalled();
     expect(chatState.clearDraft).not.toHaveBeenCalled();
     expect(warningMock).toHaveBeenCalledWith("手动 Skills 模式至少需要一个仍处于启用状态的技能");
+  });
+
+  it("shows template and attachment names while preserving their button actions", () => {
+    render(<InputBar />);
+
+    const templateButton = screen.getByTitle("templateBtn");
+    const attachmentButton = screen.getByTitle("attachBtn");
+    expect(templateButton.textContent).toContain("templateBtn");
+    expect(attachmentButton.textContent).toContain("attachBtn");
+
+    fireEvent.click(templateButton);
+    expect(appState.setTemplatePanelOpen).toHaveBeenCalledWith(true);
+
+    const fileInput = document.querySelector<HTMLInputElement>('input[type="file"]')!;
+    const fileInputClick = vi.spyOn(fileInput, "click");
+    fireEvent.click(attachmentButton);
+    expect(fileInputClick).toHaveBeenCalledOnce();
   });
 });

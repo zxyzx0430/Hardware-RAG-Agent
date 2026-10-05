@@ -31,7 +31,8 @@ export function SettingsPage() {
   const { setActiveNav, themeMode, setThemeMode, lang, setLang, chatFontSize, setChatFontSize } = useAppStore();
   const {
     providers, chatProviderId, chatModel, imageProviderId, imageModel, visionProviderId, visionModel,
-    temperature, topK, maxTokens, relevanceThreshold, systemPrompt, longTermMemory, skills: tools,
+    temperature, topK, maxTokens, relevanceThreshold, retrievalSettingsStatus, retrievalSettingsStorageIssue,
+    systemPrompt, longTermMemory, skills: tools,
     webSearchConfig, showWebSearchKey, imageGenerationConfig, showImageGenerationKey,
     addProvider, removeProvider, updateProvider, verifyProvider, fetchProviderModels,
     setChatModel, setImageModel, setVisionModel,
@@ -76,6 +77,18 @@ export function SettingsPage() {
     }
   }, [tab, fetchTools]);
   const savedLabel = lang === 'zh' ? '✓ 已保存' : '✓ Saved';
+  const retrievalFeedback = (key: 'topK' | 'relevanceThreshold'): string => {
+    if (retrievalSettingsStorageIssue) {
+      return retrievalSettingsStatus[key] === 'synced' ? t('retrievalSyncedStorageError') : t('retrievalStorageError');
+    }
+    switch (retrievalSettingsStatus[key]) {
+      case 'saving': return t('retrievalSaving');
+      case 'synced': return t('retrievalSynced');
+      case 'local_only': return t('retrievalLocalOnly');
+      case 'read_error': return t('retrievalReadError');
+      default: return '';
+    }
+  };
 
   // 服务商详情 + 新建表单相关状态
   const [selectedProviderId, setSelectedProviderId] = useState<string>("");
@@ -85,13 +98,33 @@ export function SettingsPage() {
   const [showNewProviderKey, setShowNewProviderKey] = useState(false);
   const [showProvKey, setShowProvKey] = useState(false);
   const [verifyLoading, setVerifyLoading] = useState(false);
-  const [verifyError, setVerifyError] = useState(false);
+  const [providerVerificationFeedback, setProviderVerificationFeedback] = useState<{
+    providerId: string;
+    result: Awaited<ReturnType<typeof verifyProvider>>;
+  } | null>(null);
   const [fetchModelsLoading, setFetchModelsLoading] = useState(false);
 
   const selectedProvider = useMemo(
     () => providers.find((p) => p.id === selectedProviderId) || null,
     [providers, selectedProviderId]
   );
+  const selectedProviderVerificationResult =
+    selectedProvider && providerVerificationFeedback?.providerId === selectedProvider.id
+      ? providerVerificationFeedback.result
+      : null;
+  const providerVerificationMessageKey = selectedProviderVerificationResult?.ok === false
+    ? selectedProviderVerificationResult.kind === "local-auth"
+      ? "providerVerifyLocalAuth"
+      : selectedProviderVerificationResult.kind === "model-service"
+        ? "providerVerifyModelService"
+        : selectedProviderVerificationResult.kind === "network"
+          ? "providerVerifyNetwork"
+          : selectedProviderVerificationResult.kind === "timeout"
+            ? "providerVerifyTimeout"
+            : selectedProviderVerificationResult.kind === "empty-models"
+              ? "providerVerifyEmptyModels"
+              : "providerVerifyUnknown"
+    : null;
   const verifiedProviders = useMemo(
     () => providers.filter((p) => p.verified),
     [providers]
@@ -110,12 +143,16 @@ export function SettingsPage() {
   const handleVerifyProvider = useCallback(async () => {
     if (!selectedProvider) return;
     setVerifyLoading(true);
-    setVerifyError(false);
+    setProviderVerificationFeedback(null);
     try {
-      const ok = await verifyProvider(selectedProvider.id);
-      if (!ok) setVerifyError(true);
+      const result = await verifyProvider(selectedProvider.id);
+      if (!result.ok) setProviderVerificationFeedback({ providerId: selectedProvider.id, result });
+      else setProviderVerificationFeedback(null);
     } catch {
-      setVerifyError(true);
+      setProviderVerificationFeedback({
+        providerId: selectedProvider.id,
+        result: { ok: false, kind: "unknown" },
+      });
     } finally {
       setVerifyLoading(false);
     }
@@ -139,8 +176,16 @@ export function SettingsPage() {
     setNewProviderApiKey("");
     setSelectedProviderId(created.id);
     triggerSaved('newProvider');
-    // FIX-8: 自动验证新添加的服务商（store 内部已捕获异常并记录日志，不阻塞 UI）
-    await verifyProvider(created.id);
+    try {
+      const result = await verifyProvider(created.id);
+      if (!result.ok) setProviderVerificationFeedback({ providerId: created.id, result });
+      else setProviderVerificationFeedback(null);
+    } catch {
+      setProviderVerificationFeedback({
+        providerId: created.id,
+        result: { ok: false, kind: "unknown" },
+      });
+    }
   }, [newProviderName, newProviderBaseUrl, newProviderApiKey, addProvider, verifyProvider, triggerSaved]);
 
   const handleDeleteProvider = useCallback(async () => {
@@ -211,9 +256,13 @@ export function SettingsPage() {
                         title={p.verified ? `${p.models.length} ${t('model')}` : (lang === 'zh' ? '未验证' : 'Unverified')}
                       >
                         <span className="provider-name">{p.name}</span>
-                        {p.verified
-                          ? <span className="provider-check ok">✓</span>
-                          : <span className="provider-check pending">?</span>}
+                        {selectedProviderId === p.id &&
+                        providerVerificationFeedback?.providerId === p.id &&
+                        !providerVerificationFeedback.result.ok
+                          ? <span className="provider-check pending">!</span>
+                          : p.verified
+                            ? <span className="provider-check ok">✓</span>
+                            : <span className="provider-check pending">?</span>}
                       </button>
                     ))}
                     {providers.length === 0 && (
@@ -342,8 +391,12 @@ export function SettingsPage() {
                     {savedField === 'provName' && <span className="saved-feedback">{savedLabel}</span>}
                     {savedField === 'provBaseUrl' && <span className="saved-feedback">{savedLabel}</span>}
                     {savedField === 'provApiKey' && !verifyLoading && <span className="saved-feedback">{savedLabel}</span>}
-                    {verifyError && <div style={{ marginTop: 6, fontSize: 12, color: "var(--danger)" }}>{t('invalidKey')}</div>}
-                    {selectedProvider.verified && selectedProvider.models.length > 0 && (
+                    {providerVerificationMessageKey && (
+                      <div style={{ marginTop: 6, fontSize: 12, color: "var(--danger)" }}>
+                        {t(providerVerificationMessageKey)}
+                      </div>
+                    )}
+                    {selectedProvider.verified && selectedProvider.models.length > 0 && !providerVerificationMessageKey && (
                       <div style={{ marginTop: 6, fontSize: 12, color: "var(--success)" }}>
                         {t('verifiedKey')} · {selectedProvider.models.length} {t('model')}
                       </div>
@@ -610,9 +663,9 @@ export function SettingsPage() {
               <div className="settings-section">
                 <h3>{t('ragParams')}</h3>
                 <div style={{ marginBottom: 24 }}><div className="field-label">{t('temperature')}: {temperature}</div><p style={{ fontSize:12,color:'var(--muted-fg)',marginBottom:8 }}>{t('tempDesc')}</p><div className="range-wrap"><span className="range-label">0</span><input type="range" min="0" max="1" step="0.05" value={temperature} onChange={(e) => updateSetting('temperature', parseFloat(e.target.value))} onPointerUp={() => triggerSaved('temperature')} onKeyUp={() => triggerSaved('temperature')} className="range-slider" /><span className="range-label">1</span></div>{savedField === 'temperature' && <span className="saved-feedback">{savedLabel}</span>}</div>
-                <div style={{ marginBottom: 24 }}><div className="field-label">{t('topK')}: {topK}</div><p style={{ fontSize:12,color:'var(--muted-fg)',marginBottom:8 }}>{t('topKDesc')}</p><div className="range-wrap"><span className="range-label">1</span><input type="range" min="1" max="20" step="1" value={topK} onChange={(e) => updateSetting('topK', parseInt(e.target.value))} onPointerUp={() => triggerSaved('topK')} onKeyUp={() => triggerSaved('topK')} className="range-slider" /><span className="range-label">20</span></div>{savedField === 'topK' && <span className="saved-feedback">{savedLabel}</span>}</div>
+                <div style={{ marginBottom: 24 }}><div className="field-label">{t('topK')}: {topK}</div><p style={{ fontSize:12,color:'var(--muted-fg)',marginBottom:8 }}>{t('topKDesc')}</p><div className="range-wrap"><span className="range-label">1</span><input type="range" min="1" max="20" step="1" value={topK} onChange={(e) => void updateSetting('topK', parseInt(e.target.value))} className="range-slider" /><span className="range-label">20</span></div>{retrievalFeedback('topK') && <span className="saved-feedback" role="status" aria-live="polite">{retrievalFeedback('topK')}</span>}</div>
                 <div style={{ marginBottom: 24 }}><div className="field-label">{t('maxTokens')}: {maxTokens}</div><p style={{ fontSize:12,color:'var(--muted-fg)',marginBottom:8 }}>{t('maxTokensDesc')}</p><div className="range-wrap"><span className="range-label">512</span><input type="range" min="512" max="8192" step="256" value={maxTokens} onChange={(e) => updateSetting('maxTokens', parseInt(e.target.value))} onPointerUp={() => triggerSaved('maxTokens')} onKeyUp={() => triggerSaved('maxTokens')} className="range-slider" /><span className="range-label">8192</span></div>{savedField === 'maxTokens' && <span className="saved-feedback">{savedLabel}</span>}</div>
-                <div style={{ marginBottom: 24 }}><div className="field-label">{t('relevanceThreshold')}: {relevanceThreshold === 0 ? (lang === 'zh' ? '关闭' : 'OFF') : `${relevanceThreshold}%`}</div><p style={{ fontSize:12,color:'var(--muted-fg)',marginBottom:8 }}>{t('relevanceThresholdDesc')}</p><div className="range-wrap"><span className="range-label">0</span><input type="range" min="0" max="100" step="5" value={relevanceThreshold} onChange={(e) => updateSetting('relevanceThreshold', parseInt(e.target.value))} onPointerUp={() => triggerSaved('relevanceThreshold')} onKeyUp={() => triggerSaved('relevanceThreshold')} className="range-slider" /><span className="range-label">100</span></div>{savedField === 'relevanceThreshold' && <span className="saved-feedback">{savedLabel}</span>}</div>
+                <div style={{ marginBottom: 24 }}><div className="field-label">{t('relevanceThreshold')}: {relevanceThreshold === 0 ? (lang === 'zh' ? '关闭' : 'OFF') : `${relevanceThreshold}%`}</div><p style={{ fontSize:12,color:'var(--muted-fg)',marginBottom:8 }}>{t('relevanceThresholdDesc')}</p><div className="range-wrap"><span className="range-label">0</span><input type="range" min="0" max="100" step="5" value={relevanceThreshold} onChange={(e) => void updateSetting('relevanceThreshold', parseInt(e.target.value))} className="range-slider" /><span className="range-label">100</span></div>{retrievalFeedback('relevanceThreshold') && <span className="saved-feedback" role="status" aria-live="polite">{retrievalFeedback('relevanceThreshold')}</span>}</div>
                 <div style={{ borderRadius:6,border:'1px solid var(--border)',background:'var(--thinking-bg)',padding:'12px 16px',marginBottom:24 }}><p style={{ fontSize:12,color:'var(--muted-fg)' }}>{t('currentConfig')}: Top-{topK}, Temperature {temperature}, {maxTokens.toLocaleString()} tokens, {t('relevanceThreshold')} {relevanceThreshold === 0 ? (lang === 'zh' ? '关闭' : 'OFF') : `${relevanceThreshold}%`}</p></div>
 
                 <RagSettingsPanel />

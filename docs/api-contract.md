@@ -237,6 +237,7 @@
 | `EXECUTION_TIMEOUT` | 408 | 沙箱执行超时（默认 30s） |
 | `INVALID_POLICY` | 400 | Agent 权限模式 `permission_mode` 缺失或非法（`agent_sandbox_routes.py`） |
 | `INVALID_SETTINGS_KEY` | 400 | 设置键不在白名单（`crud.py`，仅允许 `ALLOWED_SETTINGS_KEYS` 中的键） |
+| `INVALID_RETRIEVAL_SETTING` | 422 | `topK` 或 `relevanceThreshold` 不是有限数，或超出允许范围；批量设置整批不变 |
 | `NOT_FOUND` | 404 | 通用资源未找到（会话/消息等 CRUD 资源不存在，`crud.py`） |
 | `AUTH_REQUIRED` | 401 | 未提供认证 token（`auth.py`，已配置 providers 但请求未带 Bearer token） |
 | `AUTH_INVALID` | 401 | session_token 无效或已过期（`auth.py`，30 天有效期） |
@@ -426,6 +427,8 @@
     { "role": "user", "content": "ESP32 I2C NACK 怎么排查？" }
   ],
   "top_k": 5,
+  "relevance_threshold": 0.5,
+  "kb_ids": ["kb-001"],
   "temperature": 0.2,
   "max_tokens": 8192,
   "system_prompt": "你是一个嵌入式硬件助手",
@@ -457,6 +460,10 @@
 - 字段说明：
   - `messages` 为历史消息数组，最后一条通常为当前用户消息；`content` 支持字符串或 OpenAI 格式的多模态数组 `[{type:"text",text:"..."},{type:"image_url",image_url:{url:"..."}}]`。
   - `top_k`、`temperature`、`max_tokens`、`system_prompt`、`long_term_memory`、`model` 均为可选参数，后端有默认值；`system_prompt` 为空时后端使用默认系统提示词。
+  - 检索范围参数契约（2026-10-04）：`top_k` 限制每次 `search_docs` 检索的候选/结果数，不是整条回答可用来源数上限；`relevance_threshold` 为 `0.0`–`1.0`，前端设置页的 `relevanceThreshold`（`0`–`100`）发送时除以 100；缺省或空数组 `kb_ids` 表示检索全部启用的知识库，非空数组表示限定知识库，不能用空数组关闭 RAG。
+  - 阈值只用于过滤向量检索候选；不据此过滤仅由关键词检索得到的候选，也不把阈值套到 RRF 内部排序分数或 reranker 分数上。来源事件的 `score` 是检索/展示分数，不是答案正确概率，也不是 RRF 内部排序分数。
+  - 来源编号契约（2026-10-04）：`source.id` 使用 `srcN`，编号在一次用户请求内由 RAG 与 web 来源共同分配；同一请求中的相同证据复用编号，独立请求可重新从 `src1` 开始，确认续跑沿用该请求的服务器端来源状态。该状态不是客户端请求或 SSE 字段。
+  - 实现状态边界（F1，2026-10-04）：Agent `ToolContext` 持有服务端来源注册器；新用户请求建立新状态，HITL 确认续跑从服务端请求快照恢复同一状态，客户端请求和 SSE 不携带该对象。冻结候选的全套后端自动化测试为 606 项通过；这不等同于真实 API、浏览器或质量评测验收。当前 `ChatRequest` 字段声明提供类型与默认值，但没有显式的 `top_k` / `relevance_threshold` 范围校验器；本契约约定不代表服务端已对越界聊天参数返回 `422`，也不标记端到端 `verified`。
   - `use_agent`（可选，默认 `false`）：是否走 LangGraph ReAct Agent 主路径；`true` 时后端优先用 Agent，失败降级为基础 LLM 流。
   - `permission_mode`（可选，默认 `"default"`）：Agent 工具调用门控模式，枚举 `"bypassPermissions"`（全放行）/`"default"`（每次询问）/`"acceptEdits"`（低风险自动放行）。
   - `tool_keys`（可选，默认 `{}`）：Agent 工具所需 API Key 注入，目前支持 `tavily`（联网搜索 API Key）和 `tavily_base_url`（可选，Tavily 兼容端点 Base URL，留空时使用官方 Tavily 服务）。
@@ -480,10 +487,10 @@
 
 ```json
 { "type": "thinking", "content": "正在检索知识库...", "source": "rag" }
-{ "type": "source", "id": "chunk-001", "title": "ESP32 Technical Reference Manual", "doc": "doc-001", "page": 42, "score": 0.92, "excerpt": "I2C 总线需要 4.7kΩ 上拉电阻...", "kb_id": "builtin-001", "kb_name": "硬件手册库" }
+{ "type": "source", "id": "src1", "title": "ESP32 Technical Reference Manual", "doc": "doc-001", "page": 42, "score": 0.92, "excerpt": "I2C 总线需要 4.7kΩ 上拉电阻...", "kb_id": "builtin-001", "kb_name": "硬件手册库" }
 { "type": "tool", "name": "search_docs", "icon": "search", "args": { "query": "ESP32 I2C NACK" }, "result": "" }
 { "type": "thinking", "content": "已找到相关资料，正在生成回答。", "source": "reasoning" }
-{ "type": "text", "content": "先检查上拉电阻和时钟配置。" }
+{ "type": "text", "content": "先检查上拉电阻和时钟配置 [src1]。" }
 { "type": "done", "success": true, "usage": { "prompt_tokens": 120, "completion_tokens": 80, "total_tokens": 200 } }
 { "type": "error", "message": "模型调用失败" }
 ```
@@ -1325,6 +1332,12 @@
 - 约束：所有值均为字符串。前端自行做类型转换。
 
 ### 5.19 `PUT /api/settings`
+
+检索设置补充（2026-10-04；当前 F1 候选已通过自动化前后端软件回归，真实服务与浏览器联调仍待验证）：
+
+- `topK` 必须是 1–20 的整数；`relevanceThreshold` 必须是 0–100 的有限数，`0` 表示不按相关度阈值过滤。前端设置页使用 0–100 单位；聊天请求使用 `relevance_threshold` 的 0–1 单位。
+- 任一值非法或超范围时，返回 HTTP `422`、错误码 `INVALID_RETRIEVAL_SETTING`；批量请求在写入前统一校验，失败时整批设置保持原值。
+- 设置接口约束已在 `backend/app/api/crud.py` 中实现；后端全套自动化回归为 606 项通过，前端全套为 99 项通过、lint 无错误且构建通过。当前没有据此标记真实服务/浏览器端到端 `verified`。
 
 手动记忆补充（2026-10-03，后端 `implemented`，界面联调待验证）：
 
@@ -2282,6 +2295,8 @@
 
 | 日期 | 变更内容 | 变更人 |
 | --- | --- | --- |
+| 2026-10-04 | §5.1 登记 F1 的服务端请求来源状态与 HITL 续跑快照边界；§5.19 更新检索设置自动化回归状态。完整门禁为后端 606 项、前端 99 项通过；真实 API/浏览器/质量评测仍未验收，详见 testing.md | 04 工具扩展与安全执行 |
+| 2026-10-04 | §2.14、§5.1、§5.19 补充检索设置范围与原子拒绝、每次检索 top-k、阈值单位/作用范围、空 KB 选择语义及请求内 `srcN` 生命周期；登记当前实现与待接线/待验收边界，不标记端到端 `verified` | 04 工具扩展与安全执行 |
 | 2026-10-04 | §5.1 对齐 webfetch 失败封套、空回答/idle 超时、完成/等待字段；§5.27 对齐续跑错误、等待和主动停止。定向自动化结果见 testing.md，不代表真实网络或全部 RAG 质量验收 | 00 主控 |
 | 2026-10-03 | Skills 管理与记忆字段已实现；MCP 改为 RAM 配置和严格 stdio，确认逐调用绑定 call_id、参数与连接实例，失败不重放；验证边界见 testing.md | 00 主控 |
 | 2026-10-03 | §5.37 约定 Markdown Skills 管理、固定 SHA 的 GitHub 预览/导入及适配诊断；§5.1 登记只读技能模式和记忆快照字段，正在实施，未宣称联调通过 | 00 主控 |

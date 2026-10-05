@@ -9,7 +9,7 @@ import json
 import threading
 import time
 from collections import Counter
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, AsyncIterator, Literal, Optional
 
@@ -109,11 +109,18 @@ class AgentRequestSnapshot:
     skills_runtime: Any = None
     skills_context: tuple[dict, ...] = ()
     mcp_tools: tuple[Any, ...] = ()
-    tool_context: Any = None
+    tool_context: Any = field(default=None, repr=False, compare=False)
     mcp_snapshot_bound: bool = False
+    rag_source_registry_snapshot: dict[str, Any] | None = field(
+        default=None, repr=False, compare=False,
+    )
 
 
-def _ensure_external_tool_snapshot(snapshot: AgentRequestSnapshot, session_id: str) -> AgentRequestSnapshot:
+def _ensure_external_tool_snapshot(
+    snapshot: AgentRequestSnapshot,
+    session_id: str,
+    payload: Any = None,
+) -> AgentRequestSnapshot:
     """Freeze connected tool instances and approvals for this request only."""
     if snapshot.skills_mode != "off" or snapshot.mcp_snapshot_bound or snapshot.tool_context is not None:
         return snapshot
@@ -121,9 +128,9 @@ def _ensure_external_tool_snapshot(snapshot: AgentRequestSnapshot, session_id: s
     tools = get_mcp_manager().connected_tool_specs_snapshot()
     if not tools:
         return replace(snapshot, mcp_snapshot_bound=True)
-    from src.agent.exceptions import ToolContext
     from src.agent.mcp_authorization import MCPRequestAuthorizations
-    ctx = ToolContext(permission_mode=snapshot.permission_mode, session_id=session_id)
+    snapshot = _ensure_request_tool_context(snapshot, payload, session_id)
+    ctx = snapshot.tool_context
     ctx.mcp_authorization = MCPRequestAuthorizations(tools)
     return replace(snapshot, mcp_tools=tools, tool_context=ctx, mcp_snapshot_bound=True)
 
@@ -159,6 +166,33 @@ def _payload_with_request_snapshot(payload: Any, snapshot: AgentRequestSnapshot)
         return payload.model_copy(update=updates)
     copied = payload.__class__(**{**vars(payload), **updates})
     return copied
+
+
+def _ensure_request_tool_context(
+    snapshot: AgentRequestSnapshot,
+    payload: Any,
+    session_id: str,
+) -> AgentRequestSnapshot:
+    """Bind one fresh Agent ToolContext to a new request snapshot."""
+    if snapshot.tool_context is not None:
+        return snapshot
+
+    from src.agent.agent_factory import _build_tool_ctx
+
+    if payload is None:
+        from types import SimpleNamespace
+
+        payload = SimpleNamespace(
+            permission_mode=snapshot.permission_mode,
+            session_id=session_id,
+            kb_ids=list(snapshot.kb_ids) if snapshot.kb_ids is not None else None,
+            top_k=snapshot.top_k,
+            relevance_threshold=snapshot.relevance_threshold,
+            skills_mode=snapshot.skills_mode,
+        )
+    request_payload = _payload_with_request_snapshot(payload, snapshot)
+    context = _build_tool_ctx(request_payload, snapshot.skills_runtime)
+    return replace(snapshot, tool_context=context)
 
 
 def _ensure_skills_runtime(snapshot: AgentRequestSnapshot) -> AgentRequestSnapshot:
@@ -281,6 +315,20 @@ def _prune_pending_agent_snapshots(now: float) -> None:
 def _store_pending_request_snapshot(
     session_id: str | None, snapshot: AgentRequestSnapshot,
 ) -> None:
+    context = snapshot.tool_context
+    if context is None:
+        logger.warning("cannot store resumable Agent request without ToolContext")
+        _clear_pending_request_snapshot(session_id)
+        return
+    try:
+        from src.agent.tools.groups.retrieval.source_registry import get_context_source_registry
+
+        registry_snapshot = get_context_source_registry(context).to_snapshot()
+    except Exception:
+        logger.warning("cannot store resumable Agent request with invalid source registry", exc_info=True)
+        _clear_pending_request_snapshot(session_id)
+        return
+    snapshot = replace(snapshot, rag_source_registry_snapshot=registry_snapshot)
     now = time.monotonic()
     with _PENDING_AGENT_SNAPSHOT_LOCK:
         _prune_pending_agent_snapshots(now)
@@ -294,8 +342,29 @@ def _get_pending_request_snapshot(
     now = time.monotonic()
     with _PENDING_AGENT_SNAPSHOT_LOCK:
         _prune_pending_agent_snapshots(now)
-        snapshot = _PENDING_AGENT_REQUESTS.get(_session_memory_key(session_id))
-        return snapshot[0] if snapshot is not None else None
+        key = _session_memory_key(session_id)
+        pending = _PENDING_AGENT_REQUESTS.get(key)
+        if pending is None:
+            return None
+        snapshot = pending[0]
+        try:
+            if snapshot.tool_context is None or snapshot.rag_source_registry_snapshot is None:
+                raise ValueError("request source registry snapshot is missing")
+            from src.agent.tools.groups.retrieval.source_registry import RagSourceRegistry
+
+            registry = RagSourceRegistry.from_snapshot(snapshot.rag_source_registry_snapshot)
+            snapshot.tool_context.rag_source_registry = registry
+            snapshot.tool_context.source_counter = registry.next_id - 1
+            return replace(snapshot, rag_source_registry_snapshot=registry.to_snapshot())
+        except Exception:
+            # A resumed tool call must never guess request-local evidence state.
+            removed = _PENDING_AGENT_REQUESTS.pop(key, None)
+            if removed is not None:
+                authorization = getattr(removed[0].tool_context, "mcp_authorization", None)
+                if authorization is not None:
+                    authorization.revoke()
+            logger.warning("discarded Agent resume snapshot with invalid source registry", exc_info=True)
+            return None
 
 
 def _store_pending_memory_snapshot(session_id: str | None, memory: str) -> None:
@@ -306,8 +375,13 @@ def _store_pending_memory_snapshot(session_id: str | None, memory: str) -> None:
 
 
 def _get_pending_memory_snapshot(session_id: str | None) -> str | None:
-    snapshot = _get_pending_request_snapshot(session_id)
-    return snapshot.long_term_memory if snapshot is not None else None
+    # Memory-only compatibility reads are not resumable Agent requests and do
+    # not require or synthesize a source registry snapshot.
+    now = time.monotonic()
+    with _PENDING_AGENT_SNAPSHOT_LOCK:
+        _prune_pending_agent_snapshots(now)
+        pending = _PENDING_AGENT_REQUESTS.get(_session_memory_key(session_id))
+        return pending[0].long_term_memory if pending is not None else None
 
 
 def _clear_pending_request_snapshot(session_id: str | None) -> None:
@@ -627,7 +701,8 @@ async def _run_agent_stream(
     snapshot = request_snapshot or _request_snapshot_from_payload(payload, resolved_memory)
     resolved_memory = snapshot.long_term_memory
     snapshot = _ensure_skills_runtime(snapshot)
-    snapshot = _ensure_external_tool_snapshot(snapshot, session_id)
+    request_payload = _payload_with_request_snapshot(payload, snapshot)
+    snapshot = _ensure_external_tool_snapshot(snapshot, session_id, request_payload)
     await reset_thread_checkpoint(session_id)
     _clear_pending_request_snapshot(session_id)
     snapshot, manual_events, manual_load_succeeded = await _preload_manual_skills(
@@ -637,6 +712,8 @@ async def _run_agent_stream(
         yield event
     if not manual_load_succeeded:
         raise RuntimeError("Selected skill instructions could not be loaded")
+    effective_payload = _payload_with_request_snapshot(payload, snapshot)
+    snapshot = _ensure_request_tool_context(snapshot, effective_payload, session_id)
     effective_payload = _payload_with_request_snapshot(payload, snapshot)
     agent = await _build_agent_for_payload(
         effective_payload, creds, resolved_memory, request_snapshot=snapshot,
@@ -695,13 +772,20 @@ async def _build_agent_for_payload(
                 else getattr(payload, "long_term_memory", None) or "",
             )
         )
-    snapshot = _ensure_external_tool_snapshot(snapshot, _session_memory_key(payload.session_id))
-    if snapshot.tool_context is not None:
+    session_id = _session_memory_key(payload.session_id)
+    snapshot = _ensure_external_tool_snapshot(snapshot, session_id, payload)
+    snapshot = _ensure_request_tool_context(snapshot, payload, session_id)
+    if snapshot.skills_mode != "off":
+        tools = build_tools(
+            payload,
+            skills_runtime=snapshot.skills_runtime,
+            mcp_tools=snapshot.mcp_tools,
+            tool_context=snapshot.tool_context,
+        )
+    elif snapshot.tool_context is not None:
         tools = build_tools(payload, mcp_tools=snapshot.mcp_tools, tool_context=snapshot.tool_context)
-    elif snapshot.skills_mode == "off":
-        tools = build_tools(payload)
     else:
-        tools = build_tools(payload, skills_runtime=snapshot.skills_runtime)
+        tools = build_tools(payload)
     enable_hitl = (
         payload.permission_mode != "bypassPermissions"
         and snapshot.skills_mode == "off"

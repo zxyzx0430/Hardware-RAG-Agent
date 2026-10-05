@@ -88,12 +88,11 @@ class FusedResult:
     doc_id: str
     kb_id: str
     kb_name: str
+    rank_score: float | None = None
 
 
-# M5: reranker score blending weights for display score.
-# Reranker sigmoid (cross-encoder relevance) is weighted higher than the RRF
-# fusion score so users see relevance driven by the cross-encoder, with RRF
-# as a tiebreaker. Weights sum to 1.0.
+# Reranker score blending weights for internal ordering. Display scores remain
+# the original vector/BM25 relevance values and are never used as rank scores.
 _RERANKER_WEIGHT: float = 0.7
 _RRF_WEIGHT: float = 0.3
 
@@ -107,21 +106,42 @@ def _sigmoid(logit: float) -> float:
 
 
 def _blend_reranker_score(rrf_score: float, raw_logit: float) -> float:
-    """Blend reranker sigmoid with RRF score: w_reranker*sigmoid + w_rrf*rrf."""
+    """Blend the cross-encoder score with the actual RRF score for ordering."""
     return _RERANKER_WEIGHT * _sigmoid(raw_logit) + _RRF_WEIGHT * rrf_score
 
 
 def _apply_reranker_score(
     results: list[FusedResult], kept: list[tuple[int, float]]
 ) -> list[FusedResult]:
-    """Reorder by reranker rank and write back blended score to each FusedResult."""
-    kept_map = {i: s for i, s in kept}
-    out = []
-    for i, _ in kept:
+    """Write blended internal rank scores without changing display scores."""
+    seen: set[int] = set()
+    updates: list[tuple[FusedResult, float]] = []
+    for i, raw_score in kept:
+        if isinstance(i, bool) or not isinstance(i, int) or i < 0 or i >= len(results):
+            raise ValueError("reranker returned an invalid result index")
+        if i in seen:
+            raise ValueError("reranker returned a duplicate result index")
+        seen.add(i)
         r = results[i]
-        r.score = _blend_reranker_score(r.score, kept_map[i])
-        out.append(r)
-    return out
+        rrf_score = r.rank_score if r.rank_score is not None else 0.0
+        updates.append((r, _blend_reranker_score(rrf_score, raw_score)))
+    for result, rank_score in updates:
+        result.rank_score = rank_score
+    return [result for result, _ in updates]
+
+
+def _rank_order_key(result: FusedResult) -> tuple[float, str, str, str, str, str]:
+    """Sort by internal rank, then stable identity rather than database order."""
+    rank_score = result.rank_score
+    chunk_index = (result.metadata or {}).get("chunk_index")
+    return (
+        -float(rank_score) if rank_score is not None else math.inf,
+        str(result.kb_id or ""),
+        str(result.doc_id or ""),
+        str(chunk_index if chunk_index is not None else ""),
+        str((result.metadata or {}).get("big_chunk_id") or ""),
+        str((result.metadata or {}).get("small_chunk_id") or ""),
+    )
 
 
 class BM25Index:
@@ -438,7 +458,7 @@ def rrf_fusion(
             )
 
     # Sort by RRF score for ranking
-    scored.sort(key=lambda x: x[0], reverse=True)
+    scored.sort(key=lambda x: (-x[0], _make_rrf_key(x[2], 0)))
 
     # ── Diagnostic logging: final ranking ──
     if logger.isEnabledFor(logging.DEBUG) and scored:
@@ -456,8 +476,9 @@ def rrf_fusion(
             metadata=r.metadata,
             score=orig_score,
             doc_id=r.doc_id,
+            rank_score=rrf_score,
         )
-        for _, orig_score, r in scored
+        for rrf_score, orig_score, r in scored
     ]
 
 
@@ -1045,6 +1066,7 @@ class KnowledgeBaseManager:
                 doc_id=r.doc_id,
                 kb_id=kb_id,
                 kb_name=kb.name,
+                rank_score=r.rank_score,
             )
             for r in fused[:k]
         ]
@@ -1130,9 +1152,9 @@ class KnowledgeBaseManager:
         # Previously each KB ran rerank independently inside search(), causing
         # serial latency: 13 KBs × ~47s = 611s on CPU. Now we merge first and
         # rerank once — a single batch predict ~50s.
-        # M5: FusedResult.score IS overwritten with a blended reranker+RRF score
-        # (0.7*sigmoid(reranker_logit) + 0.3*rrf) so users see reranker-weighted
-        # relevance. On reranker failure/cooldown, RRF score is preserved.
+        # Keep ranking state separate from display score. A successful
+        # cross-encoder blends with the actual per-KB RRF score; a failed or
+        # unavailable reranker leaves that RRF ordering intact.
         if len(all_results) > 1:
             try:
                 from src.rag.reranker import rerank as rerank_chunks
@@ -1158,8 +1180,9 @@ class KnowledgeBaseManager:
         # details are preserved in metadata.small_chunks for frontend highlighting.
         all_results = self._apply_big_chunk_lookup(all_results)
 
-        # Sort by score descending
-        all_results.sort(key=lambda r: r.score, reverse=True)
+        # The same internal ranking rule is used for single- and multi-KB
+        # results. Stable identity breaks exact ties without favoring KB query order.
+        all_results.sort(key=_rank_order_key)
         return all_results[:k]  # Return top-k fused results across all KBs
 
     # ═══════════════════════════════════════
@@ -1406,13 +1429,14 @@ class KnowledgeBaseManager:
         self, bc_id: str, group: list[FusedResult], big_chunks: dict[str, dict],
     ) -> FusedResult:
         """Merge a group of small chunks into a single big-chunk FusedResult."""
-        ordered = sorted(group, key=lambda r: r.score, reverse=True)
+        ordered = sorted(group, key=_rank_order_key)
         top = ordered[0]
         meta = self._build_big_chunk_meta(top, bc_id, ordered)
         return FusedResult(
             content=big_chunks[bc_id]["text"], metadata=meta,
             score=top.score, doc_id=top.doc_id,
             kb_id=top.kb_id, kb_name=top.kb_name,
+            rank_score=top.rank_score,
         )
 
     def _build_big_chunk_meta(

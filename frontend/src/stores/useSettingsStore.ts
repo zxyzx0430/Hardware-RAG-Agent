@@ -1,5 +1,4 @@
 import { create } from "zustand";
-import { loadFromStorage, saveToStorage } from "../utils/persistence";
 import { useLogStore } from "./useLogStore";
 import { useToastStore } from "./useToastStore";
 import { apiPost, apiGet, apiPut, apiPatch, apiDelete } from "../api/client";
@@ -32,6 +31,11 @@ interface SettingsState {
   topK: number;
   maxTokens: number;
   relevanceThreshold: number; // 0-100, 0=no filtering, 60=default recommended
+  retrievalSettingsStatus: {
+    topK: RetrievalSettingStatus;
+    relevanceThreshold: RetrievalSettingStatus;
+  };
+  retrievalSettingsStorageIssue: boolean;
   systemPrompt: string;
   longTermMemory: string;
   skills: Skill[];
@@ -61,7 +65,12 @@ interface SettingsState {
   addProvider: (name: string, baseUrl: string, apiKey: string) => ProviderConfig;
   removeProvider: (id: string) => void;
   updateProvider: (id: string, patch: Partial<Pick<ProviderConfig, "name" | "baseUrl" | "apiKey">>) => void;
-  verifyProvider: (id: string) => Promise<boolean>;
+  verifyProvider: (id: string) => Promise<
+    | { ok: true; modelCount: number }
+    | { ok: false; kind: "local-auth"; code: "AUTH_REQUIRED" | "AUTH_INVALID" }
+    | { ok: false; kind: "model-service"; code?: "MODEL_FETCH_FAILED" }
+    | { ok: false; kind: "network" | "timeout" | "empty-models" | "unknown" }
+  >;
   /** 重新从上游拉取模型列表并写入 provider.models */
   fetchProviderModels: (id: string) => Promise<string[]>;
   /** 获取指定用途的服务商+模型+base_url+api_key（用于请求头注入和 /api/chat） */
@@ -99,6 +108,9 @@ interface SettingsState {
 }
 
 const LONG_TERM_MEMORY_MAX_CHARS = 4000;
+
+type RetrievalSettingKey = "topK" | "relevanceThreshold";
+type RetrievalSettingStatus = "idle" | "saving" | "synced" | "local_only" | "read_error";
 
 // 需要持久化的字段
 const PERSIST_KEYS: (keyof SettingsState)[] = [
@@ -145,9 +157,47 @@ const DEFAULTS = {
   permissionMode: "default" as "bypassPermissions" | "default" | "acceptEdits",
 };
 
+function readPersistedSettings(): { value: Record<string, unknown> | null; error: boolean } {
+  try {
+    const raw = localStorage.getItem("hwrag_settings");
+    if (!raw) return { value: null, error: false };
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { value: null, error: true };
+    return { value: parsed as Record<string, unknown>, error: false };
+  } catch {
+    return { value: null, error: true };
+  }
+}
+
+const persistedSettingsAtStartup = readPersistedSettings();
+
+function normalizeTopK(value: unknown): number | null {
+  const parsed = typeof value === "string" && value.trim() !== "" ? Number(value) : value;
+  return typeof parsed === "number" && Number.isInteger(parsed) && parsed >= 1 && parsed <= 20
+    ? parsed
+    : null;
+}
+
+function normalizeRelevanceThreshold(value: unknown): number | null {
+  const parsed = typeof value === "string" && value.trim() !== "" ? Number(value) : value;
+  return typeof parsed === "number" && Number.isFinite(parsed) && parsed >= 0 && parsed <= 100
+    ? parsed
+    : null;
+}
+
+const retrievalLocalExplicit: Record<RetrievalSettingKey, boolean> = {
+  topK: normalizeTopK(persistedSettingsAtStartup.value?.topK) !== null,
+  relevanceThreshold: normalizeRelevanceThreshold(persistedSettingsAtStartup.value?.relevanceThreshold) !== null,
+};
+const retrievalWriteVersion: Record<RetrievalSettingKey, number> = { topK: 0, relevanceThreshold: 0 };
+const retrievalSaveQueue: Record<RetrievalSettingKey, Promise<void>> = {
+  topK: Promise.resolve(),
+  relevanceThreshold: Promise.resolve(),
+};
+
 // 从 localStorage 加载已保存的值，覆盖默认值
 function loadPersistedDefaults(): Partial<typeof DEFAULTS> {
-  const saved = loadFromStorage("settings", null as Record<string, unknown> | null);
+  const saved = persistedSettingsAtStartup.value;
   if (!saved) return {};
   const picked: Record<string, unknown> = {};
   for (const key of PERSIST_KEYS) {
@@ -155,6 +205,12 @@ function loadPersistedDefaults(): Partial<typeof DEFAULTS> {
       picked[key] = saved[key];
     }
   }
+  const topK = normalizeTopK(picked.topK);
+  if (topK === null) delete picked.topK;
+  else picked.topK = topK;
+  const relevanceThreshold = normalizeRelevanceThreshold(picked.relevanceThreshold);
+  if (relevanceThreshold === null) delete picked.relevanceThreshold;
+  else picked.relevanceThreshold = relevanceThreshold;
   // 迁移：maxTokens 太小会导致输出截断，至少 8192
   if (picked.maxTokens && (picked.maxTokens as number) < 8192) {
     picked.maxTokens = 8192;
@@ -168,7 +224,12 @@ function persist(state: SettingsState) {
   for (const key of PERSIST_KEYS) {
     data[key] = state[key];
   }
-  saveToStorage("settings", data);
+  try {
+    localStorage.setItem("hwrag_settings", JSON.stringify(data));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // Prevent a settings GET started before a successful save from overwriting it.
@@ -182,6 +243,8 @@ function genId(): string {
 export const useSettingsStore = create<SettingsState>((set, get) => ({
   ...DEFAULTS,
   ...loadPersistedDefaults(),
+  retrievalSettingsStatus: { topK: "idle", relevanceThreshold: "idle" },
+  retrievalSettingsStorageIssue: persistedSettingsAtStartup.error,
 
   addProvider: (name, baseUrl, apiKey) => {
     const provider: ProviderConfig = {
@@ -220,7 +283,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   verifyProvider: async (id) => {
     const provider = get().providers.find((p) => p.id === id);
-    if (!provider) return false;
+    if (!provider) return { ok: false, kind: "unknown" };
     try {
       // 传入正在验证的 provider 的凭证，覆盖全局 header
       // /api/models 使用 current_user_optional，无需 session_token 即可验证
@@ -229,13 +292,28 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         "X-Base-URL": provider.baseUrl,
         "X-Provider": id,
       };
-      const res = await apiPost<{ models: string[] }>("models", { base_url: provider.baseUrl }, 60_000, customHeaders);
-      if (res.models && res.models.length > 0) {
-        set((s) => ({
-          providers: s.providers.map((p) =>
-            p.id === id ? { ...p, verified: true, models: res.models } : p
-          ),
-        }));
+      const response = await apiPost<unknown>("models", { base_url: provider.baseUrl }, 60_000, customHeaders);
+      const models = response && typeof response === "object" && "models" in response
+        ? (response as { models?: unknown }).models
+        : undefined;
+      if (!Array.isArray(models)) {
+        useLogStore.getState().log("error", "settings", "服务商验证失败 (unknown)");
+        return { ok: false, kind: "unknown" };
+      }
+      if (models.length === 0) {
+        useLogStore.getState().log("error", "settings", "服务商验证失败 (empty-models)");
+        return { ok: false, kind: "empty-models" };
+      }
+      if (!models.every((model) => typeof model === "string" && model.trim().length > 0)) {
+        useLogStore.getState().log("error", "settings", "服务商验证失败 (unknown)");
+        return { ok: false, kind: "unknown" };
+      }
+      const verifiedModels = models as string[];
+      set((s) => ({
+        providers: s.providers.map((p) =>
+          p.id === id ? { ...p, verified: true, models: verifiedModels } : p
+        ),
+      }));
         // 加密存储 API Key 到后端（fire-and-forget）。
         // 流程：store-key → 401 时 fallback 到 /api/auth/login 恢复会话。
         // login 用 provider+api_key 换 session_token（要求 key 与后端已存储的匹配）。
@@ -287,13 +365,34 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
           }
         };
         void persistKey();
-        useLogStore.getState().log("ok", "settings", `服务商验证成功: ${provider.name} (${res.models.length} 模型)`);
-        return true;
-      }
-      return false;
+      useLogStore.getState().log("ok", "settings", "服务商验证成功 (" + verifiedModels.length + " 模型)");
+      return { ok: true, modelCount: verifiedModels.length };
     } catch (err) {
-      useLogStore.getState().log("error", "settings", `服务商验证失败: ${provider.name} - ${err instanceof Error ? err.message : String(err)}`);
-      return false;
+      const code = err && typeof err === "object" && "code" in err
+        ? (err as { code?: unknown }).code
+        : undefined;
+      if (code === "AUTH_REQUIRED" || code === "AUTH_INVALID") {
+        useLogStore.getState().log("error", "settings", "服务商验证失败 (local-auth, " + code + ")");
+        return { ok: false, kind: "local-auth", code };
+      }
+      if (code === "MODEL_FETCH_FAILED") {
+        useLogStore.getState().log("error", "settings", "服务商验证失败 (model-service, MODEL_FETCH_FAILED)");
+        return { ok: false, kind: "model-service", code };
+      }
+      if (err && typeof err === "object" && "name" in err && (err as { name?: unknown }).name === "AbortError") {
+        useLogStore.getState().log("error", "settings", "服务商验证失败 (timeout)");
+        return { ok: false, kind: "timeout" };
+      }
+      if (err instanceof TypeError) {
+        useLogStore.getState().log("error", "settings", "服务商验证失败 (network)");
+        return { ok: false, kind: "network" };
+      }
+      if (err instanceof Error && /^API 5\d{2}:/.test(err.message)) {
+        useLogStore.getState().log("error", "settings", "服务商验证失败 (model-service)");
+        return { ok: false, kind: "model-service" };
+      }
+      useLogStore.getState().log("error", "settings", "服务商验证失败 (unknown)");
+      return { ok: false, kind: "unknown" };
     }
   },
 
@@ -474,12 +573,54 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     }
   },
   updateSetting: async (key, value) => {
+    if (key === "topK" || key === "relevanceThreshold") {
+      const retrievalKey = key as RetrievalSettingKey;
+      const normalized = retrievalKey === "topK" ? normalizeTopK(value) : normalizeRelevanceThreshold(value);
+      if (normalized === null) {
+        useToastStore.getState().showError(retrievalKey === "topK" ? "Top-K 必须是 1 到 20 的整数" : "相关度阈值必须在 0 到 100 之间");
+        return;
+      }
+      retrievalLocalExplicit[retrievalKey] = true;
+      const version = ++retrievalWriteVersion[retrievalKey];
+      set((state) => ({
+        [retrievalKey]: normalized,
+        retrievalSettingsStatus: { ...state.retrievalSettingsStatus, [retrievalKey]: "saving" },
+      } as Partial<SettingsState>));
+      const localSaved = persist(get());
+      set({ retrievalSettingsStorageIssue: !localSaved });
+
+      const previous = retrievalSaveQueue[retrievalKey];
+      const operation = previous.catch(() => undefined).then(async () => {
+        if (version !== retrievalWriteVersion[retrievalKey]) return;
+        const latestValue = get()[retrievalKey];
+        try {
+          await apiPut("settings", { [retrievalKey]: latestValue });
+          if (version !== retrievalWriteVersion[retrievalKey]) return;
+          const savedLocally = persist(get());
+          set((state) => ({
+            retrievalSettingsStatus: { ...state.retrievalSettingsStatus, [retrievalKey]: "synced" },
+            retrievalSettingsStorageIssue: !savedLocally,
+          }));
+          if (!savedLocally) useToastStore.getState().showError("后台已同步，但本机缓存写入失败");
+        } catch (err) {
+          console.warn(`updateSetting sync failed: ${key}`, err);
+          if (version !== retrievalWriteVersion[retrievalKey]) return;
+          const savedLocally = persist(get());
+          set((state) => ({
+            retrievalSettingsStatus: { ...state.retrievalSettingsStatus, [retrievalKey]: "local_only" },
+            retrievalSettingsStorageIssue: !savedLocally,
+          }));
+          useToastStore.getState().showError(
+            savedLocally ? "本机已保存，后台未同步" : "本机保存失败，后台也未同步"
+          );
+        }
+      });
+      retrievalSaveQueue[retrievalKey] = operation;
+      await operation;
+      return;
+    }
     if (key === "permissionMode") {
       console.info('[SettingsStore] permission_mode=%s', value);
-    } else if (key === "topK") {
-      console.info('[SettingsStore] retrieval topK=%d', value);
-    } else if (key === "relevanceThreshold") {
-      console.info('[SettingsStore] retrieval threshold=%f', value);
     }
     set({ [key]: value } as Partial<SettingsState>);
     // fire-and-forget backend sync; 不阻塞 UI
@@ -527,6 +668,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   fetchSettings: async () => {
     const writeVersionAtStart = longTermMemoryWriteVersion;
+    const retrievalVersionsAtStart = { ...retrievalWriteVersion };
     try {
       const data = await apiGet<{ settings?: Record<string, unknown> }>("settings");
       const serverSettings = data?.settings;
@@ -534,11 +676,46 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       const serverMemory = typeof serverSettings.longTermMemory === "string"
         ? serverSettings.longTermMemory
         : "";
-      if (writeVersionAtStart === longTermMemoryWriteVersion) {
-        set({ longTermMemory: serverMemory });
+      const updates: Partial<Pick<SettingsState, RetrievalSettingKey | "longTermMemory">> = {};
+      const statuses: Partial<SettingsState["retrievalSettingsStatus"]> = {};
+      const localValuesToSync: Array<[RetrievalSettingKey, number]> = [];
+      for (const key of ["topK", "relevanceThreshold"] as const) {
+        if (retrievalVersionsAtStart[key] !== retrievalWriteVersion[key]) continue;
+        const serverValue = key === "topK"
+          ? normalizeTopK(serverSettings[key])
+          : normalizeRelevanceThreshold(serverSettings[key]);
+        const localValue = get()[key];
+        if (retrievalLocalExplicit[key]) {
+          if (serverValue === localValue) statuses[key] = "synced";
+          else {
+            statuses[key] = "saving";
+            localValuesToSync.push([key, localValue]);
+          }
+        } else if (serverValue !== null) {
+          updates[key] = serverValue;
+          statuses[key] = "synced";
+        }
       }
+      if (writeVersionAtStart === longTermMemoryWriteVersion) updates.longTermMemory = serverMemory;
+      set((state) => ({
+        ...updates,
+        retrievalSettingsStatus: { ...state.retrievalSettingsStatus, ...statuses },
+        retrievalSettingsStorageIssue: false,
+      }));
+      const saved = persist(get());
+      if (!saved) set({ retrievalSettingsStorageIssue: true });
+      for (const [key, value] of localValuesToSync) void get().updateSetting(key, value);
     } catch (err) {
       console.warn("fetchSettings failed", err);
+      set((state) => {
+        const statuses = { ...state.retrievalSettingsStatus };
+        for (const key of ["topK", "relevanceThreshold"] as const) {
+          if (retrievalVersionsAtStart[key] === retrievalWriteVersion[key] && statuses[key] === "idle") {
+            statuses[key] = "read_error";
+          }
+        }
+        return { retrievalSettingsStatus: statuses };
+      });
       useToastStore.getState().showError("加载设置失败");
     }
   },

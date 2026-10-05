@@ -72,6 +72,11 @@ def _source_events(tool_result: dict, call_id: str) -> list[dict]:
     return [event for event in events if event.get("type") == "source"]
 
 
+def _tool_result_data(tool_result: dict) -> dict:
+    data = tool_result.get("data")
+    return data if isinstance(data, dict) else tool_result
+
+
 @pytest.mark.asyncio
 async def test_interleaved_agent_requests_use_their_own_tool_config(monkeypatch):
     """Each request must execute its own retrieval and credential settings."""
@@ -162,6 +167,9 @@ async def test_interleaved_agent_requests_use_their_own_tool_config(monkeypatch)
 
     tools_a = {tool.name: tool for tool in agent_factory.build_tool_specs(request_a)}
     tools_b = {tool.name: tool for tool in agent_factory.build_tool_specs(request_b)}
+    context_a = tools_a["search_docs"]._ctx
+    context_b = tools_b["search_docs"]._ctx
+    assert context_a.rag_source_registry is not context_b.rag_source_registry
 
     result_a1 = await tools_a["search_docs"].ainvoke({"query": "request-a-1"})
     await tools_a["web_search"].ainvoke({"query": "request-a-web-1"})
@@ -217,13 +225,29 @@ async def test_interleaved_agent_requests_use_their_own_tool_config(monkeypatch)
     expected_source_kbs = {
         "request-a-1": {"kb-a"},
         "request-b-1": {"kb-b"},
-        "request-a-2": {"kb-a"},
-        "request-b-2": {"kb-b"},
+        "request-a-2": set(),
+        "request-b-2": set(),
     }
     if observed_source_kbs != expected_source_kbs:
         failures.append(
-            "source SSE included a KB not selected for the request: "
+            "source SSE did not match the request KB selection and duplicate policy: "
             f"{observed_source_kbs!r}"
         )
+
+    # Repeated evidence in one request keeps its existing [srcN] citation but
+    # does not emit a duplicate source event. A separate request owns a fresh
+    # registry and may start again from src1.
+    data_a2 = _tool_result_data(result_a2)
+    data_b2 = _tool_result_data(result_b2)
+    data_a1 = _tool_result_data(result_a1)
+    data_b1 = _tool_result_data(result_b1)
+    if data_a2["results"] or "[src1]" not in result_a2["output"] or "[src2]" not in result_a2["output"]:
+        failures.append(f"request A did not reuse its prior source IDs: {result_a2!r}")
+    if data_b2["results"] or "[src1]" not in result_b2["output"]:
+        failures.append(f"request B did not reuse its prior source ID: {result_b2!r}")
+    if [item["id"] for item in data_a1["results"]] != ["src1", "src2"]:
+        failures.append(f"request A source IDs were not request-local: {data_a1['results']!r}")
+    if [item["id"] for item in data_b1["results"]] != ["src1"]:
+        failures.append(f"request B source IDs were not request-local: {data_b1['results']!r}")
 
     assert not failures, "\n".join(failures)

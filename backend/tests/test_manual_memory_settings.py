@@ -76,3 +76,42 @@ def test_settings_whitelist_still_rejects_unknown_fields(memory_client):
     response = memory_client.put("/api/settings", json={"longTermMemory": "", "unknown": "value"})
     assert response.status_code == 400
     assert read_memory(memory_client) is None
+
+
+def test_retrieval_settings_save_and_reload_as_legacy_string_values(memory_client):
+    response = memory_client.put(
+        "/api/settings", json={"topK": 7, "relevanceThreshold": 50}
+    )
+
+    assert response.status_code == 200
+    assert memory_client.get("/api/settings").json()["data"]["settings"] == {
+        "topK": "7",
+        "relevanceThreshold": "50",
+    }
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("topK", 0),
+        ("topK", 1.5),
+        ("topK", 21),
+        ("topK", True),
+        ("relevanceThreshold", -1),
+        ("relevanceThreshold", 101),
+        ("relevanceThreshold", "NaN"),
+        ("relevanceThreshold", False),
+    ],
+)
+def test_invalid_retrieval_setting_does_not_partially_update_settings(
+    memory_client, key, value
+):
+    assert memory_client.put("/api/settings", json={"model": "old"}).status_code == 200
+
+    response = memory_client.put(
+        "/api/settings", json={"model": "new", key: value}
+    )
+
+    assert response.status_code == 422
+    settings = memory_client.get("/api/settings").json()["data"]["settings"]
+    assert settings == {"model": "old"}

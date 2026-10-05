@@ -455,15 +455,15 @@
 
 /* ── InputBar ── */
 .inputbar-resize-wrap {
-  display: flex; align-items: stretch;
+  display: flex; align-items: stretch; min-width: 0;
 }
 .inputbar-resizer {
-  width: 4px; cursor: col-resize; flex-shrink: 0;
+  width: 12px; cursor: col-resize; flex: 0 0 12px;
   background: transparent; position: relative;
   transition: background 0.2s;
 }
 .inputbar-resizer::after {
-  content: ''; position: absolute; inset: 0 -3px;
+  content: ''; position: absolute; inset: 0;
 }
 .inputbar-resizer:hover,
 .inputbar-resizer.active {
@@ -484,6 +484,7 @@
 .inputbar {
   border-top: 1px solid var(--border); background: var(--bg);
   padding: 12px 16px; position: relative; z-index: 100;
+  container-name: inputbar-actions; container-type: inline-size;
 }
 .input-shell {
   border-radius: var(--radius-md); border: 1px solid var(--border);
@@ -500,14 +501,23 @@
 .input-textarea::placeholder { color: var(--muted-fg); }
 .input-actions {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 0 12px 10px; gap: 8px;
+  padding: 0 12px 10px; gap: 8px; min-width: 0;
 }
-.input-left { display: flex; align-items: center; gap: 6px; }
+.input-left { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
 .input-btn {
   display: flex; align-items: center; justify-content: center;
   width: 28px; height: 28px; border-radius: var(--radius-sm);
   color: var(--muted-fg); transition: 0.15s;
 }
+.input-btn-labeled {
+  width: auto;
+  min-width: 28px;
+  padding: 0 6px;
+  gap: 4px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.input-btn-label { white-space: nowrap; }
 .input-btn:hover { color: var(--fg); background: var(--muted); }
 .model-selector {
   position: relative; display: flex; align-items: center; gap: 6px;
@@ -518,6 +528,8 @@
 .model-selector svg:first-child { color: var(--primary); }
 .model-selector .model-label { }
 .model-selector .model-chevron { color: var(--muted-fg); }
+.model-selector .model-label,
+.permission-selector { white-space: nowrap; }
 .model-dropdown {
   position: fixed;
   width: 208px; border-radius: var(--radius-md); border: 1px solid var(--border);
@@ -552,6 +564,25 @@
   cursor: pointer; transition: 0.15s;
 }
 .stop-btn:hover { background: var(--secondary); }
+
+.send-btn,
+.stop-btn { flex: 0 0 auto; white-space: nowrap; }
+
+@container inputbar-actions (max-width: 560px) {
+  .input-actions {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+
+  .input-left {
+    flex: 1 1 100%;
+  }
+
+  .input-right {
+    flex: 0 0 auto;
+    margin-left: auto;
+  }
+}
 
 /* ── Streaming indicator ── */
 .streaming-indicator {

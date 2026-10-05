@@ -1008,7 +1008,10 @@
   .explorer-header-actions {
     flex: 1 0 100%;
     width: 100%;
-    justify-content: space-between;
+    display: flex;
+    flex-wrap: wrap;
+    align-content: flex-start;
+    justify-content: flex-start;
     gap: 4px;
     margin-left: 0;
   }
@@ -1018,10 +1021,17 @@
   .explorer-header-actions > .explorer-recent-toggle,
   .explorer-header-actions > .explorer-collapse-btn,
   .explorer-header-actions .explorer-recent-wrapper > .explorer-recent-toggle {
-    flex: 0 0 32px;
-    width: 32px;
+    flex: 0 0 auto;
+    width: auto;
+    min-width: 32px;
     height: 30px;
-    padding: 4px;
+    padding: 4px 7px;
+    gap: 4px;
+    white-space: nowrap;
+  }
+
+  .explorer-header-actions .explorer-recent-wrapper {
+    flex: 0 0 auto;
   }
 
   .explorer-header-button-icon {
@@ -1029,7 +1039,22 @@
   }
 
   .explorer-header-button-label {
-    display: none;
+    display: inline;
+    white-space: nowrap;
+  }
+
+  .explorer-follow-btn::after,
+  .explorer-collapse-btn::after {
+    font-size: 11px;
+    white-space: nowrap;
+  }
+
+  .explorer-follow-btn::after {
+    content: attr(aria-label);
+  }
+
+  .explorer-collapse-btn::after {
+    content: attr(aria-label);
   }
 
   /* Keep the tree and editor both usable at the minimum Explorer width. */

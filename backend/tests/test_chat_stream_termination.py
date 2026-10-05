@@ -299,8 +299,14 @@ def test_resume_confirmation_fallback_done_remains_incomplete_and_keeps_snapshot
         ),
         decision="allow",
     )
+    request_snapshot = chat_routes._ensure_request_tool_context(
+        chat_routes._request_snapshot_from_payload(request.payload, ""),
+        request.payload,
+        session_id,
+    )
     ctx = chat_routes.ResumeContext(
         agent=object(), config={}, req=request, call_counter=Counter(), model="test-model",
+        request_snapshot=request_snapshot,
     )
 
     async def collect():

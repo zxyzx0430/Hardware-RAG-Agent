@@ -41,7 +41,10 @@ export function KnowledgePanel() {
     collections, activeKbId, fetchCollections, setActiveKb, fetchDocChunks,
     uploadProgress, setUploadProgress, removeUploadProgress, pollIndexingStatus,
   } = useKnowledgeStore();
-  const { selectedKbIds, toggleKbSelection } = useChatStore();
+  const {
+    activeSessionId, selectedKbIds, kbScopeIssue, toggleKbSelection,
+    setSelectedKbIds, beginKbScopeRepair, verifySelectedKbScope,
+  } = useChatStore();
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
   const [showKbManager, setShowKbManager] = useState(false);
@@ -55,6 +58,13 @@ export function KnowledgePanel() {
   useEffect(() => {
     fetchCollections();
   }, [fetchCollections]);
+
+  const selectedKbScopeKey = selectedKbIds.join("\u0000");
+  useEffect(() => {
+    if (selectedKbIds.length > 0 && kbScopeIssue === null) {
+      void verifySelectedKbScope();
+    }
+  }, [activeSessionId, selectedKbScopeKey, kbScopeIssue, selectedKbIds.length, verifySelectedKbScope]);
 
   // When active KB changes (including mount): reset chunk method override and reload items filtered by KB
   useEffect(() => {
@@ -306,6 +316,17 @@ export function KnowledgePanel() {
               padding: "8px", boxShadow: "var(--shadow-md)",
             }}>
               <div style={{ fontSize: 11, color: "var(--muted-fg)", marginBottom: 6 }}>{t('searchAllHint')}</div>
+              {kbScopeIssue && (
+                <div role="alert" aria-live="assertive" style={{ border: "1px solid var(--danger, #b42318)", borderRadius: 4, padding: 7, marginBottom: 7, fontSize: 11 }}>
+                  <div style={{ marginBottom: 6 }}>{t(`kbScope${kbScopeIssue === "verification_failed" ? "VerificationFailed" : kbScopeIssue === "storage_error" ? "StorageError" : kbScopeIssue[0].toUpperCase() + kbScopeIssue.slice(1)}`)}</div>
+                  {kbScopeIssue === "verification_failed" ? (
+                    <button type="button" onClick={() => void verifySelectedKbScope()}>{t('kbScopeRetryVerification')}</button>
+                  ) : kbScopeIssue !== "repair" ? (
+                    <button type="button" onClick={beginKbScopeRepair}>{t('kbScopeReselect')}</button>
+                  ) : null}
+                  <button type="button" onClick={() => setSelectedKbIds([])} style={{ marginLeft: 6 }}>{t('kbScopeUseAll')}</button>
+                </div>
+              )}
               {visibleCollections.length > 0 ? (
                 <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
                   {visibleCollections.map((kb) => (
@@ -322,6 +343,7 @@ export function KnowledgePanel() {
                         type="checkbox"
                         checked={selectedKbIds.includes(kb.id)}
                         onChange={() => toggleKbSelection(kb.id)}
+                        disabled={kbScopeIssue !== null && kbScopeIssue !== "repair"}
                         style={{ margin: 0 }}
                       />
                       <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{kb.name}</span>

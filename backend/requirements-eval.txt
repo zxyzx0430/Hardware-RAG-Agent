@@ -1,4 +1,12 @@
--r requirements.txt
-
-# Optional RAG evaluation tooling. Use Python 3.10-3.12.
+# Optional judge-only tooling. Use a separate Python 3.10-3.12 environment.
+# The product backend runs separately; do not mix its modern LangChain stack
+# with the legacy dependency APIs used by the fixed DeepEval protocol.
 deepeval==1.5.5
+langchain==0.2.17
+langchain-core==0.2.43
+langchain-openai==0.1.25
+ragas==0.1.21
+httpx==0.28.1
+PyYAML==6.0.3
+jsonschema==4.26.0
+python-dotenv==1.2.4

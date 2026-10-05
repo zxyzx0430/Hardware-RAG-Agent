@@ -5,6 +5,7 @@
 """
 
 import datetime
+import math
 import logging
 import uuid
 from typing import Optional
@@ -336,7 +337,7 @@ def truncate_messages(session_id: str, keep_count: int = 0, db: DBSession = Depe
 # 设置键白名单
 ALLOWED_SETTINGS_KEYS = {
     "activeProvider", "model", "visionModel", "imageModel",
-    "temperature", "topK", "maxTokens", "systemPrompt", "longTermMemory",
+    "temperature", "topK", "relevanceThreshold", "maxTokens", "systemPrompt", "longTermMemory",
     "chatFontSize", "themeMode", "lang", "permissionMode",
 }
 
@@ -365,6 +366,38 @@ def update_settings(payload: dict, db: DBSession = Depends(get_db), user: dict =
             raise _fail(
                 "INVALID_LONG_TERM_MEMORY",
                 "Long-term memory must be a string of at most 4000 characters.",
+                status_code=422,
+            )
+    for key in ("topK", "relevanceThreshold"):
+        if key not in payload:
+            continue
+        raw_value = payload[key]
+        try:
+            if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float, str)):
+                raise ValueError
+            numeric_value = float(raw_value)
+        except (TypeError, ValueError):
+            raise _fail(
+                "INVALID_RETRIEVAL_SETTING",
+                f"{key} must be a finite number within its supported range.",
+                status_code=422,
+            )
+        if not math.isfinite(numeric_value):
+            raise _fail(
+                "INVALID_RETRIEVAL_SETTING",
+                f"{key} must be a finite number within its supported range.",
+                status_code=422,
+            )
+        if key == "topK" and (not numeric_value.is_integer() or not 1 <= numeric_value <= 20):
+            raise _fail(
+                "INVALID_RETRIEVAL_SETTING",
+                "topK must be an integer from 1 through 20.",
+                status_code=422,
+            )
+        if key == "relevanceThreshold" and not 0 <= numeric_value <= 100:
+            raise _fail(
+                "INVALID_RETRIEVAL_SETTING",
+                "relevanceThreshold must be from 0 through 100.",
                 status_code=422,
             )
     now = datetime.datetime.utcnow()

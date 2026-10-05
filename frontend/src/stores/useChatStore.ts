@@ -61,6 +61,10 @@ import { useToastStore } from "./useToastStore";
 import { handleToolCallEvent, handleToolResultEvent, handleCompileLogEvent, handleProgressEvent } from "./useWorkbenchBridge";
 
 const DEFAULT_MODEL = "";
+type KbScopeIssue = "corrupt" | "unavailable" | "repair" | "storage_error" | "verification_failed" | null;
+type StoredKbScope = { version: 1; mode: "all" } | { version: 1; mode: "selected"; ids: string[] } | { version: 1; mode: "repair" };
+const KB_SCOPE_STORAGE_PREFIX = "hwrag_chat_kb_scope_v1_";
+let _sendValidationInProgress = false;
 
 // 段落换行标志：tool_result 后设置的标志，下一次 text chunk 前插入 \n\n 分隔工具结果和回答文本
 // 按 sessionId 隔离，避免多会话切换时串号
@@ -107,9 +111,13 @@ interface ChatState {
   statsOpen: boolean;
   /** 选中的知识库 ID 列表，空数组表示使用全部已启用知识库 */
   selectedKbIds: string[];
+  /** 非空表示检索范围需要用户显式修复或重新验证 */
+  kbScopeIssue: KbScopeIssue;
   setSelectedKbIds: (ids: string[]) => void;
   /** 切换某个知识库的选中状态（在数组中增删） */
   toggleKbSelection: (kbId: string) => void;
+  beginKbScopeRepair: () => void;
+  verifySelectedKbScope: () => Promise<boolean>;
   /** 401 未授权：为 true 时提示用户配置 API Key */
   needsApiKey: boolean;
   setNeedsApiKey: (v: boolean) => void;
@@ -192,7 +200,66 @@ function getLog() {
 // Maximum number of messages retained in memory to avoid OOM on long conversations
 const MAX_MESSAGES = 200;
 
+function _kbScopeStorageKey(sessionId: string): string {
+  return `${KB_SCOPE_STORAGE_PREFIX}${encodeURIComponent(sessionId)}`;
+}
+
+function _loadKbScope(sessionId: string): { ids: string[]; issue: KbScopeIssue } {
+  if (!sessionId) return { ids: [], issue: null };
+  let raw: string | null;
+  try {
+    raw = localStorage.getItem(_kbScopeStorageKey(sessionId));
+  } catch {
+    return { ids: [], issue: "storage_error" };
+  }
+  if (raw === null) return { ids: [], issue: null };
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { ids: [], issue: "corrupt" };
+  }
+  if (!parsed || typeof parsed !== "object" || (parsed as { version?: unknown }).version !== 1) {
+    return { ids: [], issue: "corrupt" };
+  }
+  const scope = parsed as Partial<StoredKbScope>;
+  if (scope.mode === "all") return { ids: [], issue: null };
+  if (scope.mode === "repair") return { ids: [], issue: "repair" };
+  if (
+    scope.mode === "selected"
+    && Array.isArray(scope.ids)
+    && scope.ids.length > 0
+    && scope.ids.every((id) => typeof id === "string" && id.length > 0)
+  ) {
+    return { ids: [...new Set(scope.ids)], issue: null };
+  }
+  return { ids: [], issue: "corrupt" };
+}
+
+function _saveKbScope(sessionId: string, scope: StoredKbScope): boolean {
+  if (!sessionId) return true;
+  try {
+    localStorage.setItem(_kbScopeStorageKey(sessionId), JSON.stringify(scope));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function _kbScopeIssueMessage(issue: KbScopeIssue): string {
+  switch (issue) {
+    case "corrupt": return "本会话的知识库范围无法读取，请重新选择或明确使用全部知识库。";
+    case "unavailable": return "所选知识库已停用或不存在，请修复范围或明确使用全部知识库。";
+    case "repair": return "请至少选择一个知识库，或明确使用全部已启用知识库。";
+    case "storage_error": return "知识库范围未能保存在本机，请重新选择后再发送。";
+    case "verification_failed": return "暂时无法验证所选知识库，请检查连接后重试。";
+    default: return "知识库范围需要修复后才能发送。";
+  }
+}
+
 const PENDING_SAVE_PREFIX = "hwrag_pending_save_";
+const _messageSaveQueues = new Map<string, Promise<void>>();
 
 function _pendingSaveStorageKey(sessionId: string): string {
   return `${PENDING_SAVE_PREFIX}${encodeURIComponent(sessionId)}`;
@@ -230,6 +297,11 @@ function _clearPendingSaveIds(sessionId: string, ids: string[]): string[] {
   return remaining;
 }
 
+function _pendingSaveStatus(sessionId: string): "saving" | "pending" | undefined {
+  if (_messageSaveQueues.has(sessionId)) return "saving";
+  return _loadPendingSaveIds(sessionId).length > 0 ? "pending" : undefined;
+}
+
 function _loadPendingSaveStatuses(): Record<string, "pending"> {
   const sessions = loadFromStorage("sessions", [] as { id: string }[]);
   if (!Array.isArray(sessions)) return {};
@@ -238,6 +310,9 @@ function _loadPendingSaveStatuses(): Record<string, "pending"> {
       .map((session) => [session.id, "pending" as const])
   );
 }
+
+const _initialActiveSessionId = loadFromStorage("activeSession", "");
+const _initialKbScope = _loadKbScope(_initialActiveSessionId);
 
 function _messageSavePayload(message: Message): Record<string, unknown> {
   return {
@@ -248,6 +323,22 @@ function _messageSavePayload(message: Message): Record<string, unknown> {
     tool_calls: [],
     activity: message.activity || null,
   };
+}
+
+function _isMessageSaveSnapshotCurrent(sessionId: string, messages: Message[]): boolean {
+  const currentById = new Map(
+    (useChatStore.getState().sessionMessages[sessionId] || []).map((message) => [message.id, message])
+  );
+  return messages.every((message) => {
+    const current = currentById.get(message.id);
+    return current !== undefined
+      && JSON.stringify(_messageSavePayload(current)) === JSON.stringify(_messageSavePayload(message));
+  });
+}
+
+function _clearSavedMessageIdsIfCurrent(sessionId: string, messages: Message[]): string[] {
+  if (!_isMessageSaveSnapshotCurrent(sessionId, messages)) return _loadPendingSaveIds(sessionId);
+  return _clearPendingSaveIds(sessionId, messages.map((message) => message.id));
 }
 
 function _matchesBackendMessage(local: Message, backend: BackendMessage): boolean {
@@ -264,21 +355,35 @@ async function _postMessagesWithSessionRecovery(sessionId: string, messages: Mes
     }
   };
 
-  try {
-    await postMessages();
-  } catch (err) {
-    const errMsg = err instanceof Error ? err.message : String(err);
-    if (!errMsg.includes("404") && !errMsg.includes("NOT_FOUND")) throw err;
+  const postWithSessionRecovery = async () => {
+    try {
+      await postMessages();
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      if (!errMsg.includes("404") && !errMsg.includes("NOT_FOUND")) throw err;
 
-    const session = useSessionStore.getState().sessions.find((item) => item.id === sessionId);
-    await apiPost("sessions", {
-      id: sessionId,
-      title: session?.title || "新对话",
-      model: session?.model || "",
-      project: session?.project || "",
-      context_window: session?.contextWindow || CONTEXT_WINDOW_256K,
-    });
-    await postMessages();
+      const session = useSessionStore.getState().sessions.find((item) => item.id === sessionId);
+      await apiPost("sessions", {
+        id: sessionId,
+        title: session?.title || "新对话",
+        model: session?.model || "",
+        project: session?.project || "",
+        context_window: session?.contextWindow || CONTEXT_WINDOW_256K,
+      });
+      await postMessages();
+    }
+  };
+
+  // A confirmation can be accepted while the initial "awaiting confirmation"
+  // write is still in flight. Serialize each session's CRUD writes so an older
+  // snapshot cannot commit after and overwrite the resumed answer.
+  const previous = _messageSaveQueues.get(sessionId) ?? Promise.resolve();
+  const current = previous.catch(() => undefined).then(postWithSessionRecovery);
+  _messageSaveQueues.set(sessionId, current);
+  try {
+    await current;
+  } finally {
+    if (_messageSaveQueues.get(sessionId) === current) _messageSaveQueues.delete(sessionId);
   }
 }
 
@@ -427,6 +532,28 @@ function mapBackendMessage(m: BackendMessage): Message {
 
 
 export const useChatStore = create<ChatState>((set, get) => {
+  async function verifyKbScopeForSession(sessionId: string, ids: string[]): Promise<boolean> {
+    if (ids.length === 0) return true;
+    try {
+      const data = await apiGet<{ collections?: Array<{ id?: unknown; enabled?: unknown }> }>("kb/collections");
+      if (!Array.isArray(data?.collections)) throw new Error("知识库列表响应无效");
+      const enabledIds = new Set(
+        data.collections
+          .filter((collection) => typeof collection.id === "string" && collection.enabled !== false)
+          .map((collection) => collection.id as string)
+      );
+      const unavailable = ids.some((id) => !enabledIds.has(id));
+      if (get().activeSessionId === sessionId) {
+        if (unavailable) set({ kbScopeIssue: "unavailable" });
+        else if (get().kbScopeIssue === "verification_failed") set({ kbScopeIssue: null });
+      }
+      return !unavailable;
+    } catch {
+      if (get().activeSessionId === sessionId) set({ kbScopeIssue: "verification_failed" });
+      return false;
+    }
+  }
+
   function updatePendingSaveStatus(sessionId: string, status?: "saving" | "pending"): void {
     set((state) => {
       const next = { ...state.pendingSaveBySession };
@@ -739,9 +866,10 @@ export const useChatStore = create<ChatState>((set, get) => {
   compressingMessage: "",
   currentSseRequest: null,
   backgroundSseRequests: new Map<string, AbortController>(),
-  activeSessionId: loadFromStorage("activeSession", ""),
+  activeSessionId: _initialActiveSessionId,
   statsOpen: false,
-  selectedKbIds: [],
+  selectedKbIds: _initialKbScope.ids,
+  kbScopeIssue: _initialKbScope.issue,
   needsApiKey: false,
   pendingConfirm: null,
   pendingSaveBySession: _loadPendingSaveStatuses(),
@@ -754,15 +882,46 @@ export const useChatStore = create<ChatState>((set, get) => {
   sessionFileViewerSource: {},
   sessionHighlightSourceId: {},
 
-  setSelectedKbIds: (selectedKbIds) => set({ selectedKbIds }),
+  setSelectedKbIds: (ids) => {
+    const selectedKbIds = [...new Set(ids.filter((id) => typeof id === "string" && id.length > 0))];
+    const saved = _saveKbScope(
+      get().activeSessionId,
+      selectedKbIds.length > 0 ? { version: 1, mode: "selected", ids: selectedKbIds } : { version: 1, mode: "all" }
+    );
+    set({ selectedKbIds, kbScopeIssue: saved ? null : "storage_error" });
+  },
 
   setNeedsApiKey: (needsApiKey) => set({ needsApiKey }),
 
-  toggleKbSelection: (kbId) => set((s) => ({
-    selectedKbIds: s.selectedKbIds.includes(kbId)
-      ? s.selectedKbIds.filter((id) => id !== kbId)
-      : [...s.selectedKbIds, kbId],
-  })),
+  toggleKbSelection: (kbId) => {
+    const state = get();
+    if (!kbId || (state.kbScopeIssue !== null && state.kbScopeIssue !== "repair")) return;
+    const baseIds = state.kbScopeIssue === "repair" ? [] : state.selectedKbIds;
+    const selectedKbIds = baseIds.includes(kbId)
+      ? baseIds.filter((id) => id !== kbId)
+      : [...baseIds, kbId];
+    const mode: StoredKbScope["mode"] = selectedKbIds.length > 0 ? "selected" : state.kbScopeIssue === "repair" ? "repair" : "all";
+    const scope: StoredKbScope = mode === "selected"
+      ? { version: 1, mode, ids: selectedKbIds }
+      : { version: 1, mode };
+    const saved = _saveKbScope(state.activeSessionId, scope);
+    set({
+      selectedKbIds,
+      kbScopeIssue: !saved ? "storage_error" : mode === "repair" ? "repair" : null,
+    });
+  },
+
+  beginKbScopeRepair: () => {
+    const sessionId = get().activeSessionId;
+    const saved = _saveKbScope(sessionId, { version: 1, mode: "repair" });
+    set({ selectedKbIds: [], kbScopeIssue: saved ? "repair" : "storage_error" });
+  },
+
+  verifySelectedKbScope: async () => {
+    const { activeSessionId, selectedKbIds, kbScopeIssue } = get();
+    if (kbScopeIssue && kbScopeIssue !== "verification_failed") return false;
+    return verifyKbScopeForSession(activeSessionId, selectedKbIds);
+  },
 
   setDraft: (sessionId, text) => set((s) => ({
     drafts: { ...s.drafts, [sessionId]: text },
@@ -959,14 +1118,14 @@ export const useChatStore = create<ChatState>((set, get) => {
         updatePendingSaveStatus(sessionId, "saving");
         try {
           await _postMessagesWithSessionRecovery(sessionId, recoveryWrites);
-          const stillPending = _clearPendingSaveIds(sessionId, recoveryIds);
-          updatePendingSaveStatus(sessionId, stillPending.length > 0 ? "pending" : undefined);
+          _clearSavedMessageIdsIfCurrent(sessionId, recoveryMessages);
+          updatePendingSaveStatus(sessionId, _pendingSaveStatus(sessionId));
           const refreshed = await apiGet<{ messages: BackendMessage[] }>(`sessions/${sessionId}/messages`);
           backendMessages = refreshed?.messages || [];
         } catch (syncErr) {
           // Keep a durable marker so refresh can retry only the save request.
           _rememberPendingSaveIds(sessionId, recoveryIds);
-          updatePendingSaveStatus(sessionId, "pending");
+          updatePendingSaveStatus(sessionId, _pendingSaveStatus(sessionId) ?? "pending");
           const syncMessage = syncErr instanceof Error ? syncErr.message : String(syncErr);
           getLog()("warn", "chat", `恢复未保存消息失败: ${sessionId} - ${syncMessage}`);
         }
@@ -1013,7 +1172,9 @@ export const useChatStore = create<ChatState>((set, get) => {
         getLog()("debug", "chat", `加载会话消息被中断: ${sessionId}，使用缓存`);
       } else {
         getLog()("warn", "chat", `加载会话消息失败: ${sessionId}，使用缓存`);
-        if (_loadPendingSaveIds(sessionId).length > 0) updatePendingSaveStatus(sessionId, "pending");
+        if (_loadPendingSaveIds(sessionId).length > 0) {
+          updatePendingSaveStatus(sessionId, _pendingSaveStatus(sessionId) ?? "pending");
+        }
         useToastStore.getState().showError(`加载会话消息失败: ${errMsg}`);
       }
     } finally {
@@ -1031,13 +1192,18 @@ export const useChatStore = create<ChatState>((set, get) => {
     updatePendingSaveStatus(sessionId, "saving");
     try {
       await _postMessagesWithSessionRecovery(sessionId, lastTwo);
-      const remaining = _clearPendingSaveIds(sessionId, messageIds);
-      updatePendingSaveStatus(sessionId, remaining.length > 0 ? "pending" : undefined);
-      getLog()("ok", "chat", `已持久化会话 ${sessionId} 最后两条消息到后端`);
-      return true;
+      const snapshotIsCurrent = _isMessageSaveSnapshotCurrent(sessionId, lastTwo);
+      if (snapshotIsCurrent) _clearPendingSaveIds(sessionId, messageIds);
+      updatePendingSaveStatus(sessionId, _pendingSaveStatus(sessionId));
+      if (snapshotIsCurrent) {
+        getLog()("ok", "chat", `已持久化会话 ${sessionId} 最后两条消息到后端`);
+      } else {
+        getLog()("debug", "chat", `会话 ${sessionId} 的旧保存快照已完成，保留较新消息的待保存标记`);
+      }
+      return snapshotIsCurrent;
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
-      updatePendingSaveStatus(sessionId, "pending");
+      updatePendingSaveStatus(sessionId, _pendingSaveStatus(sessionId) ?? "pending");
       getLog()("warn", "chat", `持久化消息失败: ${sessionId}`);
       useToastStore.getState().showError(`保存会话失败: ${errMsg}`);
       return false;
@@ -1058,11 +1224,12 @@ export const useChatStore = create<ChatState>((set, get) => {
     updatePendingSaveStatus(sessionId, "saving");
     try {
       await _postMessagesWithSessionRecovery(sessionId, retryMessages);
-      const remaining = _clearPendingSaveIds(sessionId, retryIds);
-      updatePendingSaveStatus(sessionId, remaining.length > 0 ? "pending" : undefined);
-      post("messages_changed", sessionId);
+      const snapshotIsCurrent = _isMessageSaveSnapshotCurrent(sessionId, retryMessages);
+      if (snapshotIsCurrent) _clearPendingSaveIds(sessionId, retryIds);
+      updatePendingSaveStatus(sessionId, _pendingSaveStatus(sessionId));
+      if (snapshotIsCurrent) post("messages_changed", sessionId);
     } catch (err) {
-      updatePendingSaveStatus(sessionId, "pending");
+      updatePendingSaveStatus(sessionId, _pendingSaveStatus(sessionId) ?? "pending");
       const errMsg = err instanceof Error ? err.message : String(err);
       getLog()("warn", "chat", `重试保存会话失败: ${sessionId} - ${errMsg}`);
       useToastStore.getState().showError(`保存会话失败: ${errMsg}`);
@@ -1074,6 +1241,7 @@ export const useChatStore = create<ChatState>((set, get) => {
             streamingSessionId, currentSseRequest, streamingContent,
             streamingSteps, backgroundSseRequests } = get();
     if (id === activeSessionId) return;
+    const nextKbScope = _loadKbScope(id);
     getLog()("info", "chat", `切换会话: ${activeSessionId} → ${id}`);
 
     // 流式中切换会话：保存部分内容到 sessionMessages，但不中止 SSE。
@@ -1142,6 +1310,8 @@ export const useChatStore = create<ChatState>((set, get) => {
 
     set({
       activeSessionId: id,
+      selectedKbIds: nextKbScope.ids,
+      kbScopeIssue: nextKbScope.issue,
       messages: loadedMessages,
       sessionMessages: updatedSessionMessages,
       isStreaming: hasBackgroundStream,
@@ -1165,13 +1335,32 @@ export const useChatStore = create<ChatState>((set, get) => {
   },
 
   sendMessage: async (content, attachments, quoted, skills) => {
-    const { messages, isStreaming, activeSessionId, backgroundSseRequests } = get();
+    const { messages, isStreaming, activeSessionId, selectedKbIds, kbScopeIssue } = get();
     // 允许只有附件没有文字（如只发图片）
-    if (isStreaming) {
-      useToastStore.getState().showWarning("正在生成中，请先停止当前回答");
+    if (isStreaming || _sendValidationInProgress) {
+      useToastStore.getState().showWarning(
+        _sendValidationInProgress ? "正在验证知识库范围，请稍候" : "正在生成中，请先停止当前回答"
+      );
       return;
     }
     if (!content.trim() && (!attachments || attachments.length === 0)) return;
+    if (kbScopeIssue && kbScopeIssue !== "verification_failed") {
+      useToastStore.getState().showWarning(_kbScopeIssueMessage(kbScopeIssue));
+      return;
+    }
+    if (selectedKbIds.length > 0) {
+      _sendValidationInProgress = true;
+      let scopeIsValid = false;
+      try {
+        scopeIsValid = await verifyKbScopeForSession(activeSessionId, selectedKbIds);
+      } finally {
+        _sendValidationInProgress = false;
+      }
+      if (!scopeIsValid) {
+        useToastStore.getState().showWarning(_kbScopeIssueMessage(get().kbScopeIssue));
+        return;
+      }
+    }
     const skillsMode = skills?.mode ?? "off";
     const skillIds = skillsMode === "manual"
       ? [...new Set((skills?.skillIds ?? []).filter((id) => typeof id === "string" && id))].slice(0, 3)
@@ -1181,10 +1370,11 @@ export const useChatStore = create<ChatState>((set, get) => {
       return;
     }
     // SubTask 8.4: abort 后台 SSE（避免两个流并发导致消息损坏）
-    if (backgroundSseRequests.has(activeSessionId)) {
-      const bgController = backgroundSseRequests.get(activeSessionId);
+    const currentBackgroundSseRequests = get().backgroundSseRequests;
+    if (currentBackgroundSseRequests.has(activeSessionId)) {
+      const bgController = currentBackgroundSseRequests.get(activeSessionId);
       bgController?.abort();
-      const newBg = new Map(backgroundSseRequests);
+      const newBg = new Map(currentBackgroundSseRequests);
       newBg.delete(activeSessionId);
       set({ backgroundSseRequests: newBg });
       getLog()("warn", "chat", `会话 ${activeSessionId} 有后台 SSE，已中止以避免并发`);
@@ -1227,34 +1417,36 @@ export const useChatStore = create<ChatState>((set, get) => {
     const nextMessages = trimMessages([...messages, userMsg, assistantMsg]);
 
     // 立即同步到 sessionMessages
-    const updatedSM = { ...get().sessionMessages, [activeSessionId]: nextMessages };
     saveSessionMessages(activeSessionId, nextMessages);
 
-    set({
-      messages: nextMessages,
-      isStreaming: true,
-      streamingContent: "",
-      streamingSteps: [{
-        id: `h-${Date.now()}`,
-        type: "thinking",
-        content: "模型正在思考...",
-        source: "reasoning",
-        status: "running",
-      }],
-      streamingSources: [],
-      streamingTodos: [],
-      streamingSessionId: activeSessionId,
-      streamingStartTime: Date.now(),
-      _pendingUsage: null,
-      streamingError: null,
-      sessionMessages: updatedSM,
+    set((state) => {
+      const sessionMessages = { ...state.sessionMessages, [activeSessionId]: nextMessages };
+      if (state.activeSessionId !== activeSessionId) return { sessionMessages };
+      return {
+        messages: nextMessages,
+        isStreaming: true,
+        streamingContent: "",
+        streamingSteps: [{
+          id: `h-${Date.now()}`,
+          type: "thinking",
+          content: "模型正在思考...",
+          source: "reasoning",
+          status: "running",
+        }],
+        streamingSources: [],
+        streamingTodos: [],
+        streamingSessionId: activeSessionId,
+        streamingStartTime: Date.now(),
+        _pendingUsage: null,
+        streamingError: null,
+        sessionMessages,
+      };
     });
     getLog()("info", "chat", `sendMessage set messages: activeSessionId=${activeSessionId} count=${nextMessages.length}`);
 
     // 构建请求体：历史消息 + 设置（扁平结构，对齐后端 ChatRequest）
     // 模型优先从当前会话读取（各对话独立），回退到全局设置
     const { topK, temperature, systemPrompt, longTermMemory, maxTokens, relevanceThreshold, permissionMode, webSearchConfig } = useSettingsStore.getState();
-    const { selectedKbIds } = get();
     const currentSession = useSessionStore.getState().sessions.find((s) => s.id === activeSessionId);
     const model = currentSession?.model || useSettingsStore.getState().chatModel;
     getLog()("info", "chat", `model=${model} topK=${topK} maxTokens=${maxTokens} threshold=${relevanceThreshold} sessionId=${activeSessionId} systemPrompt="${systemPrompt?.slice(0, 50)}..."`);
@@ -1308,7 +1500,15 @@ export const useChatStore = create<ChatState>((set, get) => {
     let terminalErrorMessage = "回答未能完成";
 
     const controller = new AbortController();
-    set({ currentSseRequest: controller });
+    if (get().activeSessionId === requestSessionId) {
+      set({ currentSseRequest: controller });
+    } else {
+      set((state) => {
+        const backgroundSseRequests = new Map(state.backgroundSseRequests);
+        backgroundSseRequests.set(requestSessionId, controller);
+        return { backgroundSseRequests };
+      });
+    }
 
     apiSSE("chat", requestBody, {
       onEvent: (event) => {

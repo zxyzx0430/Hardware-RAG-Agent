@@ -1,8 +1,53 @@
 # 测试与测试数据
 
-> 更新日期：2026-10-04。日期 1–3 收口的改动后回归与改动前基线分别记录；真实 RAG 全量链路、诊断评分及标准评分未完成的边界分开记录，不将历史结果或格式校验当作质量验收。
+> 更新日期：2026-10-05。记录修复后的最终软件门禁，并单列修复前 606 项快照与 67 项失败轨迹；浏览器、硬件和 RAG 全量质量评测仍分别记录，不混作软件测试结论。
+
+## 2026-10-05 最终修复后软件发布门禁
+
+本节记录 2026-10-05 的最终隔离软件门禁。后端在全新的 `copy-full` 副本中完成；00 核对当前源码与运行副本的 247 项 manifest，均无哈希差异。前端最终测试使用隔离副本；前后 160 项文件哈希一致。提交与发布状态以 Git 记录为准。
+
+| 范围 | 实际结果 | 输入快照与限制 |
+| --- | --- | --- |
+| 后端完整测试 | **608 passed / 0 failed / 0 skipped，193 warnings，191.87 秒，退出码 0**。日志：`04-backend-pytest-r1/logs/full-backend-pytest-fixed.log`。 | 全新 E 盘隔离副本 `copy-full`；当前源码和副本 247 项 SHA-256 均与 manifest 一致。数据库、向量目录、pytest 临时目录及缓存位于隔离副本；没有改 API、权限、KB 行为或依赖。 |
+| 前端最终测试 | 2026-10-05 20:36:02 开始，35.64 秒；23 个测试文件、**145 项通过**。 | 独立副本 160 项源码/配置文件哈希一致，报告为 `05-frontend-release-gate/final-rerun-report.md`。不是浏览器验收。 |
+| 前端静态检查与构建 | lint 0 errors/13 warnings，TypeScript 与构建退出码 0，827 模块。 | 这些结果来自同一源码的较早检查，不是 20:36 最终前端复跑的一部分；构建有大分块警告。 |
+
+### 导入循环 P1：修复前失败、修复和复核
+
+修复前诊断确认循环依赖：`agent_factory` 初始化经 `context_guard`、`app.api.sse`、`app.api` 回到 `chat_routes`；后者从未完成初始化的 `agent_factory` 导入 `_should_use_agent` 失败后走 fallback，未建立 `create_hardware_agent` 导出。原 03 测试曾报属性缺失；04 的首次窄复核 1 项和完整 `test_chat_source_registry_snapshot.py` 5 项通过，但同一 67 项组随后仍为 **66 passed、1 failed**。RED 证据及诊断值 `FACTORY_CREATE=True`、`ROUTE_AGENT_AVAILABLE=False`、`ROUTE_CREATE=False` 均保留。
+
+04 在 `backend/src/agent/context_guard.py` 中将两个 SSE helper 的导入延迟到函数使用处，并新增两种 fresh-import 顺序回归；修复只涉及这一个源码文件和一条新测试文件，未调整权限、API、KB 语义或依赖。修后两种独立导入顺序 **2 passed**（38.77 秒，3 warnings）；原 67 项组 **67 passed**（61.38 秒，47 warnings）；来源快照文件 **5 passed**（11.69 秒，26 warnings）；最终完整后端套件 **608 passed**。导入顺序 P1 已由这些软件回归关闭。项目外证据：`04-backend-pytest-r1/logs/full-backend-pytest-fixed.log`、`source-copy-hashes-full.tsv` 及对应 fresh-import、67 项和来源快照测试报告。
+
+修复前历史门禁：后端完整测试为 **606 passed / 0 failed / 0 skipped，193 warnings，244.65 秒，退出码 0**；前端 **145 项通过**（23 个测试文件）。该 606 项全量通过与当时独立 67 项组合的 **66 passed、1 failed** 均为实际记录；后者暴露导入顺序缺陷，不能被全量结果或随后单项/5 项窄复核覆盖。最初 RED（`1 failed / 1 passed`）也保留。完整轨迹见 `03-review/pytest-backend-focused.log`、`03-review/release-review.md` 和 `04-backend-pytest-r1/logs/same-67-focused-group.log`。
+
+知识库检索范围沿用当前契约：省略或传空数组的 `kb_ids` 表示检索全部启用知识库，不能用空数组关闭 RAG（[API 契约 §5.1](api-contract.md)）。当前实现与此一致，本轮没有把“空知识库选择”登记为新缺陷，也没有更改其语义。
+
+这些软件回归不代表真实浏览器、模型服务、硬件、全量 RAG 质量、其他新电脑安装或发布流程已完成验收。未在本轮重跑的 `lint`、TypeScript 和 Vite 构建仍只引用同源码的先前记录。
+
+## 2026-10-04 F1 集成软件回归
+
+F1 候选 `RAG-P1-20261004-A-F1` 是 2026-10-04 测试时的未提交工作区快照，HEAD 为 `32e82560d8c7723005b7247482910f1b5f01d579`；此处描述的是当时状态，后续发布状态以 Git 记录为准。运行前后核对冻结清单 422 个文件，缺失 0、哈希差异 0；后端隔离副本的 243 个源码/测试/输入文件及 `backend/pytest.ini` 也逐项匹配清单。副本在独立目录，未复制 `.env`、认证文件、数据库、索引或用户知识库；SQLite、审计、Chroma、上传、会话历史、检查点、临时目录及模型缓存均位于该运行目录，检查点使用内存模式，Hugging Face/Transformers 离线。
+
+全套后端命令由项目外验证脚本执行：
+
+```powershell
+& '<external-acceptance-root>/20261004-rag-improvement-control/verify_backend_f1.ps1' `
+  -IsolatedRoot '<external-acceptance-root>/F1-6dbff660011f49d186083bedb51d8f03/copy'
+```
+
+结果为 **606 passed / 0 failed / 0 errors / 0 skipped，193 warnings，152.06 秒，退出码 0**。日志与运行路径核验 JSON 保存在 `<external-acceptance-root>/F1-6dbff660011f49d186083bedb51d8f03/`。警告主要包括 FastAPI `on_event`、`datetime.utcnow()` 弃用、两项旧测试返回布尔值，以及 Transformers 缓存变量弃用；不影响本次退出码。
+
+首次深层隔离路径运行得到 599 passed、7 个 Git 测试夹具初始化错误：Windows Git 无法创建 260 字符的模板 hook 文件路径（`Filename too long`）。保留原始日志；没有改全局 Git 配置或跳过测试。换用较短的唯一 E 盘根目录后完整重跑，606 项全部通过。前端独立快照另有 16 个文件的 99 项测试通过、lint 0 错误/13 警告、TypeScript 与 Vite 构建通过；源码清单 152 项哈希与聚合哈希均已核对。
+
+以上是自动化软件门禁，不代表浏览器、真实本地 API/RAG 全链路、35 道质量评测、标准评分或真实硬件验收已完成。导入预检提示缺少 FFmpeg shared libraries，因此音视频解码仍未验收；没有下载权重或启动用户服务。
 
 ## 怎么运行
+
+2026-10-04 发布检查点：`codex/day1-3-baseline` 的 `32e82560d8c7723005b7247482910f1b5f01d579` 当时已推送并核对远端 SHA，`master` 保持原提交。105 个文件包括源码、回归、公开样例与正式文档；凭证、数据库、索引、缓存、日志及评测产物未提交。提交前清除一个测试文件末尾的多余空行，没有改测试行为；其余后端源码/样例此前与 549 项全绿隔离副本逐文件一致。这是历史发布记录，不预判当前工作区后续状态。
+
+GitNexus 缓存版 1.6.12 的全范围检查识别 105 文件、1,554 符号和 223 个受影响流程，风险 `critical`。全范围的符号列表触及 1,000 条硬上限；随后以两个项目外临时 Git index 分组重跑：已修改 48 文件/561 符号/213 流程，新增 57 文件/993 符号/10 流程，分别为 `critical`、`high`，均退出码 0且无 partial/truncated 提示。没有改工作树或原暂存范围来绕过检查。图谱陈旧和动态调用覆盖限制仍在，不将这些结果称为全量无风险认证。
+
+可选 `tests/mcp_live_acceptance.py` 为本机原生导入顺序使用 PyArrow，项目未单独锁定这个直接依赖；已有主机可运行不等于该脚本在空白环境已验证。DeepEval 的独立判分环境不用于验证此硬件/Agent 验收脚本。
 
 ### 后端
 
@@ -28,13 +73,68 @@ macOS / Linux：
 
 先用 `cd backend`，再运行 `python -m tests.rag_eval.run_golden_eval --validate-only`，只检查黄金集格式。
 
+2026-10-04 推送后重新运行上述命令：30 道通用题 schema 校验通过，version 1.0、退出码 0、无模型调用；另有 5 道 PDF 专项题，因此历史合并 35 题不是该通用 YAML 的独立题数。
+
 需要完整评测的参数和流程见 [黄金集评测说明](../backend/tests/rag_eval/GOLDEN_EVAL_README.md)。完整评测会访问运行中的本地服务并生成结果，不属于普通单元测试。
 
-修复前的 2026-10-03～04 评测见 [RAG 质量基线第 1–7 节](rag-quality-baseline.md)：35 道正式题已采集，30 道完成来源引用链路；这不是答案正确率。30 个合格候选均尝试 v3 自评诊断，8 个有效、21 个评分超时、1 个 API 错误，8 个子集加权平均 85.31，不能代表全量质量分。题库/资料错误已在后续 P0 中校准，但没有据此重写旧答案或旧分数；修复后证据另见该报告第 8 节。DeepEval 标准四指标完整样本仍为 0，不能发布完整标准总分。修复前实际重排器未加载，结果属于降级路径。
+修复前的 2026-10-03～04 评测见 [RAG 质量基线第 1–7 节](rag-quality-baseline.md)：35 道正式题已采集，30 道完成来源引用链路；这不是答案正确率。30 个合格候选均尝试 v3 自评诊断，8 个有效、21 个评分超时、1 个 API 错误，8 个子集加权平均 85.31，不能代表全量质量分。题库/资料错误已在后续 P0 中校准，但没有据此重写旧答案或旧分数；修复后证据另见该报告第 8 节。当时 DeepEval 标准四指标完整样本为 0；后续部分完整分见第 10 节，仍无全量标准总分。修复前实际重排器未加载，结果属于降级路径。
+
+### 2026-10-04 独立 DeepEval 环境
+
+软件快照推送后，在项目外隔离目录建立独立评测环境。解释器为应用自带的 Python 3.12.14，不下载或替换全局 Python；DeepEval 固定 1.5.5。判分环境使用 LangChain 0.2.17 / core 0.2.43 / openai 0.1.25 和 Ragas 0.1.21 的旧依赖 API；不装后端的 Torch/Docling 等完整运行栈。安装退出码 0，`pip check` 返回 `No broken requirements found`，104 行依赖锁保存在项目外目录，SHA-256 为 `3141cc3cfd3dafbfe36272b3be54736118e648e9c593044b6697068275d125ec`。缓存、安装日志与临时文件均在该隔离目录；当时的系统 Python 3.13.13 / DeepEval 4.0.7 未改动。
+
+`backend/requirements-eval.txt` 已改为仅安装判分依赖，不再包含 `-r requirements.txt`。安装成功不代表评分成功；Text 自定义适配和原生四指标的实际验证结果另记。此配置与本节结果文档是推送之后的本地改动，不冒充已包含在 `32e82560` 的远端文件。
+
+在上述环境中，项目现有 `preflight_deepeval_runtime()` 实际返回 `python=3.12, deepeval=1.5.5`，四个原生指标均可导入；提前设置 `DEEPEVAL_TELEMETRY_OPT_OUT=YES`，仅在这次离线导入检查的上下文中阻断 DeepEval 的 PyPI 更新查询，退出后还原，没有改第三方包代码。原有 `test_metric_failures.py`、`test_report_denominators.py`、`test_eval_deadlines.py` 三文件另跑 **33 项通过、1 条警告、0.98 秒、退出码 0**，无模型请求。为避免导入后端认证 fixture 或插件副作用，使用 `--confcutdir=.../backend/tests/rag_eval` 和 `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`；警告是关闭插件后已有 `asyncio_mode` 配置不识别，不是跳过测试。结果保存为项目外 `protocol-tests.log`。这组纯评分协议测试不代替完整后端 549 项或真实原生判分。
+
+Luna/max 实现项目外 `saved_deepeval.py` 与配套测试，采用实际 `Text` 身份的 `DeepEvalBaseLLM`，不伪装为 OpenAI 模型名；schema 返回实例、请求不重试、共享 40 次 HTTP 上限、单指标 90 秒、单响应 4,096 token。主控另跑 unittest：**7 项通过，0.354 秒、退出码 0**，四个原生 `a_measure` 都用假响应实际计算完成，另验非法格式不重试、请求封顶与取消。执行线程的同组 pytest 也为 7 项通过、5 条依赖弃用警告，不能合计成 14 个不同测试；首次自动加载插件曾触发非收费 PyPI 版本查询，随后禁用插件复测阻断查询，全程零 judge 请求。主控的评分 driver 另核对提交、题库/回答 hash 和成功检索的完整父上下文，dry preflight 有 3 个合格样本、0 模型调用。
+
+首次真实原生判分运行 `grade-run-20261004T034214Z-353ef5ed`：G001/G023/G026 共 **3 planned / 3 eligible / 3 attempted / 0 scored / 3 failed**，四指标各 0/3 有效，全部为 `format_failure`，标准总分为 `null`，不得解释为 RAG 质量 0 分。实际 judge HTTP 尝试 **15 次**，没有重试或重新生成回答，脚本退出码 1；失败原文输入、结果分母与日志保留在项目外目录。评分器格式适配需继续核对，后续修复验证不覆盖这次失败成绩。
+
+后续明确非流式请求与完整 JSON 代码块解码，适配器测试 9 项通过；两次格式诊断共 2 次 HTTP，不生成质量分。G001/G026 两题的第二轮实际 16 次 HTTP：召回及精确度均各 2/2 有效、分数 1.0，忠实性及回答相关性各 0/2 有效，两个完整总分均 `null`，退出码 1。再增加 SSE 与长度截断回归后外部适配器 **11 项通过、0.852 秒**；只针对 G001 的两个失败维度做流式探针，单指标 180 秒、单 HTTP 读取 90 秒、额度最多再 7 次。实际 4 次 HTTP，两个指标均失败、退出码 1：回包均 HTTP 200/SSE，各指标出现 `finish_reason=length`，在 4,096 token 预算下被判为不完整而拒绝计分。合计 **37 次 judge/诊断 HTTP 尝试**，不混同旧聊天或 Embedding 调用数。原生评分完整样本仍为 0；没有用跨版本好分数拼总分。用户中止时该探针已自然结束，确认无该评分进程继续运行，未再发请求。具体报告和未验证边界见 [质量报告第 9 节](rag-quality-baseline.md#9-2026-10-04-发布与独立-deepeval-验收)。
+
+### 2026-10-04 四指标重评和提示词优化
+
+产品只增加完整证据阅读、关键限制、逐句引用及检索内容不作为指令的规则，新增 `test_rag_answer_prompt.py`，没有改题库、指标公式、权重或工具权限。使用已有系统 Python 建立新的 E 盘源码/SQLite/索引隔离副本，实际命令：
+
+```powershell
+./scripts/verify_backend_isolated.ps1 -Python <python-executable> `
+  -TempRoot <external-acceptance-root>/20261004-rag-score-optimization/backend-regression `
+  -TestPaths @('tests', '-vv', '-o', 'faulthandler_timeout=120')
+```
+
+结果 **550 collected / 550 passed / 0 failed / 0 skipped，183 warnings，227.86 秒，退出码 0**。副本为该目录下 `hardware-rag-verify-434078a12a4744c88d777f3fc3b13855`；新提示词和测试文件与当前工作区 SHA-256 一致。本轮没有前端、浏览器、新电脑或硬件重验。
+
+项目外 `collect_optimized.py` 复用只读真实问答流程；准备版本 `071038Z-72834b67` 在计费前累计台账核验失败，零模型请求，保留。正式新 `live-smoke/runs/20261004T071141Z-03fb7ee6`：三份 MD 共 457 片段入库；4 planned / 4 attempted / 4 completed，三题来源链路 3/3、严格内容检查 2/3、空库 1/1；退出码 1 来自内容检查而非传输错误。完整父上下文分别 5/5/10 段；自有服务 PID 2896 已退出，58087 空闲，cleanup verified。累计应用问题尝试为 13，内部模型与 Embedding 次数未计量。
+
+Text 外部适配器和原生公式对照最终 **16 项离线 unittest 通过、1.223 秒、退出码 0**，包括输出截断拒绝、结束标记后连接不结束、取消和请求上限；无真实 judge 调用。项目外 driver 的默认行为只预检，显式 `--run-live` 才读取本机未跟踪凭证和调用模型。最终使用命令如下；这是付费实网操作，重跑会新建记录且不保证相同分数，不属于普通自动测试：
+
+```powershell
+$evalPython = '<external-acceptance-root>/20261004-release-deepeval/.venv-eval/Scripts/python.exe'
+& $evalPython '<external-acceptance-root>/20261004-release-deepeval/grade_rag_run.py' `
+  --answer-run '<external-acceptance-root>/20261004-rag-p0/live-smoke/runs/20261004T071141Z-03fb7ee6' `
+  --max-output-tokens 32768 --judge-effort low --run-live
+```
+
+四项仍用 DeepEval 1.5.5 原生类，30/25/25/20 是项目已有加权方案，不是 DeepEval 统一规定的默认权重。`include_reason=False` 仅省去额外总结请求，保留原生事实抽取、逐条 verdict 和公式；每指标 600 秒、单 HTTP 读取 90 秒、每轮最多 40 次尝试、不重试、无输入截断。客户端请求 low 不证明上游实际配置。
+
+| 保存运行 | 答案版本 | planned / eligible / attempted / scored / failed | judge HTTP | 有效完整子集均值 |
+| --- | --- | --- | --- | --- |
+| `grade-run-20261004T064036Z-0f04ca97` | 旧 | 3 / 3 / 3 / 0 / 3 | 26 | 无 |
+| `rag-grade-20261004T070429Z-b4c65c22` | 旧 | 3 / 3 / 3 / 2 / 1 | 20 | 100，仅 2/3 |
+| `rag-grade-20261004T072004Z-7ce19b16` | 新 | 3 / 3 / 3 / 2 / 1 | 21 | 93.47，仅 2/3 |
+| `rag-grade-20261004T074755Z-5a13c032` | 同一批新答案、请求 low | 3 / 3 / 3 / 1 / 2 | 19 | 100，仅 1/3 |
+| `rag-grade-20261004T081323Z-5db5cac6` | 用户确认网络恢复后的同配置单轮重测 | 3 / 3 / 3 / 3 / 0 | 21 | 95.51，三题全部完整 |
+
+恢复前的四轮均退出码 1，均不是三题完整或全量质量验收。另一次旧 G023 单项低推理开销探针用 3 次 HTTP、200.969 秒完成，忠实性 1.0，不参与均值。恢复前检查点合计 **89 次 judge/诊断尝试**，上一小节 37 次另计，该检查点独立环境累计 126；不等于实际计费请求数，也不包含应用/Embedding 次数。
+
+恢复前统一配置轮明确出现三次 HTTP 503 与一次传输错误；失败保留为空值，不等于质量零分，不跨运行补分。用户确认短暂网络问题后，授权再用相同配置重测一次：最后一行实际退出码 **0**，四指标各 3/3 有效，21 次 HTTP 均为 200/stop。指标均值按百分制为召回 100、忠实性 97.62、回答相关性 100、检索精确度 80.56；每题先保留两位再平均，项目加权均分 **95.51**。这是三题开发子集数值达标，不是全量验收，UART 解释错误和 ESP32-S3 精确度 41.67 仍在。
+
+新增 21 次后本节继续评分合计 **110 次 judge/诊断尝试**，与前一检查点的 37 次累计 **147 次**；应用提问没有重发，仍为 13 个历史累计问题尝试。适配器与公式对照重复复测仍为 16 项通过、1.538 秒，不将两轮同名测试相加。所有判分进程已自然结束，未继续循环刷分。完整报告和逐条审查在 `20261004-release-deepeval/` 各对应目录内 `report.json`。新问题、判分波动与总体置信度边界见[质量报告第 10 节](rag-quality-baseline.md#10-2026-10-04-四指标重评与证据边界优化)。
 
 ### 多模态模型接口测试
 
-- 测试接口：`https://9router.zxyzx.bbroot.com/v1`
+- 测试接口地址保存在本机未纳入版本控制的设置中；本文件不记录服务地址或密钥。
 - 模型名称：`Text`；支持多模态，可用于后续聊天及多模态接口联调。
 - API key 属于凭证，不保存在本文件或 Git 中；请只在本机应用设置或其他未纳入版本控制的安全配置中填写。
 - 记录接口和模型信息不代表模型连通性或具体功能已经通过测试；运行后需单独记录实际结果。
@@ -69,8 +169,8 @@ macOS / Linux：
 | 运行日期 | 命令 | 结果 |
 | --- | --- | --- |
 | 2026-10-03～04 | 本机项目外 `20261003-rag-quality/live_quality.py`：独立源码/数据库服务、真实上传索引、`collect`、`rubric_full`、`cache_probe`；参数和材料见 [质量基线](rag-quality-baseline.md) | 7 份固定输入均索引，共 1,228 片段；普通题已保存 30/30、引用链路 25/30，PDF 已保存 5/5、链路 5/5；另 2 个缺资料探针。2 次空输出错误、2 次本轮 300 秒截止、1 次无有效 KB 引用未算成功。v3 诊断 8/30 有效、21 次超时和 1 次 API 错误，标准总分不可用。删除合成 KB 后仍返回缓存内容已复现；没有修改产品代码、原知识库或硬件，非浏览器/启用重排器后的质量验收 |
-| 2026-10-03 | `./scripts/verify_backend_isolated.ps1 -Python D:/python/python.exe -TempRoot E:/Desktop/agent-acceptance-artifacts/20261003-rag-quality -TestPaths tests/rag_eval` | 18 项通过、30 条警告，34.32 秒，退出码 0；证据/评测报告逻辑回归，不是 18 个真实模型问答的质量通过 |
-| 2026-10-03 | `./scripts/verify_backend_isolated.ps1 -Python D:/python/python.exe -TempRoot E:/Desktop/agent-acceptance-artifacts/20261003`（本轮最终源码，包括 MCP 停止后的排队请求保护） | Git 范围正式后端测试：457 项通过、183 条警告，退出码 0，98.87 秒；隔离副本为 `hardware-rag-verify-3cf4d5be36854ab7bd7a5b38ed3f2f08`，不含被忽略的本地探索测试，不是新电脑安装验收 |
+| 2026-10-03 | `./scripts/verify_backend_isolated.ps1 -Python <python-executable> -TempRoot <external-acceptance-root>/20261003-rag-quality -TestPaths tests/rag_eval` | 18 项通过、30 条警告，34.32 秒，退出码 0；证据/评测报告逻辑回归，不是 18 个真实模型问答的质量通过 |
+| 2026-10-03 | `./scripts/verify_backend_isolated.ps1 -Python <python-executable> -TempRoot <external-acceptance-root>/20261003`（本轮最终源码，包括 MCP 停止后的排队请求保护） | Git 范围正式后端测试：457 项通过、183 条警告，退出码 0，98.87 秒；隔离副本不含被忽略的本地探索测试，不是新电脑安装验收 |
 | 2026-10-03 | `cd frontend; npm test`（本轮最终前端） | 16 个文件、79 项通过，退出码 0，24.95 秒；组件及状态/API 模拟测试，不是浏览器验收 |
 | 2026-10-03 | `cd frontend; npm run lint`（本轮最终前端） | 0 错误、13 条已有 React Hooks 警告，退出码 0 |
 | 2026-10-03 | `cd frontend; npm run build`（本轮最终前端） | 824 个模块构建成功，退出码 0，11.77 秒；仍有超过 500 kB 的分块提示 |
@@ -116,7 +216,7 @@ macOS / Linux：
 
 可用 `./scripts/verify_backend_isolated.ps1 -Python <可运行的 Python 路径>` 重现受控源码副本回归。脚本只复制 Git 已跟踪和未被忽略的后端源码、正式测试及 Markdown 夹具，不复制 `.env`、凭据、原数据库或本地探索测试；使用新建的临时数据目录。用 `-TestPaths tests/test_manual_memory_settings.py` 可执行定向测试。保留副本用于诊断，不覆盖旧虚拟环境；它不是新电脑安装验证，也不是网络/浏览器/硬件验收。
 
-本轮后期 C 盘空间耗尽，测试改为 `-TempRoot E:/Desktop/agent-acceptance-artifacts/20261003`。每次创建独立源码副本、SQLite、`TEMP/TMP` 和 Pytest base；只搬移本轮自己创建的已完成临时副本到该目录保留诊断，未清理用户缓存或私有材料。不要并行启动会扩大 C 盘缓存的 GitNexus `pnpm dlx` 调用。
+本轮后期 C 盘空间耗尽，测试改为 `-TempRoot <external-acceptance-root>/20261003`。每次创建独立源码副本、SQLite、`TEMP/TMP` 和 Pytest base；只搬移本轮自己创建的已完成临时副本到该目录保留诊断，未清理用户缓存或私有材料。不要并行启动会扩大系统缓存的 GitNexus `pnpm dlx` 调用。
 
 2026-10-03 本轮记忆保存补丁及消息持久化定向回归：上述脚本运行 `tests/test_manual_memory_settings.py`、`tests/test_crud_message_idempotency.py`，13 项通过、42 条警告、退出码 0。包括严格类型/4,000 字符边界、替换/清空/读取、非法值整批不更新，以及原消息幂等行为；此时 Skills、Agent 记忆注入和界面仍在实施，不据此宣称整项验收。
 
@@ -153,7 +253,7 @@ python -c "import pyarrow,pytest; raise SystemExit(pytest.main(['-p','pytest_asy
 
 ## 2026-10-04 RAG P0 修复检查
 
-这些结果来自 `9bd7e292` 之后、版本提交前的隔离工作区测试；后续发布提交和远端分支以 Git 记录为准。执行任务显式使用 `gpt-6-luna` / `max`，主控按事先列出的验收条件复核；项目外验收计划和产物根目录为 `E:/Desktop/agent-acceptance-artifacts/20261004-rag-p0/`。定向结果不能相加当作全量数量。
+这些结果来自 `9bd7e292` 之后、版本提交前的隔离工作区测试；后续发布提交和远端分支以 Git 记录为准。执行任务显式使用 `gpt-6-luna` / `max`，主控按事先列出的验收条件复核；验收计划与产物保存在项目外目录。定向结果不能相加当作全量数量。
 
 | 检查点 | 实际结果 | 边界 |
 | --- | --- | --- |
@@ -179,8 +279,8 @@ python -c "import pyarrow,pytest; raise SystemExit(pytest.main(['-p','pytest_asy
 最终完整后端命令（在当前 PowerShell 直接调用，不再嵌套外层 shell）：
 
 ```powershell
-./scripts/verify_backend_isolated.ps1 -Python D:/python/python.exe `
-  -TempRoot E:/Desktop/agent-acceptance-artifacts/20261004-rag-p0/integrated-final4 `
+./scripts/verify_backend_isolated.ps1 -Python <python-executable> `
+  -TempRoot <external-acceptance-root>/20261004-rag-p0/integrated-final4 `
   -TestPaths @('tests', '-vv', '-o', 'faulthandler_timeout=120')
 ```
 
@@ -189,8 +289,8 @@ python -c "import pyarrow,pytest; raise SystemExit(pytest.main(['-p','pytest_asy
 缓存/索引检查使用下面的精确参数；多路径必须作为 PowerShell 数组传递，不能把一串逗号参数误当作全部执行：
 
 ```powershell
-./scripts/verify_backend_isolated.ps1 -Python D:/python/python.exe `
-  -TempRoot E:/Desktop/agent-acceptance-artifacts/20261004-rag-p0/final-verified2 `
+./scripts/verify_backend_isolated.ps1 -Python <python-executable> `
+  -TempRoot <external-acceptance-root>/20261004-rag-p0/final-verified2 `
   -TestPaths @('tests/test_rag_cache_freshness.py', 'tests/test_kb_index_responsiveness.py',
     'tests/test_kb_index_status_isolated.py', 'tests/test_task4_parallel_cache.py')
 ```
@@ -200,8 +300,8 @@ python -c "import pyarrow,pytest; raise SystemExit(pytest.main(['-p','pytest_asy
 公开入口兼容与显式关闭 wrapper 的最终联合命令为：
 
 ```powershell
-./scripts/verify_backend_isolated.ps1 -Python D:/python/python.exe `
-  -TempRoot E:/Desktop/agent-acceptance-artifacts/20261004-rag-p0/stream-wrapper-final `
+./scripts/verify_backend_isolated.ps1 -Python <python-executable> `
+  -TempRoot <external-acceptance-root>/20261004-rag-p0/stream-wrapper-final `
   -TestPaths @('tests/test_chat_stream_termination.py', 'tests/test_chat_long_term_memory.py',
     'tests/test_agent_stream_reliability.py', 'tests/test_hitl_resume_fail_closed.py',
     'tests/test_mcp_agent_integration.py', 'tests/test_chat_skills_integration.py',
@@ -212,15 +312,15 @@ python -c "import pyarrow,pytest; raise SystemExit(pytest.main(['-p','pytest_asy
 
 全量回归进程启动前清空测试进程的 API 凭证环境变量，使用上方隔离脚本的新源码副本、新 SQLite/Chroma 和 E 盘临时目录；不复制 `.env`、加密 key、凭据 JSON 或原数据库，不使用用户手册。第一次失败副本保留于 `integrated-final/hardware-rag-verify-c9797f2793874ff7a11fbf453eaffd10`。没有安装/升级依赖、删除原材料、提交或推送。
 
-评测线程的 49 项检查另使用 `E:/Desktop/agent-task-e-isolated-20261004`，运行 `pytest tests/rag_eval -q -p no:cacheprovider`，将 `config.TEST_DOCS_DIR`、`config.OUTPUT_DIR` 和黄金评测 `_OUTPUT_DIR` 指向该副本。复制阶段曾机械复制 `app/db/.enc_key`、`keys_store.json` 及备份，三份副本在 Pytest 启动前已精确删除；没有查看/打印/解析或用于认证，原文件不改动。不能将这一过程描述为“凭据从未被复制”。后续全量回归采用 Git 白名单复制，已核对这些凭据不属于复制范围。
+评测线程的 49 项检查另用项目外隔离副本，运行 `pytest tests/rag_eval -q -p no:cacheprovider`，将 `config.TEST_DOCS_DIR`、`config.OUTPUT_DIR` 和黄金评测 `_OUTPUT_DIR` 指向该副本。复制阶段曾机械复制 `app/db/.enc_key`、`keys_store.json` 及备份，三份副本在 Pytest 启动前已精确删除；没有查看/打印/解析或用于认证，原文件不改动。不能将这一过程描述为“凭据从未被复制”。后续全量回归采用 Git 白名单复制，已核对这些凭据不属于复制范围。
 
 标准质量评分在当前 Python 3.13.13 / DeepEval 4.0.7 环境预检失败；标准路径要求 Python 3.10～3.12 / DeepEval 1.5.5 和异步评分接口。本轮没有更换全局环境。协议回归通过与“取得完整标准质量总分”是两件事。
 
 索引取消死循环修复只调整 `_run_index_worker` 及其回归：改用受 shield 保护、不会被 runner 当作 Task 一并取消的 executor Future，并显式复制 `contextvars`。实体线程结束前不归还索引名额；已完成 Future 的异常通过 `result()` 传播，避免线程自身 `CancelledError` 再被无限循环处理。旧 helper 的 AST 子进程红灯确实打印线程启动、runner 已取消及释放前快照后超时，父测试终止并回收自己的 PID 14440；不是依赖导入慢造成的假红灯。修复后的精确联合命令为：
 
 ```powershell
-./scripts/verify_backend_isolated.ps1 -Python D:/python/python.exe `
-  -TempRoot E:/Desktop/agent-acceptance-artifacts/20261004-rag-p0/resumed-cancel-fix `
+./scripts/verify_backend_isolated.ps1 -Python <python-executable> `
+  -TempRoot <external-acceptance-root>/20261004-rag-p0/resumed-cancel-fix `
   -TestPaths @('tests/test_rag_cache_freshness.py', 'tests/test_kb_index_responsiveness.py',
     'tests/test_kb_index_status_isolated.py', 'tests/test_task4_parallel_cache.py',
     'tests/test_routes_kb.py::TestKbUpload::test_upload_success_returns_doc_id_and_status')
