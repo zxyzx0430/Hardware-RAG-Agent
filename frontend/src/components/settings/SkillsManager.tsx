@@ -51,6 +51,7 @@ export function SkillsManager({ lang }: { lang: string }) {
   const getSkill = useSkillsStore((state) => state.getSkill);
   const setSkillEnabled = useSkillsStore((state) => state.setSkillEnabled);
   const updateSkillContent = useSkillsStore((state) => state.updateSkillContent);
+  const createSkill = useSkillsStore((state) => state.createSkill);
   const deleteSkill = useSkillsStore((state) => state.deleteSkill);
   const previewGitHubImport = useSkillsStore((state) => state.previewGitHubImport);
   const importGitHubSkills = useSkillsStore((state) => state.importGitHubSkills);
@@ -58,15 +59,22 @@ export function SkillsManager({ lang }: { lang: string }) {
   const clearError = useSkillsStore((state) => state.clearError);
 
   const [importOpen, setImportOpen] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
   const [sourceUrl, setSourceUrl] = useState("");
   const [sourceRef, setSourceRef] = useState("");
   const [sourcePath, setSourcePath] = useState("");
   const [selectedPaths, setSelectedPaths] = useState<string[]>([]);
+  const [installScope, setInstallScope] = useState<"project" | "user">("project");
+  const [claudeAdapter, setClaudeAdapter] = useState(false);
+  const [newSkillName, setNewSkillName] = useState("");
+  const [newSkillDescription, setNewSkillDescription] = useState("");
+  const [newSkillBody, setNewSkillBody] = useState("");
   const [dialog, setDialog] = useState<SkillDialog | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<SkillDeleteTarget | null>(null);
   const [dialogLoading, setDialogLoading] = useState<string | null>(null);
   const [editContent, setEditContent] = useState("");
   const [savingSkill, setSavingSkill] = useState(false);
+  const [creatingSkill, setCreatingSkill] = useState(false);
   const [enablingSkill, setEnablingSkill] = useState(false);
   const [deletingSkillId, setDeletingSkillId] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
@@ -124,6 +132,27 @@ export function SkillsManager({ lang }: { lang: string }) {
     setSavingSkill(false);
   };
 
+  const submitCreateSkill = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const name = newSkillName.trim();
+    const description = newSkillDescription.trim();
+    const body = newSkillBody.trim();
+    if (!name || !description) return;
+    const content = `---\nname: ${JSON.stringify(name)}\ndescription: ${JSON.stringify(description)}\n---\n\n${body}${body ? "\n" : ""}`;
+    setCreatingSkill(true);
+    try {
+      if (await createSkill(content)) {
+        setCreateOpen(false);
+        setNewSkillName("");
+        setNewSkillDescription("");
+        setNewSkillBody("");
+        setFeedback(isChinese ? `技能“${name}”已创建。` : `Skill “${name}” was created.`);
+      }
+    } finally {
+      setCreatingSkill(false);
+    }
+  };
+
   const confirmDelete = async () => {
     if (!deleteTarget || deletingSkillId) return;
     const target = deleteTarget;
@@ -147,15 +176,15 @@ export function SkillsManager({ lang }: { lang: string }) {
   };
 
   const confirmImport = async () => {
-    if (await importGitHubSkills(selectedPaths)) {
+    if (await importGitHubSkills(selectedPaths, { scope: installScope, claude_adapter: claudeAdapter })) {
       setImportOpen(false);
       setSourceUrl("");
       setSourceRef("");
       setSourcePath("");
       setSelectedPaths([]);
       setFeedback(isChinese
-        ? "所选技能已导入，默认保持停用。"
-        : "Selected skills were imported and remain disabled by default.");
+        ? "有效技能已导入并启用；需审核的技能仍不可用。"
+        : "Valid skills are imported and enabled; skills requiring review remain unavailable.");
     }
   };
 
@@ -172,15 +201,23 @@ export function SkillsManager({ lang }: { lang: string }) {
           <h3>{isChinese ? "Agent Skills" : "Agent Skills"}</h3>
           <p style={{ fontSize: 13, color: "var(--muted-fg)", marginBottom: 12 }}>
             {isChinese
-              ? "管理 Markdown 技能。导入不会自动启用；启用前请检查来源、内容和兼容提示。"
-              : "Manage Markdown skills. Imports stay disabled until you review their source, content, and compatibility notes."}
+              ? "Skills 用于发现和加载技能说明，不限制普通工具或 MCP。导入不会运行脚本；确需执行时仍按常规权限确认。"
+              : "Skills discover and load instructions without restricting regular tools or MCP. Importing does not run scripts; any required execution follows the usual permission checks."}
           </p>
         </div>
         <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+          <button
+            type="button"
+            className="verify-btn"
+            onClick={() => { setCreateOpen((open) => !open); setImportOpen(false); clearPreview(); clearError(); }}
+            disabled={creatingSkill || importing}
+          >
+            {isChinese ? "新建 Skill" : "New Skill"}
+          </button>
           <button type="button" className="verify-btn" onClick={() => void fetchSkills()} disabled={loading}>
             {isChinese ? "刷新" : "Refresh"}
           </button>
-        <button type="button" className="verify-btn primary" onClick={() => { setImportOpen((open) => !open); clearPreview(); clearError(); }} disabled={previewLoading || importing}>
+        <button type="button" className="verify-btn primary" onClick={() => { setImportOpen((open) => !open); setCreateOpen(false); clearPreview(); clearError(); }} disabled={previewLoading || importing}>
             {isChinese ? "从 GitHub 导入" : "Import from GitHub"}
           </button>
         </div>
@@ -188,6 +225,46 @@ export function SkillsManager({ lang }: { lang: string }) {
 
       {error && <div role="alert" style={{ color: "var(--danger)", fontSize: 12, margin: "8px 0" }}>{error}</div>}
       {feedback && <div role="status" style={{ color: "var(--success)", fontSize: 12, margin: "8px 0" }}>{feedback}</div>}
+
+      {createOpen && (
+        <form onSubmit={(event) => void submitCreateSkill(event)} style={{ padding: 14, border: "1px solid var(--border)", borderRadius: 8, margin: "12px 0" }}>
+          <h4 style={{ marginBottom: 8 }}>{isChinese ? "创建标准 Skill" : "Create a standard Skill"}</h4>
+          <label className="field-label" htmlFor="newSkillName">{isChinese ? "Skill 名称" : "Skill name"}</label>
+          <input
+            id="newSkillName"
+            className="form-input"
+            required
+            minLength={1}
+            value={newSkillName}
+            onChange={(event) => setNewSkillName(event.target.value)}
+          />
+          <label className="field-label" htmlFor="newSkillDescription" style={{ marginTop: 8 }}>{isChinese ? "描述" : "Description"}</label>
+          <input
+            id="newSkillDescription"
+            className="form-input"
+            required
+            value={newSkillDescription}
+            onChange={(event) => setNewSkillDescription(event.target.value)}
+          />
+          <label className="field-label" htmlFor="newSkillBody" style={{ marginTop: 8 }}>{isChinese ? "技能说明" : "Instructions"}</label>
+          <textarea
+            id="newSkillBody"
+            className="form-input"
+            rows={7}
+            value={newSkillBody}
+            onChange={(event) => setNewSkillBody(event.target.value)}
+            placeholder={isChinese ? "写下这个技能要提供的说明…" : "Write the instructions this Skill should provide…"}
+          />
+          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+            <button type="submit" className="verify-btn primary" disabled={creatingSkill || !newSkillName.trim() || !newSkillDescription.trim()}>
+              {creatingSkill ? (isChinese ? "正在创建…" : "Creating…") : (isChinese ? "创建技能" : "Create Skill")}
+            </button>
+            <button type="button" className="verify-btn" onClick={() => setCreateOpen(false)} disabled={creatingSkill}>
+              {isChinese ? "取消" : "Cancel"}
+            </button>
+          </div>
+        </form>
+      )}
 
       {importOpen && (
         <form onSubmit={(event) => void previewGitHub(event)} style={{ padding: 14, border: "1px solid var(--border)", borderRadius: 8, margin: "12px 0" }}>
@@ -204,6 +281,28 @@ export function SkillsManager({ lang }: { lang: string }) {
               <input id="skillGithubPath" className="form-input" value={sourcePath} onChange={(event) => setSourcePath(event.target.value)} />
             </div>
           </div>
+          <fieldset style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "8px 10px", marginTop: 10 }}>
+            <legend style={{ padding: "0 4px", fontSize: 12 }}>{isChinese ? "安装范围" : "Install scope"}</legend>
+            <div style={{ display: "grid", gap: 6, fontSize: 12 }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                <input type="radio" name="skillInstallScope" value="project" checked={installScope === "project"} onChange={() => setInstallScope("project")} />
+                {isChinese ? "当前项目" : "Current project"} <code>.agents/skills</code>
+              </label>
+              <label style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                <input type="radio" name="skillInstallScope" value="user" checked={installScope === "user"} onChange={() => setInstallScope("user")} />
+                {isChinese ? "当前用户" : "Current user"} <code>~/.agents/skills</code>
+              </label>
+              <label style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                <input type="checkbox" checked={claudeAdapter} onChange={(event) => setClaudeAdapter(event.target.checked)} />
+                {isChinese ? "同时创建 Claude 适配" : "Also create a Claude adapter"}
+              </label>
+            </div>
+            <p style={{ margin: "7px 0 0", fontSize: 11, color: "var(--muted-fg)" }}>
+              {isChinese
+                ? "Claude 适配写入对应的 .claude/skills 目录。仅安装到所选范围，不会自动迁移或覆盖已有技能。"
+                : "Claude adapters go in the matching .claude/skills directory. Installation stays within the selected scope and does not migrate or overwrite existing skills."}
+            </p>
+          </fieldset>
           <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
             <button type="submit" className="verify-btn primary" disabled={previewLoading || !sourceUrl.trim()}>
               {previewLoading ? (isChinese ? "正在预览…" : "Previewing…") : (isChinese ? "预览候选技能" : "Preview candidates")}
@@ -231,7 +330,7 @@ export function SkillsManager({ lang }: { lang: string }) {
         <p role="status" style={{ color: "var(--muted-fg)", fontSize: 13 }}>{isChinese ? "正在加载技能…" : "Loading skills…"}</p>
       ) : skills.length === 0 ? (
         <div style={{ padding: 20, color: "var(--muted-fg)", fontSize: 13, textAlign: "center" }}>
-          {isChinese ? "还没有 Markdown Skill。你可以从公共 GitHub 仓库预览并导入。" : "No Markdown skills yet. Preview and import one from a public GitHub repository."}
+          {isChinese ? "还没有 Skill。你可以新建一个，或从公共 GitHub 仓库预览并导入。" : "No Skills yet. Create one or preview and import it from a public GitHub repository."}
         </div>
       ) : (
         <div aria-label={isChinese ? "已安装技能" : "Installed skills"}>
@@ -241,7 +340,14 @@ export function SkillsManager({ lang }: { lang: string }) {
                 <div style={{ minWidth: 0 }}>
                   <strong style={{ fontSize: 13 }}>{skill.name}</strong>
                   {skill.locally_modified && <span style={{ marginLeft: 8, color: "var(--warning)", fontSize: 11 }}>{isChinese ? "本地已修改" : "Locally modified"}</span>}
+                  {skill.scope && <span style={{ marginLeft: 8, color: "var(--muted-fg)", fontSize: 11 }}>{skill.scope === "project"
+                    ? (isChinese ? "项目级" : "Project")
+                    : skill.scope === "user"
+                      ? (isChinese ? "用户级" : "User")
+                      : (isChinese ? "旧私有目录" : "Legacy private directory")}</span>}
+                  {skill.claude_adapter && <span style={{ marginLeft: 8, color: "var(--muted-fg)", fontSize: 11 }}>{isChinese ? "Claude 适配" : "Claude adapter"}</span>}
                   <p style={{ fontSize: 12, color: "var(--muted-fg)", marginTop: 3 }}>{skill.description}</p>
+                  {skill.install_path && <p style={{ fontSize: 11, color: "var(--muted-fg)", marginTop: 3, overflowWrap: "anywhere" }}><code>{skill.install_path}</code></p>}
                   <p style={{ fontSize: 11, color: "var(--muted-fg)", marginTop: 3 }}>
                     {isChinese ? "兼容状态：" : "Compatibility: "}{compatibilityLabel(skill.compatibility_status, isChinese)}
                   </p>
@@ -259,10 +365,10 @@ export function SkillsManager({ lang }: { lang: string }) {
                   <button
                     type="button"
                     className={`mini-toggle ${skill.enabled ? "on" : "off"}`}
-                    aria-label={`${skill.enabled ? (isChinese ? "停用" : "Disable") : (isChinese ? "检查并启用" : "Review and enable")}: ${skill.name}`}
+                    aria-label={`${skill.compatibility_status === "review_required" ? (isChinese ? "需审核，不可启用" : "Review required; unavailable") : skill.enabled ? (isChinese ? "停用" : "Disable") : (isChinese ? "检查并启用" : "Review and enable")}: ${skill.name}`}
                     aria-pressed={skill.enabled}
                     onClick={() => void toggleSkill(skill)}
-                    disabled={dialogLoading === skill.id || deletingSkillId !== null}
+                    disabled={dialogLoading === skill.id || deletingSkillId !== null || skill.compatibility_status === "review_required"}
                   >
                     <span className="mini-toggle-knob"></span>
                   </button>

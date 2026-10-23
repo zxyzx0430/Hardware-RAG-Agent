@@ -122,7 +122,7 @@ def _ensure_external_tool_snapshot(
     payload: Any = None,
 ) -> AgentRequestSnapshot:
     """Freeze connected tool instances and approvals for this request only."""
-    if snapshot.skills_mode != "off" or snapshot.mcp_snapshot_bound or snapshot.tool_context is not None:
+    if snapshot.mcp_snapshot_bound:
         return snapshot
     from src.mcp.manager import get_mcp_manager
     tools = get_mcp_manager().connected_tool_specs_snapshot()
@@ -196,26 +196,29 @@ def _ensure_request_tool_context(
 
 
 def _ensure_skills_runtime(snapshot: AgentRequestSnapshot) -> AgentRequestSnapshot:
-    if snapshot.skills_mode == "off":
-        if snapshot.skills_runtime is not None:
-            raise ValueError("Skills runtime must be absent when Skills mode is off")
-        return snapshot
     if snapshot.skills_runtime is not None:
         if getattr(snapshot.skills_runtime, "mode", None) != snapshot.skills_mode:
             raise ValueError("Skills runtime does not match the saved request mode")
-        expected_ids = tuple(item.id for item in snapshot.skills_runtime.snapshots)
-        if snapshot.skill_snapshots and tuple(item.id for item in snapshot.skill_snapshots) != expected_ids:
+        current = tuple(snapshot.skills_runtime.snapshots)
+        saved = tuple((item.id, item.content_hash) for item in snapshot.skill_snapshots)
+        current_prefix = tuple((item.id, item.content_hash) for item in current[:len(saved)])
+        if len(saved) > len(current) or saved != current_prefix:
             raise ValueError("Skills runtime does not match the saved request snapshot")
-        return replace(snapshot, skill_snapshots=tuple(snapshot.skills_runtime.snapshots))
+        return replace(snapshot, skill_snapshots=current)
 
     from src.agent.skill_runtime import build_skills_runtime
     runtime = build_skills_runtime(
         snapshot.skills_mode,
         snapshot.skill_ids if snapshot.skills_mode == "manual" else None,
     )
+    current = tuple(runtime.snapshots)
+    saved = tuple((item.id, item.content_hash) for item in snapshot.skill_snapshots)
+    current_prefix = tuple((item.id, item.content_hash) for item in current[:len(saved)])
+    if len(saved) > len(current) or saved != current_prefix:
+        raise ValueError("Skills runtime does not match the saved request snapshot")
     return replace(
         snapshot,
-        skill_snapshots=tuple(runtime.snapshots),
+        skill_snapshots=current,
         skills_runtime=runtime,
     )
 
@@ -231,7 +234,7 @@ async def _preload_manual_skills(
     from langchain_core.messages import ToolMessage
     from src.agent.core.toolkit.tool_router import ToolRouter
     from src.agent.exceptions import ToolContext
-    from src.agent.skill_runtime import LoadSkillTool, READ_ONLY_SKILL_TOOLS
+    from src.agent.skill_runtime import LoadSkillTool, SKILL_RUNTIME_TOOLS
     from src.agent.sse_helpers import convert_tool_message_to_sse
     from src.agent.agent_factory import _load_disabled_tools
 
@@ -248,7 +251,7 @@ async def _preload_manual_skills(
         session_id=session_id,
         skills_mode=snapshot.skills_mode,
         skills_runtime=runtime,
-        skills_allowed_tools=frozenset(READ_ONLY_SKILL_TOOLS - disabled_tools),
+        skills_allowed_tools=frozenset(SKILL_RUNTIME_TOOLS - disabled_tools),
         kb_scope=kb_scope,
     )
     router = ToolRouter.get_default()
@@ -775,21 +778,22 @@ async def _build_agent_for_payload(
     session_id = _session_memory_key(payload.session_id)
     snapshot = _ensure_external_tool_snapshot(snapshot, session_id, payload)
     snapshot = _ensure_request_tool_context(snapshot, payload, session_id)
-    if snapshot.skills_mode != "off":
-        tools = build_tools(
-            payload,
-            skills_runtime=snapshot.skills_runtime,
-            mcp_tools=snapshot.mcp_tools,
-            tool_context=snapshot.tool_context,
-        )
-    elif snapshot.tool_context is not None:
-        tools = build_tools(payload, mcp_tools=snapshot.mcp_tools, tool_context=snapshot.tool_context)
-    else:
-        tools = build_tools(payload)
+    tools = build_tools(
+        payload,
+        skills_runtime=snapshot.skills_runtime,
+        mcp_tools=snapshot.mcp_tools,
+        tool_context=snapshot.tool_context,
+    )
+    from src.agent.core.toolkit.tool_spec import ConfirmationRule
+    has_always_confirmation = any(
+        getattr(tool, "requires_confirmation", None) == ConfirmationRule.ALWAYS
+        for tool in tools
+    )
     enable_hitl = (
         payload.permission_mode != "bypassPermissions"
-        and snapshot.skills_mode == "off"
-    ) or bool(snapshot.mcp_tools)
+        or bool(snapshot.mcp_tools)
+        or has_always_confirmation
+    )
     resolved_memory = snapshot.long_term_memory
     skills_catalog = (
         snapshot.skills_runtime.catalog()
@@ -868,30 +872,29 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
             },
         )
     request_snapshot = _request_snapshot_from_payload(payload, long_term_memory)
-    if request_snapshot.skills_mode != "off":
-        try:
-            request_snapshot = _ensure_skills_runtime(request_snapshot)
-        except Exception as exc:
-            from src.skills.errors import SkillError
-            if isinstance(exc, SkillError):
-                raise HTTPException(
-                    status_code=exc.status_code,
-                    detail={
-                        "success": False,
-                        "error": {"code": exc.code, "message": str(exc)},
-                    },
-                ) from exc
-            logger.error("Skills request snapshot could not be created")
+    try:
+        request_snapshot = _ensure_skills_runtime(request_snapshot)
+    except Exception as exc:
+        from src.skills.errors import SkillError
+        if isinstance(exc, SkillError):
             raise HTTPException(
-                status_code=503,
+                status_code=exc.status_code,
                 detail={
                     "success": False,
-                    "error": {
-                        "code": "SKILLS_UNAVAILABLE",
-                        "message": "无法读取所选 Skills，请检查技能状态后重试。",
-                    },
+                    "error": {"code": exc.code, "message": str(exc)},
                 },
             ) from exc
+        logger.error("Skills request snapshot could not be created")
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "success": False,
+                "error": {
+                    "code": "SKILLS_UNAVAILABLE",
+                    "message": "无法读取所选 Skills，请检查技能状态后重试。",
+                },
+            },
+        ) from exc
 
     async def event_generator():
         """SSE 流式生成器，带 CancelledError 处理 + idle timeout + finally 清理。"""

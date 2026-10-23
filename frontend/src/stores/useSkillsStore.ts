@@ -16,6 +16,9 @@ export interface InstalledSkill {
   description: string;
   content: string;
   enabled: boolean;
+  scope?: "project" | "user" | "legacy";
+  install_path?: string;
+  claude_adapter?: boolean;
   format?: string;
   compatibility_status?: unknown;
   issues?: unknown;
@@ -61,9 +64,13 @@ interface SkillsState {
   getSkill: (id: string) => Promise<SkillDetail | null>;
   setSkillEnabled: (id: string, enabled: boolean) => Promise<boolean>;
   updateSkillContent: (id: string, content: string) => Promise<boolean>;
+  createSkill: (content: string) => Promise<boolean>;
   deleteSkill: (id: string) => Promise<boolean>;
   previewGitHubImport: (url: string, ref?: string, path?: string) => Promise<boolean>;
-  importGitHubSkills: (paths: string[]) => Promise<boolean>;
+  importGitHubSkills: (
+    paths: string[],
+    options?: { scope?: "project" | "user"; claude_adapter?: boolean },
+  ) => Promise<boolean>;
   setChatSkillSelection: (sessionId: string, selection: ChatSkillsSelection) => void;
   clearPreview: () => void;
   clearError: () => void;
@@ -87,7 +94,10 @@ export const useSkillsStore = create<SkillsState>((set, get) => ({
     set({ loading: true, error: null });
     try {
       const data = await apiGet<{ skills: InstalledSkill[] }>("skills");
-      set({ skills: Array.isArray(data?.skills) ? data.skills : [], loading: false, loaded: true });
+      const skills = Array.isArray(data?.skills)
+        ? data.skills.map((skill) => skill.compatibility_status === "review_required" ? { ...skill, enabled: false } : skill)
+        : [];
+      set({ skills, loading: false, loaded: true });
       return true;
     } catch (error) {
       set({ loading: false, error: errorMessage(error) });
@@ -121,6 +131,19 @@ export const useSkillsStore = create<SkillsState>((set, get) => ({
     set({ error: null });
     try {
       await apiPatch(`skills/${encodeURIComponent(id)}`, { content });
+      await get().fetchSkills();
+      return true;
+    } catch (error) {
+      set({ error: errorMessage(error) });
+      return false;
+    }
+  },
+
+  createSkill: async (content) => {
+    set({ error: null });
+    try {
+      const skill = await apiPost<InstalledSkill>("skills", { content });
+      set((state) => ({ skills: mergeSkills(state.skills, [skill]) }));
       await get().fetchSkills();
       return true;
     } catch (error) {
@@ -172,7 +195,7 @@ export const useSkillsStore = create<SkillsState>((set, get) => ({
     }
   },
 
-  importGitHubSkills: async (paths) => {
+  importGitHubSkills: async (paths, options) => {
     const preview = get().preview;
     const allowedPaths = new Set(preview?.candidates.map((candidate) => candidate.path) ?? []);
     const selectedPaths = [...new Set(paths)].filter((path) => allowedPaths.has(path));
@@ -185,13 +208,15 @@ export const useSkillsStore = create<SkillsState>((set, get) => ({
       const data = await apiPost<{ skills: InstalledSkill[] }>("skills/github/import", {
         source: preview.source,
         paths: selectedPaths,
+        scope: options?.scope ?? "project",
+        claude_adapter: options?.claude_adapter ?? false,
       }, GITHUB_IMPORT_TIMEOUT_MS);
       set((state) => ({
         skills: Array.isArray(data?.skills) ? mergeSkills(state.skills, data.skills) : state.skills,
         preview: null,
         importing: false,
       }));
-      void get().fetchSkills();
+      await get().fetchSkills();
       return true;
     } catch (error) {
       set({ importing: false, error: errorMessage(error) });
@@ -216,6 +241,8 @@ export const useSkillsStore = create<SkillsState>((set, get) => ({
 
 function mergeSkills(current: InstalledSkill[], imported: InstalledSkill[]): InstalledSkill[] {
   const byId = new Map(current.map((skill) => [skill.id, skill]));
-  for (const skill of imported) byId.set(skill.id, skill);
+  for (const skill of imported) {
+    byId.set(skill.id, skill.compatibility_status === "review_required" ? { ...skill, enabled: false } : skill);
+  }
   return [...byId.values()];
 }

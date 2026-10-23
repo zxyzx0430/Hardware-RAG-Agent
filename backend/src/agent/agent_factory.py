@@ -379,7 +379,14 @@ def _build_llm(
 # Tool list assembly (per-request)
 # ═══════════════════════════════════════════
 
-def build_tool_specs(payload: Any, *, skills_runtime: Any = None, mcp_tools: tuple = (), tool_context: ToolContext | None = None) -> list[BaseTool]:
+def build_tool_specs(
+    payload: Any,
+    *,
+    skills_runtime: Any = None,
+    mcp_tools: tuple = (),
+    tool_context: ToolContext | None = None,
+    skill_importer: Any = None,
+) -> list[BaseTool]:
     """Instantiate request-scoped tools, inject ctx, and keep them out of the registry.
 
     Creates fresh tool instances every call so concurrent requests never share
@@ -397,28 +404,43 @@ def build_tool_specs(payload: Any, *, skills_runtime: Any = None, mcp_tools: tup
     """
     ensure_default_tools_registered()
     skills_mode = getattr(payload, "skills_mode", "off") or "off"
+    if skills_runtime is None and tool_context is not None:
+        skills_runtime = getattr(tool_context, "skills_runtime", None)
     if skills_mode == "off":
         if skills_runtime is not None and getattr(skills_runtime, "mode", "off") != "off":
             raise ValueError("Skills runtime does not match request mode")
+        if skills_runtime is None:
+            from src.agent.skill_runtime import build_skills_runtime
+            skills_runtime = build_skills_runtime("off")
     elif skills_runtime is None or getattr(skills_runtime, "mode", None) != skills_mode:
         raise ValueError("Skills mode requires its matching request runtime")
     ctx = tool_context or _build_tool_ctx(payload, skills_runtime)
+    ctx.skills_mode = skills_mode
+    ctx.skills_runtime = skills_runtime
     tool_list = _assemble_all_tools(payload)
-    if skills_mode == "off":
-        existing_names = {tool.name for tool in tool_list}
-        if any(tool.name in existing_names or tool.mcp_info is None for tool in mcp_tools):
-            raise ValueError("Invalid external tool snapshot")
-        tool_list.extend(_filter_disabled_tools(list(mcp_tools)))
-    if skills_runtime is not None and skills_mode != "off":
-        from src.agent.skill_runtime import LoadSkillTool, ReadSkillResourceTool
-        tool_list = [
-            tool for tool in tool_list
-            if skills_runtime.allows_tool(tool.name, mcp_info=getattr(tool, "mcp_info", None))
-        ]
-        tool_list.extend([
-            LoadSkillTool(skills_runtime), ReadSkillResourceTool(skills_runtime),
-        ])
-        tool_list = _filter_disabled_tools(tool_list)
+    existing_names = {tool.name for tool in tool_list}
+    if any(tool.name in existing_names or tool.mcp_info is None for tool in mcp_tools):
+        raise ValueError("Invalid external tool snapshot")
+    tool_list.extend(mcp_tools)
+
+    from src.agent.skill_runtime import (
+        ImportSkillTool,
+        LoadSkillTool,
+        PreviewSkillImportTool,
+        ReadSkillResourceTool,
+    )
+    skill_tools = [
+        LoadSkillTool(skills_runtime),
+        ReadSkillResourceTool(skills_runtime),
+        PreviewSkillImportTool(skills_runtime, skill_importer),
+        ImportSkillTool(skills_runtime, skill_importer),
+    ]
+    existing_names = {tool.name for tool in tool_list}
+    if any(tool.name in existing_names for tool in skill_tools):
+        raise ValueError("Skills tool name conflicts with a registered tool")
+    tool_list.extend(skill_tools)
+    tool_list = _filter_disabled_tools(tool_list)
+    if skills_mode != "off":
         required_skill_tools = {"load_skill", "read_skill_resource"}
         missing_skill_tools = required_skill_tools - {tool.name for tool in tool_list}
         if missing_skill_tools:

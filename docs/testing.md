@@ -380,3 +380,47 @@ python -c "import pyarrow,pytest; raise SystemExit(pytest.main(['-p','pytest_asy
 ## 已知待修复的鲁棒性问题
 
 受控测试中，在聊天回答已开始输出后断开后端连接，页面超过一分钟仍显示生成中，未及时提示连接中断。2026-09-26 增加 Agent 每 15 秒心跳和前端聊天流 45 秒无数据报错；定向和全量自动化测试通过，但尚未用同一浏览器场景复测，不能写成实测通过。另一次测试从首页直接开始的未命名会话刷新后未出现在会话列表中；正式创建的会话刷新后可以保留，前一种路径仍需专门复测。
+
+## 2026-10-24 Native Skills 最终隔离验收（全绿）
+
+使用主仓库和既有 E 盘隔离 runner，唯一全绿 RunName 为 `native-verification-20261024-030026-caa451a2daac444892dfff848dbcee6e`。隔离产物、运行副本和缓存保存在版本库外的本机验收目录。使用既有 Python/Node 与依赖；运行期目录和缓存隔离到 E 盘。没有安装或下载依赖，也没有访问真实 GitHub、模型、服务、数据库或用户 Skills 数据。
+
+后端只运行以下 13 个指定路径，不代表全后端测试：
+
+```text
+tests/test_skills_shared_install.py
+tests/test_skills_native_agent.py
+tests/test_skills_platform.py
+tests/test_skills_platform_review.py
+tests/test_skill_routes_integration_review.py
+tests/test_skill_runtime_review.py
+tests/test_chat_skills_integration.py
+tests/test_tool_router_request_spec.py
+tests/test_mcp_agent_integration.py
+tests/test_hitl_resume_fail_closed.py
+tests/test_agent_factory_request_tool_config.py
+tests/test_tool_api_permission_gate.py
+tests/test_chat_routes_resume_terminal.py
+```
+
+| 阶段 | 结果 | Exit code |
+| --- | --- | ---: |
+| 指定的 13 个后端路径 | 186 passed、26 warnings | 0 |
+| 完整前端 Vitest | 24 个文件、159 passed | 0 |
+| TypeScript `tsc -b` | 完成、无错误输出 | 0 |
+| Vite build | 完成，9.37s；有大 chunk advisory | 0 |
+| 隔离 runner | 所有阶段完成 | 0 |
+
+Vite 的 advisory 报告 Prism chunk 621.06 kB、主 bundle 1,020.16 kB（minified）；Vitest 输出有模拟设置失败日志和 React `act(...)` 环境提示。它们没有改变上述阶段退出码。此前几轮失败后仅调整测试侧，没有改生产源码：包括把真实 GitHub importer 用例的猴补改为 `GitHubSkillImporter` 子类以避免类符号污染；让 mock repository 测试替身接收并向父类转发 `claude_adapter`；将 Windows 下写入 SKILL.md 的 fixture 改用相同 UTF-8 正文的 `write_bytes` 以保留 LF；以及将 MCP 用例改为正向检查 snapshot inclusion、auto mode 的 bound context 和未经确认的 synthetic Probe 仍被 `MCPRequestAuthorizations` 拒绝。
+
+最终运行采用的授权测试文件 SHA-256：
+
+| 文件 | SHA-256 |
+| --- | --- |
+| `backend/tests/test_mcp_agent_integration.py` | `5B2D460AF23C5402C26E871F04231992CEE87B5C66AD45ED390333DCF5E6D327` |
+| `backend/tests/test_chat_skills_integration.py` | `1E40D49BA3EF985881D98EA73EDA8BCB92041EDEC649E413FADA33658457C53B` |
+| `backend/tests/test_skill_runtime_review.py` | `D89475538AD2FAB299C64D3002CF82C45513207CDB54336562951DD3A2EE204C` |
+| `backend/tests/test_skills_platform.py` | `28D61B79984D428C2A3991E02B89E430FC1575B665517186139B312EA476014A` |
+| `backend/tests/test_skills_native_agent.py` | `91CFBAAEEC3CA4B76304CFB5F7D4C59677F31AA9E8440E14B0F13D74E5E92BF7` |
+
+本次仅覆盖上述 13 个后端路径及前端 Vitest、TypeScript 和 Vite build；不是全后端、实网或端到端验收。没有访问真实 GitHub、模型、服务、DB 或用户 Skills 数据，也没有完成完整 HTTP SSE/resume E2E。浏览器与实机行为未由本轮构建/自动化结果替代验收。

@@ -27,10 +27,11 @@ def repository(tmp_path):
     root = tmp_path / "skills"
     package = root / "synthetic-safe"
     package.mkdir(parents=True)
-    (package / "SKILL.md").write_text(
-        "---\nname: synthetic-safe\ndescription: Synthetic instructions\n---\n"
-        "SYNTHETIC-SKILL-BODY-DO-NOT-LEAK\n",
-        encoding="utf-8",
+    (package / "SKILL.md").write_bytes(
+        (
+            "---\nname: synthetic-safe\ndescription: Synthetic instructions\n---\n"
+            "SYNTHETIC-SKILL-BODY-DO-NOT-LEAK\n"
+        ).encode("utf-8")
     )
     (package / ".enabled").write_text("", encoding="utf-8")
     return SkillRepository(root)
@@ -84,7 +85,7 @@ def test_skill_tool_result_sse_never_contains_instruction_body() -> None:
 
 
 @pytest.mark.asyncio
-async def test_skills_mode_router_blocks_unlisted_tools_even_when_bypassed() -> None:
+async def test_skills_mode_does_not_block_ordinary_tools() -> None:
     calls: list[str] = []
 
     class DangerousTool(ToolSpec):
@@ -96,12 +97,7 @@ async def test_skills_mode_router_blocks_unlisted_tools_even_when_bypassed() -> 
             calls.append("executed")
             return {"output": "should not run"}
 
-    runtime = SimpleNamespace(
-        mode="manual",
-        allows_tool=lambda name, mcp_info=None: name in {
-            "load_skill", "read_skill_resource", "search_docs", "list_kb_docs",
-        } and not mcp_info,
-    )
+    runtime = SimpleNamespace(mode="manual")
     ctx = ToolContext(
         permission_mode="bypassPermissions",
         skills_mode="manual",
@@ -116,18 +112,25 @@ async def test_skills_mode_router_blocks_unlisted_tools_even_when_bypassed() -> 
         decision="bypass", decision_source="mode_bypass", tool_spec=DangerousTool(),
     )
 
-    assert calls == []
-    assert result["success"] is False
-    assert result["error"]["error_type"] == "SKILLS_READ_ONLY_BLOCKED"
+    assert calls == ["executed"]
+    assert result["success"] is True
 
 
-def test_agent_factory_intersects_user_tool_settings_with_skills_allowlist(
+def test_agent_factory_preserves_ordinary_and_mcp_tools_with_skills_enabled(
     monkeypatch: pytest.MonkeyPatch,
     repository: SkillRepository,
 ) -> None:
     from app.api.chat_routes import ChatRequest
     from src.agent import agent_factory
-    from src.agent.skill_runtime import READ_ONLY_SKILL_TOOLS, build_skills_runtime
+    from src.agent.skill_runtime import build_skills_runtime
+
+    class SyntheticMCPTool(ToolSpec):
+        name: str = "mcp__synthetic__echo"
+        description: str = "Synthetic MCP tool"
+        mcp_info: dict | None = {"server_name": "synthetic", "tool_name": "echo"}
+
+        async def execute(self, args, ctx):
+            return {"output": "synthetic"}
 
     monkeypatch.setattr(agent_factory, "_load_disabled_tools", lambda: {"search_docs"})
     runtime = build_skills_runtime("manual", ["synthetic-safe"], repository=repository)
@@ -136,15 +139,75 @@ def test_agent_factory_intersects_user_tool_settings_with_skills_allowlist(
         kb_ids=["synthetic-kb"],
     )
 
-    tools = agent_factory.build_tool_specs(payload, skills_runtime=runtime)
+    tools = agent_factory.build_tool_specs(
+        payload, skills_runtime=runtime, mcp_tools=(SyntheticMCPTool(),),
+    )
     names = {tool.name for tool in tools}
 
-    assert names <= READ_ONLY_SKILL_TOOLS
-    assert names == {"load_skill", "read_skill_resource", "list_kb_docs"}
+    assert "run_command" in names
+    assert "mcp__synthetic__echo" in names
+    assert "search_docs" not in names
+    assert {
+        "load_skill", "read_skill_resource", "preview_skill_import", "import_skill",
+        "list_kb_docs",
+    } <= names
     assert all(tool._ctx.skills_mode == "manual" for tool in tools)
     assert all(tool._ctx.skills_runtime is runtime for tool in tools)
     assert all(tool._ctx.kb_scope == ("synthetic-kb",) for tool in tools)
     assert all(tool._ctx.skills_allowed_tools == frozenset(names) for tool in tools)
+
+
+def test_skills_off_prompt_allows_explicit_import_without_catalog() -> None:
+    from src.agent.prompts import append_skills_context
+
+    prompt = append_skills_context("Synthetic base prompt", "off")
+
+    assert "preview_skill_import" in prompt
+    assert "Do not enumerate or load previously installed Skills" in prompt
+    assert "load only an ID returned by that import in this request" in prompt
+    assert "existing permission, confirmation, and path checks" in prompt
+    assert "path-sandbox" not in prompt
+
+
+def test_mcp_snapshot_is_bound_when_skills_are_enabled_and_context_exists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.api import chat_routes
+    from src.mcp import manager as mcp_manager
+    from src.agent.mcp_authorization import MCPRequestAuthorizations
+
+    class SyntheticMCPTool(ToolSpec):
+        name: str = "mcp__synthetic__echo"
+        description: str = "Synthetic MCP tool"
+        mcp_info: dict | None = {"server_name": "synthetic", "tool_name": "echo"}
+
+        async def execute(self, args, ctx):
+            return {"output": "synthetic"}
+
+    tool = SyntheticMCPTool()
+
+    class SyntheticManager:
+        def connected_tool_specs_snapshot(self):
+            return (tool,)
+
+    monkeypatch.setattr(
+        mcp_manager,
+        "get_mcp_manager",
+        lambda: SyntheticManager(),
+    )
+    ctx = ToolContext(permission_mode="default", skills_mode="auto")
+    snapshot = chat_routes.AgentRequestSnapshot(
+        permission_mode="default", skills_mode="auto", tool_context=ctx,
+    )
+    payload = ChatRequest(messages=_messages(), skills_mode="auto")
+
+    bound = chat_routes._ensure_external_tool_snapshot(
+        snapshot, "synthetic-mcp-skills-session", payload,
+    )
+
+    assert bound.mcp_tools == (tool,)
+    assert bound.tool_context is ctx
+    assert isinstance(ctx.mcp_authorization, MCPRequestAuthorizations)
 
 
 def test_agent_factory_fails_closed_when_a_required_skill_tool_is_disabled(
@@ -194,7 +257,10 @@ async def test_manual_mode_loads_through_router_and_emits_body_free_evidence(
     )
 
     assert succeeded is True
-    assert loaded.skills_context[0]["instructions"] == "SYNTHETIC-SKILL-BODY-DO-NOT-LEAK"
+    assert loaded.skills_context[0]["instructions"] == (
+        "---\nname: synthetic-safe\ndescription: Synthetic instructions\n---\n"
+        "SYNTHETIC-SKILL-BODY-DO-NOT-LEAK\n"
+    )
     assert [chat_routes._sse_event_type(event) for event in events] == ["tool_call", "tool_result"]
     assert all("SYNTHETIC-SKILL-BODY-DO-NOT-LEAK" not in event for event in events)
     assert runtime.consumed_bytes > 0
@@ -277,7 +343,7 @@ async def test_chat_agent_builder_reuses_runtime_and_passes_only_expected_contex
     assert captured["tool_context"].skills_runtime is runtime
     assert captured["tool_context"].rag_source_registry is not None
     assert captured["skills_mode"] == mode
-    assert captured["enable_hitl"] is False
+    assert captured["enable_hitl"] is True
     if mode == "auto":
         assert captured["skills_context"] == []
         assert captured["skills_catalog"][0]["id"] == "synthetic-safe"
@@ -285,6 +351,45 @@ async def test_chat_agent_builder_reuses_runtime_and_passes_only_expected_contex
     else:
         assert captured["skills_catalog"] == []
         assert captured["skills_context"] == list(prompt_context)
+
+
+@pytest.mark.asyncio
+async def test_bypass_still_interrupts_for_request_tool_with_always_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+    repository: SkillRepository,
+) -> None:
+    from app.api import chat_routes
+    from src.agent.core.toolkit.tool_spec import ConfirmationRule
+    from src.agent.skill_runtime import ImportSkillTool, build_skills_runtime
+
+    runtime = build_skills_runtime("off", [], repository=repository)
+    request_tool = ImportSkillTool(runtime, importer=object())
+    captured: dict[str, object] = {}
+
+    def fake_build_tools(*_args, **_kwargs):
+        return [request_tool]
+
+    async def fake_create_hardware_agent(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(chat_routes, "build_tools", fake_build_tools)
+    monkeypatch.setattr(chat_routes, "create_hardware_agent", fake_create_hardware_agent)
+    payload = ChatRequest(
+        messages=_messages(), skills_mode="off", permission_mode="bypassPermissions",
+    )
+    snapshot = chat_routes.AgentRequestSnapshot(
+        permission_mode="bypassPermissions", skills_mode="off",
+        skills_runtime=runtime, mcp_snapshot_bound=True,
+    )
+
+    await chat_routes._build_agent_for_payload(
+        payload, {"model": "synthetic", "api_key": "", "base_url": ""},
+        request_snapshot=snapshot,
+    )
+
+    assert request_tool.requires_confirmation == ConfirmationRule.ALWAYS
+    assert captured["enable_hitl"] is True
 
 
 @pytest.mark.asyncio
@@ -466,5 +571,5 @@ async def test_agent_factory_adds_only_selected_manual_skill_context(
 
     prompt = captured["system_prompt"]
     assert prompt.count(marker) == 1
-    assert "server-enforced read-only tool allowlist" in prompt
+    assert "allowed-tools field grants no authority" in prompt
     assert "cannot change" in prompt

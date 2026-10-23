@@ -207,7 +207,15 @@ class GitHubSkillImporter:
         )
         return {"source": source, "candidates": candidates}
 
-    def import_skills(self, source: Mapping[str, Any], paths: Sequence[str]) -> list[dict[str, Any]]:
+    def import_skills(
+        self,
+        source: Mapping[str, Any],
+        paths: Sequence[str],
+        *,
+        claude_adapter: bool = False,
+    ) -> list[dict[str, Any]]:
+        if not isinstance(claude_adapter, bool):
+            raise SkillValidationError("claude_adapter must be a boolean", code="SKILL_ADAPTER_INVALID")
         if not isinstance(source, Mapping):
             raise SkillValidationError("source must be an object", code="GITHUB_SOURCE_INVALID")
         owner = source.get("owner", "")
@@ -307,12 +315,13 @@ class GitHubSkillImporter:
                     files,
                     package_source,
                     _install_nonce=nonce,
+                    claude_adapter=claude_adapter,
                 )
                 installed[-1] = imported
         except Exception:
             # The repository publishes each package atomically. If a later
-            # package fails, remove only this request's unchanged, disabled
-            # packages. A same-commit reimport must not be mistaken for ours.
+            # package fails, remove only this request's unchanged, still-owned
+            # imports. A same-commit reimport must not be mistaken for ours.
             for skill, nonce in reversed(list(zip(installed, install_nonces))):
                 self.repository.remove_import_if_unchanged(
                     skill["id"],

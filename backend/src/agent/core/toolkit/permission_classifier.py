@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from src.agent.core.toolkit.tool_spec import RiskLevel, ToolSpec
+from src.agent.core.toolkit.tool_spec import ConfirmationRule, RiskLevel, ToolSpec
 from src.agent.exceptions import ToolContext
 
 logger = logging.getLogger(__name__)
@@ -74,6 +74,8 @@ class PermissionClassifier:
     def check(self, spec: ToolSpec, args: dict[str, Any], ctx: ToolContext) -> str:
         """Return allow/ask/deny for a tool call. Pure, no side effects."""
         if spec.mcp_info is not None:
+            return ASK
+        if spec.requires_confirmation == ConfirmationRule.ALWAYS:
             return ASK
         mode = ctx.permission_mode
         if mode == BYPASS_MODE:

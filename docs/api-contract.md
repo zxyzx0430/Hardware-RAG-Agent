@@ -465,10 +465,10 @@
   - 来源编号契约（2026-10-04）：`source.id` 使用 `srcN`，编号在一次用户请求内由 RAG 与 web 来源共同分配；同一请求中的相同证据复用编号，独立请求可重新从 `src1` 开始，确认续跑沿用该请求的服务器端来源状态。该状态不是客户端请求或 SSE 字段。
   - 实现状态边界（F1，2026-10-04）：Agent `ToolContext` 持有服务端来源注册器；新用户请求建立新状态，HITL 确认续跑从服务端请求快照恢复同一状态，客户端请求和 SSE 不携带该对象。冻结候选的全套后端自动化测试为 606 项通过；这不等同于真实 API、浏览器或质量评测验收。当前 `ChatRequest` 字段声明提供类型与默认值，但没有显式的 `top_k` / `relevance_threshold` 范围校验器；本契约约定不代表服务端已对越界聊天参数返回 `422`，也不标记端到端 `verified`。
   - `use_agent`（可选，默认 `false`）：是否走 LangGraph ReAct Agent 主路径；`true` 时后端优先用 Agent，失败降级为基础 LLM 流。
-  - `permission_mode`（可选，默认 `"default"`）：Agent 工具调用门控模式，枚举 `"bypassPermissions"`（全放行）/`"default"`（每次询问）/`"acceptEdits"`（低风险自动放行）。
+  - `permission_mode`（可选，默认 `"default"`）：Agent 工具调用门控模式，枚举 `"bypassPermissions"` / `"default"` / `"acceptEdits"`，按既有风险分类决定。`ALWAYS` 工具（如原生 Skill 安装）与 MCP 的确认不会因 bypass 或 Skills 模式而免除。
   - `tool_keys`（可选，默认 `{}`）：Agent 工具所需 API Key 注入，目前支持 `tavily`（联网搜索 API Key）和 `tavily_base_url`（可选，Tavily 兼容端点 Base URL，留空时使用官方 Tavily 服务）。
-  - 本轮已约定、正在实施：`skills_mode` 枚举 `off` / `auto` / `manual`，默认 `off`，不改变旧客户端普通 Agent 行为；`skill_ids` 为手动模式的已启用技能 ID 列表，1～3 个且不重复。自动模式仅提供元数据，再按需加载正文和参考资料；手动模式明确加载所选技能。
-  - Skills 初版是服务器限制的只读模式，只提供技能加载、技能资料读取和已启用的 KB 检索工具。即使 `permission_mode=bypassPermissions` 也不能写文件、执行命令、访问外部 MCP 或操作硬件；不支持工具调用的模型明确失败，不声称已使用技能。
+  - `skills_mode` 枚举 `off` / `auto` / `manual`，默认 `off`；`skill_ids` 为手动模式已启用技能 ID 列表，1～3 个且不重复。自动模式只提供名称、描述和标识/版本元数据，再按需加载正文和资料；手动模式明确加载所选技能。off 不自动发现旧包，但 Agent 收到明确安装请求后可安装并在同请求加载这次新增的包，不必再去设置启用。
+  - Skills 不施加普通工具/MCP 全局只读交集，也不授予额外权限。普通工具、脚本命令和已配置 MCP 沿用各自禁用、风险、确认及路径规则；导入本身不运行脚本。`allowed-tools` 为实验性元数据而非权限授权。不支持工具调用的模型明确失败，不声称已使用技能；本轮源码接入与集中验证边界见 §5.37 和 testing.md。
   - 已实现记忆语义：`long_term_memory` 最多 4,000 字符，省略时读取已保存设置，显式 `""` 表示本次不使用；普通聊天、Agent 与确认续跑使用同一请求快照，注入一次。记忆是偏好背景，不是权限；验证边界见 testing.md。
   - `thinking` 的 `content` 为人类可读思考文本；`source` 枚举 `rag` / `llm` / `reasoning`，标识思考来源。
   - `source` 的 `id` 为文档片段唯一标识；`doc` 为所属文档 ID；`page` 为可选页码/位置；`score` 为相似度得分；`excerpt` 为命中片段摘要。
@@ -1812,7 +1812,7 @@
 - 成功体为 `{success:true,data:...}`；业务错误为 `{success:false,data:{error:{code,message}}}`。重复配置 409；非法配置 422；未知服务 404；启动失败 502。不返回原始进程错误、env 或密钥。
 - 配置只驻留后端内存，不写入设置/localStorage；后端重启需重加。command 必须是现有程序的绝对路径，Windows 接受 `.exe/.com`；args 为字符串数组，env 为字符串映射，不拆命令、不自动安装。启动本机进程不受系统沙箱隔离。
 - 已知服务未启动时 tools 返回空数组。连接/初始化/分页发现合计 60 秒限时，前端启动请求 70 秒；单次 RPC 30 秒，通知最多 16 条、列表最多 32 页/128 工具、消息最多 64 KiB。受限 JSON Schema 不支持的关键字、远端引用或非法参数明确失败，不降级为宽松校验。
-- 已连接工具加入普通 Agent 的请求快照，HIGH、每次确认且不自动重试；只读 Skills 不开放 MCP。停止/重启不会把旧快照转到新进程。长名称或歧义名称映射为不超过 64 字符的带摘要名称，保留 server/tool 来源字段。
+- 已连接工具加入 Agent 的请求快照，HIGH、每次确认且不自动重试；Skills 模式不再屏蔽 MCP，仍要求精确的请求级授权。停止/重启不会把旧快照转到新进程。长名称或歧义名称映射为不超过 64 字符的带摘要名称，保留 server/tool 来源字段。
 - 子进程只继承必要环境变量及用户显式填写的 env；服务错误、断连和超时是真正失败，外部调用审计省略参数原文。结果仍会发给当前模型服务，用户应自行判断数据敏感性。
 - 更新时间：2026-10-03
 
@@ -2238,9 +2238,9 @@
 
 - 更新时间：2026-09-24
 
-### 5.37 `/api/skills/*` — Markdown Skills 与 GitHub 导入
+### 5.37 `/api/skills/*` — 标准 Agent Skills 与 GitHub 导入
 
-- 状态：`implemented`（2026-10-03 工作区；自动化、实网和浏览器证据分别见 testing.md）。
+- 状态：标准包/共享目录、Agent API 与现有前端接线完成；本轮选定软件自动化验证完成。结果为 13 个指定后端测试路径 186 passed / 26 warnings、完整 Vitest 24 files / 159 passed、`tsc -b` exit 0、Vite build exit 0（chunk-size advisory）。不代表完整后端或整项目验收；真实 GitHub/模型/浏览器、真实用户库/Skills 数据、完整 HTTP/SSE/resume E2E 与第三方 Agent 实际发现/运行未验证。
 - `/api/tools` 仍管理内置工具开关；本节管理独立的 Markdown 技能包，不互相冒称。
 - 列表和详情沿用 `current_user_optional`，写入、编辑、删除、开关及 GitHub 操作沿用 `current_user`；凭据为空的本地开发兼容行为不因本轮变化。
 - JSON 成功体沿用 `success/data`；业务失败直接使用 `{success:false,error:{code,message}}`，没有 detail 外壳。422 自动校验保持 FastAPI 格式；聊天端创建技能快照的错误仍使用 HTTPException 的 detail。

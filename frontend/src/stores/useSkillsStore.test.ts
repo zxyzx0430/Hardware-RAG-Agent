@@ -61,28 +61,43 @@ describe("skills API state", () => {
     expect(apiPostMock).toHaveBeenCalledTimes(1);
   });
 
-  it("imports only the selected paths from the frozen preview source", async () => {
+  it("imports selected paths to the requested scope and keeps review-required packages unavailable", async () => {
     const store = await loadStore();
     store.setState({
       preview: {
         source,
         candidates: [
           { path: "skills/review", name: "review", description: "Review" },
+          { path: "skills/bad-package", name: "bad-package", description: "Needs review" },
           { path: "skills/flash", name: "flash", description: "Flash" },
         ],
       },
     });
-    const imported = [{ id: "review", name: "review", description: "Review", content: "# Review", enabled: false }];
+    const imported = [
+      {
+        id: "review", name: "review", description: "Review", content: "---\nname: review\n---\n# Review",
+        enabled: true, scope: "user" as const, install_path: "~/.agents/skills/review", claude_adapter: true,
+      },
+      {
+        id: "bad-package", name: "bad-package", description: "Needs review", content: "# Invalid package",
+        enabled: true, compatibility_status: "review_required",
+      },
+    ];
     apiPostMock.mockResolvedValueOnce({ skills: imported });
     apiGetMock.mockResolvedValueOnce({ skills: imported });
 
-    await expect(store.getState().importGitHubSkills(["skills/review"])).resolves.toBe(true);
+    await expect(store.getState().importGitHubSkills(
+      ["skills/review", "skills/bad-package", "skills/not-previewed"],
+      { scope: "user", claude_adapter: true },
+    )).resolves.toBe(true);
 
     expect(apiPostMock).toHaveBeenCalledWith("skills/github/import", {
       source,
-      paths: ["skills/review"],
+      paths: ["skills/review", "skills/bad-package"],
+      scope: "user",
+      claude_adapter: true,
     }, 70_000);
-    expect(store.getState().skills).toEqual(imported);
+    expect(store.getState().skills).toEqual([imported[0], { ...imported[1], enabled: false }]);
     expect(store.getState().preview).toBeNull();
   });
 
@@ -117,7 +132,12 @@ describe("skills API state", () => {
 
     await expect(store.getState().importGitHubSkills(["skills/review"])).resolves.toBe(false);
 
-    expect(apiPostMock).toHaveBeenCalledWith("skills/github/import", { source, paths: ["skills/review"] }, 70_000);
+    expect(apiPostMock).toHaveBeenCalledWith("skills/github/import", {
+      source,
+      paths: ["skills/review"],
+      scope: "project",
+      claude_adapter: false,
+    }, 70_000);
     expect(store.getState().preview).toEqual(preview);
     expect(store.getState().error).toContain("network timed out");
     expect(store.getState().importing).toBe(false);

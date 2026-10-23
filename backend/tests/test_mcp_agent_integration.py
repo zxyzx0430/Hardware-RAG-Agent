@@ -274,10 +274,26 @@ async def test_real_stdio_agent_batch_asks_separately_and_denied_tool_is_not_cal
         await manager.shutdown()
 
 
-@pytest.mark.asyncio
-async def test_connected_mcp_is_excluded_from_skills_mode(monkeypatch):
+def test_connected_mcp_is_preserved_in_skills_mode_with_request_authorization(monkeypatch):
     from app.api import chat_routes
     from src.mcp import manager
-    monkeypatch.setattr(manager, "get_mcp_manager", lambda: pytest.fail("Skills must not discover external tools"))
+
+    probe = Probe()
+
+    class SyntheticManager:
+        def connected_tool_specs_snapshot(self):
+            return (probe,)
+
+    synthetic_manager = SyntheticManager()
+    monkeypatch.setattr(manager, "get_mcp_manager", lambda: synthetic_manager)
     snapshot = chat_routes.AgentRequestSnapshot(skills_mode="auto")
-    assert chat_routes._ensure_external_tool_snapshot(snapshot, "test") is snapshot
+    bound_snapshot = chat_routes._ensure_external_tool_snapshot(snapshot, "test")
+
+    assert bound_snapshot.mcp_tools == (probe,)
+    assert bound_snapshot.mcp_snapshot_bound is True
+    assert bound_snapshot.tool_context.skills_mode == "auto"
+    authorization = bound_snapshot.tool_context.mcp_authorization
+    assert isinstance(authorization, MCPRequestAuthorizations)
+    assert authorization.dispatch_decision(
+        "synthetic-confirmation-check", probe, {"value": "synthetic"}
+    ) == (False, "mcp_confirmation_required")

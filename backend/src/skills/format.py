@@ -18,10 +18,12 @@ LEGACY_FILENAME = "skill.md"
 MAX_SKILL_MARKDOWN_BYTES = 32 * 1024
 MAX_RESOURCE_BYTES = 32 * 1024
 TEXT_RESOURCE_EXTENSIONS = frozenset(
-    {".md", ".txt", ".json", ".yaml", ".yml", ".csv", ".toml"}
+    {
+        ".md", ".txt", ".json", ".yaml", ".yml", ".csv", ".toml",
+        ".py", ".sh", ".ps1", ".bat", ".cmd",
+    }
 )
 
-_NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 _WINDOWS_DEVICE_RE = re.compile(r"^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$", re.I)
 _DRIVE_RE = re.compile(r"^[a-zA-Z]:")
 
@@ -259,20 +261,36 @@ def _validate_json_metadata(value: Any) -> None:
 def _validate_standard_metadata(metadata: dict[str, Any], directory_name: str | None) -> None:
     name = metadata.get("name")
     description = metadata.get("description")
-    if not isinstance(name, str) or not 1 <= len(name) <= 64 or not _NAME_RE.fullmatch(name) or "--" in name:
-        raise SkillValidationError("Skill name must be 1-64 lowercase letters, numbers, or single hyphens", code="SKILL_NAME_INVALID")
+    if not _is_valid_standard_name(name):
+        raise SkillValidationError("Skill name must be 1-64 NFC lowercase Unicode letters or numbers separated by single hyphens", code="SKILL_NAME_INVALID")
     if directory_name is not None and name != directory_name:
         raise SkillValidationError("Skill name must match its package directory", code="SKILL_NAME_DIRECTORY_MISMATCH")
-    if not isinstance(description, str) or not 1 <= len(description.strip()) <= 1024:
+    if not isinstance(description, str) or not description.strip() or len(description) > 1024:
         raise SkillValidationError("Skill description must contain 1-1024 characters", code="SKILL_DESCRIPTION_INVALID")
+
+
+def _is_valid_standard_name(name: Any) -> bool:
+    if not isinstance(name, str) or not 1 <= len(name) <= 64:
+        return False
+    if name != unicodedata.normalize("NFC", name) or name.startswith("-") or name.endswith("-") or "--" in name:
+        return False
+    if _WINDOWS_DEVICE_RE.fullmatch(name):
+        return False
+    for char in name:
+        if char == "-":
+            continue
+        if not char.isalnum() or char != char.lower():
+            return False
+    return True
 
 
 def _validate_optional_metadata(metadata: dict[str, Any]) -> None:
     for key in ("license", "compatibility"):
         if key in metadata and not isinstance(metadata[key], str):
             raise SkillValidationError(f"Skill {key} metadata must be text", code="SKILL_METADATA_INVALID")
-    if isinstance(metadata.get("compatibility"), str) and len(metadata["compatibility"]) > 500:
-        raise SkillValidationError("Skill compatibility metadata exceeds 500 characters", code="SKILL_METADATA_INVALID")
+    compatibility = metadata.get("compatibility")
+    if compatibility is not None and (not compatibility.strip() or len(compatibility) > 500):
+        raise SkillValidationError("Skill compatibility metadata must contain 1-500 characters", code="SKILL_METADATA_INVALID")
     if "metadata" in metadata:
         extra = metadata["metadata"]
         if not isinstance(extra, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in extra.items()):
@@ -340,7 +358,7 @@ def resource_extension_supported(path: str) -> bool:
 
 
 def diagnose_package_files(paths: Iterable[str]) -> tuple[str, tuple[SkillIssue, ...]]:
-    """Report inert scripts and resources that this adapter will not read."""
+    """Report scripts that import preserves without executing."""
     issues: list[SkillIssue] = []
     partial = False
     for path in paths:
@@ -353,7 +371,7 @@ def diagnose_package_files(paths: Iterable[str]) -> tuple[str, tuple[SkillIssue,
             if not any(issue.code == "SCRIPTS_NOT_EXECUTED" for issue in issues):
                 issues.append(SkillIssue(
                     "SCRIPTS_NOT_EXECUTED", "warning",
-                    "Scripts are preserved as inert files; this app will not execute them or install dependencies.",
+                    "Import preserves scripts without executing them or installing dependencies; later execution must use ordinary tool-permission checks.",
                 ))
             partial = True
         first = lower.split("/", 1)[0]

@@ -14,9 +14,11 @@ def repository(tmp_path):
     root = tmp_path / "skills"
     package = root / "synthetic-safe"
     package.mkdir(parents=True)
-    (package / "SKILL.md").write_text(
-        "---\nname: synthetic-safe\ndescription: Synthetic instructions\n---\n"
-        "Use references/note.md. Never execute scripts.\n", encoding="utf-8",
+    (package / "SKILL.md").write_bytes(
+        (
+            "---\nname: synthetic-safe\ndescription: Synthetic instructions\n---\n"
+            "Use references/note.md. Never execute scripts.\n"
+        ).encode("utf-8")
     )
     (package / ".enabled").write_text("", encoding="utf-8")
     (package / "references").mkdir()
@@ -28,6 +30,7 @@ def test_auto_catalog_is_metadata_only(repository):
     runtime = build_skills_runtime("auto", [], repository=repository)
     catalog = runtime.catalog()
     assert catalog[0]["id"] == "synthetic-safe"
+    assert set(catalog[0]) == {"id", "name", "description", "content_hash"}
     assert "Never execute scripts" not in json.dumps(catalog)
     assert runtime.consumed_bytes == 0
 
@@ -42,7 +45,12 @@ def test_invalid_selection_is_not_silently_downgraded(repository, mode, ids):
 async def test_tools_load_body_and_resource_with_safe_evidence(repository):
     runtime = build_skills_runtime("manual", ["synthetic-safe"], repository=repository)
     instructions = await LoadSkillTool(runtime).execute({"skill_id": "synthetic-safe"}, ToolContext())
-    assert "Never execute scripts" in instructions["instructions"]
+    assert instructions["instructions"] == (
+        "---\nname: synthetic-safe\ndescription: Synthetic instructions\n---\n"
+        "Use references/note.md. Never execute scripts.\n"
+    )
+    assert instructions["package_path"] == str(repository.root / "synthetic-safe")
+    assert "references/note.md" in instructions["resource_paths"]
     note = await ReadSkillResourceTool(runtime).execute({"skill_id": "synthetic-safe", "path": "references/note.md"}, ToolContext())
     assert note["content"] == "Synthetic note"
     evidence = runtime.evidence()
@@ -82,22 +90,17 @@ def test_request_budgets_are_not_shared(repository):
     assert second.evidence() == ()
 
 
-def test_readonly_allowlist_never_admits_external_or_write_tools(repository):
-    runtime = build_skills_runtime("auto", [], repository=repository)
-    assert runtime.allows_tool("search_docs") is True
-    assert runtime.allows_tool("load_skill") is True
-    assert runtime.allows_tool("search_docs", {}) is False
-    assert runtime.allows_tool("load_skill", {"server_name": "external"}) is False
-    assert runtime.allows_tool("run_command") is False
-    assert runtime.allows_tool("upload_firmware") is False
-    assert runtime.allows_tool("mcp__external__echo") is False
-    assert build_skills_runtime("off", [], repository=repository).allows_tool("load_skill") is False
+def test_off_mode_hides_catalog_and_only_loads_explicitly_imported_skills(repository):
+    runtime = build_skills_runtime("off", [], repository=repository)
+    assert runtime.catalog() == []
+    with pytest.raises(SkillUnavailableError):
+        runtime.load_instructions("synthetic-safe")
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("case", ["write", "mcp_empty", "mcp_marker", "kb_scope", "not_enabled", "missing_runtime", "mode_mismatch"])
+@pytest.mark.parametrize("case", ["write", "mcp_empty", "mcp_marker", "kb_scope", "kb_scope_off"])
 async def test_router_independently_blocks_forged_dispatch(repository, case):
-    """Use the real runtime and spy execution; model instructions are not a gate."""
+    """Ordinary tools remain usable while KB scope and MCP grants remain enforced."""
     from pydantic import PrivateAttr
     from src.agent.core.toolkit.tool_router import ToolRouter
     from src.agent.core.toolkit.tool_spec import ToolSpec
@@ -127,29 +130,30 @@ async def test_router_independently_blocks_forged_dispatch(repository, case):
         spec.mcp_info = {}
     elif case == "mcp_marker":
         spec.mcp_info = {"server_name": "synthetic-external"}
-    elif case == "kb_scope":
+    elif case in {"kb_scope", "kb_scope_off"}:
         spec._kb_ids = ["outside-request"]
     ctx = ToolContext(
-        permission_mode="bypassPermissions", skills_mode="auto",
+        permission_mode="bypassPermissions",
+        skills_mode="off" if case == "kb_scope_off" else "auto",
         skills_runtime=runtime, skills_allowed_tools=frozenset({spec.name}),
         kb_scope=("synthetic-kb",),
     )
-    if case == "not_enabled":
-        ctx.skills_allowed_tools = frozenset()
-    elif case == "missing_runtime":
-        ctx.skills_runtime = None
-    elif case == "mode_mismatch":
-        ctx.skills_mode = "manual"
     result = await ToolRouter(CaptureAudit()).dispatch(
         "synthetic-forged-call", spec.name, {}, ctx,
         decision="allow", decision_source="user_allow", tool_spec=spec,
     )
-    assert executed == []
-    assert result["success"] is False
-    assert result["error"]["error_type"] == "SKILLS_READ_ONLY_BLOCKED"
-    assert len(audited) == 1
-    assert audited[0].decision == "deny"
-    assert audited[0].decision_source == "skills_read_only"
+    if case == "write":
+        assert executed == [{}]
+        assert result["success"] is True
+    else:
+        assert executed == []
+        assert result["success"] is False
+        if case in {"kb_scope", "kb_scope_off"}:
+            assert result["error"]["error_type"] == "KB_SCOPE_MISMATCH"
+        else:
+            assert result["error"]["error_type"] == "PERMISSION_DENIED"
+        assert len(audited) == 1
+        assert audited[0].decision == "deny"
 
 
 def test_metadata_free_legacy_is_available_manually_but_not_auto_selected(repository):

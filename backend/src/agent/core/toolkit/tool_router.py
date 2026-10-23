@@ -1,4 +1,4 @@
-"""ToolRouter — unified dispatch entry point with a Skills-mode hard boundary.
+"""ToolRouter — unified dispatch entry point with request-scoped safety checks.
 
 Dispatch flow per call:
   1. find tool in registry           -> TOOL_NOT_FOUND envelope on miss
@@ -16,9 +16,9 @@ Dispatch flow per call:
 
 Loop detection was removed (v2 suggestion 3: converged to the streaming
 layer in sse_helpers). General permission is checked UPSTREAM by
-PermissionClassifier at the pre-ToolNode stage. When Skills mode is active,
-this router also enforces the request-local read-only tool allowlist and
-knowledge-base scope before execution. ToolSpec._arun delegates here; dispatch
+PermissionClassifier at the pre-ToolNode stage. This router preserves the
+request's knowledge-base scope independently of Skills mode and does not
+filter ordinary tools or MCP tools. ToolSpec._arun delegates here; dispatch
 calls spec.execute (NOT _arun) so there is no recursion.
 
 Spec: industrial-tool-runtime §ADDED Requirements (ToolRouter).
@@ -51,7 +51,7 @@ ERR_INVALID_ARGS: str = "INVALID_ARGS"
 ERR_TIMEOUT: str = "TIMEOUT"
 ERR_EXEC: str = "EXEC_ERROR"
 ERR_OUTPUT_SCHEMA: str = "OUTPUT_SCHEMA_VIOLATION"
-ERR_SKILLS_READ_ONLY: str = "SKILLS_READ_ONLY_BLOCKED"
+ERR_SKILLS_READ_ONLY: str = "KB_SCOPE_MISMATCH"
 
 SUGGEST_INVALID_ARGS: str = "请检查参数类型与必填字段。"
 SUGGEST_TIMEOUT: str = "请缩小查询范围或拆分任务后重试。"
@@ -110,7 +110,7 @@ class _DispatchState:
 
 
 class ToolRouter:
-    """Dispatch tools; HITL permissions stay upstream, Skills limits stay here."""
+    """Dispatch tools; permission checks and exact MCP grants remain enforced."""
 
     def __init__(self, audit_recorder: AuditRecorder) -> None:
         self.audit_recorder = audit_recorder
@@ -155,10 +155,10 @@ class ToolRouter:
         spec = tool_spec if tool_spec is not None else _TOOL_REGISTRY.get(tool_name)
         if spec is None:
             return _not_found_envelope(tool_name, call_id, start_ms).model_dump()
-        if ctx.skills_mode != "off" and not _skills_mode_allows(spec, ctx):
+        if not _skills_mode_allows(spec, ctx):
             envelope = _skills_read_only_envelope(spec, call_id, start_ms)
             self.audit_recorder.record(
-                AuditRecord(call_id, spec, args, envelope, "deny", "skills_read_only", ctx)
+                AuditRecord(call_id, spec, args, envelope, "deny", "kb_scope_mismatch", ctx)
             )
             return envelope.model_dump()
         state = _DispatchState(call_id, spec, args, ctx, start_ms)
@@ -404,40 +404,27 @@ def _suggestion_for(tag: str) -> str:
 
 
 def _skills_mode_allows(spec: ToolSpec, ctx: ToolContext) -> bool:
-    """Enforce request-local Skills allowlist after model/HITL permission checks."""
-    runtime = ctx.skills_runtime
-    if ctx.skills_mode not in {"auto", "manual"} or runtime is None:
-        return False
-    if getattr(runtime, "mode", None) != ctx.skills_mode:
-        return False
-    if spec.name not in ctx.skills_allowed_tools:
-        return False
-    try:
-        if not runtime.allows_tool(spec.name, mcp_info=getattr(spec, "mcp_info", None)):
-            return False
-    except Exception:
-        return False
-    if spec.name in {"search_docs", "list_kb_docs"}:
-        configured_scope = getattr(spec, "_kb_ids", None)
-        configured_scope = tuple(configured_scope) if configured_scope else None
-        request_scope = tuple(ctx.kb_scope) if ctx.kb_scope else None
-        if configured_scope != request_scope:
-            return False
-    return True
+    """Keep KB tools aligned with request scope independently of Skills mode."""
+    if spec.name not in {"search_docs", "list_kb_docs"}:
+        return True
+    configured_scope = getattr(spec, "_kb_ids", None)
+    configured_scope = tuple(configured_scope) if configured_scope else None
+    request_scope = tuple(ctx.kb_scope) if ctx.kb_scope else None
+    return configured_scope == request_scope
 
 
 def _skills_read_only_envelope(
     spec: ToolSpec, call_id: str, start_ms: int,
 ) -> ToolResultEnvelope:
-    """Return a content-free denial envelope for a tool outside Skills mode."""
+    """Return a content-free denial envelope when a KB tool exceeds request scope."""
     return ToolResultEnvelope(
         success=False,
         output="",
         data=None,
         error=ErrorDetail(
             error_type=ERR_SKILLS_READ_ONLY,
-            error_message="Tool is outside the request's read-only Skills scope.",
-            suggestion="Use only enabled Skills and in-scope knowledge-base tools.",
+            error_message="Knowledge-base tool scope does not match this request.",
+            suggestion="Use the knowledge base selected for this request.",
             retryable=False,
         ),
         metadata=ResultMetadata(

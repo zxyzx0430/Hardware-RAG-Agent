@@ -29,11 +29,13 @@ describe("SkillModeSelector", () => {
       { id: "s3", name: "Checklist", description: "Check pins", enabled: true },
       { id: "s4", name: "Extra", description: "Extra review", enabled: true },
       { id: "disabled", name: "Disabled", description: "Not available", enabled: false },
+      { id: "needs-review", name: "Needs review", description: "Unavailable", enabled: true, compatibility_status: "review_required" },
     ] });
     render(<SkillModeSelector sessionId="session-a" lang="zh" />);
 
     expect(screen.getByRole("button", { name: "技能模式：关闭" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "技能模式：关闭" }));
+    expect(screen.getByText("可直接说“导入这个 Skill 并使用它…”；自动/手动模式按需发现，关闭模式不自动发现。")).toBeTruthy();
     fireEvent.click(screen.getByRole("radio", { name: /自动选择/ }));
     expect(useSkillsStore.getState().chatSkillSelections["session-a"]).toMatchObject({ mode: "auto", skillIds: [] });
     fireEvent.click(screen.getByRole("radio", { name: /手动指定/ }));

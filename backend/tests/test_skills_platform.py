@@ -134,7 +134,9 @@ def test_install_accepts_root_skill_name_different_from_repository(tmp_path):
         {"owner": "test-owner", "repo": "different-repo-name", "commit_sha": "a" * 40, "path": ""},
     )
     assert installed["id"] == "custom-skill"
-    assert installed["enabled"] is False
+    assert installed["enabled"] is True
+    assert installed["scope"] == "project"
+    assert installed["install_path"] == str(tmp_path / "skills" / "custom-skill")
     assert installed["source"]["repo"] == "different-repo-name"
 
 
@@ -165,7 +167,7 @@ def test_rollback_will_not_delete_a_user_enabled_or_modified_import(tmp_path):
     assert (directory / ".enabled").exists()
 
 
-def test_import_uses_pinned_blob_and_leaves_root_skill_disabled(tmp_path):
+def test_import_uses_pinned_blob_and_enables_root_skill_by_default(tmp_path):
     raw = _skill("custom-skill", "Read-only instructions")
     transport = _FakeGitHub({"SKILL.md": raw})
     repository = SkillRepository(tmp_path / "skills", staging_root=_external_staging_root(tmp_path))
@@ -179,7 +181,11 @@ def test_import_uses_pinned_blob_and_leaves_root_skill_disabled(tmp_path):
 
     imported = importer.import_skills(preview["source"], [""])
     assert imported[0]["id"] == "custom-skill"
-    assert imported[0]["enabled"] is False
+    assert imported[0]["enabled"] is True
+    assert imported[0]["scope"] == "project"
+    assert imported[0]["install_path"] == str(tmp_path / "skills" / "custom-skill")
+    assert imported[0]["content_hash"]
+    assert imported[0]["claude_adapter"] is False
     assert "Read-only instructions" not in transport.calls[0]
     assert all(transport.commit in call for call in transport.calls if "raw.githubusercontent.com" in call)
 
@@ -191,7 +197,9 @@ def test_multi_import_rollback_only_removes_unchanged_packages(
     class FailSecondInstallRepository(SkillRepository):
         install_count = 0
 
-        def install_package(self, files, source, *, _install_nonce=None):
+        def install_package(
+            self, files, source, *, _install_nonce=None, claude_adapter=False
+        ):
             self.install_count += 1
             if self.install_count == 2:
                 first = self.root / "first-skill"
@@ -202,6 +210,7 @@ def test_multi_import_rollback_only_removes_unchanged_packages(
                 files,
                 source,
                 _install_nonce=_install_nonce,
+                claude_adapter=claude_adapter,
             )
 
     files = {
@@ -706,14 +715,15 @@ def test_github_routes_are_authenticated_static_endpoints_with_success_data(monk
     class FakeImporter:
         def __init__(self, repository):
             calls["root"] = repository.root
+            calls["scope"] = repository.scope
 
         def preview(self, url, *, ref=None, path=None):
             calls["preview"] = (url, ref, path)
             return {"source": {"owner": "owner", "repo": "repo", "commit_sha": "a" * 40, "path": ""}, "candidates": []}
 
-        def import_skills(self, source, paths):
-            calls["import"] = (source, paths)
-            return [{"id": "sample-skill", "enabled": False}]
+        def import_skills(self, source, paths, *, claude_adapter=False):
+            calls["import"] = (source, paths, claude_adapter)
+            return [{"id": "sample-skill", "enabled": True, "scope": "project", "claude_adapter": claude_adapter}]
 
     monkeypatch.setattr(skill_routes, "GitHubSkillImporter", FakeImporter)
     with _api_client(monkeypatch, tmp_path) as client:
@@ -728,6 +738,9 @@ def test_github_routes_are_authenticated_static_endpoints_with_success_data(monk
             },
         )
         assert imported.status_code == 200
-        assert imported.json()["data"]["skills"][0]["enabled"] is False
+        assert imported.json()["data"]["skills"][0]["enabled"] is True
+        assert imported.json()["data"]["skills"][0]["scope"] == "project"
+        assert imported.json()["data"]["skills"][0]["claude_adapter"] is False
     assert calls["preview"] == ("https://github.com/owner/repo", None, None)
-    assert calls["import"][1] == [""]
+    assert calls["scope"] == "project"
+    assert calls["import"][1:] == ([""], False)

@@ -17,7 +17,7 @@ export function SkillModeSelector({ sessionId, lang }: { sessionId: string; lang
   const error = useSkillsStore((state) => state.error);
   const fetchSkills = useSkillsStore((state) => state.fetchSkills);
   const setChatSkillSelection = useSkillsStore((state) => state.setChatSkillSelection);
-  const enabledSkills = skills.filter((skill) => skill.enabled);
+  const enabledSkills = skills.filter((skill) => skill.enabled && skill.compatibility_status !== "review_required");
   const selectedEnabledIds = selection.skillIds.filter((id) => enabledSkills.some((skill) => skill.id === id));
 
   useEffect(() => {
@@ -93,9 +93,16 @@ export function SkillModeSelector({ sessionId, lang }: { sessionId: string; lang
           style={{ position: "fixed", top: position.top, left: position.left, width: 300, maxHeight: Math.min(340, position.maxHeight), overflowY: "auto", zIndex: 1200 }}
         >
           <div style={{ padding: "10px 12px", borderBottom: "1px solid var(--border)" }}>
-            <strong style={{ fontSize: 12 }}>{isChinese ? "只读 Skills 模式" : "Read-only Skills mode"}</strong>
+            <strong style={{ fontSize: 12 }}>{isChinese ? "Skills 发现与加载" : "Skill discovery and loading"}</strong>
             <p style={{ margin: "4px 0 0", fontSize: 11, color: "var(--muted-fg)" }}>
-              {isChinese ? "技能只提供说明和只读资料，不会执行其中的脚本。" : "Skills provide instructions and read-only references; their scripts are not executed."}
+              {isChinese
+                ? "Skills 不限制普通工具或 MCP。导入不会运行脚本；确需执行时仍按常规权限确认。"
+                : "Skills do not restrict regular tools or MCP. Importing does not run scripts; any required execution follows the usual permission checks."}
+            </p>
+            <p style={{ margin: "5px 0 0", fontSize: 11, color: "var(--muted-fg)" }}>
+              {isChinese
+                ? "可直接说“导入这个 Skill 并使用它…”；自动/手动模式按需发现，关闭模式不自动发现。"
+                : "Say “Import this Skill and use it …” directly in chat. Auto/manual discover on demand; Off does not discover Skills automatically."}
             </p>
           </div>
           {([

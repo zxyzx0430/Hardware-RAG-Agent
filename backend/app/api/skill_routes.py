@@ -4,20 +4,21 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 import uuid
 from pathlib import Path
+from typing import Literal
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, StrictBool, StrictStr
 
 from app.api.dependencies import current_user, current_user_optional
 from app.api.errors import sanitize_error
 from src.skills.errors import SkillError
-from src.skills.format import LEGACY_FILENAME, parse_skill_document
+from src.skills.format import STANDARD_FILENAME, parse_skill_document
 from src.skills.github_import import GitHubSkillImporter
-from src.skills.repository import SkillRepository
+from src.skills.repository import SkillRepository, default_skills_root
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["skills"])
@@ -51,10 +52,14 @@ class GitHubSourceRequest(BaseModel):
 class GitHubImportRequest(BaseModel):
     source: GitHubSourceRequest
     paths: list[StrictStr]
+    scope: Literal["project", "user"] = "project"
+    claude_adapter: StrictBool = False
 
 
-def _repository() -> SkillRepository:
-    return SkillRepository(SKILLS_DIR)
+def _repository(scope: Literal["project", "user"] = "project") -> SkillRepository:
+    if SKILLS_DIR.resolve() != default_skills_root().resolve():
+        return SkillRepository(SKILLS_DIR, scope=scope)
+    return SkillRepository(scope=scope)
 
 
 def _ok(data):
@@ -82,23 +87,19 @@ def _internal_error(error: Exception, operation: str) -> JSONResponse:
     )
 
 
-def _slugify(name: str) -> str:
-    slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", name.strip().lower()).strip("-")
-    return slug or uuid.uuid4().hex
-
-
 def _create_legacy_skill(repository: SkillRepository, content: str) -> dict:
-    parsed = parse_skill_document(
-        content,
-        directory_name=None,
-        filename=LEGACY_FILENAME,
-    )
-    metadata_name = parsed.metadata.get("name")
-    skill_id = (
-        _slugify(metadata_name)
-        if isinstance(metadata_name, str) and metadata_name.strip()
-        else uuid.uuid4().hex
-    )
+    text_without_bom = content.removeprefix("\ufeff")
+    lines = text_without_bom.splitlines()
+    if lines and lines[0] == "---":
+        parsed = parse_skill_document(
+            content,
+            directory_name=None,
+            filename=STANDARD_FILENAME,
+            require_standard=True,
+        )
+        skill_id = parsed.name
+    else:
+        skill_id = uuid.uuid4().hex
     return repository.create_legacy_skill(skill_id, content)
 
 
@@ -127,7 +128,7 @@ async def get_skill(skill_id: str, user: dict = Depends(current_user_optional)) 
 
 @router.post("/skills")
 async def create_skill(payload: SkillCreateRequest, user: dict = Depends(current_user)) -> dict:
-    """Preserve the existing editor flow by creating a legacy skill package."""
+    """Preserve the editor flow while creating a standard skill package."""
     try:
         skill = await asyncio.to_thread(
             _create_legacy_skill,
@@ -209,14 +210,35 @@ async def import_github_skills(
     user: dict = Depends(current_user),
 ) -> dict:
     try:
-        importer = GitHubSkillImporter(_repository())
+        importer = GitHubSkillImporter(_repository(payload.scope))
         skills = await asyncio.to_thread(
             importer.import_skills,
             payload.source.model_dump(),
             payload.paths,
+            claude_adapter=payload.claude_adapter,
         )
         return _ok({"skills": skills})
     except SkillError as exc:
         return _skill_error(exc)
     except Exception as exc:  # noqa: BLE001
         return _internal_error(exc, "GitHub import")
+
+
+@router.get("/skills/{skill_id}/export")
+async def export_skill(
+    skill_id: str,
+    scope: Literal["project", "user", "legacy"] | None = None,
+    user: dict = Depends(current_user_optional),
+) -> Response:
+    try:
+        package = await asyncio.to_thread(_repository().export_skill, skill_id, scope=scope)
+        filename = f"{quote(skill_id, safe='-._~')}.zip"
+        return Response(
+            content=package,
+            media_type="application/zip",
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
+        )
+    except SkillError as exc:
+        return _skill_error(exc)
+    except Exception as exc:  # noqa: BLE001
+        return _internal_error(exc, "export")
