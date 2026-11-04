@@ -48,7 +48,7 @@ async def stream_agent_to_sse(
     events: Any,
     config: dict,
     call_counter: Counter,
-    permission_mode: str = "bypassPermissions",
+    permission_mode: str = "default",
     model: str = "",
     requested_max_tokens: int | None = None,
     context_budget: Any = None,
@@ -693,7 +693,7 @@ class ChatRequest(BaseModel):
     # Agent path opt-in (spec §10.1): when True + model supports tools + langgraph available,
     # the request flows through the ReAct agent instead of the single-shot LLM stream.
     use_agent: bool = False
-    permission_mode: str = "default"  # bypassPermissions / default / acceptEdits (spec §7.1)
+    permission_mode: Literal["bypassPermissions", "default", "acceptEdits"] = "default"
     tool_keys: dict[str, str] = {}  # per-request tool credentials, e.g. {"tavily": "..."}
     skills_mode: Literal["off", "auto", "manual"] = "off"
     skill_ids: list[str] = Field(default_factory=list, max_length=3)
@@ -1062,16 +1062,9 @@ async def _build_agent_for_payload(
         mcp_tools=snapshot.mcp_tools,
         tool_context=snapshot.tool_context,
     )
-    from src.agent.core.toolkit.tool_spec import ConfirmationRule
-    has_always_confirmation = any(
-        getattr(tool, "requires_confirmation", None) == ConfirmationRule.ALWAYS
-        for tool in tools
-    )
-    enable_hitl = (
-        payload.permission_mode != "bypassPermissions"
-        or bool(snapshot.mcp_tools)
-        or has_always_confirmation
-    )
+    # HITL must stay enabled even in bypass mode: PermissionClassifier still
+    # asks for HIGH/ALWAYS tools, and disabling the interrupt would skip it.
+    enable_hitl = bool(tools)
     resolved_memory = snapshot.long_term_memory
     skills_catalog = (
         snapshot.skills_runtime.catalog()

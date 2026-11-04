@@ -282,7 +282,7 @@ async def stream_agent_to_sse(
     events: Any,
     config: dict,
     call_counter: Counter,
-    permission_mode: str = "bypassPermissions",
+    permission_mode: str = "default",
     model: str = "",
     requested_max_tokens: int | None = None,
     context_budget: ContextBudget | None = None,
@@ -960,7 +960,7 @@ def _emit_tool_call(
     specs = ctx.request_tools.values() if ctx is not None else list_registered_tools()
     spec = next((item for item in specs if item.name == name), None)
     risk_level = spec.risk_level.value if spec is not None else None
-    perm_mode = state.get("permission_mode", "bypassPermissions")
+    perm_mode = state.get("permission_mode", "default")
     decision_source = "mode_bypass" if perm_mode == "bypassPermissions" else "auto_allow"
     if spec is not None and spec.mcp_info is not None:
         decision_source = "confirmation_required"

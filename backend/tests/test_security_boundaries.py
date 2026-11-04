@@ -97,3 +97,77 @@ def test_grep_walk_skips_secret_files(monkeypatch, tmp_path: Path) -> None:
     matches, _ = _grep_sync(str(allowed), _GrepCfg(re.compile("MARKER"), "*", 100))
     contents = [item["content"] for item in matches]
     assert contents == ["SAFE_MARKER"]
+
+
+class TestCommandPolicy:
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "ls C:\\Users",
+            "dir ..",
+            "grep -r sk- C:\\Users",
+            "where /r C:\\ python.exe",
+            "git status && git diff",
+            "git status; Remove-Item important.txt",
+            "git diff --output=changes.txt",
+            "git show --ext-diff",
+            "git log -n abc",
+            "git status ..\\..\\Windows",
+            "pwd extra",
+        ],
+    )
+    def test_unsafe_commands_are_not_auto_allowable(self, command: str) -> None:
+        from src.agent.core.toolkit.command_policy import is_auto_allowable
+
+        assert is_auto_allowable(command) is False
+
+    @pytest.mark.parametrize(
+        "command",
+        ["pwd", "git status", "git status --short", "git diff --stat",
+         "git log -n 3 --oneline", "git show --stat HEAD"],
+    )
+    def test_safe_commands_remain_auto_allowable(self, command: str) -> None:
+        from src.agent.core.toolkit.command_policy import is_auto_allowable
+
+        assert is_auto_allowable(command) is True
+
+    def test_bypass_mode_does_not_skip_high_risk(self) -> None:
+        from src.agent.core.toolkit.permission_classifier import (
+            ALLOW,
+            ASK,
+            PermissionClassifier,
+        )
+        from src.agent.core.toolkit.tool_spec import RiskLevel, ToolSpec
+        from src.agent.exceptions import ToolContext
+        from pydantic import BaseModel
+
+        class _CommandArgs(BaseModel):
+            command: str
+
+        class _CommandTool(ToolSpec):
+            name: str = "run_command"
+            description: str = "test"
+            args_schema: type[BaseModel] = _CommandArgs
+            risk_level: RiskLevel = RiskLevel.HIGH
+
+            async def execute(self, args, ctx):
+                raise AssertionError("permission check must not execute the tool")
+
+        classifier = PermissionClassifier()
+        bypass = ToolContext(permission_mode="bypassPermissions")
+        assert classifier.check(
+            _CommandTool(), {"command": "rm -rf /"}, bypass
+        ) == ASK
+        assert classifier.check(
+            _CommandTool(), {"command": "git status"}, bypass
+        ) == ALLOW
+
+    def test_invalid_permission_mode_is_rejected(self) -> None:
+        from pydantic import ValidationError
+        from app.api.chat_routes import ChatRequest
+
+        with pytest.raises(ValidationError):
+            ChatRequest(
+                messages=[{"role": "user", "content": "hi"}],
+                permission_mode="root",
+            )

@@ -55,20 +55,18 @@ class PermissionClassifier:
     """3-state permission gate evaluated per pending tool_call.
 
     Decision matrix (spec §PermissionClassifier + v2 §2):
-      * bypassPermissions               -> allow (every tool)
-      * risk_level == LOW               -> allow
-      * risk_level == HIGH              -> _decide_high: run_command is graded
-                                            by risk_classifier and may auto-
-                                            allow safe commands (e.g. ls/cat);
-                                            destructive commands and all other
-                                            HIGH tools -> ask
-      * risk_level == MEDIUM            -> path_guard.validate first;
+      * requires_confirmation == ALWAYS -> ask (every mode)
+      * risk_level == HIGH               -> _decide_high; run_command is
+                                            allowed only when command_policy
+                                            accepts its restricted argv,
+                                            everything else asks — bypass
+                                            mode does NOT skip HIGH
+      * bypassPermissions                -> allow (LOW/MEDIUM only)
+      * risk_level == LOW                -> allow
+      * risk_level == MEDIUM             -> path_guard.validate first;
                                             deny on path violation;
                                             acceptEdits -> allow;
                                             default     -> ask
-
-    Note: HIGH risk does NOT always ask.  run_command can return ALLOW when
-    risk_classifier classifies the concrete command as LOW risk.
     """
 
     def check(self, spec: ToolSpec, args: dict[str, Any], ctx: ToolContext) -> str:
@@ -77,28 +75,29 @@ class PermissionClassifier:
             return ASK
         if spec.requires_confirmation == ConfirmationRule.ALWAYS:
             return ASK
+        if spec.risk_level == RiskLevel.HIGH:
+            return self._decide_high(spec, args, ctx)
         mode = ctx.permission_mode
         if mode == BYPASS_MODE:
             return ALLOW
         if spec.risk_level == RiskLevel.LOW:
             return ALLOW
-        if spec.risk_level == RiskLevel.HIGH:
-            return self._decide_high(spec, args, ctx)
         return self._decide_medium(spec, args, ctx)
 
     def _decide_high(self, spec: ToolSpec, args: dict[str, Any], ctx: ToolContext) -> str:
-        """HIGH risk: run_command graded by risk_classifier; whitelist skips HITL; others ask."""
-        if spec.name == _COMMAND_TOOL:
-            return self._grade_command(args)
-        if spec.name in _HITL_SKIP_TOOLS:
-            return ALLOW
-        return ASK
+        """HIGH risk: only a restricted safe command may skip HITL.
 
-    def _grade_command(self, args: dict[str, Any]) -> str:
-        """Grade run_command via risk_classifier; LOW -> allow, else ask."""
-        from src.agent.risk_classifier import LOW, classify_risk
-        risk = classify_risk(_COMMAND_TOOL, args)
-        if risk == LOW:
+        bypassPermissions does NOT auto-allow HIGH tools: a client-supplied
+        mode must not silently remove confirmation for run_command/build/
+        flash. run_command is allowed only when command_policy accepts its
+        exact argv; everything else asks.
+        """
+        _ = ctx
+        if spec.name == _COMMAND_TOOL:
+            from src.agent.core.toolkit.command_policy import is_auto_allowable
+            command = str(args.get("command", ""))
+            return ALLOW if is_auto_allowable(command) else ASK
+        if spec.name in _HITL_SKIP_TOOLS:
             return ALLOW
         return ASK
 
