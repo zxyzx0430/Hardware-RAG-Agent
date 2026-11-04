@@ -719,11 +719,13 @@ def delete_session(session_id: str, db: DBSession = Depends(get_db), user: dict 
         _purge_session_rows(db, session_id)
         db.delete(s)
         db.commit()
-        try:
-            import asyncio
+        import asyncio
 
-            asyncio.run(_purge_session_runtime(session_id))
+        cleanup = _purge_session_runtime(session_id)
+        try:
+            asyncio.run(cleanup)
         except RuntimeError:
+            cleanup.close()
             logger.warning("runtime session cleanup deferred: %s", session_id)
         logger.info("会话已删除: id=%s", session_id)
         return _ok({"id": session_id, "deleted": True})

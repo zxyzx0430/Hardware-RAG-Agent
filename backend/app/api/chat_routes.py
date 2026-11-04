@@ -308,14 +308,14 @@ def _request_writer_context(binding: Any, lease: Any, model: str = ""):
         yield
         return
     from src.agent.compact.writer_lifecycle import bind_writer_scope
-    from src.agent.sse_adapter import activate_writer_binding
+    from src.agent.writer_lifecycle import bind_writer_lease
 
     scope = binding.current_scope()
     binding.registry.assert_scope(lease, scope)
     with bind_writer_scope(
         binding.registry, lease, scope, scope_provider=binding.current_scope,
     ):
-        with activate_writer_binding(binding, lease, model):
+        with bind_writer_lease(lease):
             yield
 
 
