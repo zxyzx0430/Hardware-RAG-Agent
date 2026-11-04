@@ -48,6 +48,7 @@ MAX_PACKAGE_FILE_BYTES = 2 * 1024 * 1024
 MAX_SELECTED_SKILLS = 3
 MAX_AUTO_CATALOG_SKILLS = 100
 IMPORT_METADATA_FILENAME = ".skill-import.json"
+_OPERATION_ID_RE = re.compile(r"^[0-9a-f]{64}$")
 ENABLED_FILENAME = ".enabled"
 _LEGACY_SKILL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 _HOST_FILES = {IMPORT_METADATA_FILENAME.casefold(), ENABLED_FILENAME.casefold()}
@@ -1100,6 +1101,42 @@ class SkillRepository:
             "id", "name", "description", "enabled", "format",
             "compatibility_status", "issues", "content_hash", "source", "locally_modified",
         )}
+
+    def find_import_by_operation_id(self, operation_id: str) -> dict[str, Any] | None:
+        """Return the unique installed package for an internal chat operation ID."""
+        if not isinstance(operation_id, str) or not _OPERATION_ID_RE.fullmatch(operation_id):
+            raise SkillValidationError("Install operation ID is invalid", code="SKILL_PACKAGE_INVALID")
+        if not self.root.exists():
+            return None
+        matches: list[str] = []
+        with _LOCK:
+            self._assert_root_safe()
+            for child in sorted(self.root.iterdir(), key=lambda item: item.name.casefold()):
+                if (
+                    self._is_link_or_reparse(child)
+                    or not child.is_dir()
+                    or not _SKILL_ID_RE.fullmatch(child.name)
+                ):
+                    continue
+                try:
+                    directory = self._skill_directory(child.name, must_exist=True)
+                    metadata_path = self._actual_named_child(directory, IMPORT_METADATA_FILENAME)
+                    if metadata_path is None:
+                        continue
+                    self._assert_safe_file(metadata_path, directory)
+                    metadata = json.loads(self._read_limited(metadata_path, 16 * 1024).decode("utf-8"))
+                except (OSError, ValueError, SkillValidationError, json.JSONDecodeError):
+                    continue
+                if isinstance(metadata, dict) and metadata.get("_operation_id") == operation_id:
+                    matches.append(child.name)
+            if len(matches) > 1:
+                raise SkillConflictError("An install operation ID appears in multiple package records.")
+            if not matches:
+                return None
+            try:
+                return self.get_skill(matches[0])
+            except (SkillNotFoundError, SkillValidationError) as exc:
+                raise SkillConflictError("The previous install record is no longer valid.") from exc
 
     def _invalid_skill_info(self, skill_id: str, error: SkillValidationError) -> dict[str, Any]:
         return {

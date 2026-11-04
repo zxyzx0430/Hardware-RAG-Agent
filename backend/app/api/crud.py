@@ -400,6 +400,8 @@ def list_sessions(offset: int = 0, limit: int = 50, db: DBSession = Depends(get_
 @db_router.post("/sessions")
 def create_session(payload: SessionCreate, db: DBSession = Depends(get_db), user: dict = Depends(current_user_optional)) -> dict:
     """创建新会话。"""
+    if user is None:
+        user = {"anonymous": True}
     try:
         _begin_session_write(db)
 
@@ -698,7 +700,6 @@ def patch_session(session_id: str, payload: SessionUpdate, db: DBSession = Depen
 async def delete_session(session_id: str, db: DBSession = Depends(get_db), user: dict = Depends(current_user_optional)) -> dict:
     """删除会话及其所有派生数据（级联 + tombstone）。"""
     try:
-        _begin_session_write(db)
         s = db.query(SessionModel).filter(SessionModel.id == session_id).first()
         if not s:
             if _session_is_tombstoned(db, session_id):
@@ -943,7 +944,13 @@ def create_message(session_id: str, payload: MessageCreate, db: DBSession = Depe
         is_new = msg is None
         normalized_activity = project_skill_activity(payload.activity)
         if is_new:
-            msg = MessageModel(id=mid, session_id=session_id)
+            next_seq = db.query(func.max(MessageModel.seq)).filter(
+                MessageModel.session_id == session_id,
+            ).scalar()
+            msg = MessageModel(
+                id=mid, session_id=session_id,
+                seq=(int(next_seq) + 1) if type(next_seq) is int else 1,
+            )
             s.msg_count = (s.msg_count or 0) + 1
 
         payload_changed = is_new or not _message_payload_matches(

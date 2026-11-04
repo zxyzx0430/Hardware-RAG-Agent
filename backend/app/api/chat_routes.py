@@ -581,6 +581,10 @@ def _get_pending_request_snapshot(
             return None
         snapshot = pending[0]
         try:
+            _require_request_snapshot_epochs_current(
+                snapshot,
+                snapshot.business_session_id or snapshot.session_id or session_id,
+            )
             if snapshot.tool_context is None or snapshot.rag_source_registry_snapshot is None:
                 raise ValueError("request source registry snapshot is missing")
             from src.agent.tools.groups.retrieval.source_registry import RagSourceRegistry
@@ -943,6 +947,17 @@ def _langchain_messages_to_dicts(messages: list) -> list[dict]:
                 item["additional_kwargs"] = retained
         dicts.append(item)
     return dicts
+
+
+def _last_plain_user_turn(payload: Any) -> str | None:
+    messages = getattr(payload, "messages", None)
+    if not isinstance(messages, list) or not messages:
+        return None
+    last = messages[-1]
+    if getattr(last, "role", None) != "user":
+        return None
+    content = getattr(last, "content", None)
+    return content if isinstance(content, str) else None
 
 
 async def _prepare_chat_skill_install(
