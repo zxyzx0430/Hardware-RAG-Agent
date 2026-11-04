@@ -25,6 +25,12 @@ class _NoopAuditRecorder:
         pass
 
 
+@pytest.fixture(autouse=True)
+def _skip_target_validation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests cover transport failures; SSRF checks live in test_security_boundaries."""
+    monkeypatch.setattr(webfetch_module, "_validate_target", lambda _url: None)
+
+
 class _DictionaryPayloadTool(WebFetchTool):
     name: str = "dictionary_payload"
 

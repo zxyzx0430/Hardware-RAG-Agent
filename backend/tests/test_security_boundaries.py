@@ -334,3 +334,42 @@ class TestAuthAndMCPBoundary:
         client = TestClient(create_app())
         kwargs = {"json": {"id": "x", "command": "python"}} if method == "post" else {}
         assert getattr(client, method)(path, **kwargs).status_code == 401
+
+
+class TestWebFetchBoundary:
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://127.0.0.1:58080/health",
+            "http://[::1]/",
+            "http://[::ffff:127.0.0.1]/",
+            "http://localhost/",
+            "http://foo.localhost/",
+            "http://foo.internal/",
+            "http://169.254.169.254/latest/meta-data",
+            "http://10.0.0.1/",
+            "http://192.168.1.1/",
+            "http://0.0.0.0/",
+            "file:///C:/Windows/win.ini",
+            "http://user:pass@example.com/",
+            "ftp://example.com/file",
+        ],
+    )
+    def test_local_and_non_http_targets_are_blocked(self, url: str) -> None:
+        from src.agent.tools.groups.retrieval.webfetch import _validate_target
+
+        with pytest.raises(RuntimeError):
+            _validate_target(url)
+
+    def test_egress_allowlist_blocks_other_hosts(self, monkeypatch) -> None:
+        from src.agent.tools.groups.retrieval import webfetch
+
+        monkeypatch.setenv("WEBFETCH_ALLOWED_HOSTS", "example.com")
+        with pytest.raises(RuntimeError):
+            webfetch._validate_target("https://evil.invalid/collect")
+
+    def test_webfetch_is_not_low_risk(self) -> None:
+        from src.agent.core.toolkit.tool_spec import RiskLevel
+        from src.agent.tools.groups.retrieval.webfetch import WebFetchTool
+
+        assert WebFetchTool().risk_level == RiskLevel.MEDIUM

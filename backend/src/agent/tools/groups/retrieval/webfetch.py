@@ -16,12 +16,16 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import ipaddress
 import logging
+import os
 import re
+import socket
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 from pydantic import BaseModel, Field
@@ -91,6 +95,59 @@ _FETCH_TIMEOUT_SECONDS: int = 30
 _MAX_CONTENT_BYTES: int = 50 * 1024
 _USER_AGENT: str = "HardwareRAGAgent/1.0 WebFetchTool"
 _TRUNCATE_SUFFIX: str = "...[truncated]"
+_ALLOWED_SCHEMES: frozenset[str] = frozenset({"http", "https"})
+_BLOCKED_HOST_SUFFIXES: tuple[str, ...] = (
+    ".localhost", ".local", ".internal", ".home.arpa",
+)
+_ALLOWLIST_ENV: str = "WEBFETCH_ALLOWED_HOSTS"
+
+
+def _allowed_hosts() -> tuple[str, ...]:
+    """Optional egress allowlist: comma-separated domain suffixes."""
+    raw = os.getenv(_ALLOWLIST_ENV, "")
+    return tuple(
+        item.strip().lower().lstrip(".")
+        for item in raw.split(",")
+        if item.strip()
+    )
+
+
+def _validate_target(url: str) -> None:
+    """Reject non-http(s), userinfo, localhost and non-global addresses."""
+    parsed = urlparse(url)
+    if parsed.scheme.lower() not in _ALLOWED_SCHEMES:
+        raise RuntimeError("WebFetch blocked: only http(s) URLs are allowed.")
+    if parsed.username or parsed.password:
+        raise RuntimeError("WebFetch blocked: userinfo in URL is not allowed.")
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if not host:
+        raise RuntimeError("WebFetch blocked: URL has no host.")
+    if host == "localhost" or any(host.endswith(s) for s in _BLOCKED_HOST_SUFFIXES):
+        raise RuntimeError("WebFetch blocked: local hostnames are not allowed.")
+    allow = _allowed_hosts()
+    if allow and not any(host == item or host.endswith("." + item) for item in allow):
+        raise RuntimeError("WebFetch blocked: host is not in WEBFETCH_ALLOWED_HOSTS.")
+    for address in _resolve_addresses(host, parsed.port):
+        try:
+            parsed_ip = ipaddress.ip_address(address.split("%", 1)[0])
+        except ValueError as exc:
+            raise RuntimeError("WebFetch blocked: invalid resolved address.") from exc
+        if not parsed_ip.is_global:
+            raise RuntimeError(
+                "WebFetch blocked: private, loopback or link-local address."
+            )
+
+
+def _resolve_addresses(host: str, port: int | None) -> list[str]:
+    """Resolve every A/AAAA record; fail closed on resolution errors."""
+    try:
+        infos = socket.getaddrinfo(host, port or 80, type=socket.SOCK_STREAM)
+    except OSError as exc:
+        raise RuntimeError("WebFetch blocked: host could not be resolved.") from exc
+    addresses = {info[4][0] for info in infos}
+    if not addresses:
+        raise RuntimeError("WebFetch blocked: host could not be resolved.")
+    return list(addresses)
 
 
 # ═══════════════════════════════════════════
@@ -116,7 +173,7 @@ class WebFetchTool(ToolSpec):
         "内容超过 50KB 自动截断。"
     )
     args_schema: type = WebFetchArgs
-    risk_level: RiskLevel = RiskLevel.LOW
+    risk_level: RiskLevel = RiskLevel.MEDIUM
     timeout_seconds: int = _FETCH_TIMEOUT_SECONDS
     max_retries: int = 0
 
@@ -124,6 +181,7 @@ class WebFetchTool(ToolSpec):
         """Fetch url, convert to markdown, return with prompt."""
         url = args.get("url", "")
         prompt = args.get("prompt", "")
+        _validate_target(url)
         try:
             html = await self._fetch_html(url)
         except httpx.HTTPStatusError as exc:
