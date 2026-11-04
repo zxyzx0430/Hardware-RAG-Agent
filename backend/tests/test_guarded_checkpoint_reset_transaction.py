@@ -362,3 +362,29 @@ async def test_reset_reservation_rejects_same_lease_run_and_second_reset(monkeyp
         await reset_task
     finally:
         await connection.close()
+
+
+@pytest.mark.asyncio
+async def test_reset_validates_the_schema_of_every_reset_table(monkeypatch):
+    """Regression: the loop must unpack (table, columns) pairs, not dict keys.
+
+    Iterating the mapping directly yields bare table-name strings, so the
+    unpack raised ValueError before any schema check ran and every reset
+    failed. Counting the validations proves each table is actually inspected.
+    """
+    connection, saver, _registry, binding, lease = await _bound_case(monkeypatch)
+    validated: list[object] = []
+    original = factory._checkpoint_reset_schema_matches
+
+    def record(rows, expected_columns):
+        validated.append(expected_columns)
+        return original(rows, expected_columns)
+
+    monkeypatch.setattr(factory, "_checkpoint_reset_schema_matches", record)
+    try:
+        await _seed_rows(connection, saver)
+        await factory.reset_thread_checkpoint_for_writer(binding, lease)
+    finally:
+        await connection.close()
+
+    assert len(validated) == len(factory._RESET_TABLE_SCHEMAS)

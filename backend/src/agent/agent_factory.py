@@ -681,7 +681,7 @@ async def _reset_bound_thread_checkpoint(
                 _assert_agent_writer_binding(binding, lease)
 
             _require_owned_reset_transaction(connection)
-            for table, expected_columns in _RESET_TABLE_SCHEMAS:
+            for table, expected_columns in _RESET_TABLE_SCHEMAS.items():
                 rows = await _checkpoint_reset_fetchall(
                     connection,
                     binding,
