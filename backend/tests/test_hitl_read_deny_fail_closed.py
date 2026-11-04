@@ -2,12 +2,80 @@
 
 import asyncio
 from collections import Counter
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from langchain_core.messages import AIMessage
 
 from src.agent import hitl_handler, sse_adapter, sse_helpers
+from src.agent.compact.writer_lifecycle import (
+    WriterLifecycleRegistry,
+    WriterScope,
+    bind_writer_scope,
+)
+
+PENDING_CALL = {"name": "write_file", "args": {"path": "x"}, "call_id": "call-1"}
+
+
+def _checkpoint_config(thread_id: str, checkpoint_id: str) -> dict:
+    return {"configurable": {
+        "thread_id": thread_id, "checkpoint_ns": "", "checkpoint_id": checkpoint_id,
+    }}
+
+
+@contextmanager
+def _bound_writer(thread_id: str):
+    """Install the host-owned writer binding the real resume path provides."""
+    saver = object()
+    scope = WriterScope(
+        owner_key=thread_id,
+        graph=object(),
+        saver=saver,
+        request_scope=object(),
+        epoch=object(),
+    )
+    registry = WriterLifecycleRegistry(known_savers=(saver,))
+    lease = registry.acquire(scope)
+    with bind_writer_scope(registry, lease, scope, scope_provider=lambda: scope):
+        yield
+
+
+def _checkpoint_agent(thread_id: str, update_state: AsyncMock, call: dict | None = None):
+    """Fake agent with the checkpoint shape HITL denial verification expects."""
+    pending = call or PENDING_CALL
+    before_config = _checkpoint_config(thread_id, "cp-1")
+    applied_config = _checkpoint_config(thread_id, "cp-2")
+    ai_message = AIMessage(
+        content="",
+        tool_calls=[{
+            "id": pending["call_id"],
+            "name": pending["name"],
+            "args": pending["args"],
+            "type": "tool_call",
+        }],
+    )
+    before = SimpleNamespace(
+        next=("tools",), values={"messages": [ai_message]},
+        config=before_config, metadata={"source": "loop"},
+    )
+    denials: dict = {}
+
+    async def aget_state(config):
+        if "messages" not in denials:
+            return before
+        return SimpleNamespace(
+            next=("model",), values={"messages": [ai_message, *denials["messages"]]},
+            config=applied_config, metadata={"source": "update"},
+        )
+
+    async def aupdate_state(config, *, values):
+        result = await update_state(config, values=values)
+        denials["messages"] = values["messages"]
+        return result
+
+    return SimpleNamespace(aget_state=aget_state, aupdate_state=aupdate_state), before_config
 
 
 def test_checkpoint_read_failure_is_not_treated_as_no_pending_interrupt() -> None:
@@ -30,12 +98,11 @@ def test_deny_write_failure_emits_no_deny_result_or_resume(
     monkeypatch: pytest.MonkeyPatch, entrypoint: str
 ) -> None:
     error = RuntimeError("checkpoint write failed")
-    config = {"configurable": {"thread_id": "hitl-write-failure"}}
-    pending = [
-        {"name": "write_file", "args": {"path": "x"}, "call_id": "call-1"}
-    ]
+    thread_id = "hitl-write-failure"
+    config = {"configurable": {"thread_id": thread_id}}
+    pending = [dict(PENDING_CALL)]
     update_state = AsyncMock(side_effect=error)
-    agent = SimpleNamespace(aupdate_state=update_state)
+    agent, before_config = _checkpoint_agent(thread_id, update_state)
     detect_interrupt = AsyncMock(return_value=pending)
     audit_deny = Mock()
     deny_results = Mock(return_value=("deny-result",))
@@ -74,11 +141,12 @@ def test_deny_write_failure_emits_no_deny_result_or_resume(
                 emitted.append(frame)
         return emitted
 
-    emitted = asyncio.run(collect())
+    with _bound_writer(thread_id):
+        emitted = asyncio.run(collect())
 
     assert emitted == []
     update_state.assert_awaited_once()
-    assert update_state.await_args.args[0] is config
+    assert update_state.await_args.args[0] is before_config
     assert (
         update_state.await_args.kwargs["values"]["messages"][0].tool_call_id
         == "call-1"
@@ -98,14 +166,16 @@ def test_deny_write_failure_emits_no_deny_result_or_resume(
 def test_successful_deny_write_keeps_audit_after_state_update(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    config = {"configurable": {"thread_id": "hitl-write-success"}}
+    thread_id = "hitl-write-success"
+    config = {"configurable": {"thread_id": thread_id}}
     pending = [{"name": "write_file", "args": {}, "call_id": "call-2"}]
     actions = []
 
-    async def update_state(received_config, *, values):
-        assert received_config is config
+    async def write_state(received_config, *, values):
+        assert received_config["configurable"]["thread_id"] == thread_id
         assert values["messages"][0].tool_call_id == "call-2"
         actions.append("state-write")
+        return _checkpoint_config(thread_id, "cp-2")
 
     def audit_deny(received_config, received_pending, source):
         assert received_config is config
@@ -114,12 +184,16 @@ def test_successful_deny_write_keeps_audit_after_state_update(
         actions.append("audit")
 
     monkeypatch.setattr(hitl_handler, "_audit_deny_decisions", audit_deny)
-    agent = SimpleNamespace(aupdate_state=AsyncMock(side_effect=update_state))
+    update_state = AsyncMock(side_effect=write_state)
+    agent, _ = _checkpoint_agent(thread_id, update_state, pending[0])
 
-    asyncio.run(
-        hitl_handler._inject_deny_messages(
-            agent, config, pending, hitl_handler.SOURCE_USER_DENY
+    with _bound_writer(thread_id):
+        asyncio.run(
+            hitl_handler._inject_deny_messages(
+                agent, config, pending, hitl_handler.SOURCE_USER_DENY
+            )
         )
-    )
+
+    assert actions == ["state-write", "audit"]
 
     assert actions == ["state-write", "audit"]

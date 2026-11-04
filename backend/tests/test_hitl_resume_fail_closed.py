@@ -119,8 +119,11 @@ def test_resume_handler_preserves_allow_deny_stop_semantics(
     monkeypatch.setattr(hitl_handler, "_inject_deny_messages", record_deny)
     monkeypatch.setattr(hitl_handler, "emit_deny_tool_results", lambda *_args: ())
     monkeypatch.setattr(hitl_handler, "handle_auto_resume", no_auto_resume)
+    monkeypatch.setattr(hitl_handler, "_reset_tokens_from_checkpoint", AsyncMock())
     monkeypatch.setattr(sse_adapter, "_iter_agent_sse", fake_dispatch)
-    monkeypatch.setattr(sse_helpers, "init_stream_state", lambda *_args: {})
+    monkeypatch.setattr(
+        sse_helpers, "init_stream_state", lambda *_args: {"token_limit": 1000}
+    )
 
     async def collect() -> list[dict]:
         frames = [
@@ -128,6 +131,7 @@ def test_resume_handler_preserves_allow_deny_stop_semantics(
             async for frame in hitl_handler.resume_agent_after_user(
                 object(), {"configurable": {"thread_id": "hitl-test"}},
                 decision, Counter(), "default",
+                **({"confirmed_call_id": "call-1"} if decision == "allow" else {}),
             )
         ]
         return [

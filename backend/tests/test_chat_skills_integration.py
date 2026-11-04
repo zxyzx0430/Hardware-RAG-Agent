@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import time
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from pydantic import ValidationError
@@ -20,6 +21,22 @@ from src.skills.repository import SkillRepository
 
 def _messages() -> list[dict[str, str]]:
     return [{"role": "user", "content": "Synthetic skill request"}]
+
+
+class _FakeWriterBinding:
+    """Minimal host binding for tests that do not exercise the writer registry."""
+
+    def __init__(self) -> None:
+        self.scope = object()
+        self.registry = SimpleNamespace(
+            assert_scope=lambda *_args: None,
+            acquire=lambda _scope: object(),
+            release=lambda *_args: None,
+            quarantine=lambda *_args, **_kwargs: None,
+        )
+
+    def current_scope(self):
+        return self.scope
 
 
 @pytest.fixture()
@@ -473,7 +490,9 @@ async def test_resume_restores_original_skills_runtime_and_permission_snapshot(
     monkeypatch.setattr(chat_routes, "build_agent_config", lambda _session_id: {})
     captured = {}
 
-    async def fake_build_agent(payload, _creds, long_term_memory=None, request_snapshot=None):
+    async def fake_build_agent(
+        payload, _creds, long_term_memory=None, request_snapshot=None, **_kwargs,
+    ):
         captured.update({
             "payload": payload,
             "memory": long_term_memory,
@@ -487,6 +506,22 @@ async def test_resume_restores_original_skills_runtime_and_permission_snapshot(
         yield sse_event("done", {"success": True})
 
     monkeypatch.setattr(hitl_handler, "resume_agent_after_user", fake_resume)
+    monkeypatch.setattr(
+        hitl_handler, "_detect_tools_interrupt",
+        AsyncMock(return_value=[{"name": "write_file", "args": {}, "call_id": "call-1"}]),
+    )
+    monkeypatch.setattr(
+        chat_routes, "_build_request_writer_binding",
+        lambda *_args, **_kwargs: _FakeWriterBinding(),
+    )
+    monkeypatch.setattr(
+        chat_routes, "_acquire_request_writer_lease", lambda *_args, **_kwargs: object(),
+    )
+    monkeypatch.setattr(chat_routes, "_session_context_window", lambda _sid: 0)
+    monkeypatch.setattr(
+        "src.agent.context_guard.resolve_context_budget",
+        lambda *_args, **_kwargs: SimpleNamespace(effective_window=0),
+    )
     request = Request({
         "type": "http", "method": "POST", "path": "/api/agent-sandbox/resume",
         "headers": [], "query_string": b"",
@@ -503,6 +538,7 @@ async def test_resume_restores_original_skills_runtime_and_permission_snapshot(
             skills_mode="auto",
         ),
         decision="allow",
+        call_id="call-1",
     )
 
     response = await chat_routes.resume_agent(resume, request, user=user)
