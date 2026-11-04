@@ -121,7 +121,7 @@ Agent 不只会写代码，还能真的和板子交互：
 
 ## 快速开始
 
-需要 Python 3.10+、Node.js 20+。
+需要 Python 3.12+、Node.js 22+。
 
 ### 新环境：首次安装依赖
 
@@ -199,8 +199,8 @@ python main.py --web --host 127.0.0.1 --port 58080
 ### 步骤 1：检查环境
 
 ```bash
-python --version   # 需要 3.10+，低于则提示用户升级
-node --version     # 需要 20+，低于则提示用户升级
+python --version   # 需要 3.12+，低于则提示用户升级
+node --version     # 需要 22+，低于则提示用户升级
 ```
 
 ### 步骤 2：克隆项目

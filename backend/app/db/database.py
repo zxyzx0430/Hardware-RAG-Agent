@@ -14,9 +14,14 @@ _LOGGER = logging.getLogger(__name__)
 
 _BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
 _DB_DIR = _BACKEND_DIR / "data"
-_DB_DIR.mkdir(parents=True, exist_ok=True)
 
-DB_PATH = os.getenv("SQLITE_DB_PATH", str(_DB_DIR / "hardware_rag.db"))
+# Only the default location needs the directory created here. A caller that
+# points SQLITE_DB_PATH at a temp directory owns that directory's lifecycle, so
+# tests never write into the user's backend/data.
+_DB_PATH_ENV = os.getenv("SQLITE_DB_PATH")
+DB_PATH = _DB_PATH_ENV or str(_DB_DIR / "hardware_rag.db")
+if not _DB_PATH_ENV:
+    _DB_DIR.mkdir(parents=True, exist_ok=True)
 DATABASE_URL = f"sqlite:///{DB_PATH}"
 
 engine = create_engine(DATABASE_URL, echo=False, connect_args={"check_same_thread": False})
