@@ -314,6 +314,18 @@ export async function apiSSE(
 
                 getLog()("debug", "sse", `SSE ${path} event: ${event.type}`);
                 callbacks.onEvent(event);
+                // A callback can abort synchronously (for example, chat error handling).
+                // Fence the rest of this decoded chunk and do not treat it as a clean done.
+                if (controller.signal.aborted) {
+                  if (abortedByTimeout) {
+                    const errMsg = "连接超时，请检查网络或后端是否运行";
+                    getLog()("error", "sse", `SSE ${path} read error: ${errMsg}`);
+                    callbacks.onError?.(new Error(`SSE 读取异常: ${errMsg}`));
+                  } else {
+                    getLog()("info", "sse", `SSE ${path} read aborted (controller already aborted)`);
+                  }
+                  return;
+                }
                 // done 事件后立即触发 onDone 并退出循环，不依赖流关闭
                 if (event.type === "done") {
                   getLog()("ok", "sse", `SSE ${path} completed`);
@@ -346,6 +358,17 @@ export async function apiSSE(
           const event = parsed as ChatSSEEvent | BuildSSEEvent;
           getLog()("debug", "sse", `SSE ${path} trailing event: ${event.type}`);
           callbacks.onEvent(event);
+          // Keep the defensive trailing-event path behind the same abort fence.
+          if (controller.signal.aborted) {
+            if (abortedByTimeout) {
+              const errMsg = "连接超时，请检查网络或后端是否运行";
+              getLog()("error", "sse", `SSE ${path} read error: ${errMsg}`);
+              callbacks.onError?.(new Error(`SSE 读取异常: ${errMsg}`));
+            } else {
+              getLog()("info", "sse", `SSE ${path} read aborted (controller already aborted)`);
+            }
+            return;
+          }
           if (event.type === "done") {
             getLog()("ok", "sse", `SSE ${path} completed (trailing)`);
             doneReceived = true;

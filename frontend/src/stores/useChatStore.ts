@@ -51,6 +51,7 @@ import { create } from "zustand";
 import type { Message, SourceRef, ActivityStep, Session, ContentPart, TodoItem } from "../types/session";
 import type { ChatRequest, ChatSSEEvent, Attachment, BackendMessage } from "../types/api";
 import { loadFromStorage, saveToStorage, saveSessionMessages as writeSessionMessages, loadSessionMessages, removeSessionMessages, migrateMessagesToShards } from "../utils/persistence";
+import { getSessionHistoryMode } from "../utils/rollingHistoryClient";
 import { post, on } from "../utils/broadcast";
 import { useAppStore } from "./useAppStore";
 import { useSessionStore, CONTEXT_WINDOW_256K } from "./useSessionStore";
@@ -82,6 +83,64 @@ declare global {
   }
 }
 
+interface PagedHistoryStatus {
+  loading: boolean;
+  pagesLoaded: number;
+  hasMore: boolean | null;
+  error: string | null;
+  persistenceError: string | null;
+  restartRequired?: boolean;
+}
+
+const MAX_REQUEST_MESSAGES = 200;
+
+function _messageSnapshotToken(messages: Message[]): string | null {
+  try {
+    const token = JSON.stringify(messages);
+    return typeof token === "string" ? token : null;
+  } catch {
+    return null;
+  }
+}
+
+function _knownHistorySendBlockReason(
+  state: ChatState,
+  sessionId: string,
+  quoted: Message | undefined,
+  serverHistory: boolean,
+): string | null {
+  if (state.activeSessionId !== sessionId) {
+    return "会话已切换，未发送本次提问；原输入仍保留，请在目标会话重新确认后重试。";
+  }
+  const pageStatus = state.pagedHistoryBySession[sessionId];
+  if (state.isLoadingMessages || pageStatus?.loading) {
+    return "会话历史仍在恢复或分页加载；为避免遗漏历史，本次未发送。请等待加载完成后重试。";
+  }
+  if (!serverHistory && pageStatus?.hasMore === true) {
+    return "仍有更早的分页历史未加载；为避免把不完整历史发送给模型，本次未发送。请先加载更早历史后重试。";
+  }
+  if (pageStatus?.error
+      || (pageStatus && pageStatus.pagesLoaded > 0 && pageStatus.hasMore === null)) {
+    return "无法确认当前会话历史是否完整；本次未发送。请重新加载历史后重试。";
+  }
+  const cachedMessages = state.sessionMessages[sessionId];
+  if (!serverHistory) {
+    const historySlots = MAX_REQUEST_MESSAGES - 1 - (quoted ? 1 : 0);
+    const knownHistoryCount = Math.max(state.messages.length, cachedMessages?.length ?? 0);
+    if (knownHistoryCount > historySlots) {
+      return `当前已知历史有 ${knownHistoryCount} 条消息，超过本次请求可容纳的 ${historySlots} 条历史消息上限。为避免省略已知历史，本次未发送；输入和本地消息已保留。请新建会话或等待安全上下文整理接入。`;
+    }
+  }
+  if (cachedMessages) {
+    const activeToken = _messageSnapshotToken(state.messages);
+    const cachedToken = _messageSnapshotToken(cachedMessages);
+    if (activeToken === null || cachedToken === null || activeToken !== cachedToken) {
+      return "当前会话显示内容与本地历史缓存不一致，无法确认完整上下文；本次未发送。请重新加载历史后重试。";
+    }
+  }
+  return null;
+}
+
 interface ChatState {
   messages: Message[];
   sessionMessages: Record<string, Message[]>;
@@ -89,6 +148,8 @@ interface ChatState {
   isStreaming: boolean;
   /** fetchMessages 期间为 true，用于区分"加载中"和"真空会话" */
   isLoadingMessages: boolean;
+  /** 显式分页读取状态，按 sessionId 隔离；缺省表示尚未请求分页历史 */
+  pagedHistoryBySession: Record<string, PagedHistoryStatus>;
   streamingContent: string;
   streamingSteps: ActivityStep[];
   streamingSources: SourceRef[];
@@ -165,6 +226,9 @@ interface ChatState {
   setActiveSession: (id: string) => void;
   /** 从后端加载会话消息（localStorage 缓存先填充，后端数据覆盖） */
   fetchMessages: (sessionId: string) => Promise<void>;
+  refreshMessagePage: (sessionId: string) => void;
+  loadInitialMessagePage: (sessionId: string) => Promise<void>;
+  loadOlderMessagePage: (sessionId: string) => Promise<void>;
   /** 流式结束后将最后一轮 user+assistant 消息持久化到后端 */
   persistLastTurn: (sessionId: string) => Promise<boolean>;
   /** 重试保存当前会话里尚未确认写入的消息；不会重新发起聊天或 Agent 请求 */
@@ -1229,6 +1293,7 @@ export const useChatStore = create<ChatState>((set, get) => {
   sources: [],
   isStreaming: false,
   isLoadingMessages: false,
+  pagedHistoryBySession: {},
   streamingContent: "",
   streamingSteps: [],
   streamingSources: [],
@@ -1426,6 +1491,71 @@ export const useChatStore = create<ChatState>((set, get) => {
     set((s) => syncToSession({ ...s, messages: trimmed }));
   },
   setSources: (sources) => set({ sources }),
+
+  refreshMessagePage: (sessionId: string) => {
+    void get().loadInitialMessagePage(sessionId);
+  },
+
+  loadInitialMessagePage: async (sessionId: string) => {
+    if (!sessionId) return;
+    set((state) => ({
+      pagedHistoryBySession: {
+        ...state.pagedHistoryBySession,
+        [sessionId]: {
+          ...(state.pagedHistoryBySession[sessionId] ?? {
+            loading: false, pagesLoaded: 0, hasMore: null,
+            error: null, persistenceError: null,
+          }),
+          loading: true,
+          error: null,
+        },
+      },
+    }));
+    try {
+      await get().fetchMessages(sessionId);
+      set((state) => ({
+        pagedHistoryBySession: {
+          ...state.pagedHistoryBySession,
+          [sessionId]: {
+            ...(state.pagedHistoryBySession[sessionId] ?? {
+              loading: false, pagesLoaded: 0, hasMore: null,
+              error: null, persistenceError: null,
+            }),
+            loading: false,
+            pagesLoaded: Math.max(1, state.pagedHistoryBySession[sessionId]?.pagesLoaded ?? 0),
+            hasMore: false,
+            error: null,
+          },
+        },
+      }));
+    } catch (error) {
+      set((state) => ({
+        pagedHistoryBySession: {
+          ...state.pagedHistoryBySession,
+          [sessionId]: {
+            ...(state.pagedHistoryBySession[sessionId] ?? {
+              loading: false, pagesLoaded: 0, hasMore: null,
+              error: null, persistenceError: null,
+            }),
+            loading: false,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        },
+      }));
+    }
+  },
+
+  loadOlderMessagePage: async (sessionId: string) => {
+    if (!sessionId) return;
+    const status = get().pagedHistoryBySession[sessionId];
+    if (!status || status.pagesLoaded === 0) return;
+    set((state) => ({
+      pagedHistoryBySession: {
+        ...state.pagedHistoryBySession,
+        [sessionId]: { ...status, hasMore: false },
+      },
+    }));
+  },
 
   fetchMessages: async (sessionId: string) => {
     if (!sessionId) return;
@@ -1966,6 +2096,24 @@ export const useChatStore = create<ChatState>((set, get) => {
     getLog()("info", "chat", `发送消息: ${content.slice(0, 50) || "(仅附件)"}... attachments=${attachments?.length ?? 0} images=${imgCount}`);
 
     try {
+    const hasPagedHistory = Boolean(get().pagedHistoryBySession[activeSessionId]);
+    let serverHistory = false;
+    if (hasPagedHistory) {
+      const historyMode = await getSessionHistoryMode(activeSessionId).catch(() => null);
+      if (historyMode === null) {
+        get().setDraft(activeSessionId, content);
+        useToastStore.getState().showWarning("无法确认会话历史版本；本次未发送。请重新加载历史后重试。");
+        return;
+      }
+      serverHistory = historyMode.mode !== "legacy" || historyMode.server_history === true;
+      const historyBlockReason = _knownHistorySendBlockReason(
+        get(), activeSessionId, quoted, serverHistory,
+      );
+      if (historyBlockReason) {
+        useToastStore.getState().showWarning(historyBlockReason);
+        return;
+      }
+    }
 
     // 编码图片附件为 base64 ContentPart
     // 本地消息用 ContentPart[] 存储（支持图片渲染），API 请求也用 ContentPart[]
@@ -2032,14 +2180,19 @@ export const useChatStore = create<ChatState>((set, get) => {
     const currentSession = useSessionStore.getState().sessions.find((s) => s.id === activeSessionId);
     const model = currentSession?.model || useSettingsStore.getState().chatModel;
     getLog()("info", "chat", `model=${model} topK=${topK} maxTokens=${maxTokens} threshold=${relevanceThreshold} sessionId=${activeSessionId} systemPrompt="${systemPrompt?.slice(0, 50)}..."`);
-    const history = messages.map((m) => ({ role: m.role, content: m.content }));
+    const history = messages.map((m) => ({ role: m.role, content: m.content, message_id: m.id }));
     const newMsg = { role: "user" as const, content: apiContent };
+    // Owner-bound sessions can send only the active turn; the server loads the
+    // persisted history and compacts it without a client-side message cap.
     // 若有引用回复，在被引用消息后插入一条 system 上下文，让 LLM 知道用户引用了之前的对话
     const quotedContext = quoted
       ? [{ role: "system" as const, content: `用户引用了之前的对话内容：\n> ${typeof quoted.content === "string" ? quoted.content : ""}` }]
       : [];
     const requestBody: ChatRequest = {
-      messages: [...history, ...quotedContext, newMsg],
+      messages: serverHistory
+        ? [...quotedContext, newMsg]
+        : [...history, ...quotedContext, newMsg],
+      ...(serverHistory ? { history_mode: "server" as const } : {}),
       top_k: topK,
       relevance_threshold: relevanceThreshold > 0 ? relevanceThreshold / 100 : 0,
       temperature,

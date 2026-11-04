@@ -411,7 +411,7 @@ async def kb_upload(
             "success": False,
             "error": {"code": "UNSUPPORTED_FORMAT", "message": f"不支持的文件格式: {ext}", "details": None},
         }
-    content_bytes = await file.read()
+    content_bytes = await file.read(MAX_UPLOAD_SIZE + 1)
     if len(content_bytes) > MAX_UPLOAD_SIZE:
         return {
             "success": False,
@@ -432,6 +432,25 @@ async def kb_upload(
         return {
             "success": False,
             "error": {"code": "KB_NOT_FOUND", "message": f"知识库不存在: {kb_id}", "details": None},
+        }
+
+    # Validate all options before reclaiming an earlier failed upload. An
+    # invalid new request must not delete or otherwise mutate the old record.
+    effective_method = chunk_method or kb.chunk_method or "hybrid"
+    if effective_method not in ("hybrid", "agent", "multimodal"):
+        return {
+            "success": False,
+            "error": {"code": "INVALID_REQUEST", "message": f"不支持的 chunk_method: {effective_method}", "details": None},
+        }
+    if chunk_size is not None and (chunk_size < MIN_CHUNK_SIZE or chunk_size > MAX_CHUNK_SIZE):
+        return {
+            "success": False,
+            "error": {"code": "INVALID_REQUEST", "message": "chunk_size 必须在 100-10000 之间", "details": None},
+        }
+    if small_chunk_size is not None and not _validate_small_chunk_size(small_chunk_size):
+        return {
+            "success": False,
+            "error": {"code": "INVALID_REQUEST", "message": "small_chunk_size 必须是 500/800/1200/2000 之一", "details": None},
         }
 
     # Check for duplicate filename in same KB
@@ -487,28 +506,6 @@ async def kb_upload(
                     "details": {"existing_doc_id": existing_doc_id, "existing_status": existing_status},
                 },
             }
-
-    # Validate chunk_method
-    effective_method = chunk_method or kb.chunk_method or "hybrid"
-    if effective_method not in ("hybrid", "agent", "multimodal"):
-        return {
-            "success": False,
-            "error": {"code": "INVALID_REQUEST", "message": f"不支持的 chunk_method: {effective_method}", "details": None},
-        }
-
-    # Validate chunk_size range
-    if chunk_size is not None and (chunk_size < MIN_CHUNK_SIZE or chunk_size > MAX_CHUNK_SIZE):
-        return {
-            "success": False,
-            "error": {"code": "INVALID_REQUEST", "message": "chunk_size 必须在 100-10000 之间", "details": None},
-        }
-
-    # Validate small_chunk_size range (must be one of the supported values)
-    if small_chunk_size is not None and not _validate_small_chunk_size(small_chunk_size):
-        return {
-            "success": False,
-            "error": {"code": "INVALID_REQUEST", "message": "small_chunk_size 必须是 500/800/1200/2000 之一", "details": None},
-        }
 
     # Fall back to KB config when small_chunk_size not provided via Form
     # (KB-level config takes effect for hybrid chunker)

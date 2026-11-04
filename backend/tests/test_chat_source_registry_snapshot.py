@@ -22,6 +22,22 @@ from src.config.settings import settings
 from src.rag import search as search_module
 
 
+@pytest.fixture(autouse=True)
+def _isolated_session_generation_database(monkeypatch):
+    """Exercise real generation reads without touching a user database."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+    from app.api import common
+    from app.db.database import Base
+
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr(common, "SessionLocal", sessionmaker(bind=engine))
+    yield
+    engine.dispose()
+
+
 class _NoopAuditRecorder:
     def record(self, _record: object) -> None:
         """Keep the test from opening or writing the local audit database."""

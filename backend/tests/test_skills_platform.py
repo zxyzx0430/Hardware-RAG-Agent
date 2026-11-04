@@ -13,7 +13,12 @@ from fastapi.testclient import TestClient
 
 from app.api import skill_routes
 from src.skills import github_import as github_import_module
-from src.skills.errors import GitHubImportError, SkillConflictError, SkillValidationError
+from src.skills.errors import (
+    GitHubImportError,
+    SkillConflictError,
+    SkillResourceError,
+    SkillValidationError,
+)
 from src.skills.format import parse_skill_document, validate_path_set
 from src.skills.github_import import (
     GitHubSkillImporter,
@@ -188,6 +193,115 @@ def test_import_uses_pinned_blob_and_enables_root_skill_by_default(tmp_path):
     assert imported[0]["claude_adapter"] is False
     assert "Read-only instructions" not in transport.calls[0]
     assert all(transport.commit in call for call in transport.calls if "raw.githubusercontent.com" in call)
+
+
+def test_unreadable_example_directory_is_partial_and_stays_unreadable(tmp_path):
+    files = {
+        "skills/example-skill/SKILL.md": _skill("example-skill"),
+        "skills/example-skill/examples/example.md": b"# Example\n",
+        "skills/example-skill/references/guide.md": b"# Supported reference\n",
+    }
+    transport = _FakeGitHub(files)
+    repository = SkillRepository(
+        tmp_path / "skills",
+        staging_root=_external_staging_root(tmp_path),
+    )
+    importer = GitHubSkillImporter(repository, transport)
+
+    preview = importer.preview(
+        f"https://github.com/{transport.owner}/{transport.repo}"
+    )
+    candidate = preview["candidates"][0]
+
+    assert candidate["compatibility_status"] == "partial"
+    issue = next(
+        item for item in candidate["issues"]
+        if item["code"] == "RESOURCE_DIRECTORY_UNSUPPORTED"
+    )
+    assert "examples/" in issue["message"]
+
+    imported = importer.import_skills(preview["source"], [candidate["path"]])[0]
+    assert imported["compatibility_status"] == "partial"
+    resources = {item["path"]: item["supported"] for item in imported["resources"]}
+    assert resources["examples/example.md"] is False
+    assert resources["references/guide.md"] is True
+
+    repository.set_enabled(imported["id"], True)
+    with pytest.raises(SkillResourceError) as error:
+        repository.read_skill_resource(imported["id"], "examples/example.md")
+    assert error.value.code == "SKILL_RESOURCE_UNSUPPORTED"
+    assert repository.read_skill_resource(
+        imported["id"], "references/guide.md"
+    ) == "# Supported reference\n"
+
+
+
+
+def test_host_operation_id_install_is_atomic_enabled_and_idempotent(tmp_path):
+    transport = _FakeGitHub({"SKILL.md": _skill("operation-skill")})
+    repository = SkillRepository(
+        tmp_path / "skills", staging_root=_external_staging_root(tmp_path),
+    )
+    importer = GitHubSkillImporter(repository, transport)
+    preview = importer.preview(f"https://github.com/{transport.owner}/{transport.repo}")
+    operation_id = "c" * 64
+
+    first = importer.import_skills(
+        preview["source"], [""], operation_id=operation_id, enable=True,
+    )
+    assert first[0]["id"] == "operation-skill"
+    assert first[0]["enabled"] is True
+    assert (tmp_path / "skills" / "operation-skill" / ".enabled").is_file()
+    assert "_operation_id" not in first[0]["source"]
+    metadata = json.loads(
+        (tmp_path / "skills" / "operation-skill" / ".skill-import.json").read_text(encoding="utf-8")
+    )
+    assert metadata["_operation_id"] == operation_id
+    calls_after_install = len(transport.calls)
+
+    replay = importer.import_skills(
+        preview["source"], [""], operation_id=operation_id, enable=True,
+    )
+    assert replay[0]["id"] == "operation-skill"
+    assert replay[0]["enabled"] is True
+    assert len(transport.calls) == calls_after_install
+    assert repository.find_import_by_operation_id(operation_id)["id"] == "operation-skill"
+
+    with pytest.raises(SkillConflictError):
+        importer.import_skills(
+            {
+                **preview["source"],
+                "repo": "different-source",
+            },
+            [""],
+            operation_id=operation_id,
+            enable=True,
+        )
+    with pytest.raises(SkillConflictError):
+        importer.import_skills(
+            preview["source"], [""], operation_id="d" * 64, enable=True,
+        )
+    assert len(repository.list_skills()) == 1
+
+
+def test_enable_on_install_rejects_partial_compatibility_before_publish(tmp_path):
+    repository = SkillRepository(
+        tmp_path / "skills", staging_root=_external_staging_root(tmp_path),
+    )
+    with pytest.raises(SkillValidationError) as error:
+        repository.install_package(
+            {"SKILL.md": b"---\nname: partial-skill\ndescription: Empty body\n---\n"},
+            {
+                "owner": "test-owner",
+                "repo": "repo",
+                "commit_sha": "a" * 40,
+                "path": "",
+            },
+            _operation_id="e" * 64,
+            _enabled=True,
+        )
+    assert error.value.code == "SKILL_REVIEW_REQUIRED"
+    assert repository.list_skills() == []
 
 
 @pytest.mark.parametrize("user_changes_first_package,expected_exists", [(False, False), (True, True)])

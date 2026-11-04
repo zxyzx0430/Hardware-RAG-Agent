@@ -12,6 +12,7 @@ counter migrated from PrivateAttr to ToolContext.kb_coverage_counter
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from typing import Any
 
@@ -82,10 +83,13 @@ class SearchDocsArgs(BaseModel):
 
 
 class SearchDocsOutput(BaseModel):
-    """Describes envelope.data shape (output & kb_coverage_hint are lifted out
-    by ToolRouter._success_envelope, so only results/truncated remain)."""
+    """Describes envelope.data; ToolRouter lifts output and coverage hint."""
     results: list[dict] = Field(default_factory=list, description="检索结果列表")
     truncated: bool = Field(False, description="是否有 chunk 内容被截断")
+    reused_source_refs: list[dict] = Field(
+        default_factory=list,
+        description="本次复用的来源 ID 及其完整来源版本引用",
+    )
 
 
 class SearchDocsTool(ToolSpec):
@@ -128,6 +132,62 @@ class SearchDocsTool(ToolSpec):
         return _build_search_result(results, ctx)
 
 
+def _sha256_utf8_text(value: str) -> str | None:
+    """Hash one exact UTF-8 text field; return None if hashing is unavailable."""
+    try:
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()
+    except Exception:
+        logger.debug("Could not compute SearchDocs source text digest", exc_info=True)
+        return None
+
+
+def _build_source_version(entry: dict[str, Any]) -> dict[str, Any] | None:
+    """Bind this result to the exact evidence text returned by SearchDocs.
+
+    These digests cover the final, possibly truncated output fields. They do not
+    identify an indexing generation, hash the uploaded document, or prove current
+    readability.
+    """
+    kb_id = entry.get("kb_id")
+    doc_id = entry.get("doc")
+    content = entry.get("content")
+    small_chunk_text = entry.get("small_chunk_text")
+    big_chunk_id = entry.get("big_chunk_id", "")
+    small_chunk_id = entry.get("small_chunk_id", "")
+    if (
+        not isinstance(kb_id, str)
+        or not kb_id
+        or kb_id != kb_id.strip()
+        or not isinstance(doc_id, str)
+        or not doc_id
+        or doc_id != doc_id.strip()
+        or not isinstance(big_chunk_id, str)
+        or not isinstance(small_chunk_id, str)
+        or not isinstance(content, str)
+        or not isinstance(small_chunk_text, str)
+    ):
+        return None
+
+    content_sha256 = _sha256_utf8_text(content)
+    small_chunk_text_sha256 = _sha256_utf8_text(small_chunk_text)
+    if content_sha256 is None or small_chunk_text_sha256 is None:
+        return None
+
+    source_version = {
+        "schema_version": 1,
+        "kb_id": kb_id,
+        "doc_id": doc_id,
+        "big_chunk_id": big_chunk_id,
+        "small_chunk_id": small_chunk_id,
+        "content_sha256": content_sha256,
+        "small_chunk_text_sha256": small_chunk_text_sha256,
+    }
+    chunk_index = entry.get("chunk_index")
+    if isinstance(chunk_index, int) and not isinstance(chunk_index, bool):
+        source_version["chunk_index"] = chunk_index
+    return source_version
+
+
 def _build_search_result(results: list, ctx: ToolContext) -> dict:
     """Build result dict + manage coverage counter on ctx (per-request).
 
@@ -137,6 +197,10 @@ def _build_search_result(results: list, ctx: ToolContext) -> dict:
     """
     candidate_entries, truncated = _build_result_dicts(results, 1)
     registry = get_context_source_registry(ctx)
+    for entry in candidate_entries:
+        source_version = _build_source_version(entry)
+        if source_version is not None:
+            entry["source_version"] = source_version
     identity_entries = [
         {
             "kb_id": entry.get("kb_id"),
@@ -154,15 +218,25 @@ def _build_search_result(results: list, ctx: ToolContext) -> dict:
     registrations = registry.register_many(identity_entries, context=ctx)
     entries: list[dict] = []
     reused_ids: list[str] = []
+    reused_source_refs: list[dict] = []
     for entry, registration in zip(candidate_entries, registrations):
         entry["id"] = registration.source_id
         if registration.is_new:
             entries.append(entry)
         else:
             reused_ids.append(registration.source_id)
+            source_version = entry.get("source_version")
+            if isinstance(source_version, dict):
+                reused_source_refs.append({
+                    "id": registration.source_id,
+                    "source_version": source_version,
+                })
 
     output_dict = _format_output_from_entries(
-        entries, truncated and bool(entries), reused_ids,
+        entries,
+        truncated and bool(entries),
+        reused_ids,
+        reused_source_refs,
     )
     max_score = _extract_max_score(results)
     hint = _update_coverage_counter(ctx, max_score)
@@ -183,10 +257,14 @@ def _update_coverage_counter(ctx: ToolContext, max_score: float) -> str | None:
 
 
 def _format_output_from_entries(
-    entries: list[dict], truncated: bool, reused_ids: list[str] | None = None,
+    entries: list[dict],
+    truncated: bool,
+    reused_ids: list[str] | None = None,
+    reused_source_refs: list[dict] | None = None,
 ) -> dict:
     """Build the dict returned by SearchDocsTool: summary + full-source entries."""
     reused_ids = reused_ids or []
+    reused_source_refs = reused_source_refs or []
     if not entries and not reused_ids:
         return {"output": "未找到相关文档片段。", "results": [], "truncated": False}
     if entries:
@@ -198,7 +276,10 @@ def _format_output_from_entries(
             "本次省略重复正文和来源卡片；需要时复用原引用。"
             "\n回答时必须用 [srcN] 格式引用已返回的来源。"
         )
-    return {"output": summary, "results": entries, "truncated": truncated}
+    output = {"output": summary, "results": entries, "truncated": truncated}
+    if reused_source_refs:
+        output["reused_source_refs"] = reused_source_refs
+    return output
 
 
 def _extract_max_score(results: list) -> float:

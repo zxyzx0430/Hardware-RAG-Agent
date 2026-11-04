@@ -36,7 +36,10 @@ logger = logging.getLogger(__name__)
 _SUMMARY_DOC_LIMIT: int = 20
 
 # Empty-KB fallback message shown to the LLM when no docs are indexed.
-_EMPTY_KB_MSG: str = "知识库当前没有任何文档，建议直接基于通用知识回答或请用户上传文档。"
+_EMPTY_KB_MSG: str = (
+    "知识库当前没有已完成索引且可检索的文档。若文档刚上传，请等待索引完成；"
+    "当前没有可用来源时，应说明知识库未提供依据。"
+)
 
 
 # ═══════════════════════════════════════════

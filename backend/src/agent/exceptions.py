@@ -22,6 +22,7 @@ class ToolContext:
     decision_source: str = "auto_allow"
     skills_mode: str = "off"
     skills_runtime: Any = None
+    # Legacy compatibility metadata; ToolRouter does not use it for authorization.
     skills_allowed_tools: frozenset[str] = field(default_factory=frozenset)
     kb_scope: tuple[str, ...] | None = None
     request_tools: dict[str, Any] = field(default_factory=dict, repr=False)

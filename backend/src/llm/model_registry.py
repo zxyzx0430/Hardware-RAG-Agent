@@ -15,6 +15,8 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "deepseek-v4": 256000,
     "deepseek-v4-flash": 256000,
     "deepseek-chat": 65536,
+    "deepseek-reasoner": 65536,
+    "deepseek-r1": 65536,
     # Qwen
     "qwen3-235b": 256000,
     "qwen-plus": 131072,
@@ -25,27 +27,79 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     # Others / fallback
 }
 
-DEFAULT_CONTEXT_WINDOW = 128000
+DEFAULT_CONTEXT_WINDOW = 32768
+CONSERVATIVE_CONTEXT_WINDOW = 32768
+CONTEXT_WINDOW_HARD_CAP = 1048576
 
 
-def get_context_window(model: str | None) -> int:
-    """Get context window size for a model. Returns DEFAULT_CONTEXT_WINDOW if unknown."""
+def get_registered_context_window(model: str | None) -> int | None:
+    """Return a registered context window, or None for an unknown model."""
     if not model:
-        return DEFAULT_CONTEXT_WINDOW
-    # Try exact match first
+        return None
     if model in MODEL_CONTEXT_WINDOWS:
         return MODEL_CONTEXT_WINDOWS[model]
-    # Try prefix match (e.g. "oc/deepseek-v4-flash" -> "deepseek-v4-flash")
-    # Strip provider prefix like "oc/", "openai/", "anthropic/"
     stripped = model.split("/")[-1] if "/" in model else model
     if stripped in MODEL_CONTEXT_WINDOWS:
         return MODEL_CONTEXT_WINDOWS[stripped]
-    # Try partial match (model name contains a known key)
-    for key, val in MODEL_CONTEXT_WINDOWS.items():
+    for key, value in MODEL_CONTEXT_WINDOWS.items():
         if key in stripped or stripped in key:
-            return val
-    logger.debug(f"[model_registry] Unknown model '{model}', using default {DEFAULT_CONTEXT_WINDOW}")
-    return DEFAULT_CONTEXT_WINDOW
+            return value
+    return None
+
+
+def resolve_context_budget(
+    model: str | None,
+    context_window_override: int | None = None,
+    *,
+    hard_cap: int = CONTEXT_WINDOW_HARD_CAP,
+) -> tuple[int, str]:
+    """Resolve a context window and whether it came from a trusted source.
+
+    A registered model uses its real window. An explicit session override may
+    tighten that window. An unknown model is still usable: an explicit override
+    is honored up to the hard cap, otherwise a conservative default is used
+    instead of silently assuming a large provider window or failing closed.
+    """
+    registered = get_registered_context_window(model)
+    override = (
+        context_window_override
+        if type(context_window_override) is int and context_window_override > 0
+        else None
+    )
+    if registered is not None:
+        window = registered
+        source = "registered"
+        if override is not None:
+            window = min(window, override)
+            source = "explicit_override"
+    elif override is not None:
+        window = override
+        source = "explicit_override"
+    else:
+        window = CONSERVATIVE_CONTEXT_WINDOW
+        source = "conservative_default"
+    if type(hard_cap) is int and hard_cap > 0:
+        window = min(window, hard_cap)
+    return window, source
+
+
+def get_context_window(model: str | None) -> int:
+    """Get a conservative context window for a model.
+
+    Unknown models use the conservative default rather than an optimistic
+    provider window. Callers that need to distinguish the source should use
+    ``resolve_context_budget``.
+    """
+    if not model:
+        return DEFAULT_CONTEXT_WINDOW
+    registered = get_registered_context_window(model)
+    if registered is not None:
+        return registered
+    logger.info(
+        "[model_registry] Unknown model '%s', using conservative window %s",
+        model, CONSERVATIVE_CONTEXT_WINDOW,
+    )
+    return CONSERVATIVE_CONTEXT_WINDOW
 
 
 # Known model max output tokens (completion tokens)
@@ -59,6 +113,8 @@ MODEL_MAX_TOKENS: dict[str, int] = {
     "deepseek-v4": 8192,
     "deepseek-v4-flash": 8192,
     "deepseek-chat": 8192,
+    "deepseek-reasoner": 8192,
+    "deepseek-r1": 8192,
     # Qwen
     "qwen3-235b": 8192,
     "qwen-plus": 8192,
@@ -98,6 +154,8 @@ MODEL_TYPES: dict[str, str] = {
     "deepseek-v4": "chat",
     "deepseek-v4-flash": "chat",
     "deepseek-chat": "chat",
+    "deepseek-reasoner": "chat",
+    "deepseek-r1": "chat",
     "qwen3-235b": "chat",
     "qwen-plus": "chat",
     "qwen-max": "chat",

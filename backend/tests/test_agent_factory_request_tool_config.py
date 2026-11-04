@@ -12,10 +12,13 @@ from types import SimpleNamespace
 
 import pytest
 from langchain_core.messages import ToolMessage
+from pydantic import BaseModel
 
 from src.agent import agent_factory
 from src.agent.core.toolkit import tool_router
 from src.agent.core.toolkit.tool_router import ToolRouter
+from src.agent.core.toolkit.tool_spec import ToolSpec
+from src.agent.exceptions import ToolContext
 from src.agent.sse_helpers import convert_tool_message_to_sse
 from src.agent.tools.groups.retrieval import web_search as web_search_module
 from src.rag import search as search_module
@@ -76,6 +79,140 @@ def _source_events(tool_result: dict, call_id: str) -> list[dict]:
 def _tool_result_data(tool_result: dict) -> dict:
     data = tool_result.get("data")
     return data if isinstance(data, dict) else tool_result
+
+
+class _RequestToolArgs(BaseModel):
+    value: str = "probe"
+
+
+class _InjectedRequestTool(ToolSpec):
+    name: str = "request_scoped_probe"
+    description: str = "Test-only request-scoped tool."
+    args_schema: type[BaseModel] = _RequestToolArgs
+
+    async def execute(self, args, ctx):
+        return {"output": f"{ctx.session_id}:{args.get('value', '')}"}
+
+
+def _patch_minimal_tool_builder(monkeypatch, base_tools):
+    registry: dict[str, object] = {}
+    monkeypatch.setattr(tool_router, "_TOOL_REGISTRY", registry)
+    monkeypatch.setattr(agent_factory, "ensure_default_tools_registered", lambda: None)
+    monkeypatch.setattr(agent_factory, "_assemble_all_tools", lambda _payload: list(base_tools))
+    monkeypatch.setattr(agent_factory, "_filter_disabled_tools", lambda tools: list(tools))
+    return registry
+
+
+def test_build_tool_specs_includes_preconfigured_request_tool(monkeypatch):
+    base_tool = _InjectedRequestTool(name="base_probe")
+    injected_tool = _InjectedRequestTool(name="request_scoped_install")
+    registry = _patch_minimal_tool_builder(monkeypatch, [base_tool])
+    context = ToolContext(request_tools={injected_tool.name: injected_tool})
+
+    tools = agent_factory.build_tool_specs(
+        SimpleNamespace(skills_mode="off"), tool_context=context,
+    )
+
+    assert tools == [base_tool, injected_tool]
+    assert context.request_tools[base_tool.name] is base_tool
+    assert context.request_tools[injected_tool.name] is injected_tool
+    assert injected_tool._ctx is context
+    assert injected_tool.name not in registry
+
+
+def test_build_tool_specs_rejects_request_tool_name_conflict(monkeypatch):
+    built_tool = _InjectedRequestTool(name="shared_name")
+    injected_tool = _InjectedRequestTool(name="shared_name")
+    _patch_minimal_tool_builder(monkeypatch, [built_tool])
+    context = ToolContext(request_tools={injected_tool.name: injected_tool})
+
+    with pytest.raises(ValueError, match="request tool name conflict"):
+        agent_factory.build_tool_specs(
+            SimpleNamespace(skills_mode="off"), tool_context=context,
+        )
+
+
+def test_build_tool_specs_rejects_invalid_request_tool(monkeypatch):
+    _patch_minimal_tool_builder(monkeypatch, [])
+    context = ToolContext(request_tools={"invalid": object()})
+
+    with pytest.raises(ValueError, match="Invalid request tool snapshot"):
+        agent_factory.build_tool_specs(
+            SimpleNamespace(skills_mode="off"), tool_context=context,
+        )
+
+
+def test_build_tool_specs_keeps_request_tool_when_context_is_rebuilt(monkeypatch):
+    injected_tool = _InjectedRequestTool(name="request_scoped_install")
+    context = ToolContext(request_tools={injected_tool.name: injected_tool})
+    _patch_minimal_tool_builder(
+        monkeypatch, [_InjectedRequestTool(name="base_probe")],
+    )
+    payload = SimpleNamespace(skills_mode="off")
+
+    first_tools = agent_factory.build_tool_specs(payload, tool_context=context)
+    second_tools = agent_factory.build_tool_specs(payload, tool_context=context)
+
+    assert first_tools[-1] is injected_tool
+    assert second_tools[-1] is injected_tool
+    assert context.request_tools[injected_tool.name] is injected_tool
+
+
+@pytest.mark.asyncio
+async def test_request_tools_are_isolated_between_interleaved_agent_builds(monkeypatch):
+    registry = _patch_minimal_tool_builder(monkeypatch, [])
+    default_tool = _InjectedRequestTool(name="request_scoped_probe")
+    default_tool._ctx = ToolContext(session_id="process-default")
+    registry[default_tool.name] = default_tool
+    router = ToolRouter(audit_recorder=_NoopAuditRecorder())
+    monkeypatch.setattr(
+        ToolRouter,
+        "get_default",
+        classmethod(lambda _cls: router),
+    )
+    tool_a = _InjectedRequestTool(name="request_scoped_probe")
+    tool_b = _InjectedRequestTool(name="request_scoped_probe")
+    context_a = ToolContext(
+        session_id="request-a", request_tools={tool_a.name: tool_a},
+    )
+    context_b = ToolContext(
+        session_id="request-b", request_tools={tool_b.name: tool_b},
+    )
+
+    tools_a = agent_factory.build_tool_specs(
+        SimpleNamespace(skills_mode="off"), tool_context=context_a,
+    )
+    tools_b = agent_factory.build_tool_specs(
+        SimpleNamespace(skills_mode="off"), tool_context=context_b,
+    )
+    results = await asyncio.gather(
+        tools_a[0].ainvoke({"value": "a1"}),
+        tools_b[0].ainvoke({"value": "b1"}),
+        tools_a[0].ainvoke({"value": "a2"}),
+    )
+
+    assert [result["output"] for result in results] == [
+        "request-a:a1", "request-b:b1", "request-a:a2",
+    ]
+    assert tools_a[0] is tool_a
+    assert tools_b[0] is tool_b
+    assert context_a.request_tools[tool_a.name] is tool_a
+    assert context_b.request_tools[tool_b.name] is tool_b
+    assert registry[default_tool.name] is default_tool
+
+
+def test_build_tool_specs_keeps_existing_behavior_without_request_tools(monkeypatch):
+    base_tool = _InjectedRequestTool(name="base_probe")
+    registry = _patch_minimal_tool_builder(monkeypatch, [base_tool])
+    context = ToolContext()
+
+    tools = agent_factory.build_tool_specs(
+        SimpleNamespace(skills_mode="off"), tool_context=context,
+    )
+
+    assert tools == [base_tool]
+    assert context.request_tools == {base_tool.name: base_tool}
+    assert registry == {}
 
 
 @pytest.mark.asyncio

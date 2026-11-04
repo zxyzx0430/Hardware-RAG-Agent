@@ -13,6 +13,24 @@ from app.api import chat_helpers
 from app.api.chat_routes import ChatRequest
 
 
+@pytest.fixture(autouse=True)
+def _isolated_memory_epoch_database(monkeypatch):
+    """Keep real deletion-epoch reads isolated, including synthetic Agent tests."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+    from app.api import common
+    from app.db.database import Base
+
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr(common, "SessionLocal", sessionmaker(bind=engine))
+    yield
+    engine.dispose()
+
+
 def _messages() -> list[dict[str, str]]:
     return [{"role": "user", "content": "test request"}]
 
@@ -187,7 +205,7 @@ async def test_chat_route_uses_one_resolved_memory_on_each_model_path(
     monkeypatch.setattr(chat_routes, "_AGENT_PATH_AVAILABLE", use_agent)
     monkeypatch.setattr(chat_routes, "_should_use_agent", lambda *_args: use_agent)
 
-    async def fake_agent_stream(_payload, _creds, long_term_memory=None, request_snapshot=None):
+    async def fake_agent_stream(_payload, _creds, long_term_memory=None, request_snapshot=None, **_kwargs):
         observed["agent_memory"] = long_term_memory
         yield sse_event("text", {"content": "reply"})
 
@@ -236,7 +254,7 @@ async def test_hitl_resume_reuses_the_memory_snapshot_from_the_paused_request(
         return object()
 
     monkeypatch.setattr(chat_routes, "_build_agent_for_payload", fake_build_agent)
-    monkeypatch.setattr(chat_routes, "_session_context_window", lambda _session_id: None)
+    monkeypatch.setattr(chat_routes, "_session_context_window", lambda _session_id, _model=None: None)
 
     async def fake_agent_stream(*_args, **_kwargs):
         yield sse_event("tool_confirm_required", {"calls": [], "count": 0})
@@ -262,7 +280,7 @@ async def test_hitl_resume_reuses_the_memory_snapshot_from_the_paused_request(
         lambda _payload: pytest.fail("resume must not reload changed saved memory"),
     )
     monkeypatch.setattr(chat_routes, "_resolve_creds", lambda *_args: creds)
-    monkeypatch.setattr(chat_routes, "build_agent_config", lambda _session_id: {})
+    monkeypatch.setattr(chat_routes, "build_agent_config", lambda _session_id, **_kwargs: {})
 
     async def fake_resume_agent_after_user(*_args):
         yield sse_event("done", {"success": True})
@@ -309,7 +327,7 @@ async def test_interleaved_agent_sessions_keep_distinct_memory_snapshots(
 
     monkeypatch.setattr(agent_factory, "reset_thread_checkpoint", fake_reset_thread_checkpoint)
     monkeypatch.setattr(chat_routes, "_build_agent_for_payload", fake_build_agent)
-    monkeypatch.setattr(chat_routes, "_session_context_window", lambda _session_id: None)
+    monkeypatch.setattr(chat_routes, "_session_context_window", lambda _session_id, _model=None: None)
 
     async def fake_agent_stream(_agent, _input, config, *_args, **_kwargs):
         await asyncio.sleep(0)

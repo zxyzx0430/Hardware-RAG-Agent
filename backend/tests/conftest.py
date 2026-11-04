@@ -29,3 +29,47 @@ def _bypass_auth():
     _empty_store = {"providers": {}, "sessions": {}}
     with patch("app.api.auth._load_store", return_value=_empty_store):
         yield
+
+
+@pytest.fixture
+def context_archive_scope(tmp_path, monkeypatch):
+    """Opt-in real archive capability for compaction tests, not global auth."""
+    from types import SimpleNamespace
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from app.api import common
+    from app.db import database
+    from app.api.compaction_archive import bind_compaction_archive
+    from app.api.context_events import ContextEventScope
+    from app.db.database import Base
+    from app.db.models import Session
+
+    path = tmp_path / "compaction-events.sqlite"
+    engine = create_engine(f"sqlite:///{path}")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
+    monkeypatch.setattr(common, "SessionLocal", factory)
+    monkeypatch.setattr(database, "SessionLocal", factory)
+    with factory.begin() as db:
+        db.add(Session(id="archive-compaction"))
+    scope = ContextEventScope("archive-compaction", "a" * 32, "b" * 64, "")
+    with bind_compaction_archive(scope):
+        yield SimpleNamespace(scope=scope, factory=factory, engine=engine, path=path)
+    engine.dispose()
+
+
+@pytest.fixture
+def compaction_checkpoint():
+    """Seed an actual graph, replacing the old async-update recording fake."""
+    async def seed(messages, context_window):
+        from langgraph.graph import StateGraph, MessagesState, START, END
+        from langgraph.checkpoint.memory import InMemorySaver
+        builder = StateGraph(MessagesState)
+        builder.add_node("agent", lambda _state: {})
+        builder.add_edge(START, "agent")
+        builder.add_edge("agent", END)
+        graph = builder.compile(checkpointer=InMemorySaver())
+        config = {"configurable": {"thread_id": "compaction-test", "context_window": context_window}}
+        await graph.ainvoke({"messages": messages}, config)
+        return graph, config, (await graph.aget_state(config)).values["messages"]
+    return seed

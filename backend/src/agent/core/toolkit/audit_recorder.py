@@ -131,8 +131,16 @@ class AuditRecorder:
     breaks the Agent stream.
     """
 
-    def record(self, record: AuditRecord) -> None:
+    def record(self, record: AuditRecord) -> Any | None:
         """Persist one audit row. Swallows all errors."""
+        # Independent, body-free archive. No host binding means no new DB write;
+        # this does not turn a tool return into authorization or completion.
+        reference = None
+        try:
+            from app.api.tool_events import record_tool_event
+            reference = record_tool_event(record)
+        except Exception:
+            logger.warning("safe_tool_event_record_failed")
         try:
             self._write(record)
         except Exception as exc:  # noqa: BLE001 — DB must not break the stream
@@ -140,6 +148,7 @@ class AuditRecorder:
                 "audit_record_failed tool=%s call_id=%s err=%s",
                 record.spec.name, record.call_id, exc,
             )
+        return reference
 
     def _write(self, record: AuditRecord) -> None:
         """Call log_tool_call with the extended fields; fall back to legacy."""

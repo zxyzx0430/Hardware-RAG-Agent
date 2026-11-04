@@ -348,3 +348,49 @@ def _maybe_emit_todo_update(events: list[str], envelope: dict) -> None:
         todos = data.get("todos")
         if isinstance(todos, list):
             events.append(sse_event("todo_update", {"todos": todos}))
+
+
+def _valid_skill_trace_id(value: Any) -> bool:
+    """Check trace IDs with the same package ID rule used by SkillRepository."""
+    if not isinstance(value, str) or not 1 <= len(value) <= 128:
+        return False
+    from src.skills.errors import SkillValidationError
+    from src.skills.repository import SkillRepository
+
+    try:
+        SkillRepository._validate_id(value)
+    except SkillValidationError:
+        return False
+    return True
+
+
+def _valid_skill_trace_path(value: Any) -> str | None:
+    """Allow only normalized, supported relative Skill resources."""
+    if not isinstance(value, str) or not 1 <= len(value) <= 1024:
+        return None
+    from src.skills.errors import SkillValidationError
+    from src.skills.format import normalize_relative_path
+    from src.skills.repository import SkillRepository
+
+    try:
+        normalized = normalize_relative_path(value)
+    except SkillValidationError:
+        return None
+    if normalized != value or not SkillRepository._is_supported_resource(normalized):
+        return None
+    return normalized
+
+
+def project_skill_tool_args_for_sse(tool_name: str, args: Any) -> Any:
+    """Project exact Skill tool arguments to their safe client-visible form."""
+    if tool_name not in _SKILL_BODY_TOOL_NAMES:
+        return args
+    if not isinstance(args, dict) or not _valid_skill_trace_id(args.get("skill_id")):
+        return {}
+    safe_args = {"skill_id": args["skill_id"]}
+    if tool_name == "read_skill_resource":
+        path = _valid_skill_trace_path(args.get("path"))
+        if path is None:
+            return {}
+        safe_args["path"] = path
+    return safe_args

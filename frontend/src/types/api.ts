@@ -21,7 +21,19 @@ export interface Attachment {
 }
 
 export interface ChatRequest {
-  messages: { role: 'user' | 'assistant' | 'system'; content: string | ContentPart[] }[];
+  messages: {
+    role: 'user' | 'assistant' | 'system';
+    content: string | ContentPart[];
+    /** Optional stable UI/DB message ID; advisory only until owner-side verification. */
+    message_id?: string;
+  }[];
+  /**
+   * Who supplies conversation history for this request.
+   * `client` (default): `messages` carries the full known history.
+   * `server`: `messages` carries only the current user turn (plus adjacent quote
+   * context); the backend loads and compacts the saved history for this session.
+   */
+  history_mode?: 'client' | 'server';
   model?: string;
   temperature?: number;
   max_tokens?: number;
@@ -82,18 +94,27 @@ export interface ToolErrorDetail {
   retryable?: boolean;
 }
 
+export interface SkillToolResultData {
+  skill_id?: string;
+  content_hash?: string;
+  stage?: "instructions" | "resource";
+  path?: string;
+  success?: boolean;
+}
+
 export interface ToolResultSSEEvent {
   type: 'tool_result';
   call_id: string;
   tool: string;
   result: {
+    success?: boolean;
     output?: string;
-    error?: string | ToolErrorDetail;
+    error?: string | ToolErrorDetail | null;
     // Backend ToolResultEnvelope wraps render payload inside data; some legacy
     // tools still put target_pane/render_data at the top level.
     target_pane?: 'wiring' | 'safety' | 'preview';
     render_data?: unknown;
-    data?: {
+    data?: SkillToolResultData & {
       target_pane?: 'wiring' | 'safety' | 'preview';
       render_data?: unknown;
     };
@@ -375,6 +396,41 @@ export interface BackendMessage {
   created_at?: string;
 }
 
+/** Successful CRUD responses use this { success, data } envelope. */
+export interface BackendApiSuccessEnvelope<T> {
+  success: true;
+  data: T;
+}
+
+/** Owner-only data returned by GET /api/sessions/{id}/lifecycle. */
+export interface BackendSessionLifecycleData {
+  session_id: string;
+  incarnation_id: string;
+}
+
+/** Full successful response from the owner-only session lifecycle route. */
+export type BackendSessionLifecycleResponse = BackendApiSuccessEnvelope<BackendSessionLifecycleData>;
+
+/** Optional query parameters for a paginated GET /api/sessions/{id}/messages request. */
+export interface BackendMessagePageQuery {
+  limit?: number;
+  before_id?: string;
+  expected_revision?: number;
+  expected_incarnation_id?: string;
+}
+
+/** Data returned by the paginated GET /api/sessions/{id}/messages route. */
+export interface BackendMessagePageData {
+  messages: BackendMessage[];
+  /** Null when this page has no older page. */
+  next_before_id: string | null;
+  has_more: boolean;
+  message_revision: number;
+}
+
+/** Full successful response from the paginated message-list route. */
+export type BackendMessagePageResponse = BackendApiSuccessEnvelope<BackendMessagePageData>;
+
 /** Body for POST /api/sessions/{id}/messages; id enables retry without duplicate rows. */
 export interface CreateMessageRequest {
   id?: string;
@@ -384,6 +440,46 @@ export interface CreateMessageRequest {
   tool_calls?: unknown[] | null;
   activity?: ActivityBlock | null;
 }
+
+/** Body for POST /api/sessions/{id}/messages/append-v1. */
+export interface AppendMessageV1Request {
+  id: string;
+  expected_incarnation_id: string;
+  role: string;
+  content: string;
+  sources?: SourceRef[] | null;
+  tool_calls?: unknown[] | null;
+  activity?: ActivityBlock | null;
+}
+
+/** Data returned after a new message is saved or a matching retry is recognized. */
+export interface AppendMessageV1Receipt {
+  id: string;
+  status: 'saved' | 'already_saved';
+  message_revision: number;
+  /** ISO date string, or an empty string when the stored timestamp is absent. */
+  created_at: string;
+}
+
+/** Full successful response from the append-v1 route. */
+export type AppendMessageV1Response = BackendApiSuccessEnvelope<AppendMessageV1Receipt>;
+
+/** Body for POST /api/sessions/{id}/messages/truncate-v1. */
+export interface TruncateMessagesV1Request {
+  keep_through_id: string;
+  expected_revision: number;
+  expected_incarnation_id: string;
+}
+
+/** Data returned by the truncate-v1 route. */
+export interface TruncateMessagesV1Receipt {
+  kept: number;
+  deleted: number;
+  message_revision: number;
+}
+
+/** Full successful response from the truncate-v1 route. */
+export type TruncateMessagesV1Response = BackendApiSuccessEnvelope<TruncateMessagesV1Receipt>;
 
 /** Raw Explorer read payload (the legacy read route has no success/data envelope). */
 export interface ExplorerReadResponse {

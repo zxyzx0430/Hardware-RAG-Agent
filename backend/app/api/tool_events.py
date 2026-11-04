@@ -1,579 +1,350 @@
-"""Private ToolMessage adapter over the existing local observation store.
-
-This module does not register tools or add an HTTP, Agent, ToolRouter, producer,
-publisher, or ``read_tool_event`` path. The host may call the private adapter
-only after its existing authorization/HITL flow and after a complete ordered
-ToolNode result batch exists.
-"""
-
-from __future__ import annotations
-
+"""Body-free host tool-return records; never permission or completion grants."""
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import asdict, replace
 import hashlib
 import json
 import logging
-import math
 import re
-from dataclasses import dataclass
-from typing import Any, Sequence
 
-from app.api.tool_observations import (
-    MAX_TOOL_OBSERVATION_BYTES,
-    ToolObservationScope,
-    archive_tool_observation,
-    read_tool_observation,
+from sqlalchemy import LargeBinary, cast, func, text
+
+from app.api.common import get_db_ctx
+from app.api.context_events import (
+    CONTEXT_EVENT_PREFIX, ContextEventScope, EventReference,
+    _BATCH_BYTES, _CREDENTIAL, _MAX_BATCHES, _SESSION_BYTES, _TOTAL_BYTES,
+    _session_prefix, _validate_scope,
 )
-
+from app.db.models import Settings
 
 logger = logging.getLogger(__name__)
-
-_ARCHIVE_TOOL_NAME = "tool_message_batch_v3"
-_ENVELOPE_SCHEMA = 3
-_ENVELOPE_KIND = "tool_message_batch"
-_REFERENCE_PATTERN = re.compile(r"[A-Za-z0-9_-]{43}\Z")
-_DIGEST_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
-_PRINCIPAL_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
-_REQUEST_PATTERN = re.compile(r"[0-9a-f]{32}\Z")
-_MAX_BATCH = 64
-_MAX_SESSION_ID_BYTES = 1024
-_ALLOWED_TOOL_CATEGORIES = frozenset({
-    "builtin_non_command",
-    "builtin_command",
-    "command",
-    "mcp",
-    "skill",
-    "skills",
-})
-_ALLOWED_MESSAGE_STATUSES = frozenset({"success", "error"})
+_TOOL_EVENT_SCOPE: ContextVar[ContextEventScope | None] = ContextVar("tool_event_archive", default=None)
+_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}", re.ASCII)
+_NAME = re.compile(r"[A-Za-z0-9_]{1,128}", re.ASCII)
+_SKILL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", re.ASCII)
+_HASH = re.compile(r"[0-9a-f]{64}", re.ASCII)
 
 
-@dataclass(frozen=True)
-class ExpectedToolCall:
-    """Host-derived exact call identity; intentionally contains no raw args."""
-
-    host_call_id: str
-    tool_call_id: str
-    tool_name: str
-
-
-@dataclass(frozen=True)
-class ToolMessageCapture:
-    """An actual ToolMessage plus host-owned non-secret instance identity."""
-
-    tool_message: Any
-    tool_instance_id: str
-    tool_contract_version: str
-    tool_category: str
-
-
-@dataclass(frozen=True)
-class ToolMessageBatchWriteResult:
-    status: str
-    reference: str | None = None
-    chain_head: str | None = None
-
-
-@dataclass(frozen=True)
-class ToolMessageBatchReadResult:
-    status: str
-    messages: tuple[Any, ...] = ()
-    chain_head: str | None = None
-
-
-def _archive_tool_message_batch(
-    scope: ToolObservationScope,
-    expected_pairs: Sequence[ExpectedToolCall],
-    captures: Sequence[ToolMessageCapture],
-) -> ToolMessageBatchWriteResult:
-    """Archive one full, ordered ToolMessage batch through the existing store.
-
-    Content is copied only through strict JSON-native serialization. The
-    existing ``_toolObservation:v1`` store remains responsible for opaque refs,
-    local persistence, epoch checks, transactions, and its current quotas.
-    """
-    if not _valid_scope(scope):
-        return ToolMessageBatchWriteResult("INVALID_SCOPE")
-    pairs = _validate_pairs(expected_pairs)
-    if isinstance(pairs, str):
-        return ToolMessageBatchWriteResult(pairs)
-    prepared = _prepare_batch(pairs, captures)
-    if isinstance(prepared, str):
-        return ToolMessageBatchWriteResult(prepared)
-
-    envelope, chain_head = _build_envelope(scope, prepared)
-    if envelope is None or chain_head is None:
-        return ToolMessageBatchWriteResult("SERIALIZATION_ERROR")
-    envelope_bytes = _strict_utf8(envelope)
-    if envelope_bytes is None:
-        return ToolMessageBatchWriteResult("SERIALIZATION_ERROR")
-    if not envelope_bytes or len(envelope_bytes) > MAX_TOOL_OBSERVATION_BYTES:
-        return ToolMessageBatchWriteResult("CAPACITY")
-
+@contextmanager
+def bind_tool_event_archive(scope: ContextEventScope | None):
+    """Bind verified host scope separately from permission to archive text."""
+    token = _TOOL_EVENT_SCOPE.set(scope if type(scope) is ContextEventScope else None)
     try:
-        reference = archive_tool_observation(
-            envelope,
-            _ARCHIVE_TOOL_NAME,
-            scope,
-        )
+        yield
+    finally:
+        _TOOL_EVENT_SCOPE.reset(token)
+
+
+def get_tool_event_scope() -> ContextEventScope | None:
+    """Return host authority, never a locator- or model-supplied identity."""
+    scope = _TOOL_EVENT_SCOPE.get()
+    return scope if type(scope) is ContextEventScope else None
+
+
+def _encode_tool_event(event: dict) -> str:
+    """Whitelist metadata, with no arbitrary error/result/argument strings."""
+    keys = {"event_type", "call_id", "tool_name", "status", "decision", "risk_level", "skill_version"}
+    phases = {"tool_attempt_started": "started", "tool_attempt_timeout": "timeout",
+              "tool_attempt_error": "error", "tool_attempt_cancelled": "cancelled"}
+    lifecycle = {"tool_dispatch": ("received", "not_found", "spec_mismatch", "invalid_args", "pipeline_error", "cancelled"),
+                 "tool_permission": ("pending", "denied", "stopped")}
+    if (type(event) is not dict or type(event.get("event_type")) is not str):
+        raise ValueError("Invalid safe tool event kind")
+    if type(event) is dict and event.get("event_type") in phases:
+        keys = keys | {"attempt"}
+        if (type(event.get("attempt")) is not int or not 1 <= event["attempt"] <= 16
+                or event.get("status") != phases[event["event_type"]]
+                or event.get("skill_version") is not None or event.get("decision") != "unknown"):
+            raise ValueError("Invalid safe tool attempt event")
+    if (type(event) is not dict or set(event) != keys
+            or (event["event_type"] != "tool_return" and event["event_type"] not in phases
+                and event["event_type"] not in lifecycle)
+            or type(event["call_id"]) is not str or not _ID.fullmatch(event["call_id"])
+            or type(event["tool_name"]) is not str or not _NAME.fullmatch(event["tool_name"])
+            or type(event["status"]) is not str
+            or event["decision"] not in ("allow", "deny", "bypass", "unknown")
+            or event["risk_level"] not in ("low", "medium", "high", "unknown")):
+        raise ValueError("Invalid safe tool event")
+    if event["event_type"] == "tool_return" and event["status"] not in ("returned", "failed", "denied"):
+        raise ValueError("Invalid safe tool return status")
+    if event["event_type"] in lifecycle:
+        expected_decision = "deny" if event["event_type"] == "tool_permission" and event["status"] in ("denied", "stopped") else "unknown"
+        if (event["status"] not in lifecycle[event["event_type"]]
+                or event["decision"] != expected_decision or event["skill_version"] is not None):
+            raise ValueError("Invalid safe tool lifecycle status")
+    version = event["skill_version"]
+    if version is not None and (
+        type(version) is not dict or set(version) != {"skill_id", "content_hash"}
+        or type(version["skill_id"]) is not str or not _SKILL_ID.fullmatch(version["skill_id"])
+        or type(version["content_hash"]) is not str or not _HASH.fullmatch(version["content_hash"])
+    ):
+        raise ValueError("Invalid safe Skill version")
+    encoded = json.dumps(event, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    if len(encoded.encode("utf-8")) > 4096 or _CREDENTIAL.search(encoded):
+        raise ValueError("Safe tool event exceeded encoding policy")
+    return encoded
+
+
+def _tool_event_identity(event: dict) -> str:
+    """Keep existing return/attempt locators stable when adding lifecycle types."""
+    if event["event_type"] == "tool_return":
+        return event["call_id"]
+    suffix = str(event["attempt"]) if "attempt" in event else event["status"]
+    return event["call_id"] + "\0" + event["event_type"] + "\0" + suffix
+
+
+def _tool_event_projection(record) -> dict:
+    """Observe a host router return, not the truth of its business outcome."""
+    envelope = record.envelope
+    data = envelope.data if type(envelope.data) is dict else {}
+    denied = record.decision == "deny"
+    failed = (envelope.success is not True or envelope.error is not None
+              or data.get("success") is False or bool(data.get("error"))
+              or data.get("timed_out") is True
+              or ("exit_code" in data and data["exit_code"] not in (None, 0)))
+    version = None
+    if record.spec.name in ("load_skill", "read_skill_resource") and not denied and not failed:
+        skill_id, content_hash = data.get("skill_id"), data.get("content_hash")
+        if (type(skill_id) is str and _SKILL_ID.fullmatch(skill_id)
+                and type(content_hash) is str and _HASH.fullmatch(content_hash)):
+            version = {"skill_id": skill_id, "content_hash": content_hash}
+    decision = record.decision if record.decision in ("allow", "deny", "bypass") else "unknown"
+    risk = record.spec.risk_level.value
+    return {"event_type": "tool_return", "call_id": record.call_id,
+            "tool_name": record.spec.name, "status": "denied" if denied else "failed" if failed else "returned",
+            "decision": decision, "risk_level": risk if risk in ("low", "medium", "high") else "unknown",
+            "skill_version": version}
+
+
+def _read_tool_event_chain(db, scope: ContextEventScope) -> list:
+    """Validate one bounded request chain and its committed head in a snapshot."""
+    _validate_scope(db, scope)
+    prefix = _session_prefix(scope.session_id)
+    rows = db.query(Settings.key, Settings.value).filter(
+        Settings.key.startswith(prefix + "tool:", autoescape=True),
+    ).limit(_MAX_BATCHES + 1).all()
+    if len(rows) > _MAX_BATCHES:
+        raise ValueError("Safe tool event count exceeded")
+    chain = []
+    scanned_bytes = 0
+    for key, raw in rows:
+        if type(raw) is not str or len(raw.encode("utf-8")) > _BATCH_BYTES:
+            raise ValueError("Safe tool event envelope unavailable")
+        scanned_bytes += len(raw.encode("utf-8"))
+        if scanned_bytes > _SESSION_BYTES:
+            raise ValueError("Safe tool event scan budget exceeded")
+        value = json.loads(raw)
+        if type(value) is not dict or type(value.get("scope")) is not dict:
+            raise ValueError("Invalid safe tool event scope")
+        if value["scope"].get("request_id") != scope.request_id:
+            continue
+        if (set(value) != {"schema_version", "scope", "sequence", "previous_sha256", "event"}
+                or type(value["schema_version"]) is not int or value["schema_version"] != 2
+                or value["scope"] != asdict(scope)
+                or type(value["sequence"]) is not int or not 1 <= value["sequence"] <= 64
+                or type(value["event"]) is not str
+                or json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":")) != raw):
+            raise ValueError("Unchained or invalid safe tool event")
+        event = json.loads(value["event"])
+        if _encode_tool_event(event) != value["event"]:
+            raise ValueError("Noncanonical safe tool event")
+        identity = _tool_event_identity(event)
+        batch = hashlib.sha256((scope.request_id + "\0" + identity).encode("utf-8")).hexdigest()[:32]
+        if key != prefix + "tool:" + batch:
+            raise ValueError("Safe tool event locator mismatch")
+        reference = EventReference(batch, scope.session_id, scope.request_id, value["sequence"], 2,
+                                   hashlib.sha256(value["event"].encode("utf-8")).hexdigest())
+        chain.append((reference, event, hashlib.sha256(raw.encode("utf-8")).hexdigest(), value["previous_sha256"]))
+    if len(chain) > 64:
+        raise ValueError("Safe tool request chain capacity exhausted")
+    chain.sort(key=lambda item: item[0].sequence)
+    previous = ""
+    for index, (reference, _, digest, parent) in enumerate(chain, start=1):
+        if reference.sequence != index or parent != previous:
+            raise ValueError("Safe tool event chain is incomplete")
+        previous = digest
+    head = db.get(Settings, prefix + "tool-head:" + scope.request_id)
+    if head is None:
+        if chain:
+            raise ValueError("Safe tool event chain head is missing")
+    else:
+        expected = {"schema_version": 2, "scope": asdict(scope), "sequence": len(chain), "last_sha256": previous}
+        if (not chain or type(head.value) is not str or len(head.value.encode("utf-8")) > 4096
+                or json.loads(head.value) != expected
+                or json.dumps(expected, sort_keys=True, ensure_ascii=False, separators=(",", ":")) != head.value):
+            raise ValueError("Safe tool event chain head mismatch")
+    return chain
+
+
+def _persist_tool_event(scope: ContextEventScope, event: dict) -> EventReference:
+    encoded = _encode_tool_event(event)
+    identity = _tool_event_identity(event)
+    batch_id = hashlib.sha256((scope.request_id + "\0" + identity).encode("utf-8")).hexdigest()[:32]
+    with get_db_ctx() as db:
+        db.execute(text("BEGIN IMMEDIATE"))
+        chain = _read_tool_event_chain(db, scope)
+        prefix = _session_prefix(scope.session_id)
+        for reference, previous_event, _, _ in chain:
+            if reference.batch_id == batch_id:
+                if _encode_tool_event(previous_event) != encoded:
+                    raise ValueError("Conflicting safe tool event")
+                return reference
+        if len(chain) >= 64:
+            raise ValueError("Safe tool request chain capacity exhausted")
+        sequence = len(chain) + 1
+        value = json.dumps({"schema_version": 2, "scope": asdict(scope), "sequence": sequence,
+                            "previous_sha256": chain[-1][2] if chain else "", "event": encoded},
+                           sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+        size = len(value.encode("utf-8"))
+        if size > _BATCH_BYTES:
+            raise ValueError("Safe tool event envelope exceeded")
+        head_key = prefix + "tool-head:" + scope.request_id
+        head = db.get(Settings, head_key)
+        head_value = json.dumps({"schema_version": 2, "scope": asdict(scope), "sequence": sequence,
+                                 "last_sha256": hashlib.sha256(value.encode("utf-8")).hexdigest()},
+                                sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+        delta = size + len(head_value.encode("utf-8")) - (len(head.value.encode("utf-8")) if head else 0)
+        rows = db.query(Settings.key, func.length(cast(Settings.value, LargeBinary))).filter(
+            Settings.key.startswith(CONTEXT_EVENT_PREFIX, autoescape=True),
+        ).limit(_MAX_BATCHES + 1).all()
+        if (len(rows) + 1 + int(head is None) > _MAX_BATCHES
+                or sum(length or 0 for _, length in rows) + delta > _TOTAL_BYTES
+                or sum(length or 0 for key, length in rows if key.startswith(prefix)) + delta > _SESSION_BYTES):
+            raise ValueError("Safe tool event archive capacity exhausted")
+        db.add(Settings(key=prefix + "tool:" + batch_id, value=value))
+        if head is None:
+            db.add(Settings(key=head_key, value=head_value))
+        else:
+            head.value = head_value
+    return EventReference(batch_id, scope.session_id, scope.request_id, sequence, 2,
+                          hashlib.sha256(encoded.encode("utf-8")).hexdigest())
+
+
+def record_tool_event(record) -> EventReference | None:
+    """Best-effort metadata archive; failure never permits history replacement."""
+    scope = _TOOL_EVENT_SCOPE.get()
+    if type(scope) is not ContextEventScope:
+        return None
+    try:
+        if record.ctx.session_id != scope.session_id or record.spec.mcp_info is not None:
+            return None
+        return _persist_tool_event(scope, _tool_event_projection(record))
     except Exception:
-        logger.warning("tool message observation archive unavailable")
-        return ToolMessageBatchWriteResult("STORE_UNAVAILABLE")
-    if reference is None:
-        return ToolMessageBatchWriteResult("STORE_REJECTED")
-    if type(reference) is not str or _REFERENCE_PATTERN.fullmatch(reference) is None:
-        # The existing store contract returns this opaque token shape. Do not
-        # expose an unexpected value as a usable reference.
-        return ToolMessageBatchWriteResult("STORE_UNAVAILABLE")
-    return ToolMessageBatchWriteResult("STORED", reference, chain_head)
+        logger.warning("Safe tool event archive unavailable; no recoverability claim")
+        return None
 
 
-def _read_tool_message_batch(
-    reference: str,
-    scope: ToolObservationScope,
-    expected_pairs: Sequence[ExpectedToolCall],
-    *,
-    byte_budget: int,
-) -> ToolMessageBatchReadResult:
-    """Read one exact existing-store ref and validate its entire ordered batch."""
-    if not _valid_scope(scope):
-        return ToolMessageBatchReadResult("INVALID_SCOPE")
-    if type(reference) is not str or _REFERENCE_PATTERN.fullmatch(reference) is None:
-        return ToolMessageBatchReadResult("INVALID_REFERENCE")
-    if type(byte_budget) is not int or byte_budget <= 0:
-        return ToolMessageBatchReadResult("INVALID_BUDGET")
-    pairs = _validate_pairs(expected_pairs)
-    if isinstance(pairs, str):
-        return ToolMessageBatchReadResult(pairs)
-
+def record_tool_phase(state, phase: str, attempt: int) -> EventReference | None:
+    """Observe an execution attempt; cancellation never proves side-effect undo."""
+    scope = _TOOL_EVENT_SCOPE.get()
+    if type(scope) is not ContextEventScope:
+        return None
     try:
-        from langchain_core.messages import ToolMessage
+        if (state.ctx.session_id != scope.session_id or state.spec.mcp_info is not None
+                or phase not in ("started", "timeout", "error", "cancelled")):
+            return None
+        risk = state.spec.risk_level.value
+        event = {"event_type": "tool_attempt_" + phase, "attempt": attempt,
+                 "call_id": state.call_id, "tool_name": state.spec.name, "status": phase,
+                 "decision": "unknown", "risk_level": risk if risk in ("low", "medium", "high") else "unknown",
+                 "skill_version": None}
+        return _persist_tool_event(scope, event)
+    except Exception:
+        logger.warning("Safe tool attempt archive unavailable; no lifecycle completeness claim")
+        return None
 
-        envelope = read_tool_observation(reference, scope)
-        if type(envelope) is not str:
-            return ToolMessageBatchReadResult("UNAVAILABLE")
-        envelope_bytes = _strict_utf8(envelope)
-        if envelope_bytes is None:
-            return ToolMessageBatchReadResult("SERIALIZATION_ERROR")
-        if len(envelope_bytes) > min(byte_budget, MAX_TOOL_OBSERVATION_BYTES):
-            return ToolMessageBatchReadResult("OVER_BUDGET")
 
-        decoded = _parse_json_object(envelope)
-        if decoded is None:
-            return ToolMessageBatchReadResult("SERIALIZATION_ERROR")
-        messages = _validate_envelope(decoded, scope, pairs)
-        if isinstance(messages, str):
-            return ToolMessageBatchReadResult(messages)
+def record_tool_dispatch(call: dict, ctx, phase: str) -> EventReference | None:
+    """Record a host dispatch transition without retaining arguments or errors."""
+    scope = _TOOL_EVENT_SCOPE.get()
+    if type(scope) is not ContextEventScope:
+        return None
+    try:
+        spec = call.get("spec")
+        if ctx.session_id != scope.session_id or (spec is not None and spec.mcp_info is not None):
+            return None
+        risk = spec.risk_level.value if spec is not None and spec.name == call.get("tool_name") else "unknown"
+        event = {"event_type": "tool_dispatch", "call_id": call.get("call_id"),
+                 "tool_name": call.get("tool_name"), "status": phase, "decision": "unknown",
+                 "risk_level": risk if risk in ("low", "medium", "high") else "unknown", "skill_version": None}
+        return _persist_tool_event(scope, event)
+    except Exception:
+        logger.warning("Safe tool dispatch archive unavailable; no completeness claim")
+        return None
 
-        restored: list[Any] = []
-        for item in messages["messages"]:
-            body = item["tool_message"]
+
+def record_tool_permission(pending: list[dict], phase: str) -> None:
+    """Observe host pending/deny/stop decisions, never create or replay approval."""
+    scope = _TOOL_EVENT_SCOPE.get()
+    if type(scope) is not ContextEventScope:
+        return
+    try:
+        from src.agent.request_context import active_tool_context
+        ctx = active_tool_context()
+        if (ctx is None or ctx.session_id != scope.session_id or type(pending) is not list
+                or len(pending) > 64 or phase not in ("pending", "denied", "stopped")):
+            return
+        for call in pending:
             try:
-                # ToolMessage() coerces a dict content into its str repr, which
-                # loses the original payload. The envelope was already
-                # validated by _validate_envelope, so construct without a
-                # second (lossy) validation pass to restore it exactly.
-                restored.append(ToolMessage.model_construct(
-                    content=body["content"],
-                    name=body["name"],
-                    tool_call_id=body["tool_call_id"],
-                    status=body["status"],
-                ))
+                if type(call) is not dict:
+                    continue
+                spec = ctx.request_tools.get(call.get("name"))
+                if spec is None or spec.mcp_info is not None:
+                    continue
+                event = {"event_type": "tool_permission", "call_id": call.get("call_id"),
+                         "tool_name": call.get("name"), "status": phase,
+                         "decision": "deny" if phase in ("denied", "stopped") else "unknown",
+                         "risk_level": spec.risk_level.value, "skill_version": None}
+                _persist_tool_event(scope, event)
             except Exception:
-                return ToolMessageBatchReadResult("SERIALIZATION_ERROR")
-        return ToolMessageBatchReadResult(
-            "AVAILABLE",
-            tuple(restored),
-            messages["chain_head"],
-        )
+                logger.warning("Safe tool permission archive unavailable; no completeness claim")
     except Exception:
-        logger.warning("tool message observation read unavailable")
-        return ToolMessageBatchReadResult("STORE_UNAVAILABLE")
+        logger.warning("Safe tool permission binding unavailable")
 
 
-def _validate_pairs(value: Any) -> list[ExpectedToolCall] | str:
-    if (
-        type(value) not in (list, tuple)
-        or not value
-        or len(value) > _MAX_BATCH
-    ):
-        return "INVALID_BATCH"
-    pairs: list[ExpectedToolCall] = []
-    seen_host_ids: set[str] = set()
-    seen_tool_ids: set[str] = set()
-    for pair in value:
-        if type(pair) is not ExpectedToolCall:
-            return "PAIR_MISMATCH"
-        if not all((
-            _valid_text(pair.host_call_id, 256),
-            _valid_text(pair.tool_call_id, 256),
-            _valid_text(pair.tool_name, 256),
-        )):
-            return "PAIR_MISMATCH"
-        if pair.host_call_id in seen_host_ids or pair.tool_call_id in seen_tool_ids:
-            return "PAIR_MISMATCH"
-        seen_host_ids.add(pair.host_call_id)
-        seen_tool_ids.add(pair.tool_call_id)
-        pairs.append(pair)
-    return pairs
-
-
-def _prepare_batch(
-    pairs: list[ExpectedToolCall],
-    captures: Any,
-) -> list[dict[str, Any]] | str:
-    if type(captures) not in (list, tuple) or len(captures) != len(pairs):
-        return "INCOMPLETE_BATCH"
+def recover_tool_event(scope: ContextEventScope, reference: EventReference, *, byte_budget: int = 4096) -> dict | None:
+    """Host-only metadata read; no HTTP/model grant or command replay entry."""
     try:
-        from langchain_core.messages import ToolMessage
+        if (type(scope) is not ContextEventScope or type(reference) is not EventReference
+                or type(byte_budget) is not int or not 1 <= byte_budget <= 4096
+                or reference.session_id != scope.session_id
+                or type(reference.request_id) is not str or not re.fullmatch(r"[0-9a-f]{32}", reference.request_id)
+                or type(reference.batch_id) is not str or not re.fullmatch(r"[0-9a-f]{32}", reference.batch_id)
+                or type(reference.version) is not int or reference.version != 2
+                or type(reference.sequence) is not int or not 1 <= reference.sequence <= 64
+                or type(reference.content_sha256) is not str or not _HASH.fullmatch(reference.content_sha256)):
+            return None
+        stored_scope = replace(scope, request_id=reference.request_id)
+        with get_db_ctx() as db:
+            db.execute(text("BEGIN"))
+            _validate_scope(db, scope)
+            for candidate, event, _, _ in _read_tool_event_chain(db, stored_scope):
+                if candidate == reference:
+                    result = {"untrusted_history": True, "completion_verified": False,
+                              "coverage": "committed_returns_only", "event": event}
+                    if len(json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) > byte_budget:
+                        return None
+                    return result
+            return None
     except Exception:
-        return "UNSUPPORTED_MESSAGE"
-
-    prepared: list[dict[str, Any]] = []
-    for sequence, (pair, capture) in enumerate(zip(pairs, captures, strict=True)):
-        if type(capture) is not ToolMessageCapture:
-            return "UNSUPPORTED_MESSAGE"
-        if (
-            type(capture.tool_category) is not str
-            or capture.tool_category not in _ALLOWED_TOOL_CATEGORIES
-        ):
-            return "INVALID_TOOL_CATEGORY"
-        if (
-            not _valid_text(capture.tool_instance_id, 128)
-            or not _valid_text(capture.tool_contract_version, 128)
-        ):
-            return "INVALID_TOOL_IDENTITY"
-        if not isinstance(capture.tool_message, ToolMessage):
-            return "UNSUPPORTED_MESSAGE"
-
-        message = capture.tool_message
-        message_status = getattr(message, "status", None)
-        if (
-            type(message.name) is not str
-            or type(message.tool_call_id) is not str
-            or message.name != pair.tool_name
-            or message.tool_call_id != pair.tool_call_id
-            or type(message_status) is not str
-            or message_status not in _ALLOWED_MESSAGE_STATUSES
-        ):
-            return "PAIR_OR_STATUS_MISMATCH"
-        content_json = _compact_json(message.content)
-        if content_json is None:
-            return "SERIALIZATION_ERROR"
-        content_bytes = _strict_utf8(content_json)
-        if content_bytes is None:
-            return "SERIALIZATION_ERROR"
-        try:
-            # Snapshot the exact JSON-native value that will be serialized.
-            content = json.loads(content_json)
-        except (TypeError, ValueError, RecursionError):
-            return "SERIALIZATION_ERROR"
-        content_bytes = _json_native_bytes(content)
-        if content_bytes is None:
-            return "SERIALIZATION_ERROR"
-        prepared.append({
-            "sequence": sequence,
-            "pair": pair,
-            "tool_instance_id": capture.tool_instance_id,
-            "tool_contract_version": capture.tool_contract_version,
-            "tool_category": capture.tool_category,
-            "status": message_status,
-            "content": content,
-            "content_bytes": content_bytes,
-        })
-    return prepared
-
-
-def _build_envelope(
-    scope: ToolObservationScope,
-    prepared: list[dict[str, Any]],
-) -> tuple[str | None, str | None]:
-    scope_value = {
-        "principal_id": scope.principal_id,
-        "session_id": scope.session_id,
-        "origin_request_id": scope.request_id,
-        "delete_epoch": scope.session_delete_epoch,
-    }
-    messages: list[dict[str, Any]] = []
-    previous_digest = ""
-    for item in prepared:
-        pair: ExpectedToolCall = item["pair"]
-        body = {
-            "type": "tool",
-            "name": pair.tool_name,
-            "tool_call_id": pair.tool_call_id,
-            "status": item["status"],
-            "content": item["content"],
-        }
-        body_digest = hashlib.sha256(item["content_bytes"]).hexdigest()
-        chain_payload = {
-            "scope": scope_value,
-            "sequence": item["sequence"],
-            "pair": {
-                "host_call_id": pair.host_call_id,
-                "tool_call_id": pair.tool_call_id,
-                "tool_name": pair.tool_name,
-            },
-            "tool_instance_id": item["tool_instance_id"],
-            "tool_contract_version": item["tool_contract_version"],
-            "tool_category": item["tool_category"],
-            "return_state": "returned",
-            "tool_message_status": item["status"],
-            "body_sha256": body_digest,
-            "previous_digest": previous_digest,
-        }
-        chain_bytes = _json_native_bytes(chain_payload)
-        if chain_bytes is None:
-            return None, None
-        chain_digest = hashlib.sha256(chain_bytes).hexdigest()
-        messages.append({
-            "sequence": item["sequence"],
-            "pair": chain_payload["pair"],
-            "tool_instance_id": item["tool_instance_id"],
-            "tool_contract_version": item["tool_contract_version"],
-            "tool_category": item["tool_category"],
-            "return_state": "returned",
-            "tool_message": body,
-            "body_sha256": body_digest,
-            "previous_digest": previous_digest,
-            "chain_sha256": chain_digest,
-        })
-        previous_digest = chain_digest
-
-    envelope_value = {
-        "schema_version": _ENVELOPE_SCHEMA,
-        "kind": _ENVELOPE_KIND,
-        "scope": scope_value,
-        "messages": messages,
-        "chain_head": previous_digest,
-    }
-    envelope = _compact_json(envelope_value)
-    return envelope, previous_digest if envelope is not None else None
-
-
-def _validate_envelope(
-    envelope: dict[str, Any],
-    scope: ToolObservationScope,
-    expected_pairs: list[ExpectedToolCall],
-) -> dict[str, Any] | str:
-    if set(envelope) != {"schema_version", "kind", "scope", "messages", "chain_head"}:
-        return "UNSUPPORTED_SCHEMA"
-    if envelope.get("schema_version") != _ENVELOPE_SCHEMA or envelope.get("kind") != _ENVELOPE_KIND:
-        return "UNSUPPORTED_SCHEMA"
-    origin_scope = envelope.get("scope")
-    if type(origin_scope) is not dict or set(origin_scope) != {
-        "principal_id", "session_id", "origin_request_id", "delete_epoch",
-    }:
-        return "SCOPE_MISMATCH"
-    origin_request_id = origin_scope.get("origin_request_id")
-    if (
-        type(origin_request_id) is not str
-        or _REQUEST_PATTERN.fullmatch(origin_request_id) is None
-    ):
-        return "INVALID_ORIGIN_REQUEST"
-    expected_origin_scope = {
-        "principal_id": scope.principal_id,
-        "session_id": scope.session_id,
-        "origin_request_id": origin_request_id,
-        "delete_epoch": scope.session_delete_epoch,
-    }
-    if origin_scope != expected_origin_scope:
-        return "SCOPE_MISMATCH"
-    records = envelope.get("messages")
-    if type(records) is not list or len(records) != len(expected_pairs):
-        return "INCOMPLETE_BATCH"
-
-    previous_digest = ""
-    for sequence, (record, pair) in enumerate(zip(records, expected_pairs, strict=True)):
-        expected_record_keys = {
-            "sequence", "pair", "tool_instance_id", "tool_contract_version",
-            "tool_category", "return_state", "tool_message", "body_sha256",
-            "previous_digest", "chain_sha256",
-        }
-        if type(record) is not dict or set(record) != expected_record_keys:
-            return "UNSUPPORTED_SCHEMA"
-        expected_pair = {
-            "host_call_id": pair.host_call_id,
-            "tool_call_id": pair.tool_call_id,
-            "tool_name": pair.tool_name,
-        }
-        if (
-            type(record.get("sequence")) is not int
-            or record.get("sequence") != sequence
-            or record.get("pair") != expected_pair
-        ):
-            return "PAIR_OR_ORDER_MISMATCH"
-        if (
-            record.get("tool_category") not in _ALLOWED_TOOL_CATEGORIES
-            or record.get("return_state") != "returned"
-            or not _valid_text(record.get("tool_instance_id"), 128)
-            or not _valid_text(record.get("tool_contract_version"), 128)
-        ):
-            return "PAIR_OR_OUTCOME_MISMATCH"
-        body = record.get("tool_message")
-        if type(body) is not dict or set(body) != {
-            "type", "name", "tool_call_id", "status", "content",
-        }:
-            return "UNSUPPORTED_SCHEMA"
-        if (
-            body.get("type") != "tool"
-            or body.get("name") != pair.tool_name
-            or body.get("tool_call_id") != pair.tool_call_id
-            or type(body.get("status")) is not str
-            or body.get("status") not in _ALLOWED_MESSAGE_STATUSES
-        ):
-            return "PAIR_OR_OUTCOME_MISMATCH"
-        content_bytes = _json_native_bytes(body.get("content"))
-        if content_bytes is None:
-            return "SERIALIZATION_ERROR"
-        body_digest = hashlib.sha256(content_bytes).hexdigest()
-        if body_digest != record.get("body_sha256"):
-            return "DIGEST_MISMATCH"
-        if record.get("previous_digest") != previous_digest:
-            return "CHAIN_MISMATCH"
-        chain_payload = {
-            "scope": expected_origin_scope,
-            "sequence": sequence,
-            "pair": expected_pair,
-            "tool_instance_id": record["tool_instance_id"],
-            "tool_contract_version": record["tool_contract_version"],
-            "tool_category": record["tool_category"],
-            "return_state": record["return_state"],
-            "tool_message_status": body["status"],
-            "body_sha256": body_digest,
-            "previous_digest": previous_digest,
-        }
-        chain_bytes = _json_native_bytes(chain_payload)
-        if chain_bytes is None:
-            return "SERIALIZATION_ERROR"
-        previous_digest = hashlib.sha256(chain_bytes).hexdigest()
-        if record.get("chain_sha256") != previous_digest:
-            return "DIGEST_MISMATCH"
-
-    if envelope.get("chain_head") != previous_digest:
-        return "DIGEST_MISMATCH"
-    return envelope
-
-
-def _parse_json_object(value: str) -> dict[str, Any] | None:
-    try:
-        decoded = json.loads(value)
-    except (TypeError, ValueError, RecursionError):
+        logger.warning("Safe tool event recovery refused")
         return None
-    if type(decoded) is not dict or not _is_json_native(decoded):
-        return None
-    if _compact_json(decoded) != value:
-        return None
-    return decoded
 
 
-def _compact_json(value: Any) -> str | None:
-    encoded = _json_native_bytes(value)
-    if encoded is None:
+def recover_tool_event_chain(scope: ContextEventScope, *, byte_budget: int = 32768) -> dict | None:
+    """Recover a whole committed metadata chain within a total response budget."""
+    if type(scope) is not ContextEventScope or type(byte_budget) is not int or not 1 <= byte_budget <= 32768:
         return None
     try:
-        return encoded.decode("utf-8")
-    except UnicodeDecodeError:
+        with get_db_ctx() as db:
+            db.execute(text("BEGIN"))
+            chain = _read_tool_event_chain(db, scope)
+            result = {"untrusted_history": True, "completion_verified": False,
+                      "coverage": "committed_returns_only",
+                      "records": [{"reference": asdict(ref), "event": event} for ref, event, _, _ in chain]}
+            if len(json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) > byte_budget:
+                return None
+            return result
+    except Exception:
+        logger.warning("Safe tool event chain recovery refused")
         return None
-
-
-def _json_native_bytes(value: Any) -> bytes | None:
-    try:
-        is_native = _is_json_native(value)
-    except RecursionError:
-        return None
-    if not is_native:
-        return None
-    try:
-        return json.dumps(
-            value,
-            ensure_ascii=False,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-    except (TypeError, ValueError, UnicodeEncodeError, RecursionError, OverflowError):
-        return None
-
-
-def _is_json_native(value: Any) -> bool:
-    if value is None or type(value) in (str, bool, int):
-        return True
-    if type(value) is float:
-        return math.isfinite(value)
-    if type(value) is list:
-        return _is_json_native_sequence(value, set())
-    if type(value) is dict:
-        return _is_json_native_mapping(value, set())
-    return False
-
-
-def _is_json_native_sequence(value: list[Any], active: set[int]) -> bool:
-    identity = id(value)
-    if identity in active:
-        return False
-    active.add(identity)
-    try:
-        return all(_is_json_native_child(item, active) for item in value)
-    finally:
-        active.remove(identity)
-
-
-def _is_json_native_mapping(value: dict[str, Any], active: set[int]) -> bool:
-    identity = id(value)
-    if identity in active:
-        return False
-    active.add(identity)
-    try:
-        return all(
-            type(key) is str and _is_json_native_child(item, active)
-            for key, item in value.items()
-        )
-    finally:
-        active.remove(identity)
-
-
-def _is_json_native_child(value: Any, active: set[int]) -> bool:
-    if value is None or type(value) in (str, bool, int):
-        return True
-    if type(value) is float:
-        return math.isfinite(value)
-    if type(value) is list:
-        return _is_json_native_sequence(value, active)
-    if type(value) is dict:
-        return _is_json_native_mapping(value, active)
-    return False
-
-
-def _strict_utf8(value: Any) -> bytes | None:
-    if type(value) is not str:
-        return None
-    try:
-        return value.encode("utf-8")
-    except UnicodeEncodeError:
-        return None
-
-
-def _valid_scope(scope: Any) -> bool:
-    if type(scope) is not ToolObservationScope:
-        return False
-    if (
-        type(scope.principal_id) is not str
-        or _PRINCIPAL_PATTERN.fullmatch(scope.principal_id) is None
-        or type(scope.session_id) is not str
-        or not scope.session_id
-        or type(scope.request_id) is not str
-        or _REQUEST_PATTERN.fullmatch(scope.request_id) is None
-        or type(scope.session_delete_epoch) is not str
-        or (
-            scope.session_delete_epoch
-            and _REQUEST_PATTERN.fullmatch(scope.session_delete_epoch) is None
-        )
-    ):
-        return False
-    session_bytes = _strict_utf8(scope.session_id)
-    return session_bytes is not None and len(session_bytes) <= _MAX_SESSION_ID_BYTES
-
-
-def _valid_text(value: Any, max_bytes: int) -> bool:
-    if type(value) is not str or not value:
-        return False
-    encoded = _strict_utf8(value)
-    return encoded is not None and len(encoded) <= max_bytes

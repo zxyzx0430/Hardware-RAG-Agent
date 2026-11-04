@@ -1,5 +1,18 @@
 # 项目现状
 
+> 更新日期：2026-11-04。这里记录当前状态，不充当开发路线图。日期 1–3、Skills/记忆/MCP 和 RAG P0 属于 `codex/day1-3-baseline` 历史版本；测试结果分别注明所依据的隔离快照。提交与推送状态以 Git 记录为准；不将功能实现或软件测试混称为全面验收。
+
+## 2026-11-04 上下文压缩与服务端历史
+
+- 长会话的模型历史改由服务端按 owner/session 读取全部持久化 user/assistant 行。前端在 `history_mode: "server"` 下只发送当前 user 轮和紧邻的 quote system 消息，不再受客户端 200 条历史上限约束；服务端无法确认 owner-bound 历史时返回 `HISTORY_UNAVAILABLE` 失败终态，不静默降级为只回答当前问题。
+- 预发送和图内压缩统一按实际模型/会话窗口与输出预留计算预算。V3 owner-bound checkpoint 支持多代压缩；已移除固定 32 代上限，改为按初始历史长度的进度界，历史仍超预算时 fail closed 并保留原历史。
+- owner-bound legacy 会话的 history-mode 返回 `server_history: true`，可走服务端历史 + 图内压缩，保存仍走 legacy Message 接口；未绑定 owner 的旧会话继续使用客户端历史。通用工具输出支持归档与回读，mid-run summary 和 HITL 续跑的 source sidecar 从真实图状态重建。
+- 定向隔离测试：后端 **248 passed / 17 skipped / 1 failed**；失败项是 `test_crud_message_idempotency.test_history_mode_bootstraps_empty_owner_history_and_reads_back_pointer` 的内存 SQLite fixture 未安装 `message_source_generations` 触发器，属于测试夹具缺口（生产启动会安装触发器），不是 append-v1 产品路径。前端 server-history **10 passed**、useSessionStore **4 passed**、`tsc -b` 退出码 0。
+- 候选工作区扩展的旧 `useChatStore.test.ts` 仍有 32 项失败，集中在既有 Skills/聊天事件、usage 和 resume 路径；主工作树同一测试文件 42 项通过，未发现这些失败由本轮 server-history 改动直接导致，但仍属当前候选工作区未收口项。完整后端套件为 **73 failed / 1166 passed / 17 skipped**，失败集中在候选既有 memory/session resume、RAG rank、Skills 安全与 MCP/webfetch 等区域，详见 [测试说明](testing.md)。
+- 顺带修复 `deepseek-reasoner` / `deepseek-r1` 未在模型注册表登记、导致请求预算 fail-closed 的问题；真正未知模型仍保持 fail-closed，没有为了通过测试放宽预算校验。
+- 未验证：真实模型服务、浏览器端到端、实体硬件与烧录、新电脑空白安装。自动测试通过不代表这些验收已完成。
+- 边界：普通对话历史和已发布 checkpoint 由 SQLite 持久化，刷新或进程重启后可由服务端历史重建；HITL 待确认快照仍在进程内存中，进程重启后不能续跑该次确认。Provider 明确返回 context overflow 时的“压缩后重试一次”辅助函数尚未接入流式路由，当前依赖本地预算 fail closed；超出单代 64 个 source slot 的极端历史会继续多代压缩，无法建立 V3 source 绑定时回退图内摘要并保留原始 Message 行。
+
 ## 2026-10-26 上下文压缩候选定向软件验收完成
 
 本轮限定的上下文压缩候选交付已由 00 接受。13 个专项 case 分组通过，含真实生产 `_iter_agent_sse` 驱动的工具更新、协作 drain、同任务关闭及 join、SQLite 保存与原文引用恢复、精确配置续跑；工具和模型各执行一次。发送前预算和失败保文、正常及 resume 的失败终态、多 pending 完整凭证与单 call 批准、quarantined owner 拒绝均有运行证据。

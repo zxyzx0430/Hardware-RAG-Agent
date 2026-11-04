@@ -11,7 +11,7 @@ import threading
 import time
 import uuid
 from collections import Counter
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, AsyncIterator, Literal, Optional
@@ -33,12 +33,15 @@ from app.api.memory_epoch import read_memory_clear_epoch
 from app.api.sse import sse_event
 from app.api.errors import sanitize_error
 from app.api.session_epoch import read_session_delete_epoch
+from app.api.compaction_archive import bind_compaction_archive, compaction_principal, get_compaction_scope, make_compaction_scope
+from app.api.tool_events import bind_tool_event_archive
 from app.api.chat_helpers import (
     MAX_LONG_TERM_MEMORY_CHARS, resolve_long_term_memory,
     _record_token_usage,
     _process_attachments, _build_chat_history, _build_system_prompt,
 )
 from app.db.models import TokenUsage
+from src.agent.request_budget import AgentRequestBudgetError
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +55,9 @@ async def stream_agent_to_sse(
     model: str = "",
     requested_max_tokens: int | None = None,
     context_budget: Any = None,
+    *,
+    compaction_source_message_ids: tuple[str | None, ...] | None = None,
+    compaction_source_messages: tuple[dict, ...] | None = None,
 ) -> AsyncIterator[str]:
     """Lazily forward to the Agent SSE adapter while keeping a patchable API symbol."""
     from src.agent.sse_adapter import stream_agent_to_sse as adapter_stream
@@ -59,6 +65,8 @@ async def stream_agent_to_sse(
     adapter_iterator = adapter_stream(
         agent, events, config, call_counter, permission_mode, model=model,
         requested_max_tokens=requested_max_tokens, context_budget=context_budget,
+        compaction_source_message_ids=compaction_source_message_ids,
+        compaction_source_messages=compaction_source_messages,
     )
     stream_error: BaseException | None = None
     try:
@@ -130,6 +138,13 @@ class AgentRequestSnapshot:
         repr=False,
         compare=False,
     )
+    context_event_scope: Any = field(default=None, repr=False, compare=False)
+    tool_event_scope: Any = field(default=None, repr=False, compare=False)
+    business_session_id: str = ""
+    principal_hash: str | None = field(default=None, repr=False)
+    graph_config: dict | None = field(default=None, repr=False, compare=False)
+    pending_call_ids: tuple[str, ...] = ()
+    pending_call_fingerprints: tuple[tuple[str, str], ...] = field(default=(), repr=False)
 
 
 class _RequestSnapshotEpochError(RuntimeError):
@@ -654,6 +669,7 @@ def _is_known_upstream_zero_output(exc: BaseException) -> bool:
 
 
 class ChatErrorCode(str, Enum):
+    HISTORY_UNAVAILABLE = "HISTORY_UNAVAILABLE"
     AUTH_FAILED = "AUTH_FAILED"
     MODEL_NOT_FOUND = "MODEL_NOT_FOUND"
     MODEL_EMPTY_RESPONSE = "MODEL_EMPTY_RESPONSE"
@@ -672,6 +688,7 @@ class ChatErrorCode(str, Enum):
 class ChatMessageSchema(BaseModel):
     role: str
     content: Optional[str | list[dict]] = None  # str=纯文本, list=[{type,text|image_url},...]
+    message_id: Optional[str] = None
 
 
 class ChatRequest(BaseModel):
@@ -697,6 +714,7 @@ class ChatRequest(BaseModel):
     tool_keys: dict[str, str] = {}  # per-request tool credentials, e.g. {"tavily": "..."}
     skills_mode: Literal["off", "auto", "manual"] = "off"
     skill_ids: list[str] = Field(default_factory=list, max_length=3)
+    history_mode: Literal["client", "server"] = "client"
 
     @field_validator("long_term_memory", mode="before")
     @classmethod
@@ -725,6 +743,8 @@ class ChatRequest(BaseModel):
             raise ValueError("manual Skills mode requires one to three skill_ids")
         if self.skills_mode != "manual" and self.skill_ids:
             raise ValueError("skill_ids are only valid in manual Skills mode")
+        if self.history_mode == "server" and not self.session_id:
+            raise ValueError("history_mode=server requires session_id")
         return self
 
 
@@ -802,6 +822,26 @@ def _multimodal_to_text_with_image_hints(parts, role: str = "user") -> str:
 # Pre-send history compaction
 # ═══════════════════════════════════════════
 
+def _transport_system_metadata(metadata: Any) -> dict:
+    """Retain sealed host locators or the bounded graph-only summary marker."""
+    from app.api.compaction_checkpoint import checkpoint_metadata_for_transport
+
+    retained = checkpoint_metadata_for_transport(metadata)
+    if retained:
+        return retained
+    try:
+        from src.agent.compact.autocompact import (
+            _MIDRUN_SUMMARY_MARKER,
+            _MIDRUN_SUMMARY_MARKER_VALUE,
+        )
+    except Exception:
+        return {}
+    if (type(metadata) is dict
+            and metadata.get(_MIDRUN_SUMMARY_MARKER) == _MIDRUN_SUMMARY_MARKER_VALUE):
+        return {_MIDRUN_SUMMARY_MARKER: dict(_MIDRUN_SUMMARY_MARKER_VALUE)}
+    return {}
+
+
 def _dicts_to_langchain_messages(dicts: list[dict]) -> list:
     """Convert agent_input message dicts to langchain Message objects."""
     from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
@@ -809,7 +849,11 @@ def _dicts_to_langchain_messages(dicts: list[dict]) -> list:
     messages: list = []
     for d in dicts:
         cls = cls_by_role.get(d.get("role", "user"), HumanMessage)
-        messages.append(cls(content=d.get("content", "")))
+        retained = (
+            _transport_system_metadata(d.get("additional_kwargs"))
+            if cls is SystemMessage else {}
+        )
+        messages.append(cls(content=d.get("content", ""), additional_kwargs=retained))
     return messages
 
 
@@ -823,8 +867,65 @@ def _langchain_messages_to_dicts(messages: list) -> list[dict]:
         content = getattr(m, "content", "")
         if not isinstance(content, str):
             content = str(content)
-        dicts.append({"role": role, "content": content})
+        item = {"role": role, "content": content}
+        if type(m) is SystemMessage:
+            retained = _transport_system_metadata(m.additional_kwargs)
+            if retained:
+                item["additional_kwargs"] = retained
+        dicts.append(item)
     return dicts
+
+
+def _build_compaction_source_message_ids(
+    payload: ChatRequest,
+    agent_messages: list[dict],
+    *,
+    transient_current_user: bool,
+) -> tuple[str | None, ...] | None:
+    """Bind persisted turns and a position-checked transient quote/user suffix."""
+    request_messages = tuple(payload.messages)
+    if not request_messages or len(request_messages) != len(agent_messages):
+        return None
+    final_index = len(request_messages) - 1
+    quote_start = final_index
+    while quote_start > 0 and request_messages[quote_start - 1].role == "system":
+        quote_start -= 1
+    has_transient_quote = quote_start < final_index
+    if ((transient_current_user or has_transient_quote)
+            and request_messages[final_index].role != "user"):
+        return None
+
+    message_ids: list[str] = []
+    sidecar: list[str | None] = []
+    for index, (request_message, agent_message) in enumerate(zip(
+        request_messages, agent_messages, strict=True,
+    )):
+        message_id = request_message.message_id
+        if (
+            type(agent_message) is not dict
+            or agent_message.get("role") != request_message.role
+            or type(request_message.content) is not str
+            or type(agent_message.get("content")) is not str
+            or agent_message.get("content") != request_message.content
+        ):
+            return None
+
+        if request_message.role == "system":
+            if not (quote_start <= index < final_index) or message_id is not None:
+                return None
+            sidecar.append(None)
+            continue
+        if (request_message.role not in {"user", "assistant"}
+                or type(message_id) is not str or not message_id):
+            return None
+        message_ids.append(message_id)
+        if index == final_index and (transient_current_user or has_transient_quote):
+            sidecar.append(None)
+        else:
+            sidecar.append(message_id)
+    if len(set(message_ids)) != len(message_ids):
+        return None
+    return tuple(sidecar)
 
 
 def _session_context_window(session_id: Optional[str]) -> Optional[int]:
@@ -843,25 +944,33 @@ def _compact_event_payload(threshold: int, context_window: int, msg_count: int) 
     }
 
 
-async def _run_autocompact(messages: list, creds: dict, context_window: int) -> list:
+async def _run_autocompact(
+    messages: list, creds: dict, context_window: int, *,
+    source_message_ids: tuple[str | None, ...] | None = None,
+    token_threshold: int | None = None,
+) -> list:
     """Build an LLM client and run autocompact_messages."""
     from src.agent.compact.autocompact import autocompact_messages
     llm_client = make_client(
         api_key=creds.get("api_key"), base_url=creds.get("base_url"), model=creds.get("model"),
     )
-    return await autocompact_messages(messages, llm_client, context_window)
+    return await autocompact_messages(
+        messages, llm_client, context_window,
+        source_message_ids=source_message_ids,
+        token_threshold=token_threshold,
+    )
 
 
 async def _check_and_compact_history(
     payload: ChatRequest, creds: dict, agent_input: dict,
     context_budget: Any = None,
+    *, request_snapshot: AgentRequestSnapshot | None = None,
+    allow_compaction: bool = False,
+    source_message_ids: tuple[str | None, ...] | None = None,
+    source_message_ids_out: list[tuple[str | None, ...] | None] | None = None,
+    verified_history: bool = False,
 ) -> AsyncIterator[str]:
-    """Pre-send: compact history when it reaches the resolved input budget.
-
-    Yields a context_compressing SSE event when compaction runs; mutates
-    agent_input['messages'] in place with the compacted list. A missing model
-    budget fails through the existing ContextLimitError path.
-    """
+    """Pre-send: compact history when it reaches the resolved input budget."""
     from src.agent.compact.autocompact import should_autocompact
     if context_budget is None:
         from src.agent.context_guard import resolve_context_budget
@@ -873,21 +982,78 @@ async def _check_and_compact_history(
         )
     lc_messages = _dicts_to_langchain_messages(agent_input["messages"])
     threshold = context_budget.token_limit
+    context_window = context_budget.effective_window
     if not should_autocompact(lc_messages, threshold):
         return
+    if not allow_compaction:
+        raise AgentRequestBudgetError(
+            "Pre-send compaction was unavailable and the full history exceeds the context budget"
+        )
+    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+    from app.api.compaction_checkpoint import checkpoint_metadata_for_transport
+
+    if (
+        source_message_ids is None
+        or type(source_message_ids) is not tuple
+        or len(source_message_ids) != len(lc_messages)
+        or any(type(message_id) not in (str, type(None))
+               for message_id in source_message_ids)
+    ):
+        raise AgentRequestBudgetError(
+            "Pre-send V3 compaction requires complete plain-text message IDs"
+        )
+
     yield sse_event(
         "context_compressing",
         _compact_event_payload(
             threshold, context_budget.effective_window, len(lc_messages),
         ),
     )
-    compacted = await _run_autocompact(
-        lc_messages, creds, context_budget.prompt_window,
-    )
-    # Use identity check: autocompact returns the same list when no compaction
-    # happened. A new list means compaction ran (even if count is unchanged,
-    # e.g., 11 msgs → 1 summary + 10 recent — tokens decreased).
+    if request_snapshot is not None:
+        _require_request_snapshot_epochs_current(
+            request_snapshot, payload.session_id,
+        )
+        from app.api.compaction_archive import get_compaction_scope
+        if get_compaction_scope() is not request_snapshot.context_event_scope:
+            raise AgentRequestBudgetError("Pre-send request scope changed")
+    from src.agent.compact.autocompact import _is_midrun_summary_message
+
+    messages = lc_messages
+    current_source_ids = source_message_ids
+    compacted = messages
+    max_rounds = max(1, len(messages) + 1)
+    for _round in range(max_rounds):
+        if not should_autocompact(messages, threshold):
+            break
+        next_compacted = await _run_autocompact(
+            messages, creds, context_window,
+            source_message_ids=current_source_ids,
+            token_threshold=threshold,
+        )
+        if next_compacted is messages:
+            break
+        retained_count = len(next_compacted) - 1
+        retained_start = len(messages) - retained_count
+        is_summary = (
+            type(next_compacted[0]) is SystemMessage
+            and (checkpoint_metadata_for_transport(next_compacted[0].additional_kwargs)
+                 or _is_midrun_summary_message(next_compacted[0]))
+        )
+        if (not is_summary or retained_start < 0
+                or any(new is not old for new, old in zip(
+                    next_compacted[1:], messages[retained_start:], strict=True,
+                ))):
+            break
+        current_source_ids = (None, *current_source_ids[retained_start:])
+        messages = next_compacted
+        compacted = messages
+    if should_autocompact(compacted, threshold):
+        raise AgentRequestBudgetError(
+            "Pre-send compaction did not bring history within the context budget"
+        )
     if compacted is not lc_messages:
+        if source_message_ids_out is not None:
+            source_message_ids_out[:] = [current_source_ids]
         agent_input["messages"] = _langchain_messages_to_dicts(compacted)
 
 
@@ -896,6 +1062,9 @@ async def _run_agent_stream(
     creds: dict,
     long_term_memory: str | None = None,
     request_snapshot: AgentRequestSnapshot | None = None,
+    *,
+    authenticated_user: dict | None = None,
+    assembled_history: Any = None,
 ) -> AsyncIterator[str]:
     """Build the agent and yield SSE events from its stream.
 
@@ -976,14 +1145,45 @@ async def _run_agent_stream(
             await reset_thread_checkpoint_for_writer(writer_binding, writer_lease)
             _require_request_snapshot_epochs_current(snapshot, payload.session_id)
         _clear_pending_request_snapshot(session_id)
-        agent_input = {"messages": _build_agent_messages(effective_payload)}
+        if getattr(effective_payload, "history_mode", "client") == "server":
+            if (
+                assembled_history is None
+                or type(assembled_history.source_message_ids) is not tuple
+                or len(assembled_history.source_message_ids) != len(assembled_history.messages)
+                or any(type(message) is not dict for message in assembled_history.messages)
+            ):
+                yield sse_event("error", {
+                    "code": ChatErrorCode.HISTORY_UNAVAILABLE,
+                    "message": "无法确认服务端历史，已停止本次请求；原有历史未被替换。",
+                })
+                yield sse_event("done", {"success": False, "completed": False})
+                return
+            agent_messages = [dict(message) for message in assembled_history.messages]
+            request_source_message_ids = assembled_history.source_message_ids
+            verified_history = True
+        else:
+            agent_messages = _build_agent_messages(effective_payload)
+            request_source_message_ids = _build_compaction_source_message_ids(
+                effective_payload, agent_messages, transient_current_user=True,
+            )
+            verified_history = False
+        agent_input = {"messages": agent_messages}
+        compaction_source_message_ids = request_source_message_ids
+        compaction_source_message_ids_out = [compaction_source_message_ids]
         # Pre-send history check uses the same output/framing-adjusted budget as the stream guard.
-        async for sse in _check_and_compact_history(
-            effective_payload, creds, agent_input, context_budget,
-        ):
-            _require_request_snapshot_epochs_current(snapshot, payload.session_id)
-            yield sse
-            _require_request_snapshot_epochs_current(snapshot, payload.session_id)
+        with bind_compaction_archive(snapshot.context_event_scope):
+            async for sse in _check_and_compact_history(
+                effective_payload, creds, agent_input, context_budget,
+                request_snapshot=snapshot,
+                allow_compaction=snapshot.context_event_scope is not None,
+                source_message_ids=compaction_source_message_ids,
+                source_message_ids_out=compaction_source_message_ids_out,
+                verified_history=verified_history,
+            ):
+                _require_request_snapshot_epochs_current(snapshot, payload.session_id)
+                yield sse
+                _require_request_snapshot_epochs_current(snapshot, payload.session_id)
+        compaction_source_message_ids = compaction_source_message_ids_out[0]
         _require_request_snapshot_epochs_current(snapshot, payload.session_id)
         call_counter: Counter = Counter()
         _require_request_snapshot_epochs_current(snapshot, payload.session_id)
@@ -992,6 +1192,10 @@ async def _run_agent_stream(
             effective_payload.permission_mode, creds.get("model", ""),
             snapshot.tool_context, writer_binding, writer_lease,
             effective_payload.max_tokens, context_budget,
+            archive_scope=snapshot.context_event_scope,
+            tool_event_scope=snapshot.tool_event_scope,
+            compaction_source_message_ids=compaction_source_message_ids,
+            compaction_source_messages=tuple(agent_input["messages"]),
         ):
             _require_request_snapshot_epochs_current(snapshot, payload.session_id)
             event_type = _sse_event_type(sse)
@@ -1015,17 +1219,22 @@ async def _run_agent_stream(
 async def _stream_agent_in_context(
     agent, agent_input, config, counter, permission_mode, model, tool_context,
     writer_binding=None, writer_lease=None, requested_max_tokens=None,
-    context_budget=None,
+    context_budget=None, *, archive_scope=None, tool_event_scope=None,
+    compaction_source_message_ids: tuple[str | None, ...] | None = None,
+    compaction_source_messages: tuple[dict, ...] | None = None,
 ):
     from src.agent.request_context import activate_tool_context
     with activate_tool_context(tool_context):
-        with _request_writer_context(writer_binding, writer_lease, model):
-            async for event in stream_agent_to_sse(
-                agent, agent_input, config, counter, permission_mode, model=model,
-                requested_max_tokens=requested_max_tokens,
-                context_budget=context_budget,
-            ):
-                yield event
+        with bind_compaction_archive(archive_scope), bind_tool_event_archive(tool_event_scope):
+            with _request_writer_context(writer_binding, writer_lease, model):
+                async for event in stream_agent_to_sse(
+                    agent, agent_input, config, counter, permission_mode, model=model,
+                    requested_max_tokens=requested_max_tokens,
+                    context_budget=context_budget,
+                    compaction_source_message_ids=compaction_source_message_ids,
+                    compaction_source_messages=compaction_source_messages,
+                ):
+                    yield event
 
 
 async def _build_agent_for_payload(
@@ -1157,6 +1366,8 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
                 },
             },
         )
+    tool_event_scope = make_compaction_scope(user, payload.session_id, session_delete_epoch)
+    context_event_scope = tool_event_scope
     request_snapshot = replace(
         _request_snapshot_from_payload(
             payload,
@@ -1166,6 +1377,10 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
         ),
         principal_id=_verified_principal_id(user),
         session_id=_session_memory_key(payload.session_id),
+        business_session_id=_session_memory_key(payload.session_id),
+        principal_hash=compaction_principal(user),
+        context_event_scope=context_event_scope,
+        tool_event_scope=tool_event_scope,
     )
     try:
         _require_request_snapshot_epochs_current(request_snapshot, payload.session_id)
@@ -1265,9 +1480,30 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
                 agent_saw_error = False
                 agent_terminal: dict[str, Any] | None = None
                 try:
+                    assembled_history = None
+                    if payload.history_mode == "server":
+                        from app.api.context_history import assemble_server_history
+
+                        assembled_history = assemble_server_history(
+                            payload.session_id,
+                            user,
+                            payload.messages,
+                            normalize_content=lambda content: _isolate_images_in_content(
+                                content, "user",
+                            ),
+                        )
+                        if assembled_history is None:
+                            yield sse_event("error", {
+                                "code": ChatErrorCode.HISTORY_UNAVAILABLE,
+                                "message": "无法确认服务端历史，已停止本次请求；原有历史未被替换。",
+                            })
+                            yield sse_event("done", {"success": False, "completed": False})
+                            return
                     async for sse in _run_agent_stream(
                         payload, creds, long_term_memory=long_term_memory,
                         request_snapshot=request_snapshot,
+                        authenticated_user=user,
+                        assembled_history=assembled_history,
                     ):
                         for frame in _sse_frames(sse):
                             event = _sse_frame_payload(frame)
@@ -1762,6 +1998,7 @@ async def resume_agent(req: ResumeRequest, request: Request, user: dict = Depend
                 agent, config, effective_req, call_counter, model,
                 request_snapshot.long_term_memory, request_snapshot,
                 writer_binding, writer_lease, lease_release_state,
+                authenticated_user=user,
             ),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
@@ -1797,6 +2034,7 @@ class ResumeContext:
     writer_binding: Any = field(default=None, repr=False)
     writer_lease: Any = field(default=None, repr=False)
     lease_release_state: dict[str, bool] | None = field(default=None, repr=False)
+    authenticated_user: dict | None = field(default=None, repr=False, compare=False)
 
 
 async def _resume_event_generator_from_ctx(ctx: ResumeContext):
@@ -1881,7 +2119,27 @@ async def _resume_in_context(ctx: ResumeContext, snapshot: AgentRequestSnapshot,
         })
     elif ctx.req.decision == "allow":
         options["confirmed_call_id"] = ctx.req.call_id
-    with activate_tool_context(snapshot.tool_context):
+    from src.agent.sse_adapter import bind_compaction_source_sidecar
+    from app.api.context_history import build_graph_message_source_ids
+
+    try:
+        observed = await ctx.agent.aget_state(ctx.config)
+    except Exception:
+        observed = None
+    graph_messages = tuple(
+        getattr(observed, "values", {}).get("messages", ()) or ()
+    )
+    resume_source_message_ids = build_graph_message_source_ids(
+        snapshot.business_session_id,
+        ctx.authenticated_user,
+        graph_messages,
+    ) if graph_messages else None
+    sidecar_scope = (
+        bind_compaction_source_sidecar(resume_source_message_ids, graph_messages)
+        if resume_source_message_ids is not None
+        else nullcontext()
+    )
+    with activate_tool_context(snapshot.tool_context), sidecar_scope:
         with _request_writer_context(ctx.writer_binding, ctx.writer_lease, ctx.model):
             async for event in handler(
                 ctx.agent, ctx.config, ctx.req.decision, ctx.call_counter,
@@ -1918,6 +2176,8 @@ async def _resume_event_generator(
     request_snapshot: AgentRequestSnapshot | None = None,
     writer_binding: Any = None, writer_lease: Any = None,
     lease_release_state: dict[str, bool] | None = None,
+    *,
+    authenticated_user: dict | None = None,
 ):
     """Backward-compat shim around _resume_event_generator_from_ctx (P2-I-1).
 
@@ -1932,6 +2192,7 @@ async def _resume_event_generator(
         writer_binding=writer_binding,
         writer_lease=writer_lease,
         lease_release_state=lease_release_state,
+        authenticated_user=authenticated_user,
     )
     async for sse in _resume_event_generator_from_ctx(ctx):
         yield sse

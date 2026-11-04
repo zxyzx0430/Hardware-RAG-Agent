@@ -204,6 +204,52 @@ async def test_direct_api_refuses_build_that_may_write_or_download(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_direct_api_refuses_image_generation_without_interactive_confirmation(monkeypatch):
+    spec = ImageGenerationTool(
+        image_model="test-image",
+        base_url="https://example.invalid",
+        api_key="synthetic",
+    )
+    fake_router = _FakeRouter()
+    monkeypatch.setattr(tool_routes, "_ensure_tools", lambda: None)
+    monkeypatch.setattr(tool_routes, "list_registered_tools", lambda: [spec])
+    monkeypatch.setattr(tool_routes.ToolRouter, "get_default", lambda: fake_router)
+
+    result = await tool_routes.call_tool(
+        tool_routes.ToolRequest(
+            tool="image_generation",
+            args={"prompt": "synthetic test image"},
+        ),
+        user={},
+    )
+
+    assert result["success"] is False
+    assert result["error"]["error_type"] == "PERMISSION_CONFIRMATION_REQUIRED"
+    assert fake_router.calls == []
+
+
+@pytest.mark.asyncio
+async def test_direct_api_refuses_build_that_may_write_or_download(monkeypatch):
+    spec = BuildTool()
+    fake_router = _FakeRouter()
+    monkeypatch.setattr(tool_routes, "_ensure_tools", lambda: None)
+    monkeypatch.setattr(tool_routes, "list_registered_tools", lambda: [spec])
+    monkeypatch.setattr(tool_routes.ToolRouter, "get_default", lambda: fake_router)
+
+    result = await tool_routes.call_tool(
+        tool_routes.ToolRequest(
+            tool="build_firmware",
+            args={"code": "int main() { return 0; }"},
+        ),
+        user={},
+    )
+
+    assert result["success"] is False
+    assert result["error"]["error_type"] == "PERMISSION_CONFIRMATION_REQUIRED"
+    assert fake_router.calls == []
+
+
+@pytest.mark.asyncio
 async def test_direct_api_fails_closed_when_tool_spec_is_missing(monkeypatch):
     fake_router = _FakeRouter()
     monkeypatch.setattr(tool_routes, "_ensure_tools", lambda: None)

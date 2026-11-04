@@ -360,6 +360,7 @@ def resource_extension_supported(path: str) -> bool:
 def diagnose_package_files(paths: Iterable[str]) -> tuple[str, tuple[SkillIssue, ...]]:
     """Report scripts that import preserves without executing."""
     issues: list[SkillIssue] = []
+    unsupported_resource_directories: set[str] = set()
     partial = False
     for path in paths:
         try:
@@ -375,10 +376,19 @@ def diagnose_package_files(paths: Iterable[str]) -> tuple[str, tuple[SkillIssue,
                 ))
             partial = True
         first = lower.split("/", 1)[0]
+        if "/" in lower and first not in {"references", "assets", "scripts"}:
+            unsupported_resource_directories.add(first)
         if first in {"references", "assets"} and not resource_extension_supported(normalized):
             issues.append(SkillIssue(
                 "RESOURCE_TYPE_UNSUPPORTED", "warning",
                 f"Resource '{normalized}' is preserved but is not a supported text resource.",
             ))
             partial = True
+    for directory in sorted(unsupported_resource_directories):
+        issues.append(SkillIssue(
+            "RESOURCE_DIRECTORY_UNSUPPORTED", "warning",
+            f"Resource directory '{directory}/' is preserved but cannot be read; "
+            "only text resources under references/ or assets/ are supported.",
+        ))
+        partial = True
     return ("partial" if partial else "supported"), tuple(issues)

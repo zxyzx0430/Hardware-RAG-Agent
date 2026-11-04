@@ -16,6 +16,22 @@ from app.api.sse import sse_event
 from src.agent import hitl_handler
 
 
+@pytest.fixture(autouse=True)
+def _isolated_session_generation_database(monkeypatch):
+    """Keep request lifecycle reads on a real, disposable Settings database."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+    from app.api import common
+    from app.db.database import Base
+
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr(common, "SessionLocal", sessionmaker(bind=engine))
+    yield
+    engine.dispose()
+
+
 def _request() -> Request:
     return Request({
         "type": "http",
