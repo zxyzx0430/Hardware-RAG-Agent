@@ -35,12 +35,12 @@
 | 项 | 值 |
 | --- | --- |
 | 分支 | `context-rebased`（worktree `E:\Desktop\agent-worktrees\skills-chat-install-s01b-20261009`） |
-| HEAD | `60f8891d` |
+| HEAD | `014c4e28` |
 | 基础 | `439d8c56`（已 merge 冻结基线 `46563470`） |
 | 原分支 | `codex/context-compaction-server-history-20261105`，HEAD `5f4cf227`，未动 |
 | 后端定向 | 251 passed / 17 skipped / 0 failed |
 | 前端 | `tsc -b` 0；server-history + useChatStore 52 passed |
-| 后端全量 | **71 failed / 1374 passed / 37 skipped / 0 timeout** |
+| 后端全量 | **70 failed / 1375 passed / 37 skipped / 0 timeout** |
 | patch/bundle | `E:\DevCaches\Temp\context-20261105\context-20261105.patch` / `.bundle`（4.3MB） |
 
 **未合并原因**：两套 writer lifecycle 接口不兼容：
@@ -49,7 +49,9 @@
 - `sse_adapter`/`checkpoint_publish` 仍调用候选 `src.agent.writer_lifecycle.WriterLease` 的 rich 方法（`start_run/validate/finish_run/quarantine/mark_paused`）。
 - 换 import 只能解决 ImportError，运行到 writer 路径会 AttributeError；把 adapter 换回基线版本又会让 context 的 `_PublicationSaver`/mid-run/pause-receipt 流程 collection 失败。
 
-71 失败主要集中在：observation index 9、Skills install 9、pending snapshot 11、context_window 硬上限 4、autocompact 结构化摘要 4、request_tools 4、MCP 4、source_registry 4、bypass 4，其余为 adapter/夹具。
+70 失败主要集中在：observation index 9（已回滚）、Skills install 8、pending snapshot 11、context_window 硬上限 4、autocompact 4、MCP 4、source_registry 4、bypass 4、request_tools 1，其余为 adapter/夹具。
+
+两轮分桶结果（2026-11-05）：`request_tools` 4→1（`b966f014`）；observation index 修好后带出 19 个 generic archive 新失败，已用 `014c4e28` 回滚；skill preflight 补 `import asyncio`（`2456ff2b`）。最终仍 70 failed，远超 26，停止硬修，保留为 feature branch。
 
 **W4 复核补充（P1，2026-11-05）**：聊天技能安装除了 S1 无入口（`_prepare_chat_skill_install` 无调用者），`install_tool.py:488/491/494` 的 `authorize_dispatch/request_binding/matches_resume` 也没有调用者（S10），grant 永远不会 claim；干净导出 `b966f014` 的 `test_chat_skills_install_tool` 9 failed。即使补入口也装不上，属于 context feature 的未完成工作。writer P0 在 `b966f014` 仍复现（`sse_adapter.py:437` 仍是 `lease.start_run`）；我此前引用的 `_iterate_agent_sse_once`/`activate_writer_binding` 只在主基线 `E:\Desktopgent`（46563470），不在合并树。
 
