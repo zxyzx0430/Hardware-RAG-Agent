@@ -5,10 +5,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.main import _RequestLogMiddleware
+from src.observability.trace import new_trace, reset_trace, set_trace
 from tests.e2e.helpers import collect_chat
 
 
-def test_request_middleware_adds_header():
+def test_request_middleware_adds_trace_header():
     app = FastAPI()
     app.add_middleware(_RequestLogMiddleware)
 
@@ -21,31 +22,29 @@ def test_request_middleware_adds_header():
 
     assert response.status_code == 200
     assert response.headers.get("x-request-id")
+    assert response.headers.get("x-trace-id")
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    reason="W5 target: one trace_id on every SSE frame plus id/seq for replay",
-    strict=False,
-)
 async def test_sse_frames_share_a_trace_id(monkeypatch):
     from src.llm.client import StreamChunk
 
     async def fake_stream(*_args, **_kwargs):
         yield StreamChunk(type="text", content="hello")
 
-    events, body = await collect_chat(monkeypatch, fake_stream)
+    trace = new_trace("trace-sse")
+    token = set_trace(trace)
+    try:
+        events, body = await collect_chat(monkeypatch, fake_stream)
+    finally:
+        reset_trace(token)
 
     trace_ids = {event.get("trace_id") for event in events}
-    assert len(trace_ids) == 1
-    assert None not in trace_ids
-    assert "\nid: " in body
+    assert trace_ids == {"trace-sse"}
+    assert [event["seq"] for event in events] == list(range(1, len(events) + 1))
+    assert "id: trace-sse:" in body
 
 
-@pytest.mark.xfail(
-    reason="W5 target: TokenUsage needs trace/cost/latency columns",
-    strict=False,
-)
 def test_token_usage_model_has_observability_columns():
     from app.db.models import TokenUsage
 
@@ -63,10 +62,6 @@ def test_token_usage_model_has_observability_columns():
     } <= columns
 
 
-@pytest.mark.xfail(
-    reason="W5 target: ToolAudit needs trace_id/result_hash",
-    strict=False,
-)
 def test_tool_audit_has_trace_and_result_hash():
     from app.db.models import ToolAudit
 
@@ -76,8 +71,60 @@ def test_tool_audit_has_trace_and_result_hash():
 
 
 @pytest.mark.asyncio
+async def test_token_usage_recorder_persists_trace():
+    from app.api.chat_helpers import _record_token_usage
+    from app.db.database import SessionLocal
+    from app.db.models import TokenUsage
+
+    trace = new_trace("trace-token")
+    token = set_trace(trace)
+    try:
+        _record_token_usage(
+            "test-model",
+            "test-provider",
+            "session-token",
+            {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
+            source="e2e",
+        )
+    finally:
+        reset_trace(token)
+
+    with SessionLocal() as db:
+        row = db.query(TokenUsage).order_by(TokenUsage.id.desc()).first()
+
+    assert row is not None
+    assert row.trace_id == "trace-token"
+    assert row.cached_tokens == 0
+    assert row.source == "e2e"
+
+
+def test_audit_logger_accepts_extended_fields():
+    from app.db.database import SessionLocal
+    from app.db.models import ToolAudit
+    from src.agent.audit_logger import log_tool_call
+
+    log_tool_call(
+        session_id="session-audit",
+        tool_name="read_file",
+        args={"path": "x"},
+        decision="deny",
+        call_id="call-audit",
+        success=False,
+        error_type="denied",
+        trace_id="trace-audit",
+    )
+
+    with SessionLocal() as db:
+        row = db.query(ToolAudit).filter_by(call_id="call-audit").one()
+
+    assert row.trace_id == "trace-audit"
+    assert row.success is False
+    assert row.result_hash is None
+
+
+@pytest.mark.asyncio
 @pytest.mark.xfail(
-    reason="W5 target: agent done event must carry non-null usage",
+    reason="W5 target: agent done event must carry non-null usage (chat_routes/sse_adapter owner)",
     strict=False,
 )
 async def test_agent_done_event_has_usage(monkeypatch):

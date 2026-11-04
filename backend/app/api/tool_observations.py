@@ -11,6 +11,8 @@ import secrets
 from dataclasses import dataclass, field
 from typing import Any
 
+from src.observability.trace import current_trace_id
+
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +118,7 @@ def archive_tool_observation(
         "principal_id": scope.principal_id,
         "session_digest": session_digest,
         "request_id": scope.request_id,
+        "trace_id": current_trace_id() or scope.request_id,
         "session_delete_epoch": scope.session_delete_epoch,
     }
     metadata_text = json.dumps(

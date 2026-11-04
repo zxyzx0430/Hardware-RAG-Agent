@@ -58,6 +58,8 @@ def main() -> int:
             "-q",
             "-p",
             "pytest_asyncio.plugin",
+            "-p",
+            "pytest_timeout",
         ],
         env,
     )

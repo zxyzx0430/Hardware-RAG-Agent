@@ -11,6 +11,7 @@ from typing import Any
 
 from app.db.database import SessionLocal
 from app.db.models import ToolAudit
+from src.observability.trace import current_trace_id
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,11 @@ def log_tool_call(
     exit_code: int | None = None,
     duration_ms: int | None = None,
     error: str | None = None,
+    call_id: str | None = None,
+    success: bool = True,
+    error_type: str | None = None,
+    trace_id: str | None = None,
+    result_hash: str | None = None,
 ) -> None:
     """Persist a single tool-call audit record. Silently fails on DB errors."""
     try:
@@ -59,6 +65,11 @@ def log_tool_call(
             exit_code=exit_code,
             duration_ms=duration_ms,
             error=_truncate(error, ERROR_MAX),
+            call_id=call_id,
+            success=success,
+            error_type=error_type,
+            trace_id=trace_id or current_trace_id(),
+            result_hash=result_hash,
         )
         _persist_audit_record(record)
     except Exception as exc:

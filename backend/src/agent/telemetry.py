@@ -14,6 +14,8 @@ from uuid import uuid4
 
 from langchain_core.callbacks import BaseCallbackHandler
 
+from src.observability.trace import current_trace_id
+
 logger = logging.getLogger(__name__)
 AGENT_INSTANCE_ID_ATTR = "_hardware_rag_agent_instance_id"
 
@@ -26,6 +28,7 @@ def emit_agent_timing(
     event: str,
     *,
     request_id: str | None = None,
+    trace_id: str | None = None,
     agent_instance_id: str | None = None,
     **fields: Any,
 ) -> None:
@@ -33,6 +36,8 @@ def emit_agent_timing(
     record: dict[str, Any] = {"event": event, "at": utc_timestamp()}
     if request_id is not None:
         record["request_id"] = request_id
+    if trace_id is not None:
+        record["trace_id"] = trace_id
     if agent_instance_id is not None:
         record["agent_instance_id"] = agent_instance_id
     record.update({key: value for key, value in fields.items() if value is not None})
@@ -75,7 +80,8 @@ class AgentRequestTiming:
     """Collect per-request durations without retaining or logging payloads."""
 
     def __init__(self, agent_instance_id: str | None = None) -> None:
-        self.request_id = uuid4().hex
+        self.trace_id = current_trace_id() or uuid4().hex
+        self.request_id = self.trace_id
         self.agent_instance_id = agent_instance_id
         self.started_ns = time.perf_counter_ns()
         self.started_at = utc_timestamp()
@@ -99,6 +105,7 @@ class AgentRequestTiming:
         emit_agent_timing(
             event,
             request_id=self.request_id,
+            trace_id=self.trace_id,
             agent_instance_id=self.agent_instance_id,
             **fields,
         )

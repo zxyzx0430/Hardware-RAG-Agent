@@ -91,11 +91,13 @@ def init_db():
         except Exception as e:
             _LOGGER.debug(f"DB migration skipped: {e}")
 
-        # 为 tool_audit 添加 call_id/success/error_type 列（审计日志增强，幂等）
+        # 为 tool_audit 添加 call_id/success/error_type/trace 列（幂等）
         for col_def in (
             "call_id VARCHAR(64)",
             "success BOOLEAN DEFAULT 1",
             "error_type VARCHAR(64)",
+            "trace_id VARCHAR(64)",
+            "result_hash VARCHAR(64)",
         ):
             try:
                 conn.execute(
@@ -105,6 +107,35 @@ def init_db():
                 )
             except Exception as e:
                 _LOGGER.debug(f"DB migration skipped: {e}")
+
+        # 为 token_usage 添加 trace/成本/延迟列（幂等）
+        for col_def in (
+            "trace_id VARCHAR(64)",
+            "run_id VARCHAR(64)",
+            "call_id VARCHAR(64)",
+            "cached_tokens INTEGER DEFAULT 0",
+            "cost_usd FLOAT DEFAULT 0",
+            "latency_ms INTEGER",
+            "status VARCHAR(32) DEFAULT 'ok'",
+            "source VARCHAR(32) DEFAULT ''",
+        ):
+            try:
+                conn.execute(
+                    __import__("sqlalchemy").text(
+                        f"ALTER TABLE token_usage ADD COLUMN {col_def}"
+                    )
+                )
+            except Exception as e:
+                _LOGGER.debug(f"DB migration skipped: {e}")
+
+        for index_sql in (
+            "CREATE INDEX IF NOT EXISTS idx_token_usage_trace ON token_usage(trace_id)",
+            "CREATE INDEX IF NOT EXISTS idx_tool_audit_trace ON tool_audit(trace_id)",
+        ):
+            try:
+                conn.execute(__import__("sqlalchemy").text(index_sql))
+            except Exception as e:
+                _LOGGER.debug(f"DB index skipped: {e}")
 
         # 为 knowledge_bases 添加 big_chunk_max_chars 列（ParentDocument 检索模式，幂等）
         try:
