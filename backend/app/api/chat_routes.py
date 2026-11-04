@@ -4,6 +4,7 @@ Chat 路由 — /api/chat SSE + /api/models
 迁移自 routes.py，共享工具见 common.py。
 """
 
+import asyncio
 import hashlib
 import copy
 import json
