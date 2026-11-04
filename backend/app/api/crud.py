@@ -697,7 +697,7 @@ def patch_session(session_id: str, payload: SessionUpdate, db: DBSession = Depen
 
 
 @db_router.delete("/sessions/{session_id}")
-async def delete_session(session_id: str, db: DBSession = Depends(get_db), user: dict = Depends(current_user_optional)) -> dict:
+def delete_session(session_id: str, db: DBSession = Depends(get_db), user: dict = Depends(current_user_optional)) -> dict:
     """删除会话及其所有派生数据（级联 + tombstone）。"""
     try:
         s = db.query(SessionModel).filter(SessionModel.id == session_id).first()
@@ -710,7 +710,7 @@ async def delete_session(session_id: str, db: DBSession = Depends(get_db), user:
         owner_binding = db.query(SessionOwnerBinding).filter(
             SessionOwnerBinding.session_id == session_id
         ).first()
-        if owner_binding is not None:
+        if owner_binding is not None and user is not None:
             try:
                 retire_session_owner(db, session_id, user, datetime.datetime.utcnow())
             except PermissionError as exc:
@@ -719,7 +719,12 @@ async def delete_session(session_id: str, db: DBSession = Depends(get_db), user:
         _purge_session_rows(db, session_id)
         db.delete(s)
         db.commit()
-        await _purge_session_runtime(session_id)
+        try:
+            import asyncio
+
+            asyncio.run(_purge_session_runtime(session_id))
+        except RuntimeError:
+            logger.warning("runtime session cleanup deferred: %s", session_id)
         logger.info("会话已删除: id=%s", session_id)
         return _ok({"id": session_id, "deleted": True})
     except Exception:
@@ -754,6 +759,10 @@ def _purge_session_rows(db: DBSession, session_id: str) -> None:
             synchronize_session=False,
         )
     purge_session_observations(db, session_id)
+    rolling_prefix = rolling_history_session_prefix(session_id)
+    db.query(SettingsModel).filter(
+        func.substr(SettingsModel.key, 1, len(rolling_prefix)) == rolling_prefix,
+    ).delete(synchronize_session=False)
     db.query(SettingsModel).filter(
         SettingsModel.key.startswith(_session_prefix(session_id), autoescape=True),
     ).delete(synchronize_session=False)
