@@ -51,6 +51,8 @@
 
 71 失败主要集中在：observation index 9、Skills install 9、pending snapshot 11、context_window 硬上限 4、autocompact 结构化摘要 4、request_tools 4、MCP 4、source_registry 4、bypass 4，其余为 adapter/夹具。
 
+**W4 复核补充（P1，2026-11-05）**：聊天技能安装除了 S1 无入口（`_prepare_chat_skill_install` 无调用者），`install_tool.py:488/491/494` 的 `authorize_dispatch/request_binding/matches_resume` 也没有调用者（S10），grant 永远不会 claim；干净导出 `b966f014` 的 `test_chat_skills_install_tool` 9 failed。即使补入口也装不上，属于 context feature 的未完成工作。writer P0 在 `b966f014` 仍复现（`sse_adapter.py:437` 仍是 `lease.start_run`）；我此前引用的 `_iterate_agent_sse_once`/`activate_writer_binding` 只在主基线 `E:\Desktopgent`（46563470），不在合并树。
+
 ## 5. writer 统一任务（下一项，未开工）
 
 两条路，推荐 **A**：
