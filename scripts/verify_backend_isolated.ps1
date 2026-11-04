@@ -58,7 +58,7 @@ try {
     # Preload PyArrow to avoid the observed native import-order crash on this Windows host.
     # The base is inside this invocation's fresh copy, never an existing user folder.
     $taskPytestBase = Join-Path $taskCopy 'pytest'
-    & $Python -c 'import sys,pyarrow,pytest; raise SystemExit(pytest.main(["-p","pytest_asyncio.plugin","--basetemp",sys.argv[1],*sys.argv[2:],"-q","--tb=short","--maxfail=1","--disable-warnings"]))' $taskPytestBase @TestPaths
+    & $Python -c 'import sys,pyarrow,pytest; raise SystemExit(pytest.main(["-p","pytest_asyncio.plugin","-p","pytest_timeout","--basetemp",sys.argv[1],*sys.argv[2:],"-q","--tb=short","--maxfail=1","--disable-warnings"]))' $taskPytestBase @TestPaths
     $taskExit = $LASTEXITCODE
 }
 finally {
