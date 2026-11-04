@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 
 from src.agent.core.toolkit.tool_spec import RiskLevel, ToolSpec
 from src.agent.exceptions import ToolContext
-from src.agent.path_guard import validate_path
+from src.agent.path_guard import validate_path, is_path_allowed_for_tree
 
 # ═══════════════════════════════════════════
 # Named constants
@@ -89,6 +89,7 @@ def _glob_sync(root: str, pattern: str, max_results: int) -> tuple[list[dict], b
     raw = list(root_path.glob(pattern))
     files = [p for p in raw if not _is_dir(p)]
     files = [p for p in files if _has_mtime(p)]
+    files = [p for p in files if is_path_allowed_for_tree(str(p))]
     files.sort(key=_get_mtime, reverse=True)
     return _truncate_matches(files, max_results)
 

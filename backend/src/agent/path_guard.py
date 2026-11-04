@@ -20,6 +20,7 @@ import tempfile
 import time
 from pathlib import Path
 
+from src.agent.path_resolver import normalize_for_compare, resolve_guard_path
 from src.config.settings import ROOT_DIR
 
 logger = logging.getLogger(__name__)
@@ -48,8 +49,9 @@ ALLOWED_DIRS: tuple[Path, ...] = (PROJECT_ROOT, SANDBOX_TEMP_DIR)
 DENY_PATTERNS: tuple[str, ...] = (
     # 版本控制 / IDE
     ".git", ".vscode", ".idea", ".claude",
-    # 配置文件
-    "settings.json", ".env",
+    # 配置文件与密钥存储（硬拒绝，任何权限模式）
+    "settings.json", ".env", ".env*",
+    ".enc_key", ".enc_key*", "keys_store*",
     # 证书/密钥（有扩展名）
     "*.key", "*.pem", "*.pfx", "*.p12", "*.keystore", "*.jks", "*.kdbx",
     # 凭证文件名（无扩展名）
@@ -93,22 +95,35 @@ def validate_path(path: str, is_write: bool) -> tuple[bool, str]:
         return False, "path is empty"
     if _has_traversal_component(path):
         return False, "path traversal (..) is not allowed"
-    real = _realpath(path)
+    real = resolve_guard_path(path)
     if not real:
         return False, "path could not be resolved"
     return _check_access(real)
 
 
 def is_in_allowed_dir(path: str) -> bool:
-    """Check whether a realpath is inside one of ALLOWED_DIRS."""
-    p = Path(path)
+    """Check whether a resolved path is inside one of ALLOWED_DIRS."""
+    normalized = normalize_for_compare(path)
     for allowed in ALLOWED_DIRS:
+        root = normalize_for_compare(str(allowed))
         try:
-            p.relative_to(allowed)
-            return True
+            if os.path.commonpath([normalized, root]) == root:
+                return True
         except ValueError:
             continue
     return False
+
+
+def is_path_allowed_for_tree(path: str) -> bool:
+    """Validate a directory-walk entry before reading it.
+
+    Used by grep/glob/list_files so a secret inside an allowed root (or a
+    symlink to one) is never read merely because the search root passed.
+    """
+    if matches_deny_pattern(path):
+        return False
+    ok, _ = validate_path(path, is_write=False)
+    return ok
 
 
 def matches_deny_pattern(path: str) -> str | None:
@@ -132,8 +147,10 @@ def _detect_short_name(parts: tuple[str, ...]) -> str | None:
 def _match_simple_patterns(parts: tuple[str, ...]) -> str | None:
     """Match slash-free deny patterns against each component via fnmatch."""
     for part in parts:
+        folded = part.casefold()
         for pat in _DENY_SIMPLE:
-            if fnmatch.fnmatch(part, pat) or part == pat:
+            pattern = pat.casefold()
+            if fnmatch.fnmatch(folded, pattern) or folded == pattern:
                 return pat
     return None
 
@@ -162,7 +179,11 @@ def _match_one_slash_pattern(
 
 def _part_matches(parts: tuple[str, ...], name: str) -> bool:
     """True if any component equals or fnmatches name (case-normalized)."""
-    return any(fnmatch.fnmatch(p, name) or p == name for p in parts)
+    folded = name.casefold()
+    return any(
+        fnmatch.fnmatch(p.casefold(), folded) or p.casefold() == folded
+        for p in parts
+    )
 
 
 def ensure_sandbox_dir() -> Path:
@@ -223,21 +244,14 @@ def _has_traversal_component(path: str) -> bool:
 
 
 def _check_access(real: str) -> tuple[bool, str]:
-    """Check deny patterns only. Allowed-dir restriction removed per user request.
+    """Deny patterns plus the allowed-directory allowlist.
 
-    System black-list (.git, .env, *.key, Windows/System32, etc.) still applies
-    in every permission mode. All other paths are allowed for both read/write.
+    Both layers apply in every permission mode: a path must resolve inside
+    PROJECT_ROOT or the sandbox, and must not match a deny pattern.
     """
     denied = matches_deny_pattern(real)
     if denied:
         return False, f"path matches deny pattern: {denied}"
+    if not is_in_allowed_dir(real):
+        return False, "path is outside allowed directories"
     return True, "ok"
-
-
-def _realpath(path: str) -> str:
-    """Resolve to absolute realpath, returning empty string on failure."""
-    try:
-        return os.path.realpath(path)
-    except (OSError, ValueError) as exc:
-        logger.warning("realpath failed for %r: %s", path, exc)
-        return ""

@@ -31,7 +31,7 @@ from pydantic import BaseModel, Field
 
 from src.agent.core.toolkit.tool_spec import RiskLevel, ToolSpec
 from src.agent.exceptions import ToolContext
-from src.agent.path_guard import validate_path
+from src.agent.path_guard import validate_path, is_path_allowed_for_tree, matches_deny_pattern
 
 # ═══════════════════════════════════════════
 # Named constants
@@ -164,7 +164,11 @@ def _grep_dir(root_path: Path, cfg: _GrepCfg) -> tuple[list[dict], bool]:
 def _walk_and_collect(root_path: Path, cfg: _GrepCfg, state: _GrepState) -> bool:
     """Walk tree, return True if truncated by any cap (files/time/matches)."""
     for dirpath, dirnames, filenames in os.walk(root_path):
-        dirnames[:] = [d for d in dirnames if d not in _IGNORED_DIRS]
+        dirnames[:] = [
+            d for d in dirnames
+            if d not in _IGNORED_DIRS
+            and matches_deny_pattern(os.path.join(dirpath, d)) is None
+        ]
         for name in filenames:
             state.file_count += 1
             if _should_stop(state, cfg):
@@ -190,6 +194,8 @@ def _matches_include(name: str, include: str) -> bool:
 
 def _scan_file(p: Path, cfg: _GrepCfg, matches: list[dict]) -> None:
     """Scan one file for pattern matches, append to matches."""
+    if not is_path_allowed_for_tree(str(p)):
+        return
     if _is_too_large(p):
         return
     try:

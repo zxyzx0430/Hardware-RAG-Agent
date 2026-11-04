@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 
 from src.agent.core.toolkit.tool_spec import RiskLevel, ToolSpec
 from src.agent.exceptions import ToolContext
-from src.agent.path_guard import validate_path
+from src.agent.path_guard import validate_path, is_path_allowed_for_tree
 
 # ═══════════════════════════════════════════
 # Named constants
@@ -137,8 +137,11 @@ def _iter_children(p: Path) -> Iterator[Path]:
     except OSError:
         return
     for child in items:
-        if not _is_ignored(child.name):
-            yield child
+        if _is_ignored(child.name):
+            continue
+        if not is_path_allowed_for_tree(str(child)):
+            continue
+        yield child
 
 
 def _node_dict(p: Path, kind: str, children: list[dict] | None) -> dict:
