@@ -113,13 +113,15 @@ type RetrievalSettingKey = "topK" | "relevanceThreshold";
 type RetrievalSettingStatus = "idle" | "saving" | "synced" | "local_only" | "read_error";
 
 // 需要持久化的字段
+// 非密钥字段才写入 localStorage。Provider apiKey、搜索/图像/嵌入 Key 与
+// session_token 只保留在内存或 sessionStorage，避免 XSS 直接读取。
 const PERSIST_KEYS: (keyof SettingsState)[] = [
   "providers", "chatProviderId", "chatModel", "imageProviderId", "imageModel",
   "visionProviderId", "visionModel",
   "temperature", "topK", "maxTokens", "relevanceThreshold", "systemPrompt",
-  "skills", "mcpServers", "webSearchConfig", "imageGenerationConfig", "chatFontSize", "themeMode", "lang",
-  "embeddingDefaultModel", "embeddingDefaultBaseUrl", "embeddingDefaultApiKey",
-  "agentChunkerDefaultModel", "agentChunkerDefaultBaseUrl", "agentChunkerDefaultApiKey",
+  "skills", "chatFontSize", "themeMode", "lang",
+  "embeddingDefaultModel", "embeddingDefaultBaseUrl",
+  "agentChunkerDefaultModel", "agentChunkerDefaultBaseUrl",
   "defaultContextWindow", "permissionMode",
 ];
 
@@ -218,18 +220,23 @@ function loadPersistedDefaults(): Partial<typeof DEFAULTS> {
   return picked;
 }
 
-// 将需要持久化的字段序列化到 localStorage
+// 将需要持久化的字段序列化到 localStorage；providers 去掉 apiKey。
 function persist(state: SettingsState) {
   const data: Record<string, unknown> = {};
   for (const key of PERSIST_KEYS) {
     data[key] = state[key];
   }
+  data.providers = stripProviderSecrets(state.providers);
   try {
     localStorage.setItem("hwrag_settings", JSON.stringify(data));
     return true;
   } catch {
     return false;
   }
+}
+
+function stripProviderSecrets(providers: ProviderConfig[]): ProviderConfig[] {
+  return providers.map((provider) => ({ ...provider, apiKey: "" }));
 }
 
 // Prevent a settings GET started before a successful save from overwriting it.
@@ -318,7 +325,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         // 流程：store-key → 401 时 fallback 到 /api/auth/login 恢复会话。
         // login 用 provider+api_key 换 session_token（要求 key 与后端已存储的匹配）。
         const persistKey = async () => {
-          const hasSessionToken = !!localStorage.getItem("session_token");
+          const hasSessionToken = !!sessionStorage.getItem("session_token");
           if (hasSessionToken) {
             // 已登录 → 直接 store-key（可能更新 base_url 等元数据）
             try {
@@ -326,7 +333,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
                 provider: id, api_key: provider.apiKey, base_url: provider.baseUrl,
               });
               if (data?.session_token) {
-                localStorage.setItem("session_token", data.session_token);
+                sessionStorage.setItem("session_token", data.session_token);
                 useLogStore.getState().log("ok", "settings", `API Key 已加密存储并刷新 session_token`);
               }
               return;
@@ -341,7 +348,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
               provider: id, api_key: provider.apiKey, base_url: provider.baseUrl,
             });
             if (data?.session_token) {
-              localStorage.setItem("session_token", data.session_token);
+              sessionStorage.setItem("session_token", data.session_token);
               useLogStore.getState().log("ok", "settings", `API Key 已加密存储并获取 session_token`);
             }
           } catch {
@@ -351,7 +358,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
                 provider: id, api_key: provider.apiKey,
               });
               if (loginData?.session_token) {
-                localStorage.setItem("session_token", loginData.session_token);
+                sessionStorage.setItem("session_token", loginData.session_token);
                 useLogStore.getState().log("ok", "settings", `会话已恢复（login 成功），session_token 已写入 localStorage`);
                 // 拿到 token 后再补一次 store-key 以更新元数据
                 apiPost("auth/store-key", {

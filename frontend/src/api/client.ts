@@ -31,7 +31,7 @@ export function getAuthHeaders(): Record<string, string> {
   const headers: Record<string, string> = {};
   if (creds.apiKey) headers["X-API-Key"] = creds.apiKey;
   // 从 localStorage 读取 session_token，添加 Authorization header
-  const sessionToken = localStorage.getItem("session_token");
+  const sessionToken = sessionStorage.getItem("session_token");
   if (sessionToken) headers["Authorization"] = `Bearer ${sessionToken}`;
   if (creds.model) headers["X-Model"] = creds.model;
   if (creds.providerId) headers["X-Provider"] = creds.providerId;
@@ -428,7 +428,7 @@ export function apiWS(
   }
   // Inject session_token for WebSocket auth — mirrors getAuthHeaders for fetch.
   // Backend ws_auth() reads it from query_params["token"] before accept().
-  const sessionToken = localStorage.getItem("session_token");
+  const sessionToken = sessionStorage.getItem("session_token");
   if (sessionToken) {
     const sep = url.includes("?") ? "&" : "?";
     url = `${url}${sep}token=${encodeURIComponent(sessionToken)}`;
