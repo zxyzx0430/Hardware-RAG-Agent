@@ -287,6 +287,13 @@ def create_app() -> FastAPI:
     # 初始化数据库表（CREATE TABLE IF NOT EXISTS）
     init_db()
 
+    try:
+        from app.db.gc import log_startup_reconciliation
+
+        log_startup_reconciliation()
+    except Exception as exc:
+        _LOGGER.warning("data integrity reconciliation failed: %s", exc)
+
     # v3-T1: 清理 30 天前的工具审计日志
     try:
         from src.agent.audit_logger import cleanup_old_logs
