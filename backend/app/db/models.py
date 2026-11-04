@@ -36,16 +36,23 @@ class Session(Base):
     branch_from_session_id = Column(Text, nullable=True)
     branch_from_message_id = Column(Text, nullable=True)
     context_window = Column(Integer, default=CONTEXT_WINDOW_256K)  # per-session context budget (tokens)
+    version = Column(Integer, default=0, nullable=False)  # bumped on every message/session mutation
+    messages_imported = Column(Integer, default=0, nullable=False)  # one-shot legacy import guard
     created_at = Column(DateTime, default=datetime.datetime.now(datetime.timezone.utc))
     updated_at = Column(DateTime, default=datetime.datetime.now(datetime.timezone.utc), onupdate=datetime.datetime.now(datetime.timezone.utc))
 
-    messages = relationship("Message", back_populates="session", order_by="Message.created_at", cascade="all, delete-orphan")
+    messages = relationship("Message", back_populates="session", order_by="(Message.created_at, Message.seq)", cascade="all, delete-orphan")
 
 
 class Message(Base):
     """会话中的消息。"""
 
     __tablename__ = "messages"
+    __table_args__ = (
+        Index("idx_messages_session_order", "session_id", "created_at", "seq"),
+        Index("uq_messages_session_seq", "session_id", "seq", unique=True),
+        Index("uq_messages_session_client_key", "session_id", "client_key", unique=True),
+    )
 
     id = Column(String, primary_key=True)
     session_id = Column(String, ForeignKey("sessions.id", ondelete="CASCADE"), index=True)
@@ -54,7 +61,13 @@ class Message(Base):
     sources = Column(JSON, nullable=True)  # 来源引用列表
     tool_calls = Column(JSON, nullable=True)  # 工具调用记录
     activity = Column(JSON, nullable=True)  # 思考步骤/工具调用活动块 (durationMs, steps, status)
+    seq = Column(Integer, nullable=False, default=0)  # per-session total-order tiebreaker
+    status = Column(String, nullable=False, default="complete")  # complete / partial / error
+    client_key = Column(String, nullable=True)  # server turn id or client message id
+    tool_call_id = Column(String, nullable=True)
+    tool_name = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.now(datetime.timezone.utc))
+    updated_at = Column(DateTime, default=datetime.datetime.now(datetime.timezone.utc), onupdate=datetime.datetime.now(datetime.timezone.utc))
 
     session = relationship("Session", back_populates="messages")
 
@@ -229,3 +242,43 @@ class ToolAudit(Base):
     call_id = Column(String(64), nullable=True)
     success = Column(Boolean, default=True)
     error_type = Column(String(64), nullable=True)
+
+
+class SessionTombstone(Base):
+    """Deleted session marker; blocks stale clients from recreating the id."""
+
+    __tablename__ = "session_tombstones"
+
+    session_id = Column(String, primary_key=True)
+    deleted_at = Column(DateTime, nullable=False, default=datetime.datetime.now(datetime.timezone.utc))
+    epoch = Column(String, nullable=False, default="")
+
+
+class Todo(Base):
+    """Persisted session-scoped TODO list (replaces the in-memory dict)."""
+
+    __tablename__ = "todos"
+    __table_args__ = (
+        Index("idx_todos_session", "session_id"),
+    )
+
+    session_id = Column(String, ForeignKey("sessions.id", ondelete="CASCADE"), primary_key=True)
+    seq = Column(Integer, primary_key=True)
+    content = Column(Text, nullable=False)
+    status = Column(String, nullable=False, default="pending")
+    priority = Column(String, nullable=False, default="medium")
+    updated_at = Column(DateTime, default=datetime.datetime.now(datetime.timezone.utc), onupdate=datetime.datetime.now(datetime.timezone.utc))
+
+
+class MCPServerConfig(Base):
+    """Persisted MCP stdio server configuration (no secrets handling here)."""
+
+    __tablename__ = "mcp_servers"
+
+    id = Column(String, primary_key=True)
+    name = Column(String, nullable=False, default="")
+    command = Column(Text, nullable=False)
+    args = Column(JSON, default=list)
+    env = Column(JSON, default=dict)
+    enabled = Column(Boolean, nullable=False, default=True)
+    updated_at = Column(DateTime, default=datetime.datetime.now(datetime.timezone.utc), onupdate=datetime.datetime.now(datetime.timezone.utc))

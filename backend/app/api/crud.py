@@ -12,9 +12,11 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlalchemy.orm import Session as DBSession
 
 from app.db.database import get_db
+from app.db.time_utils import to_utc_iso_z, utc_now
 from app.api.dependencies import current_user_optional
 from app.api.memory_epoch import MEMORY_CLEAR_EPOCH_KEY, stage_memory_clear_epoch
 from app.api.session_epoch import (
@@ -93,8 +95,9 @@ def _serialize_session(s: SessionModel) -> dict:
         "branch_from_session_id": s.branch_from_session_id,
         "branch_from_message_id": s.branch_from_message_id,
         "context_window": _cap_agent_session_context_window(s.context_window),
-        "created_at": s.created_at.isoformat() if s.created_at else "",
-        "updated_at": s.updated_at.isoformat() if s.updated_at else "",
+        "version": getattr(s, "version", 0) or 0,
+        "created_at": to_utc_iso_z(s.created_at),
+        "updated_at": to_utc_iso_z(s.updated_at),
     }
 
 
@@ -141,7 +144,7 @@ def create_session(payload: SessionCreate, db: DBSession = Depends(get_db), user
             SessionModel.id == payload.branch_from_session_id
         ).first()
         if source_session:
-            for msg in source_session.messages:
+            for seq, msg in enumerate(source_session.messages, start=1):
                 new_msg = MessageModel(
                     id=f"m{uuid.uuid4().hex[:8]}",
                     session_id=sid,
@@ -149,6 +152,7 @@ def create_session(payload: SessionCreate, db: DBSession = Depends(get_db), user
                     content=msg.content,
                     sources=msg.sources,
                     tool_calls=msg.tool_calls,
+                    seq=seq,
                 )
                 db.add(new_msg)
                 session.msg_count += 1
@@ -176,7 +180,11 @@ def get_session(session_id: str, db: DBSession = Depends(get_db), user: dict = D
                 "sources": m.sources or [],
                 "tool_calls": m.tool_calls or [],
                 "activity": m.activity,
-                "created_at": m.created_at.isoformat() if m.created_at else "",
+                "seq": m.seq,
+                "status": m.status,
+                "tool_call_id": m.tool_call_id,
+                "tool_name": m.tool_name,
+                "created_at": to_utc_iso_z(m.created_at),
             }
             for m in s.messages
         ],
@@ -205,7 +213,8 @@ def update_session(session_id: str, payload: SessionUpdate, db: DBSession = Depe
     if payload.context_window is not None:
         s.context_window = _cap_agent_session_context_window(payload.context_window)
     logger.info("会话已更新: id=%s", session_id)
-    s.updated_at = datetime.datetime.utcnow()
+    s.version = (getattr(s, "version", 0) or 0) + 1
+    s.updated_at = utc_now()
     db.commit()
     return _ok({"id": session_id, "updated": True})
 
@@ -235,7 +244,8 @@ def patch_session(session_id: str, payload: SessionUpdate, db: DBSession = Depen
         logger.warning("会话 PATCH 失败: id=%s 不存在", session_id)
         raise _fail("NOT_FOUND", f"会话不存在: {session_id}", status_code=404)
     _apply_session_update(s, payload)
-    s.updated_at = datetime.datetime.utcnow()
+    s.version = (getattr(s, "version", 0) or 0) + 1
+    s.updated_at = utc_now()
     db.commit()
     logger.info("会话已 PATCH: id=%s", session_id)
     return _ok(_serialize_session(s))
@@ -270,26 +280,39 @@ class MessageCreate(BaseModel):
     sources: Optional[list] = None
     tool_calls: Optional[list] = None
     activity: Optional[dict] = None
+    client_key: Optional[str] = None
+    status: Optional[str] = None
+    tool_call_id: Optional[str] = None
+    tool_name: Optional[str] = None
 
 
 @db_router.get("/sessions/{session_id}/messages")
 def list_messages(session_id: str, db: DBSession = Depends(get_db), user: dict = Depends(current_user_optional)) -> dict:
     """获取会话的所有消息。"""
+    session = db.query(SessionModel).filter(SessionModel.id == session_id).first()
     msgs = db.query(MessageModel).filter(
         MessageModel.session_id == session_id
-    ).order_by(MessageModel.created_at).all()
-    return _ok({"messages": [
-        {
-            "id": m.id,
-            "role": m.role,
-            "content": m.content,
-            "sources": m.sources or [],
-            "tool_calls": m.tool_calls or [],
-            "activity": m.activity,
-            "created_at": m.created_at.isoformat() if m.created_at else "",
-        }
-        for m in msgs
-    ]})
+    ).order_by(MessageModel.created_at, MessageModel.seq).all()
+    return _ok({
+        "version": (getattr(session, "version", 0) or 0) if session else 0,
+        "messages": [
+            {
+                "id": m.id,
+                "role": m.role,
+                "content": m.content,
+                "sources": m.sources or [],
+                "tool_calls": m.tool_calls or [],
+                "activity": m.activity,
+                "seq": m.seq,
+                "status": m.status,
+                "tool_call_id": m.tool_call_id,
+                "tool_name": m.tool_name,
+                "created_at": to_utc_iso_z(m.created_at),
+                "updated_at": to_utc_iso_z(m.updated_at),
+            }
+            for m in msgs
+        ],
+    })
 
 
 @db_router.post("/sessions/{session_id}/messages")
@@ -299,36 +322,70 @@ def create_message(session_id: str, payload: MessageCreate, db: DBSession = Depe
     if not s:
         raise _fail("NOT_FOUND", f"会话不存在: {session_id}", status_code=404)
 
-    mid = payload.id or f"m{uuid.uuid4().hex[:8]}"
-    msg = db.query(MessageModel).filter(MessageModel.id == mid).first() if payload.id else None
-    if msg and msg.session_id != session_id:
+    msg = _find_existing_message(db, session_id, payload)
+    if msg is not None and msg.session_id != session_id:
         raise _fail("CONFLICT", "消息 ID 已属于其他会话", status_code=409)
 
+    msg = _apply_message_payload(db, session_id, s, payload, msg)
+    logger.info("消息已保存: session=%s role=%s id=%s", session_id, payload.role, msg.id)
+    db.commit()
+    return _ok({
+        "id": msg.id,
+        "role": payload.role,
+        "content": payload.content,
+        "seq": msg.seq,
+        "status": msg.status,
+        "created_at": to_utc_iso_z(msg.created_at),
+    })
+
+
+def _find_existing_message(db: DBSession, session_id: str, payload: MessageCreate) -> MessageModel | None:
+    if payload.id:
+        return db.query(MessageModel).filter(MessageModel.id == payload.id).first()
+    if payload.client_key:
+        return db.query(MessageModel).filter(
+            MessageModel.session_id == session_id,
+            MessageModel.client_key == payload.client_key,
+        ).first()
+    return None
+
+
+def _apply_message_payload(db: DBSession, session_id: str, s: SessionModel, payload: MessageCreate, msg: MessageModel | None) -> MessageModel:
     is_new = msg is None
     if is_new:
-        msg = MessageModel(id=mid, session_id=session_id)
+        msg = MessageModel(
+            id=payload.id or f"m{uuid.uuid4().hex[:8]}",
+            session_id=session_id,
+            seq=_next_message_seq(db, session_id),
+        )
         s.msg_count = (s.msg_count or 0) + 1
-
+        db.add(msg)
     msg.role = payload.role
     msg.content = payload.content
     msg.sources = payload.sources
     msg.tool_calls = payload.tool_calls
     msg.activity = payload.activity
-    s.updated_at = datetime.datetime.utcnow()
+    msg.status = payload.status or msg.status or "complete"
+    if payload.client_key is not None:
+        msg.client_key = payload.client_key
+    if payload.tool_call_id is not None:
+        msg.tool_call_id = payload.tool_call_id
+    if payload.tool_name is not None:
+        msg.tool_name = payload.tool_name
+    msg.updated_at = utc_now()
+    s.version = (getattr(s, "version", 0) or 0) + 1
+    s.updated_at = utc_now()
     if is_new and payload.role == "user" and not s.title.startswith("对话"):
         # 用第一条用户消息做标题预览
         s.title = payload.content[:TITLE_PREVIEW_LENGTH] + ("..." if len(payload.content) > TITLE_PREVIEW_LENGTH else "")
+    return msg
 
-    logger.info("消息已%s: session=%s role=%s id=%s", "保存" if is_new else "更新", session_id, payload.role, mid)
-    if is_new:
-        db.add(msg)
-    db.commit()
-    return _ok({
-        "id": mid,
-        "role": payload.role,
-        "content": payload.content,
-        "created_at": msg.created_at.isoformat() if msg.created_at else "",
-    })
+
+def _next_message_seq(db: DBSession, session_id: str) -> int:
+    current = db.query(func.max(MessageModel.seq)).filter(
+        MessageModel.session_id == session_id
+    ).scalar()
+    return (current or 0) + 1
 
 
 @db_router.delete("/sessions/{session_id}/messages")
@@ -340,13 +397,14 @@ def truncate_messages(session_id: str, keep_count: int = 0, db: DBSession = Depe
         raise _fail("NOT_FOUND", f"会话不存在: {session_id}", status_code=404)
     msgs = db.query(MessageModel).filter(
         MessageModel.session_id == session_id
-    ).order_by(MessageModel.created_at).all()
+    ).order_by(MessageModel.created_at, MessageModel.seq).all()
     keep_count = max(0, min(keep_count, len(msgs)))
     to_delete = msgs[keep_count:]
     for m in to_delete:
         db.delete(m)
     s.msg_count = keep_count
-    s.updated_at = datetime.datetime.utcnow()
+    s.version = (getattr(s, "version", 0) or 0) + 1
+    s.updated_at = utc_now()
     db.commit()
     logger.info("消息已截断: session=%s kept=%d deleted=%d", session_id, keep_count, len(to_delete))
     return _ok({"kept": keep_count, "deleted": len(to_delete)})
@@ -426,7 +484,7 @@ def update_settings(payload: dict, db: DBSession = Depends(get_db), user: dict =
                 "relevanceThreshold must be from 0 through 100.",
                 status_code=422,
             )
-    now = datetime.datetime.utcnow()
+    now = utc_now()
     if payload.get("longTermMemory") == "":
         stage_memory_clear_epoch(db, now)
     for key, value in payload.items():

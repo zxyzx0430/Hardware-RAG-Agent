@@ -1,112 +1,106 @@
-"""FTS5-backed session history search (P0 Task 4).
+"""Full-text search over the single ``messages_fts`` index.
 
-Stores user/assistant message pairs in a SQLite FTS5 virtual table so the
-Agent can answer "上次你帮我生成的代码呢" by full-text search.
-
-DB file: <project_root>/data/agent_sessions.db (data dir auto-created).
-SQLite FTS5 is part of the Python stdlib sqlite3 module (Python 3.7+), so
-there are no external dependencies.
+The legacy ``sessions_fts`` database and its in-memory store fallback are
+retired. Both ``POST /api/search`` and the Agent ``search_history`` tool read
+the same rows by joining ``messages_fts.rowid`` to ``messages.rowid``; a LIKE
+query is used only when FTS returns no rows or the FTS query is invalid.
 """
+
 from __future__ import annotations
 
+import datetime
 import logging
-import sqlite3
-from datetime import datetime
-from pathlib import Path
+from typing import Any
 
-from src.agent.path_guard import PROJECT_ROOT
+from sqlalchemy import text
+
+from app.db.time_utils import to_utc_iso_z
 
 logger = logging.getLogger(__name__)
 
-# DB path resolved via the shared PROJECT_ROOT constant (path_guard) so cwd and
-# module relocation do not matter. PROJECT_ROOT = repo root (agent/), matching
-# the previous Path(__file__).resolve().parents[3] resolution.
-_DB_PATH: Path = PROJECT_ROOT / "data" / "agent_sessions.db"
+DEFAULT_SEARCH_LIMIT = 5
 
-# Default result cap for search_session_history.
-_DEFAULT_SEARCH_LIMIT: int = 5
-
-
-def _get_conn() -> sqlite3.Connection:
-    """Open a connection to the session DB (creates file + dir if missing)."""
-    _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(_DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def init_session_db() -> None:
-    """Create the FTS5 virtual table if not exists. Idempotent."""
-    with _get_conn() as conn:
-        conn.execute(
-            "CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5("
-            "session_id, user_msg, assistant_msg, timestamp"
-            ")"
-        )
-
-
-def index_session_message(session_id: str, user_msg: str, assistant_msg: str) -> None:
-    """Insert a user/assistant message pair into FTS5 + Store API (dual-write).
-
-    FTS5 is the primary index (persistent, lexical). Store API is the semantic
-    fallback (in-memory, embedding-based). Store API write is isolated — its
-    failure never affects FTS5.
+_FTS_SQL = text(
     """
-    ts = datetime.now(datetime.UTC).isoformat()
-    try:
-        with _get_conn() as conn:
-            conn.execute(
-                "INSERT INTO sessions_fts(session_id, user_msg, assistant_msg, timestamp) "
-                "VALUES(?, ?, ?, ?)",
-                (session_id, user_msg, assistant_msg, ts),
-            )
-    except sqlite3.Error as exc:
-        logger.error("index_session_message failed session=%s err=%s", session_id, exc)
-    _index_to_store(session_id, user_msg, assistant_msg)
-
-
-def _index_to_store(session_id: str, user_msg: str, assistant_msg: str) -> None:
-    """Dual-write to Store API for semantic search. Isolated from FTS5 path.
-
-    Lazy import keeps module load cheap when Store API is unused. No-op when
-    embedding unconfigured (store_adapter handles that gracefully).
+    SELECT m.id, m.session_id, m.role, m.content, m.created_at, m.seq, s.title
+    FROM messages_fts f
+    JOIN messages m ON m.rowid = f.rowid
+    JOIN sessions s ON s.id = m.session_id
+    WHERE messages_fts MATCH :query
+    ORDER BY rank, m.created_at DESC, m.seq DESC
+    LIMIT :limit
     """
+)
+
+_LIKE_SQL = text(
+    """
+    SELECT m.id, m.session_id, m.role, m.content, m.created_at, m.seq, s.title
+    FROM messages m
+    JOIN sessions s ON s.id = m.session_id
+    WHERE m.content LIKE :pattern ESCAPE '\\'
+    ORDER BY m.created_at DESC, m.seq DESC
+    LIMIT :limit
+    """
+)
+
+
+def search_messages(query: str, limit: int = DEFAULT_SEARCH_LIMIT) -> list[dict[str, Any]]:
+    """Return message hits ordered by FTS rank (newest first on ties)."""
+    normalized = query.strip() if isinstance(query, str) else ""
+    if not normalized or limit <= 0:
+        return []
+    rows = _try_fts(normalized, limit)
+    if not rows:
+        rows = _try_like(normalized, limit)
+    return [_row_to_result(row) for row in rows]
+
+
+def _try_fts(query: str, limit: int) -> list:
     try:
-        from src.agent.store_adapter import index_session_message_to_store
-        index_session_message_to_store(session_id, user_msg, assistant_msg)
+        return _fetch(_FTS_SQL, {"query": query, "limit": limit})
     except Exception as exc:
-        logger.debug("Store API dual-write skipped: %s", exc)
-
-
-def search_session_history(query: str, limit: int = _DEFAULT_SEARCH_LIMIT) -> list[dict]:
-    """FTS5 MATCH search across user_msg + assistant_msg. Returns newest-first."""
-    if not query.strip():
+        logger.warning("messages_fts search failed; falling back to LIKE: %s", exc)
         return []
+
+
+def _try_like(query: str, limit: int) -> list:
     try:
-        return _run_match_query(query, limit)
-    except sqlite3.Error as exc:
-        logger.error("search_session_history failed query=%s err=%s", query, exc)
+        return _fetch(_LIKE_SQL, {"pattern": _like_pattern(query), "limit": limit})
+    except Exception as exc:
+        logger.error("message LIKE search failed: %s", exc)
         return []
 
 
-def _run_match_query(query: str, limit: int) -> list[dict]:
-    """Execute the FTS5 MATCH query and return rows as dicts."""
-    with _get_conn() as conn:
-        cur = conn.execute(
-            "SELECT session_id, user_msg, assistant_msg, timestamp "
-            "FROM sessions_fts WHERE sessions_fts MATCH ? "
-            "ORDER BY rowid DESC LIMIT ?",
-            (query, limit),
-        )
-        return [dict(r) for r in cur.fetchall()]
+def _fetch(statement, params: dict[str, Any]) -> list:
+    from app.db.database import SessionLocal
+
+    with SessionLocal() as db:
+        return db.execute(statement, params).fetchall()
 
 
-def search_session_history_via_store(query: str, limit: int = _DEFAULT_SEARCH_LIMIT) -> list[dict]:
-    """Semantic search via Store API (fallback when FTS5 returns no results).
+def _like_pattern(query: str) -> str:
+    escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
 
-    Re-exported here so callers can import both FTS5 + Store API search from
-    a single module (session_search). Returns [] when Store API unavailable
-    or embedding unconfigured — caller falls back to FTS5 order gracefully.
-    """
-    from src.agent.store_adapter import search_session_history_via_store as _store_search
-    return _store_search(query, limit)
+
+def _row_to_result(row) -> dict[str, Any]:
+    return {
+        "message_id": row[0],
+        "session_id": row[1],
+        "role": row[2],
+        "content": row[3] or "",
+        "created_at": _iso(row[4]),
+        "seq": row[5],
+        "session_title": row[6],
+    }
+
+
+def _iso(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, datetime.datetime):
+        return to_utc_iso_z(value)
+    try:
+        return to_utc_iso_z(datetime.datetime.fromisoformat(str(value)))
+    except ValueError:
+        return str(value)

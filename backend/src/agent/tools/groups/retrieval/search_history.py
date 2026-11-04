@@ -1,7 +1,7 @@
-"""SearchHistoryTool (retrieval group) — FTS5 session history search (P0 Task 4).
+"""SearchHistoryTool (retrieval group) — messages_fts history search.
 
-Lets the Agent answer "上次你帮我生成的代码呢" by searching past
-user/assistant message pairs indexed in SQLite FTS5.
+Lets the Agent answer "上次你帮我生成的代码呢" by searching past messages in
+the same ``messages_fts`` index used by ``POST /api/search``.
 
 Read-only (risk_level LOW). Delegates to src.agent.session_search.
 ToolSpec pattern mirrors search_docs.py.
@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 
 from src.agent.core.toolkit.tool_spec import RiskLevel, ToolSpec
 from src.agent.exceptions import ToolContext
-from src.agent.session_search import search_session_history, search_session_history_via_store
+from src.agent.session_search import search_messages
 
 logger = logging.getLogger(__name__)
 
@@ -46,16 +46,9 @@ class SearchHistoryTool(ToolSpec):
     max_retries: int = 1
 
     async def execute(self, args: dict[str, Any], ctx: ToolContext) -> dict:
-        """Run FTS5 search first; fall back to Store API semantic search.
-
-        FTS5 (lexical, precise) is the primary path. When it returns no
-        results, Store API (semantic, embedding-based) kicks in to catch
-        meaning-similar queries that lack exact keyword overlap.
-        """
+        """Search messages_fts and render a bounded summary for the model."""
         query = args.get("query", "")
-        results = search_session_history(query, _DEFAULT_LIMIT)
-        if not results:
-            results = search_session_history_via_store(query, _DEFAULT_LIMIT)
+        results = search_messages(query, _DEFAULT_LIMIT)
         return _build_history_result(results, query)
 
 
@@ -71,6 +64,7 @@ def _format_history_summary(results: list[dict], query: str) -> str:
     """Render a one-line-per-match summary for the LLM."""
     lines = [f"找到 {len(results)} 条与「{query}」相关的历史会话："]
     for i, r in enumerate(results, 1):
-        user_preview = (r.get("user_msg") or "")[:80]
-        lines.append(f"  [{i}] session={r.get('session_id', '?')} 用户问：{user_preview}")
+        preview = (r.get("content") or "")[:80]
+        role = r.get("role") or "?"
+        lines.append(f"  [{i}] session={r.get('session_id', '?')} {role}：{preview}")
     return "\n".join(lines)
