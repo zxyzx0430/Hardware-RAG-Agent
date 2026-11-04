@@ -167,7 +167,11 @@ def _read_tool_message_batch(
         for item in messages["messages"]:
             body = item["tool_message"]
             try:
-                restored.append(ToolMessage(
+                # ToolMessage() coerces a dict content into its str repr, which
+                # loses the original payload. The envelope was already
+                # validated by _validate_envelope, so construct without a
+                # second (lossy) validation pass to restore it exactly.
+                restored.append(ToolMessage.model_construct(
                     content=body["content"],
                     name=body["name"],
                     tool_call_id=body["tool_call_id"],

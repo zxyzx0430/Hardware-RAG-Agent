@@ -37,7 +37,10 @@ def _capture(
     status="success",
 ):
     return tool_events.ToolMessageCapture(
-        tool_message=ToolMessage(
+        # ToolMessage() coerces a dict content into its str repr. Archive
+        # drops must round-trip the payload exactly, so build without that
+        # lossy validation pass.
+        tool_message=ToolMessage.model_construct(
             content=content,
             name=name,
             tool_call_id=tool_call_id,
