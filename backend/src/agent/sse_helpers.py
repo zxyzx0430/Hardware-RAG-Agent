@@ -159,10 +159,25 @@ def init_stream_state(
     context_budget: ContextBudget | None = None,
 ) -> dict:
     """Build the per-request state dict shared by all SSE handlers."""
-    session_id = config.get("configurable", {}).get("thread_id", "?")
+    from src.agent.request_context import business_session_id_from_config
+
+    session_id = business_session_id_from_config(config) or config.get(
+        "configurable", {},
+    ).get("thread_id", "?")
     session_window = None
     if context_budget is None:
         session_window = _load_session_context_window(session_id)
+        config_window = config.get("configurable", {}).get("context_window")
+        if type(config_window) is int and config_window > 0:
+            session_window = (
+                config_window if session_window is None
+                else min(session_window, config_window)
+            )
+        if requested_max_tokens is None and type(session_window) is int and session_window > 0:
+            from src.llm.model_registry import get_registered_max_tokens
+
+            declared = get_registered_max_tokens(model) or 4096
+            requested_max_tokens = min(declared, max(1, session_window // 4))
         context_budget = resolve_context_budget(
             model, session_window, requested_max_tokens,
         )

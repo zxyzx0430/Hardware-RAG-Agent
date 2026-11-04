@@ -372,7 +372,7 @@ async def test_chat_captures_host_scope_before_async_preparation(context_archive
     if kind in {"verified", "skills"}:
         assert observed[0].session_id == sid and observed[0].principal_hash == compaction_principal(owner)
         assert len(observed[0].request_id) == 32
-        assert observed[0].session_epoch == "" and read_session_delete_epoch(sid) != ""
+        assert observed[0].session_epoch == read_session_delete_epoch(sid)
     else:
         assert observed == [None]
 

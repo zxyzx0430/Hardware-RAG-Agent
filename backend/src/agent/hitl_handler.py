@@ -54,6 +54,19 @@ _RESUME_DENY: Command = Command(resume={"action": "deny"})
 # Public entry points
 # ═══════════════════════════════════════════
 
+async def _mark_writer_paused(agent: Any, config: dict, pending: list[dict]) -> None:
+    """Record the exact tools-node pause before exposing a confirmation."""
+    from src.agent.writer_lifecycle import current_writer_lease
+
+    lease = current_writer_lease()
+    if lease is None:
+        return
+    snapshot = await agent.aget_state(config)
+    lease.mark_paused(
+        agent, config, snapshot, pending, tools_node_name=TOOL_NODE_NAME,
+    )
+
+
 async def handle_auto_resume(
     agent: Any, config: dict, permission_mode: str,
     call_counter: Counter, call_start_time: dict, state: dict,
@@ -73,6 +86,7 @@ async def handle_auto_resume(
             from src.agent.core.toolkit.permission_classifier import PermissionClassifier
             confirmation = authorization.next_confirmation(pending, ctx.request_tools, PermissionClassifier(), ctx)
             if confirmation is not None:
+                await _mark_writer_paused(agent, config, pending)
                 yield build_confirm_required_event([confirmation])
                 return
             async for sse in _iter_agent_sse(agent, _RESUME_ALLOW, config, call_counter, call_start_time, state):
@@ -80,6 +94,7 @@ async def handle_auto_resume(
             continue
         decision = evaluate_pending(pending, permission_mode)
         if decision == DECISION_ASK:
+            await _mark_writer_paused(agent, config, pending)
             yield build_confirm_required_event(pending)
             return
         if decision == DECISION_DENY:

@@ -25,7 +25,13 @@ from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 from langchain_core.runnables.config import merge_configs
 
 from app.api.sse import sse_event
-from src.agent.context_guard import _CUMULATIVE_TOKENS, accumulate_tokens, reset_token_counter
+from src.agent.context_guard import (
+    _CUMULATIVE_TOKENS,
+    ContextBudget,
+    accumulate_tokens,
+    estimate_context_tokens,
+    reset_token_counter,
+)
 from src.agent.exceptions import (
     AgentStreamIdleTimeoutError,
     AgentTimeoutError,
@@ -283,8 +289,10 @@ async def stream_agent_to_sse(
     events: Any,
     config: dict,
     call_counter: Counter,
-    permission_mode: str = "bypassPermissions",
+    permission_mode: str = "default",
     model: str = "",
+    requested_max_tokens: int | None = None,
+    context_budget: ContextBudget | None = None,
     *,
     initial_execution_config: dict | None = None,
     before_initial_iteration=None,
@@ -320,7 +328,9 @@ async def stream_agent_to_sse(
     outcome = "error"
     error_type: str | None = None
     try:
-        state = init_stream_state(stream_config, model)
+        state = init_stream_state(
+            stream_config, model, requested_max_tokens, context_budget,
+        )
         if compaction_source_message_ids is None and compaction_source_messages is None:
             source_sidecar = _COMPACTION_SOURCE_SIDECAR.get()
         else:
@@ -339,7 +349,12 @@ async def stream_agent_to_sse(
         ))
         queue_registered = True
         event_context.enter_context(bind_event_channel(stream_config, state["tool_event_queue"]))
-        reset_token_counter()
+        initial_tokens = estimate_context_tokens(events)
+        if initial_tokens > state["token_limit"]:
+            raise ContextLimitError(
+                cumulative=initial_tokens, limit=state["token_limit"],
+            )
+        reset_token_counter(initial_tokens)
         # The initial request history already occupies the window. Seed the
         # same estimator used by compaction triggers so streaming compaction
         # reacts to history + new output, not only new output.
@@ -350,7 +365,9 @@ async def stream_agent_to_sse(
         if initial_messages:
             from src.agent.request_budget import estimated_messages_tokens
 
-            _CUMULATIVE_TOKENS.set(estimated_messages_tokens(initial_messages))
+            seeded_tokens = estimated_messages_tokens(initial_messages)
+            if seeded_tokens > _CUMULATIVE_TOKENS.get():
+                _CUMULATIVE_TOKENS.set(seeded_tokens)
         if initial_execution_config is None:
             agent_stream = _iter_agent_sse(
                 agent, events, stream_config, call_counter, call_start_time, state,
