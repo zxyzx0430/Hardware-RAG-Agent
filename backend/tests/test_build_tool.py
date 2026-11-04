@@ -16,7 +16,6 @@ import pytest
 
 from src.agent.core.toolkit.audit_recorder import AuditRecorder
 from src.agent.core.toolkit.permission_classifier import (
-    ALLOW,
     ASK,
     PermissionClassifier,
 )
@@ -175,9 +174,13 @@ class TestFlashToolExecute:
 
 
 class TestRiskLevels:
-    def test_build_tool_risk_level_low(self):
-        """BuildTool.risk_level is LOW (compile has no side effects)."""
-        assert BuildTool().risk_level == RiskLevel.LOW
+    def test_build_tool_risk_level_high(self):
+        """BuildTool.risk_level is HIGH.
+
+        PlatformIO writes build artifacts into the project tree and may fetch
+        inferred dependencies, so a build is not a side-effect-free action.
+        """
+        assert BuildTool().risk_level == RiskLevel.HIGH
 
     def test_flash_tool_risk_level_high(self):
         """FlashTool.risk_level is HIGH (writes to device)."""
@@ -190,12 +193,12 @@ class TestRiskLevels:
 
 
 class TestPermissionClassifier:
-    def test_build_tool_auto_allow(self):
-        """BuildTool (LOW risk) is auto-allowed by PermissionClassifier."""
+    def test_build_tool_requires_confirmation(self):
+        """BuildTool (HIGH risk) goes to HITL instead of being auto-allowed."""
         spec = BuildTool()
         ctx = _build_ctx()
         decision = PermissionClassifier().check(spec, {}, ctx)
-        assert decision == ALLOW
+        assert decision == ASK
 
     def test_flash_tool_triggers_hitl(self):
         """FlashTool (HIGH risk) triggers HITL via _decide_high ASK fallback.
