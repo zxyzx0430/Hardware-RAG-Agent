@@ -254,6 +254,8 @@ npx vite --host 127.0.0.1 --port 5173
 
 ## 贡献指南
 
+当前开发顺序与逐步验收标准见[核心能力开发计划](docs/development-plan.md)。优先完善 Skills、聊天与会话、记忆上下文、知识库与 RAG；MCP 扩展暂缓，已有功能保留。
+
 ### 开发环境
 
 ```powershell

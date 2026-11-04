@@ -8,11 +8,10 @@ Dispatch flow per call:
                                         execute are NOT intercepted here)
   4. wrap into ToolResultEnvelope
   5. output_schema soft-validation   -> warning log only (never blocks)
-  6. long-output truncation          -> output > 8000 chars truncated,
-                                        full payload kept in data,
-                                        metadata.compacted = True
+  6. preserve the original tool output and metadata without truncation
   7. audit_recorder.record           -> silent on DB failure
-  8. return envelope.model_dump()
+  8. commit an eligible canonical result observation
+  9. return the complete envelope with archive status
 
 Loop detection was removed (v2 suggestion 3: converged to the streaming
 layer in sse_helpers). General permission is checked UPSTREAM by
@@ -26,6 +25,7 @@ Spec: industrial-tool-runtime §ADDED Requirements (ToolRouter).
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from dataclasses import dataclass
@@ -58,8 +58,7 @@ SUGGEST_TIMEOUT: str = "请缩小查询范围或拆分任务后重试。"
 SUGGEST_EXEC: str = "工具执行异常，请联系管理员或重试。"
 SUGGEST_NOT_FOUND: str = "工具未注册，请检查工具名拼写。"
 
-# v2 suggestion 1: long-output truncation threshold (chars).
-# envelope.output above this is truncated; full payload stays in data.
+# Retained for compatibility; dispatch no longer truncates tool output.
 OUTPUT_TRUNCATE_THRESHOLD: int = 8000
 _TRUNCATE_SUFFIX: str = "...(已截断，完整数据见 data)"
 
@@ -149,18 +148,22 @@ class ToolRouter:
                 tool_name,
                 tool_spec.name,
             )
-            return _spec_mismatch_envelope(
-                tool_name, tool_spec.name, call_id, start_ms
-            ).model_dump()
+            return _with_observation_status(
+                _spec_mismatch_envelope(
+                    tool_name, tool_spec.name, call_id, start_ms
+                )
+            )
         spec = tool_spec if tool_spec is not None else _TOOL_REGISTRY.get(tool_name)
         if spec is None:
-            return _not_found_envelope(tool_name, call_id, start_ms).model_dump()
+            return _with_observation_status(
+                _not_found_envelope(tool_name, call_id, start_ms)
+            )
         if not _skills_mode_allows(spec, ctx):
             envelope = _skills_read_only_envelope(spec, call_id, start_ms)
             self.audit_recorder.record(
                 AuditRecord(call_id, spec, args, envelope, "deny", "kb_scope_mismatch", ctx)
             )
-            return envelope.model_dump()
+            return _with_observation_status(envelope)
         state = _DispatchState(call_id, spec, args, ctx, start_ms)
         external = spec.mcp_info is not None
         authorization = ctx.mcp_authorization
@@ -170,17 +173,18 @@ class ToolRouter:
             if not granted:
                 envelope = _error_envelope(state, "PERMISSION_DENIED", "This exact tool call is not authorized.", "请确认当前工具和参数，或重新发送请求。")
                 self.audit_recorder.record(AuditRecord(call_id, spec, audit_args, envelope, "deny", source, ctx))
-                return envelope.model_dump()
+                return _with_observation_status(envelope)
             if external or source != "auto_allow":
                 decision, decision_source = "allow", source
         envelope = await self._run_pipeline(state)
         self.audit_recorder.record(
             AuditRecord(call_id, spec, audit_args, envelope, decision, decision_source, ctx)
         )
-        return envelope.model_dump()
+        reference = _archive_tool_observation(envelope, spec, ctx)
+        return _with_observation_status(envelope, reference)
 
     async def _run_pipeline(self, state: _DispatchState) -> ToolResultEnvelope:
-        """validate args -> exec -> wrap -> soft-validate output -> truncate."""
+        """Validate args, execute, wrap and soft-validate, then preserve output."""
         invalid = _validate_args(state)
         if invalid is not None:
             return invalid
@@ -236,15 +240,7 @@ class ToolRouter:
     def _truncate_long_output(
         self, envelope: ToolResultEnvelope
     ) -> ToolResultEnvelope:
-        """Truncate envelope.output above OUTPUT_TRUNCATE_THRESHOLD.
-
-        Full payload is preserved in envelope.data; metadata.compacted is
-        set so the frontend knows the LLM-facing text was trimmed.
-        """
-        if len(envelope.output) <= OUTPUT_TRUNCATE_THRESHOLD:
-            return envelope
-        envelope.output = envelope.output[:OUTPUT_TRUNCATE_THRESHOLD] + _TRUNCATE_SUFFIX
-        envelope.metadata.compacted = True
+        """Compatibility entry point that returns the complete envelope unchanged."""
         return envelope
 
 
@@ -401,6 +397,65 @@ def _suggestion_for(tag: str) -> str:
         ERR_NOT_FOUND: SUGGEST_NOT_FOUND,
     }
     return mapping.get(tag, SUGGEST_EXEC)
+
+
+def _archive_tool_observation(
+    envelope: ToolResultEnvelope,
+    spec: ToolSpec,
+    ctx: ToolContext,
+) -> str | None:
+    """Best-effort persist the exact canonical envelope outside audit metadata."""
+    excluded_tools = {
+        "import_skill",
+        "preview_skill_import",
+        "read_tool_observation",
+    }
+    if spec.name in excluded_tools:
+        return None
+    skill_body_fields = {
+        "load_skill": "instructions",
+        "read_skill_resource": "content",
+    }
+    body_field = skill_body_fields.get(spec.name)
+    if body_field is not None and (
+        envelope.success is not True
+        or not isinstance(envelope.data, dict)
+        or not isinstance(envelope.data.get(body_field), str)
+    ):
+        return None
+    scope = getattr(ctx, "tool_observation_scope", None)
+    if scope is None:
+        return None
+    try:
+        canonical_envelope = json.dumps(
+            envelope.model_dump(mode="json"),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+            allow_nan=False,
+        )
+        from app.api.tool_observations import archive_tool_observation
+
+        return archive_tool_observation(canonical_envelope, spec.name, scope)
+    except Exception:
+        logger.warning("tool observation archive unavailable")
+        return None
+
+
+def _with_observation_status(
+    envelope: ToolResultEnvelope,
+    reference: str | None = None,
+) -> dict[str, Any]:
+    """Add safe archive status only to the returned, model-facing envelope."""
+    result = envelope.model_dump()
+    metadata = result.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+        result["metadata"] = metadata
+    metadata["hwrag_tool_observation_archived"] = reference is not None
+    if reference is not None:
+        metadata["hwrag_tool_observation_ref"] = reference
+    return result
 
 
 def _skills_mode_allows(spec: ToolSpec, ctx: ToolContext) -> bool:

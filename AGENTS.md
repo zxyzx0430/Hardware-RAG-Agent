@@ -39,6 +39,7 @@
 | 文件 | 用途 |
 | --- | --- |
 | `README.md` | 安装、启动和主要功能 |
+| `docs/development-plan.md` | 当前核心能力开发顺序、单步边界和验收标准；先完善 Skills、聊天与会话、记忆上下文、知识库与 RAG，暂缓 MCP 扩展 |
 | `docs/completed.md` | 当前实现状态与验证边界，不是开发计划 |
 | `docs/agent-capability-baseline.md` | Agent、记忆、Skills/MCP 与 RAG 的能力差距基线和后续调查问题；结论需按新证据更新 |
 | `docs/testing.md` | 测试命令、必留样例、运行产物和测试记录 |
@@ -53,6 +54,7 @@
 - 可复用的 RAG 黄金集和输入文档见 `backend/tests/rag_eval/` 与 `data/test_docs/*.md`，这些文件需要保留。
 - 自动评测、数据库、向量索引、PDF 和本地配置不属于公开测试夹具；按 `.gitignore` 的具体路径规则留在本机。
 - 开发环境、隔离副本、测试产物、缓存和临时目录优先放在 D/E 盘，不在 C 盘新建大型开发环境。运行检查前显式设置当前进程的 `TEMP`、`TMP` 到可写的 D/E 盘目录；已运行的程序不一定继承新用户环境变量。
+- 优先复用 D/E 盘已有 Python、Node 和项目依赖；包管理器缓存、模型缓存和下载目录需单独检查，不能只设置 `TEMP/TMP` 就声称不会写入 C 盘。避免通过临时 `npx` / `pnpm dlx` 自动下载依赖；确需安装时先向 00 说明路径和用途。允许读取 C 盘已有工具或技能，不代表允许迁移、删除其运行数据。
 - 不为腾空间迁移或删除运行中的 Codex 数据库、聊天记录或凭证；缓存清理需逐项确认用途，并保留必要的可恢复备份。
 - 运行命令和最新有记录的结果见 `docs/testing.md`。没有实际运行的测试不得写成已通过。
 - 已用 COM5 上的真实开发板验证串口连接、接收日志和正常断开；烧录和烧录后自动重连尚未做实机验证。
@@ -61,7 +63,7 @@
 
 - 用户限定的任务范围优先；没有明确要求时，不改产品功能、依赖或测试逻辑。
 - 修改接口时同步更新 `docs/api-contract.md`。
-- 修改代码符号前先做 GitNexus 影响分析；不确定或高风险结果要进一步核实。准备提交前检查图谱变更。
+- 准备提交前检查图谱变更。
 - 代码和注释使用英文；对用户默认使用中文。
 - 保留 Conventional Commits 格式。没有明确要求时，不提交、不推送。
 - 清理文件时逐个确认用途，使用精确路径；不要运行 `git clean` 或覆盖本机材料。
@@ -71,7 +73,7 @@
 
 开发环境和服务启动步骤以 README 为准。后端测试、前端测试、静态检查和构建命令以 `docs/testing.md` 为准。
 
-Windows 上运行 GitNexus CLI 时使用 `scripts/gitnexus.ps1`，例如 `./scripts/gitnexus.ps1 status`。该脚本固定 GitNexus 1.6.12，并向 pnpm 显式授权所需的原生构建包；直接运行 `.gitnexus/run.cjs` 可能因 pnpm 拒绝未授权的 Tree-sitter 语法包而失败。修改代码符号前先用此脚本运行 `impact`，准备提交前运行 `detect-changes`。
+Windows 上运行 GitNexus CLI 时使用 `scripts/gitnexus.ps1`，例如 `./scripts/gitnexus.ps1 status`。该脚本固定 GitNexus 1.6.12，并向 pnpm 显式授权所需的原生构建包；直接运行 `.gitnexus/run.cjs` 可能因 pnpm 拒绝未授权的 Tree-sitter 语法包而失败。准备提交前运行 `detect-changes`。
 
 当前本机 GitNexus 图谱可用于 `context`、`trace` 和 `impact`；`doctor` 显示 LadybugDB FTS / VECTOR 扩展不可用，因此 `query` 可能返回空结果。修复全文搜索需要能下载 LadybugDB 扩展，并安装 Windows 所需的 OpenSSL 3；修复后先用 `doctor` 确认能力恢复。
 
@@ -96,17 +98,12 @@ This project is indexed by GitNexus as **Hardware-RAG-Agent** (12305 symbols, 22
 
 ## Always Do
 
-- **MUST run impact before editing.** Use `impact({target: "symbolName", direction: "upstream"})` or `node .gitnexus/run.cjs impact "symbolName" --direction upstream --repo .`; report callers, processes, and risk. Never substitute grep for graph analysis.
 - **MUST analyze graph changes before committing.** Use `detect_changes({scope: "all"})` (MCP) or `node .gitnexus/run.cjs detect-changes --scope all --repo .` (CLI fallback). `partial: true` or `truncated: true` is not a clean check — a zero means unseen, not unaffected; re-run it. For regression review: `detect_changes({scope: "compare", base_ref: "master"})` or `node .gitnexus/run.cjs detect-changes --scope compare --base-ref "master" --repo .`.
-- MUST warn on HIGH/CRITICAL `risk` pre-edit; never use `riskSharedAxes` to waive a HIGH/CRITICAL `risk` warning. Compare File/symbol: MCP File omits axes; Graph-RAG expands File.
-- **MUST treat `risk: UNKNOWN` as unresolved, not as low.** An empty caller set is not evidence the symbol is unused — it can also mean the callers are not resolvable by the index (plain-object property access, dynamic dispatch, cross-language calls). `impact` pairs `UNKNOWN` with a `riskNote` saying so. Confirm with a text search before treating the symbol as safe to change or delete; do not proceed on the strength of a zero.
-- **MUST use `query({search_query: "concept"})` for concepts/flows, `context({name: "symbolName"})` for a named symbol, or `impact` for blast radius, on read-only callers, dependencies, imports, or execution flow.** Graph first; text search only for empty/`UNKNOWN`/literals.
+- For codebase exploration, use `query({search_query: "concept"})` for concepts or flows and `context({name: "symbolName"})` for a named symbol. Use text search to verify literals and dynamic callsites, and when graph results are empty.
 - For security review, `explain({target: "fileOrSymbol"})` lists taint findings (source→sink flows; needs `analyze --pdg`).
 
 ## Never Do
 
-- NEVER edit a function, class, or method before MCP/CLI impact analysis.
-- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis, and never read `UNKNOWN` as an all-clear — it means the walk could not answer, which is the one verdict that requires confirming by other means.
 - NEVER rename symbols with find-and-replace — use `rename` which understands the call graph.
 - NEVER commit before MCP/CLI graph change analysis.
 

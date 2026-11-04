@@ -13,10 +13,17 @@ const MAX_PINNED = 5;
 
 const DEFAULT_MODEL = "";
 
-/** Context window presets (tokens) — mirror backend CONTEXT_WINDOW_256K / _1M. */
+/** Session context window limit plus the legacy preset value (tokens). */
 export const CONTEXT_WINDOW_256K = 262144;
 export const CONTEXT_WINDOW_1M = 1048576;
 const DEFAULT_CONTEXT_WINDOW = CONTEXT_WINDOW_256K;
+
+function normalizeContextWindow(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return DEFAULT_CONTEXT_WINDOW;
+  }
+  return Math.min(value, DEFAULT_CONTEXT_WINDOW);
+}
 
 /** One day in milliseconds — used for session time bucketing. */
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -92,7 +99,7 @@ function migrateSession(s: unknown): Session {
     ? s
     : { ...(s as Record<string, unknown>), createdAt: (s as Record<string, unknown>)?.createdAt || (s as Record<string, unknown>)?.updatedAt || Date.now() }) as Session;
   // Backfill contextWindow for old sessions that predate the field
-  const contextWindow = (base as { contextWindow?: number }).contextWindow ?? DEFAULT_CONTEXT_WINDOW;
+  const contextWindow = normalizeContextWindow((base as { contextWindow?: unknown }).contextWindow);
   // FIX-2: 迁移旧的硬编码默认 model "gpt-4o-mini" → ""，让 footer fallthrough 到全局 chatModel
   const model = base.model === "gpt-4o-mini" ? "" : base.model;
   return { ...base, contextWindow, model };
@@ -110,7 +117,7 @@ interface SessionState {
 
   // Actions
   initSessions: () => Promise<void>;
-  newSession: () => Promise<void>;
+  newSession: (options?: { requirePersisted?: boolean }) => Promise<string | undefined>;
   selectSession: (id: string) => void;
   deleteSession: (id: string, confirm?: () => boolean) => boolean;
   pinSession: (id: string) => boolean;
@@ -160,7 +167,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           msgCount: s.msg_count ?? 0,
           branchFromSessionId: s.branch_from_session_id ?? undefined,
           branchFromMessageId: s.branch_from_message_id ?? undefined,
-          contextWindow: s.context_window ?? DEFAULT_CONTEXT_WINDOW,
+          contextWindow: normalizeContextWindow(s.context_window),
         }));
         getLog()("ok", "session", `从后端加载 ${sessions.length} 个会话`);
         set({ sessions, initialized: true });
@@ -177,9 +184,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set({ initialized: true });
   },
 
-  newSession: async () => {
+  newSession: async (options) => {
     // 防止连续点击：正在创建中时直接返回
-    if (get().creatingSession) return;
+    if (get().creatingSession) {
+      if (options?.requirePersisted) throw new Error("会话正在创建，请稍后重试");
+      return undefined;
+    }
     set({ creatingSession: true });
     try {
     const { chatModel } = useSettingsStore.getState();
@@ -195,17 +205,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const localId = `s${Date.now()}`;
     let sid = localId;
     try {
-      const res = await apiPost<{ id: string }>("sessions", {
+      const res = await apiPost<{ id?: string }>("sessions", {
         id: localId,
         title: defaultTitle,
         model: sessionModel,
         project,
         context_window: DEFAULT_CONTEXT_WINDOW,
       });
-      if (res?.id) {
-        sid = res.id;
+      if (typeof res?.id === "string" && res.id.trim()) {
+        sid = res.id.trim();
         getLog()("ok", "session", `会话已创建于后端: ${sid}`);
       } else {
+        if (options?.requirePersisted) throw new Error("后端未返回有效会话 ID");
         getLog()("warn", "session", "后端未返回 id，使用本地 ID");
       }
     } catch (err) {
@@ -213,6 +224,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       if (msg.includes("401")) {
         useChatStore.setState({ needsApiKey: true });
       }
+      if (options?.requirePersisted) throw err;
       // abort 或其他错误：使用本地 ID，persistLastTurn 会自动补录
       getLog()("warn", "session", `后端创建失败（${msg}），使用本地 ID ${localId}`);
     }
@@ -242,6 +254,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     // 切换到新会话
     useChatStore.getState().setActiveSession(sid);
+    return sid;
     } finally {
       set({ creatingSession: false });
     }
@@ -510,16 +523,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setContextWindow: (window) => {
     const sid = useChatStore.getState().activeSessionId;
     if (!sid) return;
-    getLog()("info", "session", `更新 contextWindow: ${sid} → ${window}`);
-    const old = get().sessions.find((x) => x.id === sid)?.contextWindow ?? CONTEXT_WINDOW_256K;
+    const contextWindow = normalizeContextWindow(window);
+    getLog()("info", "session", `更新 contextWindow: ${sid} → ${contextWindow}`);
+    const old = normalizeContextWindow(get().sessions.find((x) => x.id === sid)?.contextWindow);
     set((s) => {
       const updated = {
-        sessions: s.sessions.map((x) => x.id === sid ? { ...x, contextWindow: window } : x),
+        sessions: s.sessions.map((x) => x.id === sid ? { ...x, contextWindow } : x),
       };
       saveToStorage("sessions", updated.sessions);
       return updated;
     });
-    apiPatch(`sessions/${sid}`, { context_window: window }).catch((err) => {
+    apiPatch(`sessions/${sid}`, { context_window: contextWindow }).catch((err) => {
       set((s) => {
         const updated = {
           sessions: s.sessions.map((x) => x.id === sid ? { ...x, contextWindow: old } : x),

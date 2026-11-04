@@ -16,6 +16,13 @@ from sqlalchemy.orm import Session as DBSession
 
 from app.db.database import get_db
 from app.api.dependencies import current_user_optional
+from app.api.memory_epoch import MEMORY_CLEAR_EPOCH_KEY, stage_memory_clear_epoch
+from app.api.session_epoch import (
+    CONTEXT_EVENT_PREFIX,
+    SESSION_DELETE_EPOCH_PREFIX,
+    _session_prefix,
+    stage_session_delete_epoch,
+)
 
 logger = logging.getLogger(__name__)
 from app.db.models import Session as SessionModel
@@ -66,6 +73,15 @@ class SessionUpdate(BaseModel):
     context_window: Optional[int] = None
 
 
+def _cap_agent_session_context_window(value: int) -> int:
+    """Clamp persisted and serialized Agent session windows to the hard cap."""
+    from src.agent.context_guard import AGENT_CONTEXT_WINDOW_CAP
+
+    if type(value) is not int:
+        raise ValueError("Session context_window must be an integer")
+    return min(value, AGENT_CONTEXT_WINDOW_CAP)
+
+
 def _serialize_session(s: SessionModel) -> dict:
     return {
         "id": s.id,
@@ -76,7 +92,7 @@ def _serialize_session(s: SessionModel) -> dict:
         "msg_count": s.msg_count,
         "branch_from_session_id": s.branch_from_session_id,
         "branch_from_message_id": s.branch_from_message_id,
-        "context_window": s.context_window,
+        "context_window": _cap_agent_session_context_window(s.context_window),
         "created_at": s.created_at.isoformat() if s.created_at else "",
         "updated_at": s.updated_at.isoformat() if s.updated_at else "",
     }
@@ -113,7 +129,7 @@ def create_session(payload: SessionCreate, db: DBSession = Depends(get_db), user
         project=payload.project,
         branch_from_session_id=payload.branch_from_session_id,
         branch_from_message_id=payload.branch_from_message_id,
-        context_window=payload.context_window,
+        context_window=_cap_agent_session_context_window(payload.context_window),
     )
     logger.info("创建会话: id=%s title=%s", sid, payload.title)
     db.add(session)
@@ -187,7 +203,7 @@ def update_session(session_id: str, payload: SessionUpdate, db: DBSession = Depe
     if payload.branch_from_message_id is not None:
         s.branch_from_message_id = payload.branch_from_message_id
     if payload.context_window is not None:
-        s.context_window = payload.context_window
+        s.context_window = _cap_agent_session_context_window(payload.context_window)
     logger.info("会话已更新: id=%s", session_id)
     s.updated_at = datetime.datetime.utcnow()
     db.commit()
@@ -206,6 +222,8 @@ def _apply_session_update(s: SessionModel, payload: SessionUpdate) -> None:
     for field in _SESSION_UPDATABLE_FIELDS:
         val = getattr(payload, field)
         if val is not None:
+            if field == "context_window":
+                val = _cap_agent_session_context_window(val)
             setattr(s, field, val)
 
 
@@ -231,6 +249,10 @@ def delete_session(session_id: str, db: DBSession = Depends(get_db), user: dict 
         logger.warning("会话删除失败: id=%s 不存在", session_id)
         raise _fail("NOT_FOUND", f"会话不存在: {session_id}", status_code=404)
     logger.info("会话已删除: id=%s", session_id)
+    stage_session_delete_epoch(db, session_id, datetime.datetime.utcnow())
+    db.query(SettingsModel).filter(
+        SettingsModel.key.startswith(_session_prefix(session_id), autoescape=True),
+    ).delete(synchronize_session=False)
     db.delete(s)
     db.commit()
     return _ok({"id": session_id, "deleted": True})
@@ -346,7 +368,11 @@ ALLOWED_SETTINGS_KEYS = {
 def get_settings(db: DBSession = Depends(get_db), user: dict = Depends(current_user_optional)) -> dict:
     """获取所有设置键值对。"""
     rows = db.query(SettingsModel).all()
-    return _ok({"settings": {r.key: r.value for r in rows}})
+    return _ok({"settings": {
+        r.key: r.value for r in rows
+        if r.key != MEMORY_CLEAR_EPOCH_KEY
+        and not r.key.startswith((SESSION_DELETE_EPOCH_PREFIX, CONTEXT_EVENT_PREFIX))
+    }})
 
 
 @db_router.put("/settings")
@@ -401,6 +427,8 @@ def update_settings(payload: dict, db: DBSession = Depends(get_db), user: dict =
                 status_code=422,
             )
     now = datetime.datetime.utcnow()
+    if payload.get("longTermMemory") == "":
+        stage_memory_clear_epoch(db, now)
     for key, value in payload.items():
         existing = db.query(SettingsModel).filter(SettingsModel.key == key).first()
         val_str = str(value) if value is not None else None

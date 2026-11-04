@@ -70,6 +70,24 @@ MODEL_MAX_TOKENS: dict[str, int] = {
 
 DEFAULT_MAX_TOKENS = 4096
 
+
+def _registered_model_value(model: str | None, values: dict[str, int]) -> int | None:
+    """Return a registry value for an exact model name or exact provider suffix."""
+    if type(model) is not str or not model:
+        return None
+    registered_name = model.rsplit("/", 1)[-1]
+    return values.get(registered_name)
+
+
+def get_registered_context_window(model: str | None) -> int | None:
+    """Return only an exactly registered context window, without a default/fuzzy match."""
+    return _registered_model_value(model, MODEL_CONTEXT_WINDOWS)
+
+
+def get_registered_max_tokens(model: str | None) -> int | None:
+    """Return only an exactly registered output-token cap, without a default/fuzzy match."""
+    return _registered_model_value(model, MODEL_MAX_TOKENS)
+
 # Known model types: "chat" | "embedding" | "reranker"
 MODEL_TYPES: dict[str, str] = {
     # Chat models

@@ -79,6 +79,23 @@ LOW_RISK_PREFIXES: tuple[str, ...] = (
     "dir", "where",
 )
 
+# These otherwise read-only Git commands can write output files or execute
+# configured helpers when the corresponding options are supplied. A safe
+# command prefix alone is therefore not enough to auto-allow them.
+_UNVERIFIED_WRITE_OPTIONS: tuple[re.Pattern[str], ...] = (
+    # Git accepts unambiguous abbreviations for long options. Treat every
+    # prefix of --output as a possible file write, including --out=path.
+    re.compile(r"(?i)(?:^|[\s\"'])--o(?:u(?:t(?:p(?:u(?:t)?)?)?)?)?(?=\s*=|\s|[\"']|$)"),
+    re.compile(r"(?i)(?:^|[\s\"'])-o(?:[^\s\"']+|\s|[\"']|$)"),
+    # Git can accept unique long-option abbreviations, so reject every
+    # boundary-delimited prefix that can resolve to an external helper.
+    re.compile(
+        r"(?i)(?:^|[\s\"'])--"
+        r"(?:ext(?:-d(?:i(?:f)?)?)?|textc(?:o(?:n(?:v)?)?)?)"
+        r"(?=\s|=|[\"']|$)"
+    ),
+)
+
 # Tools whose risk is graded by pattern matching on their args.
 COMMAND_TOOL: str = "run_command"
 COMMAND_ARG_FIELD: str = "command"
@@ -111,7 +128,7 @@ def _classify_command(command: str) -> str:
         return HIGH
     if any(kw in cmd_lower for kw in MEDIUM_RISK_KEYWORDS):
         return MEDIUM
-    if _has_shell_control_syntax(command):
+    if _has_shell_control_syntax(command) or _has_unverified_write_option(command):
         return MEDIUM
     if _matches_low_prefix(cmd_lower):
         return LOW
@@ -124,9 +141,14 @@ def _has_shell_control_syntax(command: str) -> bool:
     This deliberately errs on the side of asking: even quoted metacharacters
     can be ambiguous across PowerShell, cmd.exe, and POSIX shells.
     """
-    if any(char in command for char in ";|&><`(){}$\r\n"):
+    if any(char in command for char in ";|&><`(){}$`\r\n"):
         return True
     return re.search(r"\\\r?\n", command) is not None
+
+
+def _has_unverified_write_option(command: str) -> bool:
+    """Return True when a safe-prefix command requests output or a helper."""
+    return any(pattern.search(command) for pattern in _UNVERIFIED_WRITE_OPTIONS)
 
 
 def _matches_high_risk(command: str) -> bool:

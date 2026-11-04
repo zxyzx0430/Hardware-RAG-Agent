@@ -103,34 +103,48 @@ async def search_docs_core(
         from src.rag.kb_manager import get_kb_manager
         kb_manager = get_kb_manager()
 
-        # A cache hit is valid only when the manager can verify the current KB
-        # scope and its process-local content revision. Unknown signatures fail
-        # closed: retrieve normally, but do not read or populate the cache.
-        signature = None
+        # Search results are only safe while the enabled KB/document eligibility
+        # signature can be verified. Unknown signatures fail closed before
+        # either cache access or retrieval.
         signature_provider = getattr(kb_manager, "get_search_cache_signature", None)
-        if callable(signature_provider):
-            try:
-                signature = signature_provider(kb_ids)
-                hash(signature)
-            except Exception:
-                signature = None
+        if not callable(signature_provider):
+            logger.warning("[search_docs_core] freshness signature unavailable; dropping retrieval")
+            return []
+        try:
+            signature = signature_provider(kb_ids)
+            if signature is None:
+                raise ValueError("freshness signature is empty")
+            hash(signature)
+        except Exception as e:
+            logger.warning("[search_docs_core] cannot verify source signature before retrieval: %s", e)
+            return []
 
         key = _cache_key(query, kb_ids, top_k, threshold, doc_filter) + (signature,)
-        if signature is not None:
-            cached = _get_cached(key)
-            if cached is not None:
-                elapsed_ms = int((time.perf_counter() - start_time) * _MS_PER_SECOND)
-                elapsed_seconds = elapsed_ms / _MS_PER_SECOND
-                logger.info(
-                    f"[search_docs_core] cache hit query='{query[:60]}' top_k={top_k} "
-                    f"threshold={threshold:.2f} doc_filter='{doc_filter}'"
-                )
-                logger.info(
-                    "search_docs_core cache_hit=true total_ms=%d result_count=%d query=%r",
-                    elapsed_ms, len(cached), query[:_LOG_QUERY_TRUNCATE],
-                )
-                _observe_rag_retrieval(elapsed_seconds)
-                return cached
+        cached = _get_cached(key)
+        if cached is not None:
+            try:
+                current_signature = signature_provider(kb_ids)
+                if current_signature is None:
+                    raise ValueError("freshness signature is empty")
+                hash(current_signature)
+            except Exception as e:
+                logger.warning("[search_docs_core] cannot revalidate cached source signature: %s", e)
+                return []
+            if current_signature != signature:
+                logger.info("[search_docs_core] cache hit dropped because source signature changed")
+                return []
+            elapsed_ms = int((time.perf_counter() - start_time) * _MS_PER_SECOND)
+            elapsed_seconds = elapsed_ms / _MS_PER_SECOND
+            logger.info(
+                f"[search_docs_core] cache hit query='{query[:60]}' top_k={top_k} "
+                f"threshold={threshold:.2f} doc_filter='{doc_filter}'"
+            )
+            logger.info(
+                "search_docs_core cache_hit=true total_ms=%d result_count=%d query=%r",
+                elapsed_ms, len(cached), query[:_LOG_QUERY_TRUNCATE],
+            )
+            _observe_rag_retrieval(elapsed_seconds)
+            return cached
 
         results = await kb_manager.search_all_enabled(
             query, k=top_k, kb_ids=kb_ids, score_threshold=threshold,
@@ -141,12 +155,19 @@ async def search_docs_core(
             f"threshold={threshold:.2f} doc_filter='{doc_filter}' "
             f"found={len(results)}"
         )
-        if signature is not None:
-            try:
-                if kb_manager.get_search_cache_signature(kb_ids) == signature:
-                    _set_cached(key, results)
-            except Exception:
-                logger.debug("[search_docs_core] cache write skipped: signature unavailable")
+        try:
+            current_signature = signature_provider(kb_ids)
+            if current_signature is None:
+                raise ValueError("freshness signature is empty")
+            hash(current_signature)
+        except Exception as e:
+            logger.warning("[search_docs_core] cannot verify source signature after retrieval: %s", e)
+            return []
+        if current_signature != signature:
+            logger.info("[search_docs_core] retrieval batch dropped because source signature changed")
+            return []
+
+        _set_cached(key, results)
         elapsed_ms = int((time.perf_counter() - start_time) * _MS_PER_SECOND)
         elapsed_seconds = elapsed_ms / _MS_PER_SECOND
         logger.info(

@@ -1,5 +1,49 @@
 # Hardware RAG Agent API Contract
 
+> 2026-10-26 上下文压缩候选的定向软件验收已完成：正常/resume 的 `CONTEXT_LIMIT` 与失败终态、完整 pending 暂停凭证及单 call 确认、真实 SSE 适配器驱动的原生 drain/join 和 SQLite 发布续跑均有证据。没有新增模型可授予权限，未扩大原始工具/Skill 正文归档资格；Skills 中普通 reader 仍注册，其现有运行时读取门禁保持。13 个专项 case 与五个指定回归文件为分组覆盖，非完整 HTTP/provider E2E 或全后端通过；主树产品未同步。详见[验收记录](reports/context-compaction-acceptance-20261026.md)，本段优先于下方历史状态。
+
+> 2026-10-26 上下文压缩候选状态：协作 drain、同任务 join、精确保存配置及续跑属于宿主内部协议，不新增模型可授予权限。候选树七个冻结产品文件的无 spy 原生协议子集已有六项通过；正常/resume 的 `CONTEXT_LIMIT` 与失败终态、HITL 和完整保存恢复链仍在集中验证，不能据此声明完整 HTTP/SSE 已验收。主树产品未同步；下方历史“未接入/未测试”不代表此候选子集仍未运行，详见 [测试记录](testing.md)。
+
+> 2026-10-24 当前 Skills 状态：标准包/API、Agent 与现有前端实现及接线完成；选定软件自动化验证为 13 个指定后端测试路径 186 passed / 26 warnings、完整 Vitest 24 files / 159 passed、`tsc -b` exit 0、Vite build exit 0（chunk-size advisory）。这不是完整后端或整项目验收；真实 GitHub/模型/浏览器、真实用户库/Skills 数据、完整 HTTP/SSE/resume E2E 和第三方 Codex/Claude/Pi/OpenCode 实际发现/运行未验证。本轮无提交，详见 [实施记录](skills-native-implementation.md)。
+
+> 2026-10-23 Skills 接入状态（历史）：当时标准包、共享目录、原生工具处于实现中，集中验证尚未完成；本段的“待补齐”由上方 2026-10-24 结果更新。旧“只读/私有目录/默认停用”仍只属于历史阶段，不能作为当前协议。
+
+> 2026-10-23 历史报告越权追加已撤回并精确恢复，不构成接口变更或授权。全部产品继续冻结；fresh只读worker没有control/caller/schema/reader/HTTP/SSE/权限变更权，无测试或功能接受。
+
+> 2026-10-23 replacement51B9FCD4源码已交未验证：保持bool graph-applied/可选host receipt语义及初始协议，拒unready/foreign、owned事务与取消join是内部约束，不增HTTP/SSE/权限/归档来源。下一host writer/control设计无接线启用权，非全writer/globalCAS或跨轮实测承诺。
+
+> 2026-10-23 旧replacement事务所有权窄修已分派、未交付验证：仅内部publisher拒unready/foreign及owned事务提交回滚，不增HTTP/SSE字段、权限或恢复来源；initial协议不改。两检索正文仍无自动归档资格，不将LOW/JSON/digest当授权。CRUD的epoch stage/同Session commit源码不等跨库或全writer fence/安全擦盘。
+
+> 2026-10-23 内部恢复失败关闭源码已收、未验证：autocompact94144BB3失败抛现有AgentRequestBudgetError，不返回最后问题fallback；无新增caller/外部字段，不能因错误类型断言已跑通CONTEXT_LIMIT映射。原host scope/ref/tail/epoch与工具/Skill archive资格不变，全部产品冻结。下一存储接缝设计不授新schema/HTTP/model reader或正文归档许可。
+
+> 2026-10-23 内部启动接线源码已交、未验证：route861531CD/adapterD2E7B2B已核源码和交接；首次None输入+真实seed配置与ongoing原request状态配置分开，初始scope/epoch在direct/merged真实消费任务启动前复核。仍无新增HTTP/SSE字段或授权，保存结果不明不重投输入，receipt UNKNOWN不当未登记或已完成。全产品冻结，下一仅安全观察/Skill恢复设计；puretextarchive拒raw tool/Skill/system、现读取工具白名单和删除/配额边界不因设计放宽。
+
+> 2026-10-23 新内部启动consumer已窄分派、尚未交付/测试：初始私有模块factory7333D4AE/publisher691DDB9A现冻结。route/adapter下一仅在宿主严格资格与真实保存ack/读回后，首次以None输入及真实seed-ID config进入同原图；后续state/compaction/HITL使用原无seed-ID request config，不重复原input、不将旧parent携带追认为新发布。REFUSED/未知保存终止，receipt UNKNOWN不等确定未登记；epoch/完整有序来源/尾部/最终wire预算保持。无外部HTTP/SSE字段、权限或业务session变更，无全writer/跨库原子或运行成功承诺。
+
+> 2026-10-23 内部接线源码已交、未验证：三consumer现为BB74BC8F/63A082C7/EAF39150；两publisher调用点可从当前verified纯文本scope尝试登记，normal入口只在稳定published head与完整有序原incoming匹配时保尾读入，取消不被吞成继续执行，epoch失效安全终止。初始输入保存仍未接caller；下一仅factory/publisher模块定义host-only原图证明和真实保存结果，图已应用但confirm无head只能UNCONFIRMED/UNKNOWN，不能说确定未登记；提交结果不明不得同图重投原input。无新增外部HTTP/SSE字段、权限或全writer/跨库原子保证，未声称生产head已实际推进或跨轮已通过验证。
+
+> 2026-10-23 源码恢复已交后的窄接入契约（未测试）：normal和manual HITL请求队列按原宿主graph/业务session/具体queue配对，续跑只claim原owner/session/request及原图pending，外部session/SSE/call_id和ToolContext.session_id不变；当前四产品D7103B27/0B8AD034/6710186B/55F338EB已核。下一三文件任务显式接两publisher caller和新normal请求的稳定published-head读取，只有完整有序incoming匹配全部来源才替为checkpoint+原tail，旧producer不被新reader UUID替换。Skills/匿名/不支持或读取失败不产生恢复资格；失败保完整incoming或CONTEXT_LIMIT，epoch失效安全终止。HITL不load替图；图已applied但登记失败仍按原bool，不回滚或重放。初始pre-send未获save ack者仍不登记，v1/prose/orphan不追认，无新外部端点/字段或权限。源码实施不是验证结论。
+
+> 2026-10-23 当前接入状态纠正：01路由/HITL/事件通道实现发生自回滚，已冻结并移交Mill四文件恢复；原交接报告不代表当前接入完成。chat_routes残留需逐块归因保护，其他三文件回任务入口。外部session/SSE/call_id及ToolContext.session_id契约不改；新宿主request图、原图pending匹配、原子claim与请求通道仍待完整恢复和最终统一验证。活preflight claim不得按TTL放手，取消/未启动响应须按拥有者生命周期清理，执行前须复核epoch。自动published-context恢复、publisher登记caller与预发送观察均未启用；不从事件ID/自然耗尽或同连接tuple存在推断commit。以下旧“正在接入”均为历史阶段，不是新支持声明。
+
+> 2026-10-22 内部host连续性协议仍未测试/未启用恢复：新strict九字段路径才可产生私有origin资格；prepared保存完整有序source覆盖与未改tail证明，receipt/head只能由真实graph保存后exact-ID读回再登记。新分派要求prepared绑定宿主producer request图身份，与业务session/ToolContext分离；load按旧producer核ref和图绑定，新请求UUID不替换source UUID。新可选graph配置与publisher登记分支默认不影响旧调用，配置不是认证或授权。无新增HTTP/model读取端点，外部SSE/session字段不因内部graph UUID自动改变；HITL快照/续跑与SSE生产消费未接齐前不启用新路由恢复。配额/删除epoch/失败保原/CONTEXT_LIMIT/completed空均保持，不宣称全writer或跨库原子性。
+
+> 2026-10-22 S06分派候选语义未测试：Agent list_kb_docs/新检索只把indexed且error_message为空的文档当可用来源，未知状态/缺记录/无法核实不放行；无可检索文档提示等待索引或说明无KB依据。缓存签名包含文档状态；检索期间原有效签名变更或发布前无法复核，沿用空结果语义且不自动扩大范围/重试。接口字段、TopK/阈值/文档过滤和None/[]全启用不变；/api/kb/list管理响应仍包含indexing/error及错误信息供查询重试。不是全局原子发布/撤回已返回来源，也没有统一验证结论。
+
+> 2026-10-22 分派候选增量未测试：ToolRouter.output不再无条件截为8000字符；没有验证过完整正文可恢复来源时保留完整output，metadata.compacted不因长度被该helper设为true。返回封套字段不变；新metadata.hwrag_tool_event_ref仍仅定位body-free记录，不替代输出正文。后续provider预算无法容纳时应通过既有CONTEXT_LIMIT失败，不静默截断。此处是实施契约，不是统一验证结果。
+
+> 2026-10-22 候选未测试增量：ToolRouter正常流水线返回metadata可含hwrag_tool_event_ref{batch_id,request_id,sequence,version:2,content_sha256}，仅真实元数据记录提交成功后宿主生成，不含身份或授权。新增registry LOW工具read_tool_event，仅上述locator及byte_budget1..4096（默认4096），extra字段拒绝；host verified scope+runtime session一致且Skills-off，核现存会话/epoch/同owner/请求/完整chain/head/version/hash。成功data.available:true、untrusted_history:true、completion_verified:false、coverage:committed_returns_only；失败available:false不带event。byte_budget覆盖该工具自身返回的完整JSON数据，不含ToolRouter外层封套；错误说明可独立返回，无历史正文。没有新HTTP端点，不允许执行旧动作/凭metadata升级completed或批准；disabled与Skills过滤复用。
+
+> 同批kb_upload准入（未测试）：读取应用层文件内容最多MAX_UPLOAD_SIZE+1（50MiB+1），超限沿用FILE_TOO_LARGE；KB存在后先校验chunk_method/chunk_size/small_chunk_size，再处理同名失败上传清理或新写入。因此既有重复且新参数非法时优先INVALID_REQUEST，不发生旧记录清理。有效请求/同名重传/缺省配置/异步indexing形状不改；这不是HTTP传输层大小限制或并发重复上传CAS保证。
+
+> 2026-10-22 候选未测试增量：Agent聊天及HITL续跑在provider发送前无法确认完整请求预算或超限时，使用既有SSE `error` 形状并返回 `code: "CONTEXT_LIMIT"`，随后 `done {success:false, completed:false}`。不自动删历史、丢工具schema或走基础模型重试。预算计算包含实际请求型号、system/messages、工具定义、结构化输出schema、JSON封装、256 framing及wire输出上限；无上限则预留本地登记最大值。未知型号、不可核成本的opaque模态/provider内建工具/远端隐含历史/自动truncation/extra_body覆写不允许绕过。此为保守本地文本预算，不是精确token或provider能力确认；按真人要求待全部实现到位后统一测试，尚未验收。
+
+> 同轮内部工具返回元数据档案（未测试）不新增HTTP/model读取接口或工具许可字段；Scope仅宿主verified principal/session/request/delete-epoch提供，不来自payload。Skills活跃可记录固定元数据但仍不授原文archive权限。HITL续跑若该scope的principal与当前身份不符，沿用409/HITL_REQUEST_SNAPSHOT_UNAVAILABLE并在构建Agent前拒绝。内部读取只返回untrusted_history与completion_verified:false，returned不是完成/批准；原九字段completed空限制不变。私有Settings/配额/删除规则沿用现有context namespace，原GET context-events不返回这种不同schema的事件。
+
+> 内部元数据链续接（2026-10-22，未测试）：工具返回ref使用独立schema/version2及请求内1..64序号，事务head绑定最终envelope摘要；缺head/缺序/错尾失败关闭。宿主整链读取包含ref+event的完整JSON响应≤32768字节、单条完整响应≤4096字节，不是只限制正文。旧同请求schema1不追认或迁移；既有puretext GET/reader version1不变，仍不提供该内部链的HTTP/model访问授权。
+
+> 内部attempt事件（同日未测试）：schema2链可含tool_attempt_started/timeout/error/cancelled，attempt为1..16、decision固定unknown、skill_version为空；其locator另绑定phase+attempt，不改变tool_return旧locator。request64总上限计所有phase与return，记录配额不等于执行次数限制。取消或超时不代表外部动作撤销，无新SSE/HTTP/model工具字段与授权，pending/permission拒绝等前置事件仍未接齐。
+
 这份文档是 `Hardware RAG Agent` 前后端联调时唯一认可的接口契约来源。
 
 ## 1. 工地铁律
@@ -410,6 +454,7 @@
 
 - 状态：`agreed`
 - 用途：聊天面板发起 RAG 流式问答。
+- 持续滚动增量协议（2026-10-28 设计中，尚未实现或验收）：新客户端通过 `history_mode: "append-v1"`、会话 ID、服务端历史版本 `base_history_revision`、单轮稳定的 `turn_idempotency_key` 和新增消息提交请求。身份与删除 generation 由宿主确认，版本令牌及幂等键均不授予权限；版本过期或同一键对应不同内容应在执行模型或工具前拒绝。首次会话使用服务端确认的初始版本；旧客户端未提供 `history_mode` 时继续使用现有完整 `messages` 协议。需要断线恢复时读取服务端请求状态及已保存事件，不通过重复发起可能执行工具的聊天请求补救。接口字段、状态查询及前后端接线仍待实现与统一验证。
 - 前端入口：`apiSSE('chat', body, { onEvent, onDone })`
 - 请求 Header：
 
@@ -447,7 +492,7 @@
 | `thinking` | RAG 检索、Agent 思考或推理输出 | `content`、`source` |
 | `text` | LLM 逐 token 输出 | `content` |
 | `tool` | Agent 调用工具时（旧事件，向后兼容） | `name`、`icon`、`args`、`result` |
-| `tool_call` | Agent 发起工具调用（含完整 args + call_id） | `tool`、`args`、`call_id`、`step_index` |
+| `tool_call` | Agent 发起工具调用（args 为对外参数；Skills 读取工具有专用安全投影） | `tool`、`args`、`call_id`、`step_index` |
 | `tool_result` | 工具执行完成（含 result + duration） | `call_id`、`tool`、`result`、`duration`、`success`、`step_index` |
 | `tool_confirm_required` | 权限门控需要用户确认（HITL） | `call_id`、`tool`、`args`、`risk_level`、`reason` |
 | `source` | RAG 检索到来源时 | `id`、`title`、`doc`、`page`、`score`、`excerpt` |
@@ -475,6 +520,9 @@
   - `tool` 的 `icon` 为前端展示图标名；`args` 为结构化调用参数；`result` 为工具执行结果字符串（聊天流中可空，完成后再填充）。
   - `tool_call` 的 `call_id` 为工具调用唯一标识，用于和 `tool_result` / `tool_confirm_required` 关联；`step_index` 为 Agent 执行步骤序号。
   - `tool_result` 的 `duration` 为工具执行耗时（毫秒）；`success` 为布尔值。
+  - Skills 安全轨迹增量契约（2026-10-11，候选 A 步作者已实现、独立复核待完成，未同步主树或运行副本）：仅精确 `load_skill` / `read_skill_resource` 的 `tool_call.args` 和内部轨迹历史使用安全投影。只允许合法 `skill_id`，资源工具另可包含规范的 `references/` 或 `assets/` 相对 `path`；非法字段省略，未知字段不透传。真实执行参数、确认所需原始参数及授权语义不改变。
+  - 上述两工具的 `tool_result.result` 显式重建 `{success, output, data, error, metadata}`，不透传未知顶层字段、技能或资源正文、任意输出/错误文案。`data` 仅允许经验证的 `skill_id`、64 位小写十六进制 `content_hash`、与工具匹配的 `stage`（`instructions` / `resource`）、资源相对 `path` 以及布尔 `success`；失败可缺少元数据或令 `data=null`。成功须具有完整合法追踪字段、外层 `success` 严格为 true 且内层 `data.success` 存在并严格为 true，同时无错误；缺失、错误类型或矛盾时失败关闭，事件外层 `success` 与投影一致。候选已用真实 converter 复现两个缺失内层成功字段的红灯并完成两文件作者窄修；作者完整集成 64 项、独立新增 9 项及来源兼容 5 项通过，00 接受后端 A 软件指定范围，未同步主树或运行副本，非完整 S02 验收。路径规范化沿既有仓库大小写兼容，不将目录强制转为小写或改变实际资源定位。
+  - 安全结果使用固定文案：成功为 `Skill instructions loaded` / `Skill resource loaded`，失败为 `Skill operation failed`；失败 error 固定为 `SKILL_READ_FAILED` 及通用提示，不保留原始错误内容。metadata 仅保留可信工具名/调用关联和合法 duration、timestamp、compacted，不触发来自技能结果的 todo 事件。非 Skills 工具和 reasoning 契约不变。本步尚未覆盖前端展示、旧 activity 读回、CRUD 新持久化或 localStorage，不能据此声称整个历史链已脱敏；不迁移或删除旧数据库。
   - `webfetch` 失败沿用工具失败封套：HTTP 错误、被拒绝的重定向、连接异常和空正文返回 `success=false`、`data=null`、`error.error_type=EXEC_ERROR`；超时为 `TIMEOUT`。错误信息不含原始 URL、用户凭据或查询串。重定向不自动跟随；成功载荷仍为 `url/content/prompt/truncated`，不把普通工具数据中的 `error` 字段一律解释成失败。
   - WebFetch 请求期间的 HTTPX URL 日志另做请求范围脱敏，保留状态诊断；不改变上述载荷或授权语义，也不承诺所有工具、依赖或调用参数审计均已脱敏。
   - `tool_confirm_required` 触发时前端弹出 `ConfirmDialog`，用户决策后调 `POST /api/agent-sandbox/resume` 恢复；`risk_level` 枚举 `low` / `medium` / `high`。
@@ -1093,6 +1141,8 @@
 - 约束：
   - `tool` 字段为工具名（字符串），非 `name`。
   - 工具调用先经过 `PermissionClassifier`。`allow` 才会派发；`ask` / `deny` 不执行工具。该端点没有交互确认与恢复流程。
+  - `ConfirmationRule.ALWAYS` 工具即使处于 `bypassPermissions` 模式也要求聊天确认；直接 `/api/tool` 无法恢复确认流程，因此返回 `PERMISSION_CONFIRMATION_REQUIRED` 且不派发。`image_generation` 属于此类工具。
+  - `run_command` 只有在命令可明确判断为只读时才可自动放行；未知命令、复合 shell 语法、输出文件选项或外部 diff/textconv 辅助选项至少要求确认。
   - `output` 为纯文本或 JSON 字符串，`duration_ms` 位于 `metadata`。
 - 权限拒绝响应（HTTP 200，原始 `ToolResultEnvelope`）：
 
@@ -1241,7 +1291,10 @@
 
 - 状态：`agreed`
 - 用途：删除会话及其所有消息。
-- 成功响应：`{ "success": true }`
+- 成功响应：`{ "success": true, "data": { "id": "<session_id>", "deleted": true } }`（对齐原有实现，未新增响应字段）。
+- 删除与暂停请求失效（2026-10-21 候选指定软件范围已独立接受）：成功删除在同一事务更新该会话的私有删除 generation；旧暂停请求之后读取或重存均失效，续跑使用现有 `409 / HITL_REQUEST_SNAPSHOT_UNAVAILABLE`。删除后重新创建同一 ID 不恢复旧快照，新请求可捕获新 generation 正常使用；删除失败不发布失效，其他会话不受影响。内部 marker 复用 Settings，不新增表/列，GET 隐藏其命名空间，PUT 白名单不允许写入；数据库不可读或 marker 损坏时失败关闭。此行为不追溯中止已执行流、撤回发送内容或声称物理清除所有 LangGraph checkpoint。
+- S05a 内部事件接缝（2026-10-21，指定软件范围已独立接受）：同一删除事务还清除该会话 `_contextEvent:<session SHA256>:` 私有记录，失败回滚保留记录；其他会话不受影响。此接缝未接生产自动压缩，没有新增公共事件读取端点，不代表已经能恢复任意旧对话或安全擦除 SQLite 文件/日志。
+- 持续滚动候选接缝（2026-10-28，已写源码、未测试或同步主树）：删除事务还按会话专属前缀清理滚动历史记录，与删除 generation 更新、原归档清理及会话删除一同提交；旧版不符合新历史存储 ID 约束的会话仍保留原删除路径。设置读取在数据库查询中排除私有历史键。此处不声明 SQLite 文件或日志已安全擦除。
 - 错误响应（404）：`{ "success": false, "error": { "code": "NOT_FOUND", "message": "Session not found", "details": null } }`
 
 ### 5.16 `POST /api/sessions/{session_id}/messages`
@@ -1263,6 +1316,16 @@
 
 - 约束：`id` 可选；不传时后端生成。传入已有 ID 且属于本会话时，更新该行的消息内容和附属字段，不增加 `msg_count`；ID 属于其他会话时返回 HTTP 409、错误码 `CONFLICT`。前端重试保存时沿用同一 ID，不重新发起聊天或 Agent 恢复流。
 - `role` 使用 `user` / `assistant`。`sources` / `tool_calls` / `activity` 可选。`activity` 为思考步骤/工具调用活动块 `{ durationMs, steps, status }`，仅 assistant 消息有。
+- S02 B 可选字段契约（2026-10-11，已同意、尚未实现/验收）：仅精确 `load_skill` / `read_skill_resource` 的步骤可带 `skill_trace`，包含合法 `skill_id`、完整 64 位小写十六进制 `content_hash`、`stage`（`instructions` / `resource`）、严格布尔 `success`，资源阶段还需规范相对 `references/` 或 `assets/` 路径 `path`；保留既有路径大小写兼容。它只是说明信息，不是权限凭据。成功必须与 SSE 外层、内层严格 true 和完整元数据一致，失败可缺元数据；旧消息无此字段仍兼容，但不得回退展示或持久化原始 Skill 参数、正文、任意错误和未知字段。普通工具、reasoning、消息内容/来源/稳定 ID 及本地待保存机制不变。当前只授 B1a 前端数据投影，B1b 页面、B2 POST/GET 服务端 activity 投影另行授权；GET 只投影返回值、不重写旧数据库行，无新端点、SSE 事件、数据库列或迁移。
+- 本轮范围保护更新：B1a turn 偏回旧 P0-3 后，00 已撤销继续实现权限、先收范围回执；上条字段为已同意设计，不表示当前仍有实现写权或已实现。无 API、类型、schema 或旧数据库变更验收。
+- 最新授权更新（2026-10-11）：02 范围回执已收、写权不恢复。03 短 impact 登记由 00 核验并保留 HIGH/CRITICAL 风险告警后，仅给 03 候选 8 文件 B1a 专用数据投影增量权；上述字段契约仍为待实现/验收，B1b 页面与 B2 服务端 JSON 投影另行授权，无数据库迁移。
+- 最新范围更新（2026-10-15）：候选 B1a 前端投影/名称绑定/缓存迁移经 04 独立三文件 100 项及初始化探针、类型检查后由 00 接受指定软件范围，不是主树发布或完整 S02。00 另授 05 仅 ActivityBlock.tsx 和新增测试的 B1b 安全展示：对 exact Skill 工具，只显示既有且有效 trace 的 id/完整 hash/stage/path 和固定状态；缺失/坏 trace 不从旧 rawargs/results 补造，不 JSON 回退显示正文/任意错误/未知字段，不改普通工具、reasoning 或权限。当前 B1b 未实现验收；B2 POST/GET 服务端 activity 白名单投影仍未授权，无端点、事件、列、旧行重写或数据库迁移。
+- B1b 状态更新（2026-10-15）：候选组件窄实现已由 05 冻结交接，00 核作者 30 项组件测试与类型检查及两文件 hash；04 已接独立只读复核，尚未验收放行。不变更上述字段契约或通用工具/reasoning 行为，不将 UI trace 作为权限凭据；B2 服务端 POST/GET 投影、运行副本同步和真实数据库操作仍未授权。
+- B1b 独立门禁更新（2026-10-15）：独立组件 30 项和类型检查通过，但资源 path 原型继承探针确认不符合自有字段来源要求，故暂不放行。资源 trace 的 path 必须是自有且有效的字段，不得将继承值显示为已验证来源；05 仅获原两 UI 文件增量收紧与持久回归权，后续另做非作者复核。无新字段、端点、迁移或权限变化；英文标签 P2 不扩本轮范围。
+- B1b 恢复验证更新（2026-10-19）：own path 收紧后作者完整组件 31 项、原型路径探针及类型检查已通过，00 核当前十文件 hash；04 已接非作者独立 delta 验收，尚未放行。字段与兼容契约不变，所有产品文件冻结；B2 POST/GET、真实库和运行副本同步仍未授权。
+- B1b 软件范围接受与 B2 调查（2026-10-19）：04 独立定向例、原型探针、完整 31 项和类型检查及十冻结 hash 由 00 核验后，候选 UI 指定软件范围接受；真实浏览器和完整 S02 未验。05 只读核查 B2 CRUD 入口/影响与最少文件，未授实现。B2 预定 POST 仅净化新入库 Skill 步骤，GET 只净化返回、不更新旧行；无数据库迁移，ordinary tools/reasoning/消息字段和稳定 ID 保存语义保持，待 00 审门禁另授权。
+- B2 窄实现批准（2026-10-20，尚未交付/验收）：00 核固定 CLI 的三个入口 impact 均 UNKNOWN，并补核候选 FastAPI 装饰器、路由注册及前端实际保存/读取请求后，批准候选 CRUD 三入口与独立纯 helper、新回归文件的最小实现。POST 仅在新建/幂等更新写入前投影 `activity.steps`；消息列表 GET 和会话详情 GET 均只投影返回、不修改旧行。仅 exact 两 Skill 的工具步骤使用安全字段白名单，未知/raw args/result/content/error/label 不透传；已验证 trace 与调用 ID/stage/path/状态冲突时失败关闭，旧无 trace 不补造成功；普通工具、thinking/reasoning、消息正文/来源/ID/待保存标记保持。没有新端点、SSE 事件、DTO 字段、列或迁移，不授予任何工具权限。语法损坏的数据库 JSON 在 ORM 解码前失败的限制另记，不能伪称 projector 已解决。
+- B2 指定软件范围接受（2026-10-21）：00 作者红绿及 01 独立 delta 80 项已核；精确 Skill 名但 `type` 缺失/非 `tool` 的畸形步骤直接丢弃，不伪造成成功或原样透传。正常 Skill 步骤安全投影、普通步骤不变、POST 写前及两 GET 只投影的既定契约已在候选实现。包含旧行不重写和幂等/409 验证；不是完整 Skills/S02、浏览器、真实旧库或发布验收。
 - 成功响应：
 
 ```json
@@ -1278,6 +1341,7 @@
 
 - 状态：`agreed`
 - 用途：获取会话的所有消息，按创建时间正序。
+- 持续滚动候选分页（2026-10-28，候选源码已改，未测试、未同步主树）：省略分页与版本参数时保持原全量响应。提供 `limit`（1–200）、`before_id`、`expected_revision` 或 `expected_incarnation_id` 时返回 `messages`、`has_more`、`next_before_id` 和非负 `message_revision`；默认每页 50 条，锚点必须属于当前会话。页面按 `(created_at, id)` 正序返回，较旧页以当前页最旧消息 ID 为游标。后续页传首屏的 `expected_revision`，不匹配时返回 HTTP 409 `SNAPSHOT_STALE`；若传 `expected_incarnation_id`，后端在同一读取快照中验证已认证 owner 与该会话当前 incarnation，失效或不匹配返回 HTTP 409 `SESSION_INCARNATION_CONFLICT`。不带 incarnation 的旧分页仍保留旧兼容路径；它不提供删除后重建同 ID 会话的身份保证。前端完整接线及统一验证尚未完成。
 - 成功响应：
 
 ```json
@@ -1296,7 +1360,18 @@
 }
 ```
 
-### 5.17.1 `DELETE /api/sessions/{session_id}/messages?keep_count=N`
+### 5.17.1 持续滚动候选消息接口
+
+以下接口已在候选工作树写入源码，尚未进行运行验证或同步主树；前端类型与调用方仍在接线中。
+
+- `GET /api/sessions/{session_id}/history-mode`：在只读快照中分类当前会话。未绑定时返回 `{ "session_id": "...", "mode": "legacy" }`；已绑定时只有当前 owner 可获得 `{ "session_id": "...", "mode": "owner_v1", "incarnation_id": "..." }`。不存在返回 404，非 owner 返回 403。分类不认领会话，也不授权后续读写；错误不能被解释为 legacy。会话删除后同 ID 重建可能被分类为 legacy，客户端不能因此把旧生命周期的待保存内容发送到旧写接口。
+- `GET /api/sessions/{session_id}/lifecycle`：只向已认证且绑定当前会话的 owner 返回 `{ "session_id": "...", "incarnation_id": "..." }`。标识仅用于识别会话生命周期，不授予访问权限。匿名、未绑定、非 owner 或已失效时返回 HTTP 409 `SESSION_INCARNATION_CONFLICT`；不会自动认领旧会话。
+- `POST /api/sessions/{session_id}/messages/append-v1`：请求包含稳定消息 `id`、`expected_incarnation_id`、`role`、`content`，以及可选的 `sources`、`tool_calls`、`activity`。后端在同一写事务内验证 owner 与 incarnation；新消息返回 `status: "saved"`，同会话同 ID 且实际保存内容相同的重试返回 `status: "already_saved"`。回执还包含 `id`、`message_revision`、`created_at`。内容不同返回 HTTP 409 `MESSAGE_CONFLICT`；不会重放聊天或工具。
+- `POST /api/sessions/{session_id}/messages/truncate-v1`：请求包含 `keep_through_id`、`expected_revision` 和 `expected_incarnation_id`。后端在同一写事务内验证 owner、生命周期、revision 与会话内锚点，再保留锚点及其之前的消息；返回 `kept`、`deleted` 和 `message_revision`。revision 过期返回 HTTP 409 `SNAPSHOT_STALE`，锚点不存在返回 HTTP 404 `ANCHOR_NOT_FOUND`。
+
+这些接口的成功响应均使用现有 `{ "success": true, "data": ... }` 信封。本地待保存正文日志、旧会话迁移、分页恢复和聊天增量请求尚未完成；不能将这些候选接口当作完整滚动链路或已通过验收。
+
+### 5.17.2 `DELETE /api/sessions/{session_id}/messages?keep_count=N`
 
 - 状态：`agreed`
 - 用途：截断会话消息，保留前 `keep_count` 条，删除其余。用于前端 retry/editAndResend 时同步删除后端旧消息，防止刷新后重复。`keep_count=0` 清空所有消息。
@@ -1330,6 +1405,7 @@
 ```
 
 - 约束：所有值均为字符串。前端自行做类型转换。
+- 内部状态不属于设置返回契约：记忆清空 epoch、会话删除 generation 以及 `_contextEvent:` 事件档案 namespace 均不返回；PUT 原白名单不接受这些键。S05a 事件仅宿主内部限域读写，当前没有公共恢复字段/端点，不将隐藏键当作鉴权机制。
 
 ### 5.19 `PUT /api/settings`
 
@@ -1344,6 +1420,7 @@
 - 沿用 `longTermMemory` 键；值必须是字符串，最多 4,000 个字符。`""` 表示清空，省略该键表示不修改。
 - 错误类型（含 `null`）或超限返回 `422`，`detail.error.code` 为 `INVALID_LONG_TERM_MEMORY`；整批更新不改变此前保存值。
 - 成功仍返回 `success: true, data: {updated: true}`；`GET /api/settings` 的 `data.settings.longTermMemory` 是服务器保存值，包含空字符串。
+- 清空后的续跑规则（2026-10-21，候选指定软件范围已接受）：成功显式保存空串时，在同一设置事务中更新私有清空 epoch；事务失败不发布失效。该内部键不由 GET 返回，也不允许通过 PUT 白名单写入，无新表/列。携带清空前非空长期记忆的暂停请求在后续读取或重新保存续跑快照时失效，现有续跑接口返回 `409 / HITL_REQUEST_SNAPSHOT_UNAVAILABLE`，必须重新发送本轮请求；清空后再保存新值不恢复旧快照。非空值的普通编辑保留已暂停请求的原快照；无记忆请求不受影响。epoch 无法读取/损坏时对携带记忆的续跑失败关闭。此规则不能撤回已发送给模型的内容，也不声称中止已开始执行的续跑或删除历史消息。
 - 前端明确保存并等待成功，保存失败保留编辑草稿，不以本地缓存更新冒称服务器保存成功。
 - 记忆会随聊天发送给配置的模型；本接口不进行自动提取或聊天历史搜索，也不将记忆作为执行授权。
 
@@ -1595,6 +1672,8 @@
 - SSE 事件类型：同 §5.1（`text` / `tool_call` / `tool_result` / `done` / `error`），复用 Agent 流式协议。
 - 后端约束：
   - 请求快照在本机内存保存 30 分钟、最多 128 个；续跑使用原记忆、Skills、权限和工具连接，丢失后返回 `HITL_REQUEST_SNAPSHOT_UNAVAILABLE` 409，不接受客户端替代原快照。
+  - 会话成功删除会使此前暂停请求失效，即便旧在途快照晚存回或同一 ID 重新创建也不能续跑；失败关闭沿用同一 409。删除 generation 由宿主捕获和核对，不是客户端授权字段。候选实现与验证边界见 §5.15。
+  - S05a 请求绑定（2026-10-21，指定软件范围已独立接受）：绑定了 archive scope 的暂停请求还核对当前认证用户 principal，不匹配时在构建 Agent 前沿用 `409 / HITL_REQUEST_SNAPSHOT_UNAVAILABLE`，不接受客户端传来的 archive 身份。旧无 archive scope 请求保原有续跑语义，但无权自动归档/替换早期块。
   - MCP 批次逐个确认，全部决定完成后才恢复 ToolNode。授权绑定调用 ID、工具、参数及确切连接实例，只能消费一次；拒绝的调用在 Router 返回失败，不触及远端。停止撤销未消费授权，但不能撤回已执行的远端动作。
   - 普通内置工具保留原确认路径；MCP 不写入全局工具注册表，不由客户端的 decision_source 或 bypass 标记授权。
   - 等待下一次确认时，fallback `done` 为 `success=true, completed=false, awaiting_confirmation=true`；前端保留当前确认及续跑 payload。普通成功 fallback 仍兼容 `success=true, usage=null` 的旧形状。
@@ -1602,6 +1681,52 @@
   - `stop` → 保留 `done(success=false, reason="user stopped")` 结束流。只有当前用户决定为 `stop` 且 reason 精确匹配时，前端按主动停止处理，不显示恢复异常，清除待确认和续跑 payload；不能把任意失败当成主动停止。
   - 底层续跑函数也必须防御非法决策；只有精确的 `allow` 可以批准执行，不将未知值当作允许。
 - 更新时间：2026-10-02
+
+### 5.27.1 `GET /api/sessions/{session_id}/context-events/{batch_id}/{sequence}`
+
+- 状态：候选 `implemented`、绑定/受限GET指定软件已独立接受；后续内部checkpoint发布及模型reader各有窄软件接受见下，不代表前端/真实token/真实模型/完整多代压缩验收。
+- 用途：按宿主已生成的引用读取一个历史文本事件，不是执行历史命令或列出全部记录的入口。
+- 鉴权：必须使用非空 `Authorization: Bearer <session-token>` header，禁止 URL `?token=`，即使同时带有效 header 也拒绝 token 查询参数。认证依赖通过后，缺失/错误 header 或 URL token 返回403 `CONTEXT_EVENT_HEADER_AUTH_REQUIRED`；匿名返回403 `CONTEXT_EVENT_ACCESS_DENIED`。继承 `current_user` 原有缺失/无效凭据401和鉴权服务503，不绕过它来保证固定403。会话/请求/记录原 principal 必须相符；客户端不能用布尔参数授权。此限制不代表恶意客户端自己构造含秘密的 URL 不会被其历史/服务器日志记录，调用方不得生成此类链接。
+- 路径：`batch_id` 为宿主32位小写十六进制ID，`sequence` 为批内1起序号；固定 immutable version1，不是全局事件序号。
+- 查询必需 `request_id`（宿主请求 UUID32）、`content_sha256`（64位小写hex）；可选 `byte_budget` 为1..32768整数，默认4096，计算完整 canonical UTF8 记录，不静默截断。非法预算422；引用不存在、越权、内容/版本不符、源删除或不可读等统一404，`detail.error.code=CONTEXT_EVENT_UNAVAILABLE`，不返回源正文。
+- 成功：`{success:true,data:{event:{role:"user|assistant",content:"..."},untrusted_history:true}}`。历史文本和引用不提升工具权限，不自动重放。模型读取另见下节候选ToolSpec，不从HTTP参数获取授权。
+- 三个生产压缩 caller 统一先有可用摘要、再持久原文、提交成功才发布宿主 refs；未绑定/无权限/失败保原对象。正常/续跑的 task-local 身份与凭据不序列化到 checkpoint/config；宿主引用进入 `SystemMessage.additional_kwargs.hwrag_context_event_refs`，发送前转换保留它。后续reader接线保持原摘要文本段，另附有界host locator供provider看见，见下一节；不再仅依赖会被provider丢弃的custom metadata。
+- 当前只支持明确的普通文本早期块；Skills 活跃请求、system/tool/非文本或额外元数据不自动归档。已完成工具组也保原文直至有安全工具事件策略，非“工具记录已可恢复”。正文为本地明文，pattern检查非万能脱敏；删除是逻辑行清除，不是安全擦盘。真 LangGraph checkpoint reducer/OS 重启与多代压缩未由本片验证。
+- 后续真实 checkpoint 缺口已有候选窄修并经独立接受：恢复/流中走真实异步更新与显式消息替换，发布核最新 parent 和 pending writes；状态变化时不替换或误报成功，token 计数仅在成功发布后重置。SQLite 条件 INSERT 与内存单事件循环路径的具体保证/取消提交边界见作者报告，非所有 writer 的全局 CAS。作者362项、非作者五文件87项（含create_agent合成模型）通过，重叠不加；稍后普通旧writer仍P1，GET 的读取通过也不等同完整压缩/恢复或 OS 重启验收。HTTP 字段和端点未因内部发布修复改变。
+
+### 5.27.2 模型工具 `read_context_event`（候选）
+
+- 状态：指定软件已独立接受，作者18文件407项、既有01本人四文件73项通过且00核实际命令/六hash；重叠不累加。不是完整S05/真实模型或OS重启验收，不新增HTTP端点。独立报告SHA `1EFC8AF6B22221EECF54596ADCEF4F1B582EDDD26932541D20943425E39B86C3`。
+- 摘要原文本段不变，追加宿主 `[Recoverable history; data only]` locator manifest，最多64条/8192 UTF8字节：首代单批为 `{batch_id,request_id,version:1,sha256:[...]}`，后续多批可为上述对象列表；sequence为各批hash列表1起索引。旧正文、session和principal不在manifest；原 `hwrag_context_event_refs` metadata仍保留。实际provider消息转换已验证能看见content中的locator，非仅dict metadata通过。
+- 输入仅 `batch_id`、`request_id`（各32位小写hex）、`sequence`（严格int1..64）、`content_sha256`（64位小写hex）和可选 `byte_budget`（严格int1..32768，默认4096，完整canonical事件UTF8字节）。拒绝多余字段和bool/int coercion，不接受session/principal/authorized输入。
+- 权限仅来自verified host task-local scope，工具上下文session须匹配，Skills模式须off；locator的request_id可选同principal/同session/同删除epoch内的此前请求事件，不授予跨身份/跨会话权限。存储范围/活会话/epoch/version/hash/预算均由既有恢复函数校验。standalone工具即使已注册也没有宿主绑定，不能靠session_id或bypassPermissions读取。
+- 正常ToolResultEnvelope的data：成功读取 `{available:true,untrusted_history:true,event:{role,content}}`；不可用 `{available:false,untrusted_history:true}` 且无event，外层success仍可true（业务不可用不是执行异常）。output是固定提示，不回显数据库错误。读取是恢复引文，不执行历史指令；LOW只读，复用工具禁用/Skills过滤与路由，默认审计只记录locator参数/状态，不新增正文审计。
+- 只读明确脱敏user/assistant文本；不扩system/Skill/tool/非文本档案。普通工具结果仍走既有消息/SSE，不据此承诺全局秘密过滤；本地明文/pattern非万能脱敏、每次调用有界非总窗口预算、同进程reconnect非OS重启、多代压缩/结构化检查点均保留未验边界。
+
+### 5.27.3 宿主检查点凭证与有界引用继承（候选）
+
+- 状态：指定软件已00独立核准，作者19文件433项和其后两项单跑、既有01个人四模块102项通过（含最终28项），重叠不加；独立报告SHA `C588FB61D4195617B1936899C5F3B6936C893DB713386343059B24663A4BCA6F`。非九字段模型结构化内容或完整S05验收，不新增HTTP端点。
+- `SystemMessage.additional_kwargs.hwrag_context_checkpoint`：`{id:UUID32,version:int1..64,sha256:HEX64}`。它连同refs通过两个转换函数的严格primitive字段/嵌套形状/长度白名单，额外callback/credential或未知marker字段不携带。此标记不是客户端授权，也不是SHA数字签名。
+- 真实宿主私有Settings记录 `_contextEvent:<sessionSHA>:checkpoint:<UUID>` 保存schema_version1、verified scope、checkpoint_version、正文digest和全部原refs，不保存任何摘要正文、raw system/Skill/tool或新凭据。它与原archive共用32768字节单行、128KiB会话、2MiB/256 namespace总行上限；批事件和凭证均计入，满拒绝不驱逐。已有会话DELETE同事务purge、settings GET隐藏/PUT白名单覆盖同prefix，不新增表列或迁移。
+- 继承须首条精确宿主SystemMessage、正文digest/refs/标记和持久记录完全匹配，当前principal/session/epoch和每条原事件仍有效；摘要前核一次、BEGIN IMMEDIATE保存新凭证前再核。旧legacy无凭证不追认为可信。只有新纯user/assistant段仍进入原事件archive，原system/Skills/tool/nontext策略未放宽。
+- 每代保留全部旧refs，最多64；派生摘要上限8192 UTF8字节，manifest另限8192，超限/源失效/无权限/提交失败保同一原对象。凭证commit后才交原真实graph发布器；发布器仍核最新parent/pending，新tail不被覆盖。发布拒绝前已提交的batch/seal可计quota，不新增清理；局部限制不等全provider窗口预算/全局writer CAS。
+- 这里只提供host schema与引用来源链，模型摘要仍不可信、不证明“已完成/已批准”，不授权/重放命令。真实恶意历史模型响应、九字段质量、三个合成长会话/真实模型/OS重启等验收另列。
+
+### 5.27.4 结构化摘要内容与宿主来源绑定（候选）
+
+- 状态：00 指定软件独立接受，作者20模块485项与既有01本人四模块112项（新模块最终50项）通过，重叠不加；报告SHA `F30851F2F886F4F02F998EE233ABF9EAAD93448FA7052992F75036577309DB1B`。不称完整 S05/真实 provider 验收；工具历史、语义质量、全窗口预算仍未完成。不新增 HTTP 字段或端点，不改变 §5.27.1 GET 的 header 身份验证、权限与预算契约。
+- 模型输出必须恰为九字段 JSON：`goal`、`constraints`、`completed`、`current_state`、`decisions`、`failed_attempts`、`open_questions`、`artifacts_and_evidence`、`next_action`。每项为最多8条 `{text,source}` 数组；text 是不超过1024字符的来源原文摘录，source 仅本次宿主分配的 `s1..s64`。goal/current_state/artifacts_and_evidence/next_action 必须非空；当前纯 user/assistant 来源无法证明 terminal 工具执行，completed 必须为空。九个空字段、额外/重复字段、虚构摘录/槽位、模型自给持久 ID、坏 JSON、free text 均拒绝保原，不自动修补。
+- 校验后宿主将 source 替换为已持久化并按当前 scope/生命周期验证的 `{batch_id,request_id,sequence,version,content_sha256}`；模型不提供身份/权限字段。原事件原文/散列再核及原 seal 事务 parent/epoch/源引用校验仍适用；schema/散列不是授权或数字签名。
+- 后继输入只由前代已验证的选中 quotes 加新完整纯文本事件构成，不每代向模型重载全部旧 raw。保留全部旧 refs 与可恢复 manifest；有 seal 的旧 narrative 也不隐性追认或迁移。最多64输入槽位/保留refs、模型与绑定正文各8192 UTF-8、manifest另8192，原会话/全局配额不变，超限保原不驱逐。原事件先提交后 seal/graph 拒绝可留下计配额的未引用批，不新增清理。
+- 原 system/tool/Skills/nontext/额外元数据仍不自动归档，现会在摘要调用前拒绝。quote grounding 不证明真伪、字段语义质量或“已批准”，历史仅数据不授权执行。局部上限不等完整 system/tools/output 总窗口预算；普通聊天另500字问题、工具安全事件档案、长回放/真实模型仍后续。
+
+### 5.27.5 普通聊天客户端输入预算（候选）
+
+- 状态：00作者实现冻结，25模块567项（新57项）通过，既有01本人短独立复核中。无新HTTP字段/端点或SSE枚举，沿现有LLM错误流程返回上下文预算/摘要不可用信息；不以省略占位符继续回答，不写回原历史或长期记忆。
+- 普通chat/stream按实际request model而非client默认型号选择预算，仅精确本地登记名称或精确provider前缀后缀匹配；未知/模糊窗口或无效output配置拒绝。最终wire `max_tokens`按该型号cap；既有OpenCode stream省略该字段时预留登记最大output，不假定请求的小cap已被provider执行。
+- system+完整消息JSON的UTF-8字节+256 framing+output reserve作保守本地上限。它可能拒绝精确tokenizer本可放下的输入，不是provider能力确认或通用精确token计数。opaque图像/未知内容成本不能仅凭URL或固定85估算证明，因此当前普通客户端明确拒绝；纯text blocks保持原格式，不隐性去图或丢文本。不称完整多模态预算。
+- 超限时仅把完整的较早user/assistant prefix送同一runtime client/model做摘要，包含620字后原文而非逐条截到500字；摘要请求连固定提示/封装/输出reserve最多32KiB。新派生摘要最多8192 UTF-8字节，替换后重新核总预算。旧消息角色/重复条目/最近suffix顺序保留；prefix过大/不支持/summary失败或取消/空/过大/final仍超限则终止请求，原输入历史不改。
+- 普通摘要仍为untrusted narrative，不是§5.27.4的宿主持久seal、工具终态证据或新授权。没有合并普通/Agent archive能力；Agent tool schema/system/output全窗口、真实provider和OS重启另验。
 
 ### 5.28 `GET /api/tools`
 
@@ -2046,7 +2171,7 @@
 - 状态：`implemented`（本轮认证、版本保存及回收区尚待完整前后端联调验收）
 - 用途：第四栏文件资源管理器的后端支撑，包括文件夹授权、文件树浏览、带版本的文件读写、新建/重命名/移动、可恢复删除、diff 基准获取以及 SSE 实时监听。
 - 前端入口：`apiPost('explorer/...', ...)` / `apiGet('explorer/...?path=')` / `apiSSE('explorer/watch?path=', ...)`
-- 认证：所有 Explorer 路由（包括 `browse`、`open`、`watch`）都要求有效的 Bearer session；只有用户显式调用 `open` 才会授权项目根。当前已授权根保存在进程全局内存中，不按 session 隔离：任意有效本机 session 均可访问本进程已打开的根。后端重启清空内存授权后，前端需让用户重新显式打开，不能靠读取、搜索或监听静默授权。
+- 认证：所有 Explorer 路由（包括 `browse`、`open`、`watch`）都要求有效 Bearer session。`browse` 只用于登录后的文件夹选择，可浏览根目录授权范围外的路径以选择项目，但不读取文件内容，也不授予根目录访问。只有该 session 显式调用 `open` 才会授权项目根。授权根保存在进程内存中，并以 session token 的 SHA-256 值隔离；其他有效 session 不能访问，除非自己显式打开同一目录。后端重启后授权清空，前端必须让用户重新打开，不得由读取、搜索或监听静默授权。
 - 响应：`open` 和 `read` 保留旧版直接返回业务字段的格式；其余 JSON 路由返回 §2.6 的 `success/data` 包装。`watch` 为 SSE。请求体字段使用 `snake_case`。
 
 #### `POST /api/explorer/open`
@@ -2169,7 +2294,7 @@
 - 用途：把文件或文件夹移入应用回收区，以便恢复。
 - 请求体：`{ "path": "/absolute/path/to_delete" }`
 - 成功响应：`{ "success": true, "data": { "path": "/absolute/path/to_delete", "trash_id": "<item_id>" } }`
-- 回收区位于 Windows 的 `%LOCALAPPDATA%/HardwareRAGAgent/explorer-trash`（隔离测试用 `HWRAG_APP_DATA_DIR` 指向临时目录）。本轮不提供清空或永久删除接口。
+- 回收区位于 Windows 的 `%LOCALAPPDATA%/HardwareRAGAgent/explorer-trash/<project-root-sha256>/<item-id>`（项目根经规范化后计算 SHA-256；隔离测试用 `HWRAG_APP_DATA_DIR` 指向临时目录）。不同项目根分开存储；界面提供已删除列表和恢复，不提供自动清空或永久删除接口。
 
 #### `GET /api/explorer/trash?root_path=`
 
@@ -2248,26 +2373,30 @@
 | 方法 | 路径 | 请求 / 响应 `data` |
 | --- | --- | --- |
 | GET | `/api/skills` | `{skills: SkillInfo[]}`；旧 `content` 字段保留 |
-| POST | `/api/skills` | `{content:string}`；返回旧格式技能详情，保持原创建兼容行为 |
+| POST | `/api/skills` | `{content:string}`；新建标准 `SKILL.md` 包；无 frontmatter 的旧纯 Markdown 创建入口可包装为标准包，已有 legacy 包继续可读 |
 | GET | `/api/skills/{id}` | `SkillInfo`，包括说明和资源清单 |
 | PATCH | `/api/skills/{id}` | `{content?:string,enabled?:boolean}`，至少一个；返回更新后的详情 |
 | PATCH | `/api/skills/{id}/toggle` | 保留旧开关接口；返回 `{id,enabled}` |
-| DELETE | `/api/skills/{id}` | 仅删除已校验的单个技能目录，旧成功格式保留 |
+| DELETE | `/api/skills/{id}` | 删除已校验的单个技能及其可证明由本应用管理的状态/适配；不删除未知或被修改的适配；旧成功格式保留 |
+| GET | `/api/skills/{id}/export` | 可选 query `scope=project|user|legacy`；返回标准 ZIP 包（含 `<name>/SKILL.md` 和原始资源字节，不含宿主管理状态）；legacy 导出生成标准说明但不修改源包；错误仍为 JSON 封套 |
 | POST | `/api/skills/github/preview` | `{url:string,ref?:string|null,path?:string|null}` → `{source,candidates}` |
-| POST | `/api/skills/github/import` | `{source,paths:string[]}` → `{skills:SkillInfo[]}`，新导入技能默认停用 |
+| POST | `/api/skills/github/import` | `{source,paths:string[],scope?:"project"|"user",claude_adapter?:boolean}` → `{skills:SkillInfo[]}`；默认 project/false，有效新包立即启用 |
 
-`SkillInfo` 保留 `id/name/description/content/enabled`，增加 `format`、`compatibility_status`、`issues`、`content_hash`、`source`、`locally_modified`、`metadata` 和 `resources`。`content` 是含 frontmatter 的原始说明；Agent 加载时读取正文，不预先把列表里的所有说明注入模型。
+`SkillInfo` 保留 `id/name/description/content/enabled`，增加 `format`、`compatibility_status`、`issues`、`content_hash`、`source`、`locally_modified`、`metadata` 和 `resources`。`content` 是含 frontmatter 的原始说明；Agent 按需加载完整 `SKILL.md`，不预先把列表里的所有说明注入模型。
+
+本轮新增 `scope`（`project` / `user` / `legacy`）、`install_path`、`claude_adapter` 和 `scope_conflicts`。默认聚合发现按项目、用户、旧私有目录排序；新安装同名冲突拒绝，不覆盖或隐式迁移。启用/来源/管理信息保存在包外，标准包原始文件不被改成私有格式。Claude 适配优先同内容链接，必要时使用校验的受管理副本；不把适配重复列为另一个 Skill，也不覆盖已有 `.claude/skills` 包。
 
 - `format`：`standard` / `legacy` / `invalid`。
 - `compatibility_status`：`supported`（基础说明能力支持）、`partial`（部分支持，须查看缺项）、`review_required`（错误或不安全包，不可启用）。诊断不能证明自然语言描述的所有步骤都可执行。
 - `issues`：`[{code,severity,message}]`；`severity` 为 `warning` / `error`。
-- `resources`：`[{path,size,supported}]`。仅 `references/`、`assets/` 下白名单 UTF-8 文本可加载；脚本与二进制可以保存，但不能执行。
+- 开发候选版本新增警告 `RESOURCE_DIRECTORY_UNSUPPORTED`：包包含 `examples/` 等当前资源读取边界之外的目录时，兼容状态标为 `partial` 并说明目录。文件保留但不能读取；不扩大读取白名单或执行权限。`issues` 的字段结构不变，客户端应保留未识别警告的 `message`，不能将未知警告当成完全支持。
+- `resources`：`[{path,size,supported}]`。专用读取接口支持 `references/`、`assets/` 下白名单 UTF-8 文本；其他资源和脚本仍按原始文件保留，需要时由既有普通工具在其权限边界内读取/执行，导入本身不执行脚本。
 - GitHub `source`：预览/导入用 `{owner,repo,commit_sha,path}`，其中 SHA 为完整 40 位提交；安装后的来源额外含 provider、导入时间及摘要。本地编辑标为 `locally_modified`，外部包编辑自动停用，需单独确认启用，不能同一请求边改边启用。
 - `candidates` 包含仓库相对目录 `path`、技能名称、描述、兼容状态及 issues；`paths` 必须选该固定提交下的实际技能目录。树截断、恶意路径、链接、重复包和超限明确失败，不覆盖本机已有包。
 - 初版只读公共 GitHub 仓库。逐文件读取固定 SHA，树条目最多 5,000，累计下载最多 20 MiB、总时限 60 秒；每个包最多 128 个文件/10 MiB、单文件最多 2 MiB；不 clone、不解压 ZIP、不安装依赖。
 - 典型业务错误：`SKILL_NOT_FOUND` 404、`SKILL_EXISTS` 409、`SKILL_DISABLED` / `SKILL_REVIEW_REQUIRED` / `SKILL_VERSION_CHANGED` 409、格式/路径错误 400、大小超限 413、GitHub 下载失败 502；精确错误码随已实现测试核对。
 
-聊天运行字段见 §5.1。请求期技能快照绑定版本；只读硬限制与正文/资料隐私由运行时验收，不由导入成功代替。
+聊天运行字段见 §5.1。`skills_mode` 只控制发现/加载，不过滤普通工具或 MCP。Agent 工具 `preview_skill_import` 复用原来源校验，`import_skill` 使用固定提交和正常人工确认，安装后只追加本请求的新快照；既有 ID/hash 不被重新绑定。`load_skill` 随后读取完整 `SKILL.md`（含 frontmatter）和资源路径，`read_skill_resource` 按需读取资料，前后复核版本。off 模式不自动发现旧包，但允许用户明确导入的本请求新包继续加载。真实模型/浏览器/第三方 Agent 行为不由源码接线或导入成功代替验证。
 
 ## 6. 新增接口模板
 
@@ -2295,6 +2424,14 @@
 
 | 日期 | 变更内容 | 变更人 |
 | --- | --- | --- |
+| 2026-10-24 | §5.37 同步原生 Skills 当前接口与选定自动化结果；明确非全后端/全项目验收及真实环境、第三方 Agent 未验证边界 | 00 主控 |
+| 2026-10-22 | 按真人要求分派实施：无完整恢复来源时保留全tool output；Agent来源限indexed且无error，检索期间签名变更拒旧结果，管理状态列表不变；全部未测试 | 00 主控协调，01/工具worker实施 |
+| 2026-10-22 | 候选可选tool metadata locator及LOW read_tool_event，宿主范围/删除/chain/hash/预算读取且无授权重放；KB上传有界读与配置校验前移防无效请求触发旧清理；全部未测试 | 00 主控 |
+| 2026-10-22 | 候选 Agent 最终请求总预算超限/不可核时，聊天和续跑发送 CONTEXT_LIMIT 并失败结束，保原历史且不自动降级；按最新真人约束，全部落实后统一测试，当前未验收 | 00 主控 |
+| 2026-10-22 | 内部无正文工具返回档案接宿主请求scope，Skills仍不授原文archive、续跑身份不匹配构建前409；无新公开读取接口，未测试/未接受 | 00 主控 |
+| 2026-10-11 | §5.16 登记 02 写权撤销后由 03 接 B1a 窄数据投影，保留 HIGH/CRITICAL 告警与 UNKNOWN 源码补核边界，字段兼容设计未变，尚无实现/测试验收 | 00 主控 |
+| 2026-10-11 | §5.16 登记 S02 B 可选 skill_trace、严格安全投影和兼容边界；B1a 前端先影响门禁后实现，页面/B2 CRUD 尚未授权，无数据库迁移，不作已实现验收 | 00 主控 |
+| 2026-10-08 | §5.36 修正 Explorer 根目录授权状态：所有路由要求 Bearer session，只有显式 open 授权且按 session 哈希隔离；browse 不授权。补充项目根 SHA-256 回收区分桶路径、已删除列表与恢复说明，暂不提供永久删除 | 00 主控 |
 | 2026-10-04 | §5.1 登记 F1 的服务端请求来源状态与 HITL 续跑快照边界；§5.19 更新检索设置自动化回归状态。完整门禁为后端 606 项、前端 99 项通过；真实 API/浏览器/质量评测仍未验收，详见 testing.md | 04 工具扩展与安全执行 |
 | 2026-10-04 | §2.14、§5.1、§5.19 补充检索设置范围与原子拒绝、每次检索 top-k、阈值单位/作用范围、空 KB 选择语义及请求内 `srcN` 生命周期；登记当前实现与待接线/待验收边界，不标记端到端 `verified` | 04 工具扩展与安全执行 |
 | 2026-10-04 | §5.1 对齐 webfetch 失败封套、空回答/idle 超时、完成/等待字段；§5.27 对齐续跑错误、等待和主动停止。定向自动化结果见 testing.md，不代表真实网络或全部 RAG 质量验收 | 00 主控 |

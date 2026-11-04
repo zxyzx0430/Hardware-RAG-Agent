@@ -4,11 +4,14 @@ Chat 路由 — /api/chat SSE + /api/models
 迁移自 routes.py，共享工具见 common.py。
 """
 
-import logging
+import hashlib
 import json
+import logging
 import threading
 import time
+import uuid
 from collections import Counter
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, AsyncIterator, Literal, Optional
@@ -26,15 +29,16 @@ except ImportError:  # pragma: no cover - openai optional dependency
 from app.api.auth import get_provider_key, resolve_credentials
 from app.api.dependencies import current_user, current_user_optional
 from app.api.common import get_db_ctx, make_client
+from app.api.memory_epoch import read_memory_clear_epoch
 from app.api.sse import sse_event
 from app.api.errors import sanitize_error
+from app.api.session_epoch import read_session_delete_epoch
 from app.api.chat_helpers import (
     MAX_LONG_TERM_MEMORY_CHARS, resolve_long_term_memory,
     _record_token_usage,
     _process_attachments, _build_chat_history, _build_system_prompt,
 )
 from app.db.models import TokenUsage
-from src.agent.prompts import MAX_TOKEN_RATIO
 
 logger = logging.getLogger(__name__)
 
@@ -46,12 +50,15 @@ async def stream_agent_to_sse(
     call_counter: Counter,
     permission_mode: str = "bypassPermissions",
     model: str = "",
+    requested_max_tokens: int | None = None,
+    context_budget: Any = None,
 ) -> AsyncIterator[str]:
     """Lazily forward to the Agent SSE adapter while keeping a patchable API symbol."""
     from src.agent.sse_adapter import stream_agent_to_sse as adapter_stream
 
     adapter_iterator = adapter_stream(
         agent, events, config, call_counter, permission_mode, model=model,
+        requested_max_tokens=requested_max_tokens, context_budget=context_budget,
     )
     stream_error: BaseException | None = None
     try:
@@ -99,6 +106,8 @@ class AgentRequestSnapshot:
     """Request-scoped state required to resume a paused Agent consistently."""
 
     long_term_memory: str = ""
+    session_delete_epoch: str | None = field(default=None, repr=False)
+    memory_clear_epoch: str | None = field(default=None, repr=False)
     permission_mode: str = "default"
     kb_ids: tuple[str, ...] | None = None
     top_k: int | None = 5
@@ -114,6 +123,48 @@ class AgentRequestSnapshot:
     rag_source_registry_snapshot: dict[str, Any] | None = field(
         default=None, repr=False, compare=False,
     )
+    principal_id: str | None = field(default=None, repr=False, compare=False)
+    session_id: str | None = field(default=None, repr=False, compare=False)
+    request_id: str = field(
+        default_factory=lambda: uuid.uuid4().hex,
+        repr=False,
+        compare=False,
+    )
+
+
+class _RequestSnapshotEpochError(RuntimeError):
+    """Raised when a request snapshot can no longer be validated."""
+
+
+class _WriterLifecycleUnavailableError(RuntimeError):
+    """Raised when a request cannot establish guarded checkpoint ownership."""
+
+
+def _capture_request_snapshot_epochs(session_id: str | None) -> tuple[str, str]:
+    """Pin the generations that bound this request's session and memory snapshot."""
+    session_epoch = read_session_delete_epoch(session_id)
+    memory_epoch = read_memory_clear_epoch()
+    if session_epoch is None or memory_epoch is None:
+        raise _RequestSnapshotEpochError("request snapshot epochs are unavailable")
+    return session_epoch, memory_epoch
+
+
+def _require_request_snapshot_epochs_current(
+    snapshot: AgentRequestSnapshot,
+    session_id: str | None,
+) -> None:
+    """Fail closed if a request snapshot crossed session deletion or memory clear."""
+    if snapshot.session_delete_epoch is None or snapshot.memory_clear_epoch is None:
+        raise _RequestSnapshotEpochError("request snapshot epochs are missing")
+    session_epoch = read_session_delete_epoch(session_id)
+    memory_epoch = read_memory_clear_epoch()
+    if (
+        session_epoch is None
+        or memory_epoch is None
+        or session_epoch != snapshot.session_delete_epoch
+        or memory_epoch != snapshot.memory_clear_epoch
+    ):
+        raise _RequestSnapshotEpochError("request snapshot epochs changed")
 
 
 def _ensure_external_tool_snapshot(
@@ -139,10 +190,131 @@ def _session_memory_key(session_id: str | None) -> str:
     return session_id or "default"
 
 
-def _request_snapshot_from_payload(payload: Any, memory: str) -> AgentRequestSnapshot:
+def _verified_principal_id(user: Any) -> str | None:
+    """Derive a non-reversible scope key from verified non-anonymous credentials."""
+    if type(user) is not dict or user.get("anonymous") is not False:
+        return None
+    provider = user.get("provider")
+    api_key = user.get("api_key")
+    if (
+        type(provider) is not str
+        or not provider
+        or type(api_key) is not str
+        or not api_key
+    ):
+        return None
+    identity = f"{provider}\0{api_key}".encode("utf-8")
+    return hashlib.sha256(identity).hexdigest()
+
+
+def _tool_observation_scope(snapshot: AgentRequestSnapshot) -> Any:
+    """Create store scope only from host-pinned request snapshot fields."""
+    from app.api.tool_observations import make_tool_observation_scope
+
+    return make_tool_observation_scope(
+        snapshot.principal_id,
+        snapshot.session_id,
+        snapshot.request_id,
+        snapshot.session_delete_epoch,
+    )
+
+
+def _build_request_writer_binding(
+    agent: Any,
+    config: dict,
+    snapshot: AgentRequestSnapshot,
+    session_id: str | None,
+):
+    """Bind one factory graph to this request's pinned deletion epochs."""
+    from src.agent.agent_factory import build_agent_writer_binding
+
+    owner_key = config.get("configurable", {}).get("thread_id")
+    if type(owner_key) is not str or not owner_key:
+        raise RuntimeError("Agent checkpoint thread id is unavailable")
+    request_scope_token = object()
+    epoch_token = object()
+
+    def epoch_provider() -> object:
+        _require_request_snapshot_epochs_current(snapshot, session_id)
+        return epoch_token
+
+    return build_agent_writer_binding(
+        agent,
+        owner_key=owner_key,
+        request_scope_token=request_scope_token,
+        epoch_provider=epoch_provider,
+    )
+
+
+def _acquire_request_writer_lease(binding: Any):
+    """Acquire only after the authoritative request scope has been re-read."""
+    scope = binding.current_scope()
+    return binding.registry.acquire(scope)
+
+
+def _release_request_writer_lease(
+    binding: Any,
+    lease: Any,
+    release_state: dict[str, bool] | None = None,
+) -> None:
+    """Release a fully joined owner, or quarantine any unresolved outcome."""
+    if release_state is not None and release_state.get("released"):
+        return
+    from src.agent.compact.writer_lifecycle import QuarantineReason
+
+    try:
+        binding.registry.release(lease, binding.current_scope())
+        if release_state is not None:
+            release_state["released"] = True
+        return
+    except BaseException as exc:
+        logger.warning(
+            "Agent writer lease could not be safely released; owner remains closed (%s)",
+            type(exc).__name__,
+        )
+    try:
+        binding.registry.quarantine(
+            lease,
+            binding.scope,
+            reason=QuarantineReason.CALLER_REPORTED_UNCERTAINTY,
+        )
+    except BaseException:
+        # A stale or already-quarantined lease is already fail-closed.
+        pass
+    if release_state is not None:
+        release_state["released"] = True
+
+
+@contextmanager
+def _request_writer_context(binding: Any, lease: Any, model: str = ""):
+    """Expose one lease to the adapter and all of its automatic HITL runs."""
+    if binding is None or lease is None:
+        yield
+        return
+    from src.agent.compact.writer_lifecycle import bind_writer_scope
+    from src.agent.sse_adapter import activate_writer_binding
+
+    scope = binding.current_scope()
+    binding.registry.assert_scope(lease, scope)
+    with bind_writer_scope(
+        binding.registry, lease, scope, scope_provider=binding.current_scope,
+    ):
+        with activate_writer_binding(binding, lease, model):
+            yield
+
+
+def _request_snapshot_from_payload(
+    payload: Any,
+    memory: str,
+    *,
+    session_delete_epoch: str | None = None,
+    memory_clear_epoch: str | None = None,
+) -> AgentRequestSnapshot:
     kb_ids = getattr(payload, "kb_ids", None)
     return AgentRequestSnapshot(
         long_term_memory=memory,
+        session_delete_epoch=session_delete_epoch,
+        memory_clear_epoch=memory_clear_epoch,
         permission_mode=getattr(payload, "permission_mode", "default") or "default",
         kb_ids=tuple(kb_ids) if kb_ids is not None else None,
         top_k=getattr(payload, "top_k", None),
@@ -175,6 +347,7 @@ def _ensure_request_tool_context(
 ) -> AgentRequestSnapshot:
     """Bind one fresh Agent ToolContext to a new request snapshot."""
     if snapshot.tool_context is not None:
+        snapshot.tool_context.tool_observation_scope = _tool_observation_scope(snapshot)
         return snapshot
 
     from src.agent.agent_factory import _build_tool_ctx
@@ -192,6 +365,7 @@ def _ensure_request_tool_context(
         )
     request_payload = _payload_with_request_snapshot(payload, snapshot)
     context = _build_tool_ctx(request_payload, snapshot.skills_runtime)
+    context.tool_observation_scope = _tool_observation_scope(snapshot)
     return replace(snapshot, tool_context=context)
 
 
@@ -396,6 +570,26 @@ def _clear_pending_request_snapshot(session_id: str | None) -> None:
                 authorization.revoke()
 
 
+def _require_resume_snapshot_current(
+    snapshot: AgentRequestSnapshot,
+    session_id: str | None,
+) -> None:
+    try:
+        _require_request_snapshot_epochs_current(snapshot, session_id)
+    except _RequestSnapshotEpochError as exc:
+        _clear_pending_request_snapshot(session_id)
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "success": False,
+                "error": {
+                    "code": "HITL_REQUEST_SNAPSHOT_UNAVAILABLE",
+                    "message": "原请求快照已失效，请重新发送本轮请求。",
+                },
+            },
+        ) from exc
+
+
 def _clear_pending_memory_snapshot(session_id: str | None) -> None:
     """Compatibility alias; the cache now contains the whole Agent request snapshot."""
     _clear_pending_request_snapshot(session_id)
@@ -465,6 +659,7 @@ class ChatErrorCode(str, Enum):
     MODEL_EMPTY_RESPONSE = "MODEL_EMPTY_RESPONSE"
     TIMEOUT = "TIMEOUT"
     RAG_FAILED = "RAG_FAILED"
+    CONTEXT_LIMIT = "CONTEXT_LIMIT"
     RATE_LIMITED = "RATE_LIMITED"
     INTERNAL_ERROR = "INTERNAL_ERROR"
     NETWORK_ERROR = "NETWORK_ERROR"
@@ -659,26 +854,36 @@ async def _run_autocompact(messages: list, creds: dict, context_window: int) -> 
 
 async def _check_and_compact_history(
     payload: ChatRequest, creds: dict, agent_input: dict,
+    context_budget: Any = None,
 ) -> AsyncIterator[str]:
-    """Pre-send: compact history when over MAX_TOKEN_RATIO of context window.
+    """Pre-send: compact history when it reaches the resolved input budget.
 
     Yields a context_compressing SSE event when compaction runs; mutates
-    agent_input['messages'] in place with the compacted list. No-op (and no
-    SSE) when history is within budget or context_window is unknown.
+    agent_input['messages'] in place with the compacted list. A missing model
+    budget fails through the existing ContextLimitError path.
     """
     from src.agent.compact.autocompact import should_autocompact
-    context_window = _session_context_window(payload.session_id)
-    if not context_window:
-        return
+    if context_budget is None:
+        from src.agent.context_guard import resolve_context_budget
+
+        context_budget = resolve_context_budget(
+            creds.get("model"),
+            _session_context_window(payload.session_id),
+            payload.max_tokens,
+        )
     lc_messages = _dicts_to_langchain_messages(agent_input["messages"])
-    threshold = int(context_window * MAX_TOKEN_RATIO)
+    threshold = context_budget.token_limit
     if not should_autocompact(lc_messages, threshold):
         return
     yield sse_event(
         "context_compressing",
-        _compact_event_payload(threshold, context_window, len(lc_messages)),
+        _compact_event_payload(
+            threshold, context_budget.effective_window, len(lc_messages),
+        ),
     )
-    compacted = await _run_autocompact(lc_messages, creds, context_window)
+    compacted = await _run_autocompact(
+        lc_messages, creds, context_budget.prompt_window,
+    )
     # Use identity check: autocompact returns the same list when no compaction
     # happened. A new list means compaction ran (even if count is unchanged,
     # e.g., 11 msgs → 1 summary + 10 recent — tokens decreased).
@@ -696,22 +901,29 @@ async def _run_agent_stream(
 
     Raises on construction failure so the caller can fall back to the LLM stream.
     """
-    from src.agent.agent_factory import reset_thread_checkpoint
     session_id = _session_memory_key(payload.session_id)
+    from src.agent.context_guard import resolve_context_budget
+
+    context_budget = resolve_context_budget(
+        creds.get("model"),
+        _session_context_window(payload.session_id),
+        payload.max_tokens,
+    )
     resolved_memory = long_term_memory
     if resolved_memory is None:
         resolved_memory = getattr(payload, "long_term_memory", None) or ""
     snapshot = request_snapshot or _request_snapshot_from_payload(payload, resolved_memory)
     resolved_memory = snapshot.long_term_memory
+    _require_request_snapshot_epochs_current(snapshot, payload.session_id)
     snapshot = _ensure_skills_runtime(snapshot)
     request_payload = _payload_with_request_snapshot(payload, snapshot)
     snapshot = _ensure_external_tool_snapshot(snapshot, session_id, request_payload)
-    await reset_thread_checkpoint(session_id)
-    _clear_pending_request_snapshot(session_id)
     snapshot, manual_events, manual_load_succeeded = await _preload_manual_skills(
         snapshot, session_id,
     )
+    _require_request_snapshot_epochs_current(snapshot, payload.session_id)
     for event in manual_events:
+        _require_request_snapshot_epochs_current(snapshot, payload.session_id)
         yield event
     if not manual_load_succeeded:
         raise RuntimeError("Selected skill instructions could not be loaded")
@@ -720,16 +932,68 @@ async def _run_agent_stream(
     effective_payload = _payload_with_request_snapshot(payload, snapshot)
     agent = await _build_agent_for_payload(
         effective_payload, creds, resolved_memory, request_snapshot=snapshot,
+        context_window_override=context_budget.effective_window,
     )
-    config = build_agent_config(payload.session_id or "default")
-    agent_input = {"messages": _build_agent_messages(effective_payload)}
-    # Pre-send history check — compact if over MAX_TOKEN_RATIO of context window.
-    async for sse in _check_and_compact_history(effective_payload, creds, agent_input):
-        yield sse
-    call_counter: Counter = Counter()
+    _require_request_snapshot_epochs_current(snapshot, payload.session_id)
+    config = build_agent_config(session_id)
+    writer_binding = None
+    writer_lease = None
+    try:
+        from src.agent.compact.writer_lifecycle import (
+            WriterOwnerConflictError,
+            WriterQuarantinedError,
+        )
+    except Exception as exc:
+        # Do not start a graph writer without the checkpoint ownership guard.
+        raise _WriterLifecycleUnavailableError(
+            "Agent writer lifecycle is unavailable"
+        ) from exc
+    else:
+        try:
+            writer_binding = _build_request_writer_binding(
+                agent, config, snapshot, payload.session_id,
+            )
+            writer_lease = _acquire_request_writer_lease(writer_binding)
+        except _RequestSnapshotEpochError:
+            raise
+        except WriterOwnerConflictError:
+            # Never allow another request to write the same checkpoint concurrently.
+            raise
+        except WriterQuarantinedError:
+            # A quarantined writer has an unresolved native run or checkpoint write.
+            raise
+        except Exception as exc:
+            # Never reset, stream, or write through an unbound graph.
+            raise _WriterLifecycleUnavailableError(
+                "Agent writer lifecycle is unavailable"
+            ) from exc
+
     snapshot_pending = False
     try:
-        async for sse in _stream_agent_in_context(agent, agent_input, config, call_counter, effective_payload.permission_mode, creds.get("model", ""), snapshot.tool_context):
+        if writer_binding is not None and writer_lease is not None:
+            from src.agent.agent_factory import reset_thread_checkpoint_for_writer
+
+            await reset_thread_checkpoint_for_writer(writer_binding, writer_lease)
+            _require_request_snapshot_epochs_current(snapshot, payload.session_id)
+        _clear_pending_request_snapshot(session_id)
+        agent_input = {"messages": _build_agent_messages(effective_payload)}
+        # Pre-send history check uses the same output/framing-adjusted budget as the stream guard.
+        async for sse in _check_and_compact_history(
+            effective_payload, creds, agent_input, context_budget,
+        ):
+            _require_request_snapshot_epochs_current(snapshot, payload.session_id)
+            yield sse
+            _require_request_snapshot_epochs_current(snapshot, payload.session_id)
+        _require_request_snapshot_epochs_current(snapshot, payload.session_id)
+        call_counter: Counter = Counter()
+        _require_request_snapshot_epochs_current(snapshot, payload.session_id)
+        async for sse in _stream_agent_in_context(
+            agent, agent_input, config, call_counter,
+            effective_payload.permission_mode, creds.get("model", ""),
+            snapshot.tool_context, writer_binding, writer_lease,
+            effective_payload.max_tokens, context_budget,
+        ):
+            _require_request_snapshot_epochs_current(snapshot, payload.session_id)
             event_type = _sse_event_type(sse)
             if event_type == "tool_confirm_required":
                 _store_pending_request_snapshot(session_id, snapshot)
@@ -738,17 +1002,30 @@ async def _run_agent_stream(
                 _clear_pending_request_snapshot(session_id)
                 snapshot_pending = False
             yield sse
+            _require_request_snapshot_epochs_current(snapshot, payload.session_id)
     except Exception:
         if snapshot_pending:
             _clear_pending_request_snapshot(session_id)
         raise
+    finally:
+        if writer_binding is not None and writer_lease is not None:
+            _release_request_writer_lease(writer_binding, writer_lease)
 
 
-async def _stream_agent_in_context(agent, agent_input, config, counter, permission_mode, model, tool_context):
+async def _stream_agent_in_context(
+    agent, agent_input, config, counter, permission_mode, model, tool_context,
+    writer_binding=None, writer_lease=None, requested_max_tokens=None,
+    context_budget=None,
+):
     from src.agent.request_context import activate_tool_context
     with activate_tool_context(tool_context):
-        async for event in stream_agent_to_sse(agent, agent_input, config, counter, permission_mode, model=model):
-            yield event
+        with _request_writer_context(writer_binding, writer_lease, model):
+            async for event in stream_agent_to_sse(
+                agent, agent_input, config, counter, permission_mode, model=model,
+                requested_max_tokens=requested_max_tokens,
+                context_budget=context_budget,
+            ):
+                yield event
 
 
 async def _build_agent_for_payload(
@@ -756,6 +1033,7 @@ async def _build_agent_for_payload(
     creds: dict,
     long_term_memory: str | None = None,
     request_snapshot: AgentRequestSnapshot | None = None,
+    context_window_override: int | None = None,
 ):
     """Instantiate tools + the compiled ReAct agent for this request.
 
@@ -811,6 +1089,7 @@ async def _build_agent_for_payload(
     }
     _optional_arg(kwargs, "temperature", payload.temperature)
     _optional_arg(kwargs, "max_tokens", payload.max_tokens)
+    _optional_arg(kwargs, "context_window_override", context_window_override)
     return await create_hardware_agent(**kwargs)
 
 
@@ -827,6 +1106,20 @@ def _optional_arg(kwargs: dict, key: str, value) -> None:
 @router.post("/chat")
 async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(current_user)):
     """RAG 流式聊天，严格匹配前端 SSE 事件协议。"""
+    try:
+        session_epoch, memory_epoch = _capture_request_snapshot_epochs(payload.session_id)
+    except _RequestSnapshotEpochError as exc:
+        logger.warning("request snapshot epochs could not be pinned")
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "success": False,
+                "error": {
+                    "code": ChatErrorCode.INTERNAL_ERROR,
+                    "message": "无法验证请求上下文，请稍后重试。",
+                },
+            },
+        ) from exc
     try:
         long_term_memory = resolve_long_term_memory(payload)
     except ValueError:
@@ -871,7 +1164,30 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
                 },
             },
         )
-    request_snapshot = _request_snapshot_from_payload(payload, long_term_memory)
+    request_snapshot = replace(
+        _request_snapshot_from_payload(
+            payload,
+            long_term_memory,
+            session_delete_epoch=session_epoch,
+            memory_clear_epoch=memory_epoch,
+        ),
+        principal_id=_verified_principal_id(user),
+        session_id=_session_memory_key(payload.session_id),
+    )
+    try:
+        _require_request_snapshot_epochs_current(request_snapshot, payload.session_id)
+    except _RequestSnapshotEpochError as exc:
+        logger.warning("request snapshot changed while loading long-term memory")
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "success": False,
+                "error": {
+                    "code": ChatErrorCode.INTERNAL_ERROR,
+                    "message": "请求上下文已变化，请重新发起本轮请求。",
+                },
+            },
+        ) from exc
     try:
         request_snapshot = _ensure_skills_runtime(request_snapshot)
     except Exception as exc:
@@ -896,6 +1212,21 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
             },
         ) from exc
 
+    try:
+        _require_request_snapshot_epochs_current(request_snapshot, payload.session_id)
+    except _RequestSnapshotEpochError as exc:
+        logger.warning("request snapshot changed before stream creation")
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "success": False,
+                "error": {
+                    "code": ChatErrorCode.INTERNAL_ERROR,
+                    "message": "请求上下文已变化，请重新发起本轮请求。",
+                },
+            },
+        ) from exc
+
     async def event_generator():
         """SSE 流式生成器，带 CancelledError 处理 + idle timeout + finally 清理。"""
         import asyncio as _asyncio
@@ -907,6 +1238,7 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
         try:
             # ── 附件 + 历史构建 ──
             attachment_texts, image_parts = await _process_attachments(payload)
+            _require_request_snapshot_epochs_current(request_snapshot, payload.session_id)
             history, last_user_msg = _build_chat_history(msgs)
             if image_parts:
                 text_part = last_user_msg if isinstance(last_user_msg, str) else str(last_user_msg)
@@ -930,6 +1262,7 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
                 from src.agent.exceptions import (
                     AgentStreamIdleTimeoutError,
                     AgentTimeoutError,
+                    ContextLimitError,
                     ModelEmptyResponseError,
                 )
 
@@ -979,6 +1312,48 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
                     })
                     return
                 except Exception as agent_exc:
+                    if isinstance(agent_exc, _RequestSnapshotEpochError):
+                        raise
+                    if isinstance(agent_exc, ContextLimitError):
+                        logger.warning(
+                            "context_limit_exceeded tokens=%s limit=%s; stopping request",
+                            agent_exc.cumulative,
+                            agent_exc.limit,
+                        )
+                        yield sse_event("error", {
+                            "code": ChatErrorCode.CONTEXT_LIMIT,
+                            "message": (
+                                "上下文超过当前模型可处理上限，本轮请求已停止。"
+                                "请缩短对话历史或开启新会话后重试。"
+                            ),
+                            "detail": (
+                                f"累计上下文估算为 {agent_exc.cumulative} tokens，"
+                                f"限制为 {agent_exc.limit} tokens。"
+                            ),
+                        })
+                        yield sse_event("done", {"success": False, "completed": False})
+                        return
+                    if isinstance(agent_exc, _WriterLifecycleUnavailableError):
+                        cause = agent_exc.__cause__
+                        cause_type = (
+                            type(cause).__name__
+                            if cause is not None
+                            else type(agent_exc).__name__
+                        )
+                        logger.error(
+                            "Agent writer lifecycle unavailable (%s); request stopped before graph execution",
+                            cause_type,
+                        )
+                        error_code = ChatErrorCode.INTERNAL_ERROR
+                        error_message = "Agent 安全写入保护不可用，本轮请求已停止"
+                        error_detail = "无法建立会话写入保护；本轮未启动 Agent。"
+                        yield sse_event("error", {
+                            "code": error_code,
+                            "message": error_message,
+                            "detail": error_detail,
+                        })
+                        yield sse_event("done", {"success": False, "completed": False})
+                        return
                     known_empty_response = _is_known_upstream_zero_output(agent_exc)
                     if known_empty_response:
                         logger.warning("Agent upstream reported the known zero-output signature")
@@ -1015,6 +1390,7 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
 
             # === Fallback: 纯 LLM 流式（Agent 不可用，不检索知识库）===
             try:
+                _require_request_snapshot_epochs_current(request_snapshot, payload.session_id)
                 usage_data = None
                 full_response_text = ""  # Accumulated response for fallback token estimation
                 # 使用 queue 包装 LLM stream，支持 idle timeout + heartbeat
@@ -1027,6 +1403,7 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
                 async def _llm_worker(q):
                     """后台任务：消费 LLM stream 并推入队列。"""
                     try:
+                        _require_request_snapshot_epochs_current(request_snapshot, payload.session_id)
                         async for chunk in client.chat_stream(
                             user_message=last_user_msg, system_prompt=system_prompt,
                             history=history if len(history) > 0 else None,
@@ -1049,6 +1426,7 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
                         try:
                             chunk = await _asyncio.wait_for(queue.get(), timeout=HEARTBEAT_INTERVAL)
                         except _asyncio.TimeoutError:
+                            _require_request_snapshot_epochs_current(request_snapshot, payload.session_id)
                             if time.monotonic() - last_event_time >= IDLE_TIMEOUT:
                                 logger.error("LLM 响应超时 (5min idle)")
                                 yield sse_event("error", {"code": ChatErrorCode.TIMEOUT, "message": "LLM 响应超时", "detail": "5 分钟内无新数据，连接已断开"})
@@ -1057,6 +1435,7 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
                             yield sse_event("heartbeat", {})
                             continue
 
+                        _require_request_snapshot_epochs_current(request_snapshot, payload.session_id)
                         last_event_time = time.monotonic()
 
                         if chunk is None:
@@ -1112,6 +1491,7 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
                             logger.warning(f"Token estimation failed: {est_err}")
 
                     # 正常结束，发送 done
+                    _require_request_snapshot_epochs_current(request_snapshot, payload.session_id)
                     done_payload: dict = {"success": True, "completed": True}
                     if usage_data:
                         done_payload["usage"] = usage_data
@@ -1126,6 +1506,8 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
                         pass
 
             except Exception as e:
+                if isinstance(e, _RequestSnapshotEpochError):
+                    raise
                 _emsg = str(e)
                 _emsg_lower = _emsg.lower()
                 known_empty_response = _is_known_upstream_zero_output(e)
@@ -1170,6 +1552,13 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
                 yield sse_event("done", {"success": False, "completed": False})
                 return
 
+        except _RequestSnapshotEpochError:
+            _clear_pending_request_snapshot(payload.session_id)
+            yield sse_event("error", {
+                "code": ChatErrorCode.INTERNAL_ERROR,
+                "message": "请求上下文已变化或无法验证，本轮请求已停止，请重新发起。",
+            })
+            yield sse_event("done", {"success": False, "completed": False})
         except _asyncio.CancelledError:
             logger.info("SSE 流被客户端取消（CancelledError）")
             # 捕获后重新 raise，让 FastAPI 正常终止
@@ -1206,8 +1595,29 @@ async def resume_agent(req: ResumeRequest, request: Request, user: dict = Depend
     if not _AGENT_PATH_AVAILABLE:
         return {"error": "Agent path unavailable"}
     session_id = _session_memory_key(req.payload.session_id)
+    try:
+        pinned_session_epoch, pinned_memory_epoch = _capture_request_snapshot_epochs(
+            req.payload.session_id,
+        )
+    except _RequestSnapshotEpochError as exc:
+        _clear_pending_request_snapshot(session_id)
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "success": False,
+                "error": {
+                    "code": "HITL_REQUEST_SNAPSHOT_UNAVAILABLE",
+                    "message": "原请求快照无法验证，请重新发送本轮请求。",
+                },
+            },
+        ) from exc
     request_snapshot = _get_pending_request_snapshot(session_id)
-    if request_snapshot is None:
+    if (
+        request_snapshot is None
+        or request_snapshot.session_delete_epoch != pinned_session_epoch
+        or request_snapshot.memory_clear_epoch != pinned_memory_epoch
+    ):
+        _clear_pending_request_snapshot(session_id)
         raise HTTPException(
             status_code=409,
             detail={
@@ -1218,37 +1628,162 @@ async def resume_agent(req: ResumeRequest, request: Request, user: dict = Depend
                 },
             },
         )
+    current_principal_id = _verified_principal_id(user)
+    if (
+        current_principal_id is None
+        or request_snapshot.principal_id is None
+        or current_principal_id != request_snapshot.principal_id
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "success": False,
+                "error": {
+                    "code": "HITL_REQUEST_PRINCIPAL_MISMATCH",
+                    "message": "当前身份与暂停请求不匹配，无法继续恢复。",
+                },
+            },
+        )
+    _require_resume_snapshot_current(request_snapshot, req.payload.session_id)
+    if req.decision == "allow" and (type(req.call_id) is not str or not req.call_id):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": {
+                    "code": "HITL_CONFIRMATION_STALE",
+                    "message": "确认已失效，请重新发送请求。",
+                },
+            },
+        )
     effective_payload = _payload_with_request_snapshot(req.payload, request_snapshot)
     effective_req = req.model_copy(update={"payload": effective_payload})
     creds = _resolve_creds(effective_payload, request)
+    _require_resume_snapshot_current(request_snapshot, req.payload.session_id)
+    from src.agent.context_guard import resolve_context_budget
+
+    context_budget = resolve_context_budget(
+        creds.get("model"),
+        _session_context_window(req.payload.session_id),
+        req.payload.max_tokens,
+    )
     agent = await _build_agent_for_payload(
         effective_payload, creds, request_snapshot.long_term_memory,
         request_snapshot=request_snapshot,
+        context_window_override=context_budget.effective_window,
     )
+    _require_resume_snapshot_current(request_snapshot, req.payload.session_id)
     config = build_agent_config(session_id)
-    authorization = getattr(request_snapshot.tool_context, "mcp_authorization", None)
-    if authorization is not None:
-        if req.decision == "stop":
-            authorization.revoke()
-        else:
-            from src.agent.hitl_handler import _detect_tools_interrupt
-            pending = await _detect_tools_interrupt(agent, config)
-            if not authorization.validate_confirmation(req.call_id, pending):
-                raise HTTPException(status_code=409, detail={"error": {"code": "MCP_CONFIRMATION_STALE", "message": "确认已失效，请重新发送请求。"}})
+    from src.agent.compact.writer_lifecycle import WriterOwnerConflictError
+
+    try:
+        writer_binding = _build_request_writer_binding(
+            agent, config, request_snapshot, req.payload.session_id,
+        )
+        writer_lease = _acquire_request_writer_lease(writer_binding)
+    except _RequestSnapshotEpochError as exc:
+        _clear_pending_request_snapshot(session_id)
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "success": False,
+                "error": {
+                    "code": "HITL_REQUEST_SNAPSHOT_UNAVAILABLE",
+                    "message": "原请求快照已失效，请重新发送本轮请求。",
+                },
+            },
+        ) from exc
+    except WriterOwnerConflictError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "success": False,
+                "error": {
+                    "code": "HITL_WRITER_BUSY",
+                    "message": "该会话仍有请求在写入，请等待其结束后重试确认。",
+                },
+            },
+        ) from exc
+    except Exception as exc:
+        logger.warning("HITL writer binding could not be established (%s)", type(exc).__name__)
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "success": False,
+                "error": {
+                    "code": "HITL_WRITER_UNAVAILABLE",
+                    "message": "无法安全恢复此会话，请稍后重试。",
+                },
+            },
+        ) from exc
+
+    lease_transferred = False
+    lease_release_state = {"released": False}
+    try:
+        authorization = getattr(request_snapshot.tool_context, "mcp_authorization", None)
+        if authorization is not None:
+            if req.decision == "stop":
+                authorization.revoke()
+            else:
+                from src.agent.hitl_handler import _detect_tools_interrupt
+                pending = await _detect_tools_interrupt(agent, config)
+                _require_resume_snapshot_current(request_snapshot, req.payload.session_id)
+                writer_binding.registry.assert_scope(
+                    writer_lease, writer_binding.current_scope(),
+                )
+                if not authorization.validate_confirmation(req.call_id, pending):
+                    raise HTTPException(status_code=409, detail={"error": {"code": "MCP_CONFIRMATION_STALE", "message": "确认已失效，请重新发送请求。"}})
+                try:
+                    authorization.resolve_confirmation(req.call_id, req.decision)
+                except ValueError:
+                    raise HTTPException(status_code=409, detail={"error": {"code": "MCP_CONFIRMATION_STALE", "message": "确认已处理，请勿重复提交。"}}) from None
+        elif req.decision == "allow":
+            from src.agent.hitl_handler import (
+                _detect_tools_interrupt,
+                _require_single_pending_confirmation_call,
+            )
+
             try:
-                authorization.resolve_confirmation(req.call_id, req.decision)
-            except ValueError:
-                raise HTTPException(status_code=409, detail={"error": {"code": "MCP_CONFIRMATION_STALE", "message": "确认已处理，请勿重复提交。"}}) from None
-    call_counter: Counter = Counter()
-    model = creds.get("model", "")
-    return StreamingResponse(
-        _resume_event_generator(
-            agent, config, effective_req, call_counter, model,
-            request_snapshot.long_term_memory, request_snapshot,
-        ),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
-    )
+                pending = await _detect_tools_interrupt(agent, config)
+                _require_single_pending_confirmation_call(req.call_id, pending)
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": {
+                            "code": "HITL_CONFIRMATION_STALE",
+                            "message": "确认已失效，请重新发送请求。",
+                        },
+                    },
+                ) from exc
+            _require_resume_snapshot_current(request_snapshot, req.payload.session_id)
+            writer_binding.registry.assert_scope(
+                writer_lease, writer_binding.current_scope(),
+            )
+        call_counter: Counter = Counter()
+        model = creds.get("model", "")
+        _require_resume_snapshot_current(request_snapshot, req.payload.session_id)
+        from starlette.background import BackgroundTask
+
+        response = StreamingResponse(
+            _resume_event_generator(
+                agent, config, effective_req, call_counter, model,
+                request_snapshot.long_term_memory, request_snapshot,
+                writer_binding, writer_lease, lease_release_state,
+            ),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+            background=BackgroundTask(
+                _release_request_writer_lease,
+                writer_binding,
+                writer_lease,
+                lease_release_state,
+            ),
+        )
+        lease_transferred = True
+        return response
+    finally:
+        if not lease_transferred:
+            _release_request_writer_lease(writer_binding, writer_lease)
 
 
 @dataclass
@@ -1266,6 +1801,9 @@ class ResumeContext:
     model: str
     long_term_memory: str = ""
     request_snapshot: AgentRequestSnapshot | None = None
+    writer_binding: Any = field(default=None, repr=False)
+    writer_lease: Any = field(default=None, repr=False)
+    lease_release_state: dict[str, bool] | None = field(default=None, repr=False)
 
 
 async def _resume_event_generator_from_ctx(ctx: ResumeContext):
@@ -1277,17 +1815,34 @@ async def _resume_event_generator_from_ctx(ctx: ResumeContext):
     saw_confirmation = False
     try:
         from src.agent.hitl_handler import resume_agent_after_user
-        request_snapshot = ctx.request_snapshot or _request_snapshot_from_payload(
-            ctx.req.payload, ctx.long_term_memory,
+        request_snapshot = ctx.request_snapshot
+        if request_snapshot is None:
+            raise _RequestSnapshotEpochError("resume request snapshot is missing")
+        _require_request_snapshot_epochs_current(
+            request_snapshot, ctx.req.payload.session_id,
         )
         terminal_sent = False
         async for sse in _resume_in_context(ctx, request_snapshot, resume_agent_after_user):
+            _require_request_snapshot_epochs_current(
+                request_snapshot, ctx.req.payload.session_id,
+            )
+            if ctx.writer_binding is not None and ctx.writer_lease is not None:
+                ctx.writer_binding.registry.assert_scope(
+                    ctx.writer_lease, ctx.writer_binding.current_scope(),
+                )
             if _sse_event_type(sse) == "tool_confirm_required":
                 _store_pending_request_snapshot(
                     ctx.req.payload.session_id, request_snapshot,
                 )
                 saw_confirmation = True
             yield sse
+            _require_request_snapshot_epochs_current(
+                request_snapshot, ctx.req.payload.session_id,
+            )
+            if ctx.writer_binding is not None and ctx.writer_lease is not None:
+                ctx.writer_binding.registry.assert_scope(
+                    ctx.writer_lease, ctx.writer_binding.current_scope(),
+                )
             if _is_done_sse_event(sse):
                 terminal_sent = True
                 break
@@ -1308,16 +1863,48 @@ async def _resume_event_generator_from_ctx(ctx: ResumeContext):
     else:
         if not saw_confirmation:
             _clear_pending_request_snapshot(ctx.req.payload.session_id)
+    finally:
+        if ctx.writer_binding is not None and ctx.writer_lease is not None:
+            _release_request_writer_lease(
+                ctx.writer_binding, ctx.writer_lease, ctx.lease_release_state,
+            )
 
 
 async def _resume_in_context(ctx: ResumeContext, snapshot: AgentRequestSnapshot, handler):
     from src.agent.request_context import activate_tool_context
-    options = {}
+    _require_request_snapshot_epochs_current(snapshot, ctx.req.payload.session_id)
+    if ctx.writer_binding is not None and ctx.writer_lease is not None:
+        ctx.writer_binding.registry.assert_scope(
+            ctx.writer_lease, ctx.writer_binding.current_scope(),
+        )
+    options = {
+        "model": ctx.model,
+        "requested_max_tokens": ctx.req.payload.max_tokens,
+    }
     if getattr(snapshot.tool_context, "mcp_authorization", None) is not None:
-        options = {"confirmed_call_id": ctx.req.call_id, "confirmation_resolved": True}
+        options.update({
+            "confirmed_call_id": ctx.req.call_id,
+            "confirmation_resolved": True,
+        })
+    elif ctx.req.decision == "allow":
+        options["confirmed_call_id"] = ctx.req.call_id
     with activate_tool_context(snapshot.tool_context):
-        async for event in handler(ctx.agent, ctx.config, ctx.req.decision, ctx.call_counter, ctx.req.payload.permission_mode, **options):
-            yield event
+        with _request_writer_context(ctx.writer_binding, ctx.writer_lease, ctx.model):
+            async for event in handler(
+                ctx.agent, ctx.config, ctx.req.decision, ctx.call_counter,
+                ctx.req.payload.permission_mode, **options,
+            ):
+                _require_request_snapshot_epochs_current(snapshot, ctx.req.payload.session_id)
+                if ctx.writer_binding is not None and ctx.writer_lease is not None:
+                    ctx.writer_binding.registry.assert_scope(
+                        ctx.writer_lease, ctx.writer_binding.current_scope(),
+                    )
+                yield event
+                _require_request_snapshot_epochs_current(snapshot, ctx.req.payload.session_id)
+                if ctx.writer_binding is not None and ctx.writer_lease is not None:
+                    ctx.writer_binding.registry.assert_scope(
+                        ctx.writer_lease, ctx.writer_binding.current_scope(),
+                    )
 
 
 def _is_done_sse_event(sse: str) -> bool:
@@ -1336,6 +1923,8 @@ def _is_done_sse_event(sse: str) -> bool:
 async def _resume_event_generator(
     agent, config, req, call_counter, model, long_term_memory: str = "",
     request_snapshot: AgentRequestSnapshot | None = None,
+    writer_binding: Any = None, writer_lease: Any = None,
+    lease_release_state: dict[str, bool] | None = None,
 ):
     """Backward-compat shim around _resume_event_generator_from_ctx (P2-I-1).
 
@@ -1347,6 +1936,9 @@ async def _resume_event_generator(
         call_counter=call_counter, model=model,
         long_term_memory=long_term_memory,
         request_snapshot=request_snapshot,
+        writer_binding=writer_binding,
+        writer_lease=writer_lease,
+        lease_release_state=lease_release_state,
     )
     async for sse in _resume_event_generator_from_ctx(ctx):
         yield sse
@@ -1354,6 +1946,30 @@ async def _resume_event_generator(
 
 def _resume_error_event(exc: Exception) -> str:
     """Build the error SSE event for a failed resume."""
+    from src.agent.exceptions import ContextLimitError
+
+    if isinstance(exc, _RequestSnapshotEpochError):
+        return sse_event("error", {
+            "code": "HITL_REQUEST_SNAPSHOT_UNAVAILABLE",
+            "message": "原请求快照已失效，请重新发送本轮请求。",
+        })
+    if isinstance(exc, ContextLimitError):
+        logger.warning(
+            "context_limit_exceeded tokens=%s limit=%s during resume; stopping request",
+            exc.cumulative,
+            exc.limit,
+        )
+        return sse_event("error", {
+            "code": ChatErrorCode.CONTEXT_LIMIT,
+            "message": (
+                "上下文超过当前模型可处理上限，本轮请求已停止。"
+                "请缩短对话历史或开启新会话后重试。"
+            ),
+            "detail": (
+                f"累计上下文估算为 {exc.cumulative} tokens，"
+                f"限制为 {exc.limit} tokens。"
+            ),
+        })
     logger.exception("Agent resume failed")
     return sse_event("error", {"code": "AGENT_RESUME_FAILED", "message": str(exc)[:200]})
 

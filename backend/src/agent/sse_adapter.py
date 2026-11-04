@@ -15,13 +15,22 @@ import json
 import logging
 import time
 from collections import Counter
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 from langchain_core.runnables.config import merge_configs
 
 from app.api.sse import sse_event
-from src.agent.context_guard import _CUMULATIVE_TOKENS, accumulate_tokens, reset_token_counter
+from src.agent.context_guard import (
+    _CUMULATIVE_TOKENS,
+    ContextBudget,
+    accumulate_tokens,
+    estimate_context_tokens,
+    reset_token_counter,
+)
 from src.agent.exceptions import (
     AgentStreamIdleTimeoutError,
     AgentTimeoutError,
@@ -49,6 +58,221 @@ AGENT_HEARTBEAT_INTERVAL = 15
 AGENT_STREAM_IDLE_TIMEOUT_S = 300
 
 
+@dataclass(frozen=True)
+class _ActiveWriterBinding:
+    binding: Any
+    lease: Any
+    model: str = ""
+
+
+@dataclass
+class _NativeExitJoinState:
+    """Track LangGraph exit tasks proven at native iterator boundaries."""
+
+    joined: bool = True
+    tasks: set[asyncio.Task] = field(default_factory=set)
+
+
+_active_writer_binding: ContextVar[_ActiveWriterBinding | None] = ContextVar(
+    "sse_active_writer_binding", default=None,
+)
+
+
+@contextmanager
+def activate_writer_binding(binding: Any, lease: Any, model: str = ""):
+    """Expose the route's authoritative scope provider to every adapter run."""
+    token = _active_writer_binding.set(_ActiveWriterBinding(binding, lease, model))
+    try:
+        yield
+    finally:
+        _active_writer_binding.reset(token)
+
+
+def _revalidate_active_writer(
+    active: _ActiveWriterBinding | None = None,
+) -> Any | None:
+    """Re-read the route's epoch authority and authenticate its lease."""
+    active = active if active is not None else _active_writer_binding.get()
+    if active is None:
+        return None
+    scope = active.binding.current_scope()
+    active.binding.registry.assert_scope(active.lease, scope)
+    return scope
+
+
+def _quarantine_active_writer(
+    active: _ActiveWriterBinding | None,
+    reason: Any = None,
+) -> None:
+    """Fail closed when a native run or scope can no longer be proven safe."""
+    if active is None:
+        return
+    from src.agent.compact.writer_lifecycle import QuarantineReason
+
+    try:
+        active.binding.registry.quarantine(
+            active.lease,
+            active.binding.scope,
+            reason=reason or QuarantineReason.CALLER_REPORTED_UNCERTAINTY,
+        )
+    except BaseException:
+        # The owner may already be quarantined or have a mismatching scope.
+        pass
+
+
+def _add_exception_note(error: BaseException, note: str) -> None:
+    add_note = getattr(error, "add_note", None)
+    if callable(add_note):
+        try:
+            add_note(note)
+        except Exception:
+            pass
+
+
+def _mark_join_unconfirmed(
+    join_state: _NativeExitJoinState,
+    active: _ActiveWriterBinding | None,
+    message: str,
+    error: BaseException | None = None,
+    primary: BaseException | None = None,
+) -> None:
+    join_state.joined = False
+    from src.agent.compact.writer_lifecycle import QuarantineReason
+
+    _quarantine_active_writer(active, QuarantineReason.JOIN_UNCONFIRMED)
+    if error is None:
+        logger.error(message)
+    else:
+        logger.error(
+            message,
+            exc_info=(type(error), error, error.__traceback__),
+        )
+    if primary is not None and primary is not error:
+        _add_exception_note(primary, message)
+
+
+async def _await_tasks_to_completion(
+    tasks: list[asyncio.Task],
+) -> tuple[list[Any] | None, asyncio.CancelledError | None]:
+    """Join every task even if this owner receives another cancellation."""
+    if not tasks:
+        return [], None
+    waiter = asyncio.gather(*tasks, return_exceptions=True)
+    interrupted: asyncio.CancelledError | None = None
+    while not waiter.done():
+        try:
+            await asyncio.shield(waiter)
+        except asyncio.CancelledError as exc:
+            if interrupted is None:
+                interrupted = exc
+        except BaseException:
+            break
+    if not waiter.done():
+        return None, interrupted
+    try:
+        return waiter.result(), interrupted
+    except BaseException as exc:
+        return [exc], interrupted
+
+
+async def _join_langgraph_exit_task(
+    cancellation: asyncio.CancelledError,
+    join_state: _NativeExitJoinState,
+    active: _ActiveWriterBinding | None,
+    *,
+    source: str,
+) -> None:
+    """Join only the exit task appended by LangGraph's native __aexit__ shape.
+
+    This is called only when CancelledError came directly from the native
+    iterator's __anext__ or aclose. LangGraph appends its exit_task as the
+    final exception argument; earlier arguments remain arbitrary cancellation
+    messages and are deliberately ignored.
+    """
+    args = cancellation.args
+    candidate = args[-1] if args else None
+    current = asyncio.current_task()
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if (
+        not isinstance(candidate, asyncio.Task)
+        or candidate is current
+        or loop is None
+        or candidate.get_loop() is not loop
+    ):
+        _mark_join_unconfirmed(
+            join_state,
+            active,
+            f"Could not verify LangGraph exit task from native {source} cancellation",
+            cancellation,
+            cancellation,
+        )
+        return
+
+    join_state.tasks.add(candidate)
+    results, interrupted = await _await_tasks_to_completion([candidate])
+    if interrupted is not None:
+        _add_exception_note(
+            cancellation,
+            f"Owner received another cancellation while joining LangGraph exit task from {source}",
+        )
+    if results is None or not candidate.done():
+        _mark_join_unconfirmed(
+            join_state,
+            active,
+            f"LangGraph exit task from native {source} did not finish",
+            cancellation,
+            cancellation,
+        )
+        return
+    exit_result = results[0] if results else None
+    if isinstance(exit_result, BaseException):
+        _mark_join_unconfirmed(
+            join_state,
+            active,
+            f"LangGraph exit task from native {source} ended with an error",
+            exit_result,
+            cancellation,
+        )
+
+
+def _check_unverified_task_argument(
+    cancellation: asyncio.CancelledError,
+    join_state: _NativeExitJoinState,
+    active: _ActiveWriterBinding | None,
+    *,
+    source: str,
+    primary: BaseException | None = None,
+) -> None:
+    args = cancellation.args
+    candidate = args[-1] if args else None
+    if isinstance(candidate, asyncio.Task) and candidate not in join_state.tasks:
+        _mark_join_unconfirmed(
+            join_state,
+            active,
+            f"Cancellation from {source} carried a Task that was not proven as a LangGraph exit task",
+            cancellation,
+            primary,
+        )
+
+
+def _is_graph_drained(error: BaseException) -> bool:
+    """Recognize only LangGraph's native cooperative-drain terminal error."""
+    try:
+        from langgraph.errors import GraphDrained
+    except Exception:
+        return False
+    return isinstance(error, GraphDrained)
+
+
+def _raise_context_limit(state: dict) -> None:
+    raise ContextLimitError(
+        cumulative=_CUMULATIVE_TOKENS.get(), limit=state.get("token_limit", 0),
+    )
+
+
 # ═══════════════════════════════════════════
 # Public entry point
 # ═══════════════════════════════════════════
@@ -60,6 +284,8 @@ async def stream_agent_to_sse(
     call_counter: Counter,
     permission_mode: str = "bypassPermissions",
     model: str = "",
+    requested_max_tokens: int | None = None,
+    context_budget: ContextBudget | None = None,
 ) -> AsyncIterator[str]:
     """Run the agent stream and yield SSE event strings.
 
@@ -79,34 +305,48 @@ async def stream_agent_to_sse(
     outcome = "error"
     error_type: str | None = None
     try:
-        state = init_stream_state(stream_config, model)
+        state = init_stream_state(
+            stream_config, model, requested_max_tokens, context_budget,
+        )
         state["agent_timing"] = timing
         state["tool_event_queue"] = asyncio.Queue()
         state["permission_mode"] = permission_mode
         state["agent"] = agent
-        state["config"] = stream_config
+        state["config"] = config
+        state["stream_config"] = stream_config
         register_queue(session_id, state["tool_event_queue"])
         queue_registered = True
-        reset_token_counter()
+        initial_tokens = estimate_context_tokens(events)
+        if initial_tokens > state["token_limit"]:
+            raise ContextLimitError(
+                cumulative=initial_tokens, limit=state["token_limit"],
+            )
+        reset_token_counter(initial_tokens)
         agent_stream = _iter_agent_sse(
             agent, events, stream_config, call_counter, call_start_time, state,
         )
         try:
             async for sse in agent_stream:
+                _revalidate_active_writer()
                 timing.observe_sse(sse)
                 yield sse
+                _revalidate_active_writer()
         finally:
             await agent_stream.aclose()
+            _revalidate_active_writer()
         from src.agent.hitl_handler import handle_auto_resume
         resume_stream = handle_auto_resume(
             agent, stream_config, permission_mode, call_counter, call_start_time, state,
         )
         try:
             async for sse in resume_stream:
+                _revalidate_active_writer()
                 timing.observe_sse(sse)
                 yield sse
+                _revalidate_active_writer()
         finally:
             await resume_stream.aclose()
+            _revalidate_active_writer()
         outcome = timing.completion_outcome()
     except (asyncio.CancelledError, GeneratorExit):
         outcome = "cancelled"
@@ -126,22 +366,150 @@ async def _iter_agent_sse(
     agent: Any, events: Any, config: dict,
     call_counter: Counter, call_start_time: dict[str, float], state: dict,
 ) -> AsyncIterator[str]:
-    """Iterate agent.astream and yield converted SSE events.
+    """Iterate one native run, compact only after a confirmed graph drain.
 
-    When a tool_event_queue is present in state (set by stream_agent_to_sse),
-    tool intermediate events (compile_log / progress / thinking / heartbeat)
-    are merged into the stream in real time.
+    The continuation after checkpoint publication uses its exact execution
+    config and one ``input=None`` call. HITL callers reach this wrapper too,
+    because they invoke it directly for each Command continuation.
     """
+    state.setdefault("agent", agent)
+    state.setdefault("config", config)
+    state.setdefault("stream_config", config)
+    if (
+        not isinstance(state.get("context_budget"), ContextBudget)
+        or state.get("token_limit", 0) <= 0
+    ):
+        _raise_context_limit(state)
+    run_events = events
+    run_config = config
+    while True:
+        try:
+            async for sse in _iterate_agent_sse_once(
+                agent, run_events, run_config, call_counter, call_start_time, state,
+            ):
+                _revalidate_active_writer()
+                yield sse
+                _revalidate_active_writer()
+            return
+        except BaseException as exc:
+            if not _is_graph_drained(exc):
+                raise
+            _revalidate_active_writer()
+            handle = state.get("last_writer_run_handle")
+            if not state.get("needs_compact") or not state.get("compaction_drain_requested"):
+                raise
+            if (
+                handle is None
+                or not handle.joined
+                or not handle.drain_acknowledged
+                or handle.drain_reason != "context_compaction"
+            ):
+                _raise_context_limit(state)
+            if not await _do_compact(state):
+                _raise_context_limit(state)
+            _revalidate_active_writer()
+            execution_config = state.pop("continuation_execution_config", None)
+            if not _is_exact_execution_config(execution_config, agent):
+                _raise_context_limit(state)
+            state["needs_compact"] = False
+            state["compaction_drain_requested"] = False
+            run_events = None
+            # Keep this exact publisher object through begin_run and astream;
+            # the lifecycle validates its checkpoint tuple on the new run.
+            run_config = execution_config
+
+
+async def _iterate_agent_sse_once(
+    agent: Any, events: Any, config: dict,
+    call_counter: Counter, call_start_time: dict[str, float], state: dict,
+) -> AsyncIterator[str]:
+    """Run one LangGraph iterator and confirm its join before lifecycle ack."""
+    from langgraph.runtime import RunControl
+    from src.agent.compact.writer_lifecycle import RunOutcome
+
+    active = _active_writer_binding.get()
+    scope = _revalidate_active_writer(active)
+    native_control = RunControl()
+    run_handle = None
+    if active is not None:
+        run_handle = active.binding.registry.begin_run(
+            active.lease, scope, native_control, execution_config=config,
+        )
+    state["active_writer_run_handle"] = run_handle
+    state["last_writer_run_handle"] = None
+
     tool_event_queue: asyncio.Queue | None = state.get("tool_event_queue")
+    native_exit_join_state = _NativeExitJoinState()
 
     async def _direct_agent_items():
-        async for mode, chunk in agent.astream(
+        _revalidate_active_writer(active)
+        native_stream = agent.astream(
             events, config=config, stream_mode=["messages", "updates"],
-        ):
-            yield {"source": "agent", "mode": mode, "chunk": chunk}
+            control=native_control,
+        )
+        native_iterator = native_stream.__aiter__()
+        primary_error: BaseException | None = None
+        try:
+            while True:
+                try:
+                    mode, chunk = await native_iterator.__anext__()
+                except StopAsyncIteration:
+                    break
+                except asyncio.CancelledError as exc:
+                    await _join_langgraph_exit_task(
+                        exc, native_exit_join_state, active, source="__anext__",
+                    )
+                    raise
+                _revalidate_active_writer(active)
+                yield {"source": "agent", "mode": mode, "chunk": chunk}
+        except BaseException as exc:
+            primary_error = exc
+            raise
+        finally:
+            closer = getattr(native_iterator, "aclose", None)
+            if closer is None:
+                closer = getattr(native_stream, "aclose", None)
+            if closer is not None:
+                try:
+                    await closer()
+                except asyncio.CancelledError as exc:
+                    await _join_langgraph_exit_task(
+                        exc, native_exit_join_state, active, source="aclose",
+                    )
+                    _mark_join_unconfirmed(
+                        native_exit_join_state,
+                        active,
+                        "Native agent stream close raised cancellation",
+                        exc,
+                        primary_error,
+                    )
+                    if primary_error is None or not isinstance(
+                        primary_error, (asyncio.CancelledError, GeneratorExit),
+                    ):
+                        raise
+                except BaseException as exc:
+                    _mark_join_unconfirmed(
+                        native_exit_join_state,
+                        active,
+                        "Native agent stream close failed",
+                        exc,
+                        primary_error,
+                    )
+                    if primary_error is None:
+                        raise
+                else:
+                    _revalidate_active_writer(active)
 
     source = (
-        _merge_agent_and_tool_events(agent, events, config, tool_event_queue)
+        _merge_agent_and_tool_events(
+            agent,
+            events,
+            config,
+            tool_event_queue,
+            control=native_control,
+            exit_join_state=native_exit_join_state,
+            active_writer=active,
+        )
         if tool_event_queue is not None
         else _direct_agent_items()
     )
@@ -149,6 +517,11 @@ async def _iter_agent_sse(
     last_progress_at = time.monotonic()
     next_item_task: asyncio.Task | None = None
     had_error = False
+    run_error: BaseException | None = None
+    graph_terminal_error: BaseException | None = None
+    outcome_unknown = False
+    joined = True
+    cleanup_error: BaseException | None = None
     try:
         while True:
             if next_item_task is None:
@@ -165,6 +538,7 @@ async def _iter_agent_sse(
                 wait_seconds = min(AGENT_HEARTBEAT_INTERVAL, remaining)
 
             ready, _ = await asyncio.wait({next_item_task}, timeout=wait_seconds)
+            _revalidate_active_writer(active)
             if not ready:
                 check_active_tool_timeouts(call_start_time)
                 if not call_start_time:
@@ -177,6 +551,9 @@ async def _iter_agent_sse(
                 item = next_item_task.result()
             except StopAsyncIteration:
                 break
+            except BaseException as exc:
+                graph_terminal_error = exc
+                raise
             next_item_task = None
             check_active_tool_timeouts(call_start_time)
 
@@ -184,38 +561,214 @@ async def _iter_agent_sse(
                 sse = await _convert_chunk_to_sse(
                     item["mode"], item["chunk"], call_counter, call_start_time, state,
                 )
+                _revalidate_active_writer(active)
             else:
                 sse = _convert_tool_event_to_sse(item["event"])
             if sse:
                 if _sse_indicates_progress(sse):
                     last_progress_at = time.monotonic()
                 yield sse
+                _revalidate_active_writer(active)
 
         final_text = state.pop("text_buffer", "")
         if final_text:
             yield sse_event("text", {"content": final_text})
+            _revalidate_active_writer(active)
     except ContextLimitError as exc:
         had_error = True
+        run_error = exc
+        outcome_unknown = True
         logger.warning("context_limit_exceeded tokens=%s limit=%s", exc.cumulative, exc.limit)
+        # Let the chat route emit the stable CONTEXT_LIMIT error and failed
+        # terminal event; do not continue or retry the Agent stream here.
         raise
     except AgentTimeoutError as exc:
         had_error = True
+        run_error = exc
+        outcome_unknown = True
         logger.warning("agent_timeout elapsed=%.1fs limit=%ss", exc.elapsed, exc.limit)
         raise
-    except BaseException:
+    except BaseException as exc:
         had_error = True
+        run_error = exc
+        outcome_unknown = (
+            graph_terminal_error is not exc
+            or isinstance(exc, (asyncio.CancelledError, GeneratorExit))
+        )
         raise
     finally:
-        if next_item_task is not None and not next_item_task.done():
-            next_item_task.cancel()
-            await asyncio.gather(next_item_task, return_exceptions=True)
+        if next_item_task is not None:
+            try:
+                if not next_item_task.done():
+                    next_item_task.cancel()
+                results, interrupted = await _await_tasks_to_completion(
+                    [next_item_task],
+                )
+                if results is None or not next_item_task.done():
+                    joined = False
+                    outcome_unknown = True
+                    _mark_join_unconfirmed(
+                        native_exit_join_state,
+                        active,
+                        "Adapter next-item task did not finish during shutdown",
+                    )
+                else:
+                    task_result = results[0] if results else None
+                    if (
+                        isinstance(task_result, BaseException)
+                        and not isinstance(
+                            task_result,
+                            (asyncio.CancelledError, StopAsyncIteration),
+                        )
+                        and task_result is not run_error
+                    ):
+                        joined = False
+                        outcome_unknown = True
+                        _mark_join_unconfirmed(
+                            native_exit_join_state,
+                            active,
+                            "Adapter next-item task ended with a cleanup error",
+                            task_result,
+                            run_error,
+                        )
+                        if run_error is None:
+                            cleanup_error = task_result
+                            run_error = task_result
+                    elif isinstance(task_result, asyncio.CancelledError):
+                        _check_unverified_task_argument(
+                            task_result,
+                            native_exit_join_state,
+                            active,
+                            source="adapter next-item task",
+                            primary=run_error,
+                        )
+                    if interrupted is not None:
+                        _check_unverified_task_argument(
+                            interrupted,
+                            native_exit_join_state,
+                            active,
+                            source="adapter task join",
+                            primary=run_error,
+                        )
+                        outcome_unknown = True
+                        if run_error is None or not isinstance(
+                            run_error, (asyncio.CancelledError, GeneratorExit),
+                        ):
+                            cleanup_error = interrupted
+                            run_error = interrupted
+                        else:
+                            _add_exception_note(
+                                run_error,
+                                "Owner received another cancellation while joining adapter next-item task",
+                            )
+                _revalidate_active_writer(active)
+            except BaseException as exc:
+                joined = False
+                outcome_unknown = True
+                _mark_join_unconfirmed(
+                    native_exit_join_state,
+                    active,
+                    "Adapter next-item task join failed",
+                    exc,
+                    run_error,
+                )
+                if run_error is None:
+                    cleanup_error = exc
+                    run_error = exc
         closer = getattr(iterator, "aclose", None)
         if closer is not None:
             try:
                 await closer()
+                _revalidate_active_writer(active)
+            except BaseException as exc:
+                joined = False
+                outcome_unknown = True
+                _mark_join_unconfirmed(
+                    native_exit_join_state,
+                    active,
+                    "Adapter source iterator close failed",
+                    exc,
+                    run_error,
+                )
+                if run_error is None or (
+                    isinstance(exc, asyncio.CancelledError)
+                    and not isinstance(run_error, (asyncio.CancelledError, GeneratorExit))
+                ):
+                    cleanup_error = exc
+                    run_error = exc
+        unfinished_exit_tasks = [
+            task for task in native_exit_join_state.tasks if not task.done()
+        ]
+        if unfinished_exit_tasks:
+            joined = False
+            outcome_unknown = True
+            _mark_join_unconfirmed(
+                native_exit_join_state,
+                active,
+                "A proven LangGraph exit task remained unfinished after iterator shutdown",
+            )
+        if not native_exit_join_state.joined:
+            joined = False
+            outcome_unknown = True
+        if active is not None and run_handle is not None:
+            try:
+                scope = _revalidate_active_writer(active)
+                if not joined:
+                    from src.agent.compact.writer_lifecycle import QuarantineReason
+
+                    _quarantine_active_writer(active, QuarantineReason.JOIN_UNCONFIRMED)
+                    outcome_unknown = True
+                elif outcome_unknown:
+                    from src.agent.compact.writer_lifecycle import QuarantineReason
+
+                    _quarantine_active_writer(active, QuarantineReason.RUN_OUTCOME_UNKNOWN)
+                else:
+                    if (
+                        run_error is not None
+                        and _is_graph_drained(run_error)
+                        and state.get("compaction_drain_requested")
+                        and run_handle.drain_reason == "context_compaction"
+                    ):
+                        active.binding.registry.acknowledge_graph_drained(
+                            active.lease, scope, run_handle, run_error,
+                        )
+                        _revalidate_active_writer(active)
+                    active.binding.registry.finish_run(
+                        active.lease, scope, run_handle,
+                        joined=True, outcome=RunOutcome.KNOWN_TERMINAL,
+                    )
+                    _revalidate_active_writer(active)
+                state["last_writer_run_handle"] = run_handle
             except BaseException:
-                if not had_error:
+                _quarantine_active_writer(active)
+                if run_error is None:
                     raise
+        state["active_writer_run_handle"] = None
+        if cleanup_error is not None and (
+            not had_error
+            or isinstance(cleanup_error, (asyncio.CancelledError, GeneratorExit))
+        ):
+            raise cleanup_error
+
+
+def _is_exact_execution_config(config: Any, agent: Any) -> bool:
+    """Require the publisher's exact nonempty resumable config for continuation."""
+    if type(config) is not dict or not config:
+        return False
+    configurable = config.get("configurable")
+    if type(configurable) is not dict:
+        return False
+    active = _active_writer_binding.get()
+    if active is None:
+        return False
+    scope = _revalidate_active_writer(active)
+    return (
+        configurable.get("thread_id") == scope.owner_key
+        and configurable.get("checkpoint_ns", "") == ""
+        and type(configurable.get("checkpoint_id")) is str
+        and bool(configurable.get("checkpoint_id"))
+        and scope.graph is agent
+    )
 # ═══════════════════════════════════════════
 # Chunk dispatch
 # ═══════════════════════════════════════════
@@ -372,6 +925,14 @@ def _emit_tool_calls_from_message(
     call_counter: Counter, call_start_time: dict[str, float], state: dict,
 ) -> None:
     """Emit tool_call SSE events from a complete AIMessage's tool_calls."""
+    if state.get("token_limit", 0) > 0:
+        # messages-mode carries incremental tool-call chunks too; count only
+        # this complete normalized representation from updates mode.
+        tool_call_tokens = estimate_context_tokens([{
+            "content": "",
+            "tool_calls": msg.tool_calls,
+        }])
+        _CUMULATIVE_TOKENS.set(_CUMULATIVE_TOKENS.get() + tool_call_tokens)
     timing = state.get("agent_timing")
     if timing is not None:
         timing.begin_tool_batch([tc.get("id") for tc in msg.tool_calls])
@@ -427,31 +988,47 @@ def _should_compact(state: dict) -> bool:
 
 
 async def _maybe_compact(parts: list[str], state: dict) -> None:
-    """Append context_compressing event and compact if flag is set.
-
-    On compaction success the flag is cleared and the stream continues.
-    On failure ContextLimitError is raised so the caller can degrade.
-    """
+    """Request a native superstep drain before checkpoint compaction."""
     if not state.get("needs_compact"):
         return
-    parts.append(sse_event("context_compressing", {"message": "正在压缩上下文..."}))
-    if await _do_compact(state):
-        state["needs_compact"] = False
-        return
-    raise ContextLimitError(
-        cumulative=_CUMULATIVE_TOKENS.get(), limit=state.get("token_limit", 0),
-    )
+    active = _active_writer_binding.get()
+    run_handle = state.get("active_writer_run_handle")
+    if active is None or run_handle is None:
+        _raise_context_limit(state)
+    scope = _revalidate_active_writer(active)
+    try:
+        requested = active.binding.registry.request_drain(
+            active.lease, scope, run_handle, "context_compaction",
+        )
+    except Exception:
+        _quarantine_active_writer(active)
+        _raise_context_limit(state)
+    if requested is not True:
+        _raise_context_limit(state)
+    state["compaction_drain_requested"] = True
+    parts.append(sse_event("context_compressing", {
+        "message": "正在压缩上下文...",
+        "reason": "history_exceeds_threshold",
+        "threshold_tokens": state.get("token_limit", 0),
+        "context_window": state.get("context_window"),
+    }))
 
 
 async def _do_compact(state: dict) -> bool:
     """Compact agent messages via autocompact. Returns True on success."""
-    context_window = state.get("context_window")
-    if not context_window:
+    active = _active_writer_binding.get()
+    if active is None:
+        _raise_context_limit(state)
+    scope = _revalidate_active_writer(active)
+    active.binding.registry.assert_compaction_safe(active.lease, scope)
+    compaction_window = state.get("compaction_window")
+    if type(compaction_window) is not int or compaction_window <= 0:
         return False
     messages = _read_agent_messages(state)
+    _revalidate_active_writer(active)
     if not messages:
         return False
-    return await _compact_and_apply(state, messages, context_window)
+    return await _compact_and_apply(state, messages, compaction_window)
 
 
 def _read_agent_messages(state: dict) -> list:
@@ -460,14 +1037,21 @@ def _read_agent_messages(state: dict) -> list:
     config = state.get("config")
     if agent is None or config is None:
         return []
+    _revalidate_active_writer()
     snapshot = agent.get_state(config)
+    _revalidate_active_writer()
     return list(snapshot.values.get("messages", []))
 
 
 async def _compact_and_apply(
     state: dict, messages: list, context_window: int,
 ) -> bool:
-    """Run autocompact, update agent state, reset token counter."""
+    """Summarize only after a joined drain and publish through the saver guard."""
+    active = _active_writer_binding.get()
+    if active is None:
+        _raise_context_limit(state)
+    scope = _revalidate_active_writer(active)
+    active.binding.registry.assert_compaction_safe(active.lease, scope)
     from src.agent.compact.autocompact import _make_summary_client, autocompact_messages
     timing = state.get("agent_timing")
     compaction = timing.begin_compaction() if timing is not None else None
@@ -476,12 +1060,14 @@ async def _compact_and_apply(
         with use_agent_timing(timing):
             llm_client = _make_summary_client()
             compacted = await autocompact_messages(messages, llm_client, context_window)
+            _revalidate_active_writer(active)
             # The same list means no work was needed. A new list can have the
             # same length while replacing older messages with a shorter summary.
             if compacted is messages:
                 status = "no_change"
                 return False
-            await _apply_compacted(state, compacted)
+            await _apply_compacted(state, messages, compacted)
+            _revalidate_active_writer(active)
         status = "applied"
         return True
     except asyncio.CancelledError:
@@ -495,11 +1081,91 @@ async def _compact_and_apply(
             timing.end_compaction(compaction, status)
 
 
-async def _apply_compacted(state: dict, compacted: list) -> None:
-    """Update agent state with compacted messages and reset token counter."""
+async def _apply_compacted(state: dict, original: list, compacted: list) -> None:
+    """Publish only a confirmed, resumable checkpoint replacement."""
     agent = state.get("agent")
+    # Keep non-copyable stream callbacks out of the checkpoint publisher's
+    # deepcopy path. The publisher only needs the host's checkpoint config;
+    # timing callbacks are reattached to its exact authorized continuation
+    # object after the publication receipt has been confirmed.
     config = state.get("config")
-    await agent.update_state(config, {"messages": compacted})
+    stream_config = state.get("stream_config", config)
+    active = _active_writer_binding.get()
+    if active is None or agent is None or config is None or stream_config is None:
+        _raise_context_limit(state)
+    scope = _revalidate_active_writer(active)
+    active.binding.registry.assert_compaction_safe(active.lease, scope)
+
+    def confirm_receipt(applied_config: dict, observed: object) -> bool:
+        current_scope = _revalidate_active_writer(active)
+        if type(applied_config) is not dict:
+            return False
+        applied_conf = applied_config.get("configurable")
+        observed_config = getattr(observed, "config", None)
+        observed_conf = (
+            observed_config.get("configurable")
+            if type(observed_config) is dict
+            else None
+        )
+        observed_values = getattr(observed, "values", None)
+        if (
+            type(applied_conf) is not dict
+            or type(observed_conf) is not dict
+            or type(observed_values) is not dict
+        ):
+            return False
+        tasks = tuple(getattr(observed, "tasks", ()) or ())
+        checkpoint_id = applied_conf.get("checkpoint_id")
+        return (
+            applied_conf.get("thread_id") == current_scope.owner_key
+            and applied_conf.get("checkpoint_ns", "") == ""
+            and type(checkpoint_id) is str
+            and bool(checkpoint_id)
+            and observed_conf.get("thread_id") == current_scope.owner_key
+            and observed_conf.get("checkpoint_ns", "") == ""
+            and observed_conf.get("checkpoint_id") == checkpoint_id
+            and observed_values.get("messages", []) == compacted
+            and tuple(getattr(observed, "next", ()) or ()) == ("model",)
+            and len(tasks) == 1
+            and getattr(tasks[0], "name", None) == "model"
+            and getattr(tasks[0], "error", None) is None
+            and not getattr(tasks[0], "interrupts", ())
+            and not getattr(observed, "interrupts", ())
+        )
+
+    from src.agent.compact.checkpoint_publish import publish_compacted_checkpoint
+
+    outcome = await publish_compacted_checkpoint(
+        agent,
+        config,
+        original,
+        compacted,
+        registry=active.binding.registry,
+        lease=active.lease,
+        scope=scope,
+        current_scope=active.binding.current_scope,
+        receipt_callback=confirm_receipt,
+    )
+    _revalidate_active_writer(active)
+    execution_config = outcome.execution_config
+    if (
+        outcome.status != "APPLIED"
+        or outcome.receipt_status != "CONFIRMED"
+        or not _is_exact_execution_config(execution_config, agent)
+    ):
+        _raise_context_limit(state)
+    callbacks = (
+        stream_config.get("callbacks")
+        if type(stream_config) is dict
+        else None
+    )
+    if callbacks is not None:
+        # Preserve callback behavior without replacing or copying the exact
+        # object authorized by the lifecycle registry. Its checkpoint tuple is
+        # intentionally untouched.
+        execution_config["callbacks"] = callbacks
+    # Preserve the exact publisher object; do not merge, copy, or rebuild it.
+    state["continuation_execution_config"] = execution_config
     _reset_tokens_for_compacted(compacted)
 
 
@@ -519,6 +1185,10 @@ def _reset_tokens_for_compacted(compacted: list) -> None:
 
 async def _merge_agent_and_tool_events(
     agent: Any, events: Any, config: dict, queue: asyncio.Queue,
+    *,
+    control: Any = None,
+    exit_join_state: _NativeExitJoinState | None = None,
+    active_writer: _ActiveWriterBinding | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Merge LangGraph agent stream with intermediate tool events from queue.
 
@@ -527,34 +1197,105 @@ async def _merge_agent_and_tool_events(
       {"source": "tool_event", "event": event}
     """
     outgoing: asyncio.Queue = asyncio.Queue()
-    agent_iter = agent.astream(
-        events, config=config, stream_mode=["messages", "updates"],
-    ).__aiter__()
     tasks: list[asyncio.Task] = []
+    join_state = exit_join_state or _NativeExitJoinState()
+    active = active_writer if active_writer is not None else _active_writer_binding.get()
 
     async def _consume_agent() -> None:
+        agent_iter = None
+        primary_error: BaseException | None = None
         try:
-            async for mode, chunk in agent_iter:
+            # This synchronous check is adjacent to the first native iterator
+            # creation, with no await where the pinned epoch could change.
+            _revalidate_active_writer(active)
+            native_stream = agent.astream(
+                events, config=config, stream_mode=["messages", "updates"],
+                control=control,
+            )
+            agent_iter = native_stream.__aiter__()
+            while True:
+                try:
+                    mode, chunk = await agent_iter.__anext__()
+                except StopAsyncIteration:
+                    break
+                except asyncio.CancelledError as exc:
+                    await _join_langgraph_exit_task(
+                        exc, join_state, active, source="__anext__",
+                    )
+                    raise
+                _revalidate_active_writer(active)
                 await outgoing.put({"source": "agent", "mode": mode, "chunk": chunk})
+                _revalidate_active_writer(active)
+        except BaseException as exc:
+            primary_error = exc
+            raise
         finally:
-            # Sentinel tells the queue consumer that no more tool events will arrive.
             try:
-                queue.put_nowait(None)
-            except Exception:
-                pass
-            await outgoing.put({"source": "agent_done"})
+                closer = getattr(agent_iter, "aclose", None)
+                if closer is not None:
+                    try:
+                        await closer()
+                    except asyncio.CancelledError as exc:
+                        await _join_langgraph_exit_task(
+                            exc, join_state, active, source="aclose",
+                        )
+                        _mark_join_unconfirmed(
+                            join_state,
+                            active,
+                            "Native agent iterator close raised cancellation",
+                            exc,
+                            primary_error,
+                        )
+                        if primary_error is None or not isinstance(
+                            primary_error, (asyncio.CancelledError, GeneratorExit),
+                        ):
+                            raise
+                    except BaseException as exc:
+                        _mark_join_unconfirmed(
+                            join_state,
+                            active,
+                            "Native agent iterator close failed",
+                            exc,
+                            primary_error,
+                        )
+                        if primary_error is None:
+                            raise
+                    else:
+                        _revalidate_active_writer(active)
+            finally:
+                # Sentinels must be delivered even if native iterator close fails.
+                try:
+                    queue.put_nowait(None)
+                except Exception:
+                    pass
+                try:
+                    await outgoing.put({"source": "agent_done"})
+                    _revalidate_active_writer(active)
+                except BaseException as exc:
+                    _mark_join_unconfirmed(
+                        join_state,
+                        active,
+                        "Agent consumer could not publish its completion sentinel",
+                        exc,
+                        primary_error,
+                    )
+                    if primary_error is None:
+                        raise
 
     async def _consume_queue() -> None:
         try:
             while True:
                 event = await queue.get()
+                _revalidate_active_writer(active)
                 if event is None:
                     break
                 await outgoing.put({"source": "tool_event", "event": event})
+                _revalidate_active_writer(active)
         except asyncio.CancelledError:
             raise
         finally:
             await outgoing.put({"source": "queue_done"})
+            _revalidate_active_writer(active)
 
     try:
         tasks = [
@@ -568,8 +1309,11 @@ async def _merge_agent_and_tool_events(
                 item = await asyncio.wait_for(
                     outgoing.get(), timeout=AGENT_HEARTBEAT_INTERVAL
                 )
+                _revalidate_active_writer(active)
             except asyncio.TimeoutError:
+                _revalidate_active_writer(active)
                 yield {"source": "tool_event", "event": {"type": "heartbeat"}}
+                _revalidate_active_writer(active)
                 continue
             source = item.get("source")
             if source == "agent_done":
@@ -578,16 +1322,83 @@ async def _merge_agent_and_tool_events(
                 queue_done = True
             else:
                 yield item
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+                _revalidate_active_writer(active)
+        results, interrupted = await _await_tasks_to_completion(tasks)
+        if results is None or any(not task.done() for task in tasks):
+            _mark_join_unconfirmed(
+                join_state,
+                active,
+                "Merge consumers did not finish after both completion sentinels",
+            )
+            raise RuntimeError("agent stream merge consumers did not finish")
+        _revalidate_active_writer(active)
+        if interrupted is not None:
+            raise interrupted
         for result in results:
-            if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
+            if isinstance(result, BaseException):
                 raise result
-    except BaseException:
+    except BaseException as primary_error:
+        if isinstance(primary_error, asyncio.CancelledError):
+            _check_unverified_task_argument(
+                primary_error,
+                join_state,
+                active,
+                source="merge owner",
+            )
         for task in tasks:
             if not task.done():
                 task.cancel()
         if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+            results, interrupted = await _await_tasks_to_completion(tasks)
+            if results is None or any(not task.done() for task in tasks):
+                _mark_join_unconfirmed(
+                    join_state,
+                    active,
+                    "Merge consumers remained active after cancellation",
+                    primary=primary_error,
+                )
+            else:
+                for index, result in enumerate(results):
+                    if isinstance(result, asyncio.CancelledError):
+                        _check_unverified_task_argument(
+                            result,
+                            join_state,
+                            active,
+                            source=f"merge consumer {index}",
+                            primary=primary_error,
+                        )
+                    elif isinstance(result, BaseException):
+                        _mark_join_unconfirmed(
+                            join_state,
+                            active,
+                            f"Merge consumer {index} failed during shutdown",
+                            result,
+                            primary_error,
+                        )
+            try:
+                _revalidate_active_writer(active)
+            except BaseException as exc:
+                _mark_join_unconfirmed(
+                    join_state,
+                    active,
+                    "Writer revalidation failed after merge consumer shutdown",
+                    exc,
+                    primary_error,
+                )
+                if not isinstance(primary_error, (asyncio.CancelledError, GeneratorExit)):
+                    raise
+            if interrupted is not None:
+                _check_unverified_task_argument(
+                    interrupted,
+                    join_state,
+                    active,
+                    source="merge consumer join",
+                    primary=primary_error,
+                )
+            if interrupted is not None and not isinstance(
+                primary_error, (asyncio.CancelledError, GeneratorExit),
+            ):
+                raise interrupted
         raise
 
 

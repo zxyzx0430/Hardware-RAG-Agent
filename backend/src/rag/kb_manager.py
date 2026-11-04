@@ -17,11 +17,12 @@ import asyncio
 import logging
 import math
 import threading
+from contextvars import ContextVar
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from dataclasses import dataclass
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session as DBSession
 
 from app.db.models import KnowledgeBase, KnowledgeDoc, BigChunk
@@ -71,6 +72,12 @@ _BM25_ONLY_PENALTY: float = 0.85
 _BM25_NORM_FACTOR: float = 1.15
 _SEARCH_CACHE_REVISION = 0
 _SEARCH_CACHE_REVISION_LOCK = threading.Lock()
+_SEARCHABLE_DOCUMENT_SCOPE: ContextVar[tuple[str, frozenset[str]] | None] = ContextVar(
+    "searchable_document_scope", default=None,
+)
+_RETRIEVER_SEARCH_SIGNATURE: ContextVar[tuple | None] = ContextVar(
+    "retriever_search_signature", default=None,
+)
 
 
 def validate_small_chunk_size(size: int) -> bool:
@@ -498,7 +505,7 @@ class KnowledgeBaseManager:
             _SEARCH_CACHE_REVISION += 1
 
     def get_search_cache_signature(self, kb_ids: Optional[list[str]] = None) -> tuple:
-        """Return a validated, process-local signature for cached search results."""
+        """Return a signature covering enabled KBs and their document eligibility state."""
         db = self._db_factory()
         try:
             if kb_ids:
@@ -513,6 +520,10 @@ class KnowledgeBaseManager:
                     (kb_id, *by_id.get(kb_id, (False, None)))
                     for kb_id in requested_ids
                 )
+                enabled_ids = [
+                    kb_id for kb_id in requested_ids
+                    if by_id.get(kb_id, (False, None))[0]
+                ]
             else:
                 rows = (
                     db.query(KnowledgeBase.id, KnowledgeBase.name)
@@ -521,12 +532,85 @@ class KnowledgeBaseManager:
                     .all()
                 )
                 scope = tuple((row.id, row.name) for row in rows)
+                enabled_ids = [row.id for row in rows]
+
+            document_rows = []
+            if enabled_ids:
+                document_rows = (
+                    db.query(KnowledgeDoc)
+                    .filter(KnowledgeDoc.kb_id.in_(enabled_ids))
+                    .order_by(KnowledgeDoc.kb_id, KnowledgeDoc.doc_id)
+                    .all()
+                )
+            document_state = tuple(
+                (row.kb_id, row.doc_id, row.status, bool(row.error_message))
+                for row in document_rows
+            )
         finally:
             db.close()
 
         with _SEARCH_CACHE_REVISION_LOCK:
             revision = _SEARCH_CACHE_REVISION
-        return revision, scope
+        return revision, scope, document_state
+
+    def _get_searchable_document_ids(
+        self, kb_ids: list[str],
+    ) -> dict[str, frozenset[str]]:
+        """Read the exact indexed, error-free document IDs for enabled KB scope.
+
+        A query failure is deliberately allowed to propagate so callers cannot
+        fall back to searching every vector or BM25 candidate.
+        """
+        scoped_ids = tuple(dict.fromkeys(kb_ids))
+        searchable: dict[str, set[str]] = {kb_id: set() for kb_id in scoped_ids}
+        if not scoped_ids:
+            return {kb_id: frozenset() for kb_id in scoped_ids}
+
+        db = self._db_factory()
+        try:
+            rows = (
+                db.query(KnowledgeDoc)
+                .filter(KnowledgeDoc.kb_id.in_(scoped_ids))
+                .filter(KnowledgeDoc.status == "indexed")
+                .filter(or_(KnowledgeDoc.error_message.is_(None), KnowledgeDoc.error_message == ""))
+                .all()
+            )
+            for row in rows:
+                row_kb_id = getattr(row, "kb_id", None)
+                doc_id = getattr(row, "doc_id", None)
+                if row_kb_id in searchable and isinstance(doc_id, str) and doc_id:
+                    searchable[row_kb_id].add(doc_id)
+        finally:
+            db.close()
+
+        return {kb_id: frozenset(doc_ids) for kb_id, doc_ids in searchable.items()}
+
+    def _capture_searchable_document_scope(
+        self, kb_id: str,
+    ) -> tuple[tuple, frozenset[str]]:
+        """Capture an enabled KB's eligible docs and verify the read was stable."""
+        before = self.get_search_cache_signature([kb_id])
+        if not isinstance(before, tuple) or len(before) < 2:
+            raise RuntimeError("cannot verify knowledge-base search scope")
+
+        scope = before[1]
+        enabled = any(
+            isinstance(entry, tuple)
+            and len(entry) >= 2
+            and entry[0] == kb_id
+            and bool(entry[1])
+            for entry in scope
+        ) if isinstance(scope, tuple) else False
+        if not enabled:
+            return before, frozenset()
+
+        searchable_doc_ids = self._get_searchable_document_ids([kb_id]).get(
+            kb_id, frozenset(),
+        )
+        after = self.get_search_cache_signature([kb_id])
+        if after != before:
+            raise RuntimeError("document eligibility changed while opening the search scope")
+        return after, searchable_doc_ids
 
     # ═══════════════════════════════════════
     # KB CRUD
@@ -987,6 +1071,9 @@ class KnowledgeBaseManager:
                doc_filter: str = "") -> list[FusedResult]:
         """Search a single KB: BM25 + Vector → RRF fusion.
 
+        Standalone calls verify the enabled KB and eligible document scope
+        before retrieval; search_all_enabled supplies its prevalidated scope.
+
         Args:
             score_threshold: Minimum cosine similarity (0.0-1.0) for vector results.
                              Applied at the vector search stage (ChromaDB filters by
@@ -1001,6 +1088,18 @@ class KnowledgeBaseManager:
         if not kb or not kb.enabled:
             return []
 
+        document_scope = _SEARCHABLE_DOCUMENT_SCOPE.get()
+        searchable_doc_ids: frozenset[str] | None = None
+        standalone_signature: tuple | None = None
+        if document_scope is not None:
+            scoped_kb_id, searchable_doc_ids = document_scope
+            if scoped_kb_id != kb_id or not searchable_doc_ids:
+                return []
+        else:
+            standalone_signature, searchable_doc_ids = self._capture_searchable_document_scope(kb_id)
+            if not searchable_doc_ids:
+                return []
+
         store = self._get_store(kb)
         if not store:
             return []
@@ -1012,20 +1111,31 @@ class KnowledgeBaseManager:
         # Vector search (with optional score threshold filtering)
         t0 = time.perf_counter()
         vector_results = store.search(query, k=fetch_k, score_threshold=score_threshold)
+        if searchable_doc_ids is not None:
+            vector_results = [r for r in vector_results if r.doc_id in searchable_doc_ids]
         logger.info("search_stage kb=%s stage=vector elapsed_ms=%d",
                     kb_id, int((time.perf_counter() - t0) * 1000))
 
         # BM25 search
         t0 = time.perf_counter()
         bm25_results = self._bm25_search(kb_id, query, fetch_k)
+        if searchable_doc_ids is not None:
+            bm25_results = [r for r in bm25_results if r.doc_id in searchable_doc_ids]
         logger.info("search_stage kb=%s stage=bm25 elapsed_ms=%d",
                     kb_id, int((time.perf_counter() - t0) * 1000))
+
+        # Recheck immediately before fusion so an eligibility change during
+        # either candidate search cannot send the stale batch into RRF.
+        if standalone_signature is not None and self.get_search_cache_signature([kb_id]) != standalone_signature:
+            return []
 
         # RRF fusion
         t0 = time.perf_counter()
         fused = rrf_fusion(vector_results, bm25_results)
         logger.info("search_stage kb=%s stage=rrf elapsed_ms=%d",
                     kb_id, int((time.perf_counter() - t0) * 1000))
+        if standalone_signature is not None and self.get_search_cache_signature([kb_id]) != standalone_signature:
+            return []
 
         # Apply doc_filter: keep chunks whose title or doc_id contains the
         # filter substring (case-insensitive). Done post-fusion so RRF ranks
@@ -1058,6 +1168,9 @@ class KnowledgeBaseManager:
                     f"score={r.score:.4f} | {r.content[:50]}"
                 )
 
+        if standalone_signature is not None and self.get_search_cache_signature([kb_id]) != standalone_signature:
+            return []
+
         return [
             FusedResult(
                 content=r.content,
@@ -1074,25 +1187,75 @@ class KnowledgeBaseManager:
     def as_retriever(
         self, kb_id: str, k: int = 5, score_threshold: float = 0.0,
     ) -> object:
-        """Return a LangChain BaseRetriever wrapping rrf_fusion for this KB.
+        """Return a LangChain retriever with a verified per-query document scope.
 
         Enables LangChain ecosystem tools (MultiQueryRetriever,
         ContextualCompressionRetriever, langgraph dev studio) to consume
-        the custom RRF algorithm. rrf_fusion logic is zero-modified —
-        this method only wires the search providers into RRFEnsembleRetriever.
+        the custom RRF algorithm. Both providers are filtered before fusion; a
+        changed or unverifiable source signature fails closed.
         """
         from src.rag.rrf_retriever import RRFEnsembleRetriever
         kb = self.get_kb(kb_id)
         store = self._get_store(kb) if kb else None
 
+        def _eligible_ids_for_current_query() -> frozenset[str]:
+            scope = _SEARCHABLE_DOCUMENT_SCOPE.get()
+            if scope is None or scope[0] != kb_id:
+                raise RuntimeError("retriever candidates require a verified document scope")
+            return scope[1]
+
         def vector_fn(query: str) -> list[SearchResult]:
-            return store.search(query, k=k, score_threshold=score_threshold) if store else []
+            eligible_ids = _eligible_ids_for_current_query()
+            if not eligible_ids or not store:
+                return []
+            candidates = store.search(query, k=k, score_threshold=score_threshold)
+            return [candidate for candidate in candidates if candidate.doc_id in eligible_ids]
 
         def bm25_fn(query: str) -> list[SearchResult]:
-            return self._bm25_search(kb_id, query, k)
+            eligible_ids = _eligible_ids_for_current_query()
+            signature = _RETRIEVER_SEARCH_SIGNATURE.get()
+            if signature is None:
+                raise RuntimeError("retriever source signature is unavailable")
+            if self.get_search_cache_signature([kb_id]) != signature:
+                raise RuntimeError("document eligibility changed before BM25 retrieval")
+            candidates = self._bm25_search(kb_id, query, k)
+            if self.get_search_cache_signature([kb_id]) != signature:
+                raise RuntimeError("document eligibility changed during BM25 retrieval")
+            return [candidate for candidate in candidates if candidate.doc_id in eligible_ids]
 
-        return RRFEnsembleRetriever(
-            vector_retriever=vector_fn, bm25_retriever=bm25_fn,
+        class _EligibilityCheckedRetriever(RRFEnsembleRetriever):
+            manager: Any
+            scope_kb_id: str
+
+            def _get_relevant_documents(
+                self, query: str, *, run_manager: Any = None,
+            ):
+                signature, eligible_ids = self.manager._capture_searchable_document_scope(
+                    self.scope_kb_id,
+                )
+                if not eligible_ids:
+                    return []
+
+                document_token = _SEARCHABLE_DOCUMENT_SCOPE.set(
+                    (self.scope_kb_id, eligible_ids),
+                )
+                signature_token = _RETRIEVER_SEARCH_SIGNATURE.set(signature)
+                try:
+                    documents = super()._get_relevant_documents(
+                        query, run_manager=run_manager,
+                    )
+                    if self.manager.get_search_cache_signature([self.scope_kb_id]) != signature:
+                        return []
+                    return documents
+                finally:
+                    _RETRIEVER_SEARCH_SIGNATURE.reset(signature_token)
+                    _SEARCHABLE_DOCUMENT_SCOPE.reset(document_token)
+
+        return _EligibilityCheckedRetriever(
+            vector_retriever=vector_fn,
+            bm25_retriever=bm25_fn,
+            manager=self,
+            scope_kb_id=kb_id,
         )
 
     def as_compressor(self, top_k: int = 0) -> object:
@@ -1135,8 +1298,24 @@ class KnowledgeBaseManager:
 
         # Parallel: each KB search runs in its own thread (ChromaDB/BM25 are sync).
         # return_exceptions=True keeps one KB's failure from aborting the rest.
+        # Resolve eligible document IDs before any vector/BM25 work. If this DB
+        # read fails, let the error reach search_docs_core so the whole request
+        # fails closed instead of producing a partial or unfiltered result set.
+        searchable_by_kb = self._get_searchable_document_ids([kb.id for kb in kbs])
+
+        def _search_with_document_scope(kb_id: str, searchable_doc_ids: frozenset[str]):
+            token = _SEARCHABLE_DOCUMENT_SCOPE.set((kb_id, searchable_doc_ids))
+            try:
+                return self.search(kb_id, query, k, score_threshold, doc_filter)
+            finally:
+                _SEARCHABLE_DOCUMENT_SCOPE.reset(token)
+
         tasks = [
-            asyncio.to_thread(self.search, kb.id, query, k, score_threshold, doc_filter)
+            asyncio.to_thread(
+                _search_with_document_scope,
+                kb.id,
+                searchable_by_kb.get(kb.id, frozenset()),
+            )
             for kb in kbs
         ]
         results_nested = await asyncio.gather(*tasks, return_exceptions=True)

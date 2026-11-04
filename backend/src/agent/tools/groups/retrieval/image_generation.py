@@ -25,7 +25,7 @@ from typing import Any
 import httpx
 from pydantic import BaseModel, Field, PrivateAttr
 
-from src.agent.core.toolkit.tool_spec import RiskLevel, ToolSpec
+from src.agent.core.toolkit.tool_spec import ConfirmationRule, RiskLevel, ToolSpec
 from src.agent.exceptions import ToolContext
 
 logger = logging.getLogger(__name__)
@@ -95,7 +95,8 @@ class ImageGenerationTool(ToolSpec):
     )
     args_schema: type = ImageGenerationArgs
     output_schema: type[BaseModel] | None = ImageGenerationOutput
-    risk_level: RiskLevel = RiskLevel.LOW
+    risk_level: RiskLevel = RiskLevel.HIGH
+    requires_confirmation: ConfirmationRule = ConfirmationRule.ALWAYS
     timeout_seconds: int = _IMAGE_TIMEOUT_SECONDS
     max_retries: int = 1
 

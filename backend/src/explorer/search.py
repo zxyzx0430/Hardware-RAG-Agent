@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from src.explorer.files import _is_text_file
-from src.explorer.security import is_denied_component
+from src.explorer.security import ExplorerSecurityError, _assert_not_system, is_denied_component
 
 MAX_SEARCH_RESULTS = 100
 MAX_FILE_SIZE = 2 * 1024 * 1024  # 2MB
@@ -33,11 +33,35 @@ def search_content(
 
 def _walk_text_files(root: Path, include_pattern: str) -> Iterator[Path]:
     """Yield searchable text files under *root* matching *include_pattern*."""
+    try:
+        real_root = root.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return
+
     stack = [root]
+    visited_directories = {real_root}
     while stack:
         for entry in _safe_iterdir(stack.pop()):
-            if entry.is_dir():
-                _maybe_descend(stack, entry)
+            try:
+                if entry.is_symlink():
+                    continue
+                real_entry = entry.resolve(strict=True)
+                relative_entry = real_entry.relative_to(real_root)
+                is_directory = entry.is_dir()
+            except (OSError, RuntimeError, ValueError):
+                # resolve() follows Windows junctions. A target outside the
+                # explicitly opened root is rejected before it can be read.
+                continue
+
+            try:
+                _assert_not_system(real_entry)
+            except ExplorerSecurityError:
+                continue
+
+            if any(_is_denied_name(part) for part in relative_entry.parts):
+                continue
+            if is_directory:
+                _maybe_descend(stack, entry, real_entry, visited_directories)
             elif _is_searchable(entry, include_pattern):
                 yield entry
 
@@ -50,10 +74,16 @@ def _safe_iterdir(path: Path) -> list[Path]:
         return []
 
 
-def _maybe_descend(stack: list[Path], entry: Path) -> None:
-    """Push *entry* onto *stack* unless it is a symlink or matches DENY_PATTERNS."""
-    if entry.is_symlink() or _is_denied_name(entry.name):
+def _maybe_descend(
+    stack: list[Path],
+    entry: Path,
+    real_entry: Path,
+    visited_directories: set[Path],
+) -> None:
+    """Push a safe directory once, avoiding loops through in-root junctions."""
+    if _is_denied_name(entry.name) or real_entry in visited_directories:
         return
+    visited_directories.add(real_entry)
     stack.append(entry)
 
 

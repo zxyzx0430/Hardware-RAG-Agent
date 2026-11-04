@@ -87,6 +87,7 @@ async def call_tool(payload: ToolRequest, user: dict = Depends(current_user)):
         return await ToolRouter.get_default().dispatch(
             call_id, payload.tool, payload.args, ctx,
             decision="allow", decision_source="auto_allow",
+            tool_spec=spec,
         )
     except Exception as e:
         logger.exception(f"工具调用失败: {payload.tool}")

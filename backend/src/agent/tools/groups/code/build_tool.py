@@ -238,7 +238,9 @@ class BuildTool(ToolSpec):
     args_schema: type = BuildCodeArgs
     output_schema: type[BaseModel] | None = BuildCodeOutput
 
-    risk_level: RiskLevel = RiskLevel.LOW  # 编译无副作用，LOW
+    # PlatformIO writes build artifacts and may download inferred dependencies.
+    risk_level: RiskLevel = RiskLevel.HIGH
+    requires_confirmation: ConfirmationRule = ConfirmationRule.ALWAYS
     timeout_seconds: int = BUILD_TOOL_TIMEOUT_S
     max_retries: int = 0
 

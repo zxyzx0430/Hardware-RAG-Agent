@@ -18,7 +18,12 @@ from typing import Any
 from langchain_core.messages import ToolMessage
 
 from app.api.sse import sse_event
-from src.agent.context_guard import accumulate_tokens, check_tool_timeout, compute_token_limit
+from src.agent.context_guard import (
+    ContextBudget,
+    accumulate_tokens,
+    check_tool_timeout,
+    resolve_context_budget,
+)
 from src.agent.tools.groups.retrieval.search_docs import build_source_event_from_dict
 
 logger = logging.getLogger(__name__)
@@ -147,14 +152,30 @@ def wrap_legacy_result_as_envelope(
 # State-aware internals (take per-request `state` dict)
 # ═══════════════════════════════════════════
 
-def init_stream_state(config: dict, model: str) -> dict:
+def init_stream_state(
+    config: dict,
+    model: str,
+    requested_max_tokens: int | None = None,
+    context_budget: ContextBudget | None = None,
+) -> dict:
     """Build the per-request state dict shared by all SSE handlers."""
     session_id = config.get("configurable", {}).get("thread_id", "?")
-    ctx_window = _load_session_context_window(session_id)
+    session_window = None
+    if context_budget is None:
+        session_window = _load_session_context_window(session_id)
+        context_budget = resolve_context_budget(
+            model, session_window, requested_max_tokens,
+        )
     return {
         "step_index": 0, "call_history": [], "session_id": session_id,
-        "token_limit": compute_token_limit(model, ctx_window),
-        "context_window": ctx_window, "text_buffer": "",
+        "context_budget": context_budget,
+        "token_limit": context_budget.token_limit,
+        "context_window": context_budget.effective_window,
+        "compaction_window": context_budget.prompt_window,
+        "session_context_window": session_window,
+        "model": model,
+        "requested_max_tokens": requested_max_tokens,
+        "text_buffer": "",
     }
 
 

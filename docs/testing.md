@@ -1,6 +1,381 @@
 # 测试与测试数据
 
-> 更新日期：2026-10-05。记录修复后的最终软件门禁，并单列修复前 606 项快照与 67 项失败轨迹；浏览器、硬件和 RAG 全量质量评测仍分别记录，不混作软件测试结论。
+> 2026-10-26 上下文压缩候选定向验收完成：13 个不同专项 case 和五个指定回归文件按分组运行有通过覆盖。最终真实 `_iter_agent_sse` + SQLite/host archive 集成为 `1 passed / 27 warnings / exit 0`，RunName `s05-context-compaction-final-20261026-11`；reader + ordinary 最终回归为 `91 passed / 27 warnings / exit 0`。前面的 `149 passed / 1 failed` 与各诊断轮保留，不相加、不冒称单次全文件或全后端通过。00 已核对源码、限定测试差异及实际隔离副本。完整命令、SHA、失败处置、一次越界工具下载及未验边界见[验收记录](reports/context-compaction-acceptance-20261026.md)。本段优先于下方进行中快照。
+
+> 2026-10-26 上下文压缩集中验证进行中：候选树运行 `s05-context-compaction-final-20261025-07`，正式无 spy 原生协议验收为 `6 passed, 4 warnings in 20.14s`，exit 0。包括缺 lease 拒绝且不改状态、真实 drain/join 后保存及续跑，以及四项非法调度写拒绝。报告 `E:/Desktop/agent-acceptance-artifacts/core-plan-20261006/s05-context-compaction-native-protocol-verification-20261025/report-round5.md` SHA 为 `CB89A050A0D7DE083A8936AE799613D7146B1C4DDEA507A40767C6071486CF12`。00 比较隔离副本与候选树的七个产品文件及测试，SHA 全部匹配。首轮旧 14 路径套件仍保留 `1 failed / 6 passed` 记录，其成功夹具尚未遵循新的 lease/drain 契约；不能被本次子集通过覆盖。用户可见边界、SQLite/正文引用链及独立定向回归尚未交付结果，不预记通过。
+
+> 2026-10-23 本轮原生标准 Skills：三项实现与审查修正已交回停写，00 已授权最后集中验收，运行当前主仓库的隔离源副本，不能误用旧候选树 runner。范围为共享发现/包外状态/标准导出、固定版本导入后当前请求加载、Skills 不屏蔽普通工具与 MCP、原确认/路径/哈希/禁用规则、前端范围参数，以及前端测试/类型检查/构建。实现期间未执行测试；结果尚未交回，不预记通过。没有服务/真实模型/用户数据库操作。
+
+> 2026-10-23 仅补录历史ordinary交接，不启动测试：旧turn01a15f7f实际exec74af5c02输出150pass/26warn/54.04s/exit0已回收，前后两hash及当前client D2D7042E/test ED66401C匹配。作者567按原报告记录，与150重叠不加；旧冻结窄片接受记录在s05-ordinary-budget-20261022-00/acceptance-report.md。当前所有近期Agent/身份/HITL/publisher/lifecycle代码仍未测，最终统一测试尚未开始，OpenCode longsummary/opaque/provider边界不被旧green覆盖。
+
+> 2026-10-23 报告范围事故处置只做文件证据/hash：原报告已精确恢复D37508B4，十产品冻结hash匹配；没有测试、探针或运行验证，不计通过数。旧worker关闭，新fresh Luna/max只读设计未交付，不提前启用control/恢复或统一测试。
+
+> 2026-10-23 replacement51B9FCD4交付只作源码核，四报告/九非写hash/initial suffix与actual门禁实序匹配；ownership/cancel/原兼容边界仍未运行，旧通过结果不覆盖此码。下一host RunControl/生命周期只设计，不能把native正常退出或GraphDrained当测试已通过/保存ack。
+
+> 2026-10-23 新replacement事务所有权实施仍不运行验证：最终须覆盖unready不setup、foreign不commit/rollback、BEGIN失败不rollback、own stale/error仅回滚自身、rowcount1+commit ack、取消前后及取消后stale/error不吞取消、原InMemory/真实读回登记与initial模块不变。源码反例不当已复现数据事故。检索正文安全来源策略尚未成立，不给新归档加空白名单假测试通过。
+
+> 2026-10-23 单函数恢复失败关闭已交源码非测试：autocompact94144BB3与四报告匹配，00核实际门禁先于修改，UNKNOWN仍未解析生产caller。失败/无压缩不调用最后问题fallback、成功须graph-applied、typed错误/取消/完整输入与原SSE/HITL分支仍只在最终队列，未运行或增加通过数。下一仅六源存储/删除/配额/coverage设计，不提前创建数据库、运行探针或测试。
+
+> 2026-10-23 新一文件实施未开始统一测试：现仅autocompact恢复入口收紧最后问题fallback，最终须验失败/无压缩/不支持不调用fallback、不删原history、不新图重放、typed CONTEXT_LIMIT与取消传播、真实graph-applied才retry；此入口当前app/src未发现上游调用，不为测试方便接入生产。ToolMessage→provider内容连续性目前仅冻结源码阅读，不能替代最终真实ToolNode/实际wire样例，也不声称任意opaque输出可JSON/安全归档。
+
+> 2026-10-23 producer修正已源码核非运行验证：route861531CD/adapterD2E7B2B与更新报告匹配，actual direct/merged consumer本地复核位置已核。正式测试仍全部延期；新路径必须在最终阶段实测真实START保存/None输入/读回、后续HITL状态不pin旧seed、消费者调度间epoch失效、取消及原默认分支。没有据此增加通过数。S05a工具观察/Skill恢复下一仅边界设计，尚非可测试完成状态。
+
+> 2026-10-23 consumer源码已收仍未测试：route861531CD/adapter8BF79B80报告匹配，00发现outer检查到producer task之间的epoch调度窗口，正由原作者仅adapter修正。最终统一测试必须额外覆盖outer iterator通过后、direct/merged native消费前删除/清记忆，确认不启动原图/模型；不能仅在构造generator前断言通过。新producer-local复核不代表native内部await/allwriter全局fence。HIGH与闭包拟名门禁偏差保留；本轮没有执行该验证。
+
+> 2026-10-23 初始模块源码修正后仍禁提前测试：factory7333D4AE/publisher691DDB9A已源码核，不是通过结果；START seen/updated None误判已修，两常量原事前impact遗漏及00误选base同名定义的分析偏差保留。下一仅route/adapter接线，最终统一验证须同时覆盖实际活动v4构造器、首次None输入与真实checkpoint pin仅一次、随后tools/HITL不读旧seed、direct/merged两流分支、producer启动前epoch、REFUSED/UNKNOWN不重投输入、完整incoming/原tail/receipt不确定及原默认调用兼容。当前没有运行这些用例或构建。
+
+> 2026-10-23 caller/admission源码交接已收：三hash BB74BC8F/63A082C7/EAF39150核匹配，five符号事前门禁（LOW2/3/1与两个UNKNOWN）及六raw结果已核，不是测试。取消不转保原继续、尾部原对象/marker全保留、epoch失效走原error/failed done不fallback为源码发现。初始模块接下来只实施factory/publisher、无caller；最终统一验还须覆盖新连接setup在共享前完成、foreign事务不被setup/rollback偷改、原图/copy/writer/branch/callback/隐藏saver覆盖拒绝、首次START调度无重复输入、实际commit返回和exact raw/state读回、APPLIED登记状态未知不能重投输入、未知提交停止及取消join。Arendt13/12只读范围偏差不抹掉；未运行任何上述验证。
+
+> 2026-10-23 恢复源码交接已收、当前仍禁测试：四文件恢复hash已核D7103B27/0B8AD034/6710186B/55F338EB，不是通过结果。原claim TTL问题源码改为owner生命周期、原图pending/epoch复核和精确queue清理；未启动body的ASGI dispatch清理已写，外部middleware根本丢弃未调用response不在其保证内，任意线程/直接重复Task.cancel/全native写终止仍无运行证据。event_generator独立impact事后补查流程缺口保留。下一三文件caller/load接入只实施：最终须验两caller真实save返回/读回后登记、完整有序incoming匹配/保尾、Skills/匿名不恢复、await期间epoch变更、head CAS/配额/提交后取消不重放；不准初始未ack seal借此追认。旧通过数不覆盖本批。
+
+> 2026-10-23 交接异常后的待验状态（仍不运行）：01误读旧只读开工上下文，自撤已授权的路由/HITL/事件通道实现，现已冻结。三个文件回到任务入口，chat_routes.py 为部分回滚状态58587C4B...68178B；原作者报告不是当前实现完成证据。四文件恢复及claim生命周期修正已移交同Mill，当前尚无恢复交付。最终统一验证还须覆盖残留改动保护、无TTL活claim接管、BaseException及未启动响应清理、await准备后epoch复核、同session重叠图/pending/事件隔离；不得用旧绿覆盖。裸checkpoint事件/自然耗尽以及同连接tuple存在均不能充当已提交ack，初始发布观察未启用。额度错误后的原模型接续状态以实际返回为准，不当成测试或功能进度。
+
+> 2026-10-22 新增最终待验（当前不运行）：publisher默认关闭分支/原bool保持，native实际save config与exact-ID读回后才confirm；新reader UUID不替代producer图ID，旧private prepared缺graph绑定不可用。graph已提交但登记失败/取消不假称回滚、不工具重放，to_thread ContextVar与重复取消join必须实际验。已发布parent扩展还须核stable head父marker/body/allrefs、展开raw前缀覆盖与实际graph tail区别、v1/prose/origin-only/orphan拒绝、删除/配额/CAS。01路由/HITL/事件通道正在实现，未进入测试；pre-send观察checkpoint事件本身不能证明commit，自然耗尽/写任务join方案目前仅源代码设计，不称支持。
+
+> 请求图隔离基础层新增最终待验（2026-10-22，未运行）：旧build_agent_config结果不变；宿主request ID与业务session正确分离，畸形绑定不把graph UUID当session；窗口读取与拒绝审计仍取业务session。后续必须验证同session重叠请求不互删graph/HITL，SSE生产消费使用同请求通道，续跑仅用原host快照/config且错worker/歧义/缺失拒绝。当前仅分派基础层、尚未激活路由，无测试通过或并发安全接受。Mill私有层报告/当前hash只作源码交接，额度中断后补最终报告，不以此代替统一测试。
+
+> 跨轮恢复分派实施新增最终待验（2026-10-22，当前不运行）：prepared-only/orphan/v1不能被当published；确认必须来自实际graph保存读回而非自报ID/布尔；head预期CAS/currentowner/epoch/全部source/body/receipt链完整性；incoming完整有序prefix与保尾；编辑/缩短/Skills/tool/非text/权限缺失保持原history或CONTEXT_LIMIT。prepared/receipt/head共享配额及删除规则、取消提交边界、多worker不支持时不猜可用。现仅私有层被分派，尚无publisher/route完整接入或接受。
+> 2026-10-22 流程记录：01的search_docs_core fresh impact遗漏发生在编辑前，事后补LOW影响说明不补正该遗漏；报告最新EE19A317...45BEA0B，三产品hash不变。此为门禁/源码交接记录，不是测试、测试失败或功能接受。候选所有新差异继续等统一最终验证。
+
+> 01来源状态/发布前复核新增待验（2026-10-22，未运行）：indexing/error/带error/未知来源不得进入Agent盘点与新检索；来源状态变更使旧缓存不命中，检索await期间签名变更或复核异常时不发布旧结果；管理页仍显示失败/索引状态；None/[]全启用及显式范围不放宽。test_rag_rank_merge.py旧_FakeDb不提供doc状态列，预计需在最终阶段补真实状态fixture，不为兼容mock给生产加fail-open、不改排名断言。该预计来自源码阅读，不称新测试失败。三产品当前hash及报告已00核，仍未接受。
+
+> 分派输出保留新增待验（2026-10-22，未运行）：大于原8000字符阈值的output及关键后缀完整保留、原envelope/data/metadata语义、工具次数和权限/审计/attempt不变；metadata引用不能代替正文；下游正常请求完整输入、超限明确CONTEXT_LIMIT、不自动剪历史。Mill只改helper和说明，无测试断言变更。00已核当前源hash与交接，不把该只读核对记成测试通过。
+
+> 2026-10-22 主控已按真人要求分派实施：01的S06范围/来源失效链与Mill的工具输出保留均为实现任务，明确禁止提前测试/探针/构建/模型回放/服务验证；结果只能记未测试。00收集待验证清单，待全部实现与接入就绪后统一安排，不把旧通过数用于新差异。
+
+> 2026-10-22 连续实施新增待测（未运行）：调度缺工具/错spec/非法args/异常/取消与原envelope/权限保持，HITL pending/拒绝/停止不变批准，observer导入/存储失败不干预执行；LOW read_tool_event真实ToolNode→metadata locator→实际provider内容→同scope读取、匿名/standalone/错身份/会话/Skills/删除/坏ref/旧版本/完整JSON预算及disabled过滤。KB上传另测读大小≤cap+1、超限拒绝、无效chunk配置不得清理旧失败记录/写新文件或DB、合法重传/后台索引保持。本轮未新写/修改测试断言，均留待全部实现就绪后统一验证；不称原RED已转绿。
+
+> 2026-10-22 尝试级生命周期实现，未运行：最终统一覆盖actual await前start、每次retry编号、timeout/error/cancelled记录与原异常/tuple/重试策略保持、归档失败不重放工具、取消不冒称撤销、1..16 attempt可记录范围与request64总事件配额、return原locator兼容、并发/删除epoch/隔离和上下文清理。dispatch/pipeline HIGH未编辑，只有timeout方法LOW窄改。这里无新测试统计或关闭P1结论。
+
+> 2026-10-22 实施续接（未运行）：tool_events返回元数据改为schema2请求内有界链，新增previous-envelope hash与head、读事务snapshot及整链响应预算。最终统一验证另含并行append、event/head同事务rollback、缺中间/缺尾/缺head/错顺序、同call幂等与冲突、65项拒绝、head计共享配额、旧schema1不追认、单事件version2/序号与总JSON预算，以及删除期间读写。这里是待测清单，不是新RED/GREEN或通过统计；未增加/修改测试代码，也未执行测试。
+
+> 最新真人测试节奏（2026-10-22）：恢复开发后，先完成全部计划内实现与接入，最后集中运行测试、探针、构建及回放；不再逐项开发逐项测试，也不提前派发独立测试任务。当前 Agent 最终请求总预算及其聊天/续跑错误状态为新增未测试实现，历史普通聊天567/独立150和结构化485/独立112仅证明各自旧冻结版本，不证明这些新修改。影响分析、源码阅读和保护现有改动不属于运行测试。
+
+> 同轮工具返回元数据档案也未测试：最终集中覆盖宿主scope隔离、匿名/standalone/MCP不入档、Skills活跃不授原文archive、manual预载/stream/HITL绑定与换身份409、contextvar并行/取消清理、真实SQLite重开/错误scope/hash/预算/坏编码、同call幂等存储与冲突不覆盖、共享配额/满拒绝/删除epoch同事务purge与rollback。只记录固定元数据，不收集命令、参数、正文或任意错误，不把returned当completed；仍缺完整观察恢复链，不能以未运行的条件关闭该缺口。本轮没有修改任何测试文件或执行用例。
+
+> 2026-10-22 ordinary-budget作者整组：`s05-ordinary-full07` 25模块 **567pass/165warn/157.82s/exit0**，含新57；仅client+新test两文件变动，旧测试未改。三仓库RED/GREEN及44项安全组完整命令见 `s05-ordinary-budget-20261022-00/author-report.md` SHA `95FAD000A3979D8171C974C406E59443C7F23684F7CE301CB740D4FD11485F43`；所有组重叠不加。新57含chat/stream晚约束完整输入、摘要失败/空/超UTF8/取消、runtime model/凭据不串、framing/无wire输出cap预留、duplicates/roles/textblocks和opaque-image拒绝。原32后端/10前端hash未改，新增两文件合并34冻结；仅既有01本人指定四模块复核已派，未提前独立接受。新符号UNKNOWN actualdefs/调用补核；parent方法HIGH预先gate，nested send closure单独gate晚于首tracer字段编辑的流程偏差在报告如实登记，不冒称全部逐符号事前gate。无真实provider/用户库/OS重启；普通opaque图像预算暂不可用、Agenttool全预算未验，不把567称全产品。tracked diffcheck0，new no-index check exit1为差异状态且无空白错误，不把它写成exit0。
+
+> 2026-10-22 structured独立结果已00全文/实际命令核准：`s05-structured-independent01` 指定四模块 **112pass/27warn/43.39s/exit0**，含最终new50；实际命令 `exec-983b7e2b-d3e1-400b-ae40-d561f0460a33`，前后12hash匹配。独立报告SHA `F30851F2F886F4F02F998EE233ABF9EAAD93448FA7052992F75036577309DB1B`，作者485与112重叠不加。00当前后端32/前端10、factory/models核不变，机器表 `s05-structured-checkpoint-20261021-00/acceptance-protection-results.json`。严格schema/真实Graph+SQLite/多代引用与预算内完整摘要输入指定软件接受，真实provider语义/工具档案/全窗口预算/OS重启未验；01idle38。额外只读旧调查/skill与通用MCP资源列表已纠偏，不计GitNexus门禁或新的产品测试。下方复核中及纯37/1deselect是历史。
+
+> 2026-10-22 下一普通聊天预算外置探针（非485回归组）：实际 LLMClient、仅 provider 合成，`s05-ordinary-summary-probe01` **1fail/1deselect/7.19s/exit1**，620字后的安全约束在发送摘要时被500字切掉；`s05-ordinary-budget-probe02` **1fail/1deselect/6.81s/exit1**，无history的固定system已超本地登记窗口仍发起一次调用。分别 `-k retains_late`/`oversized_system`，外置测试未载 backend/tests/conftest，实际输出没有 warnings，不能照抄其他运行3warn。runner/完整命令/条件见 `s05-full-budget-probe-20261022-00/report.md`；无网络/真实库，client SHA `2D6D0EC1531A66C446A11D5147563D4D7056A141B1C0F29C7A17126B403A1AA6` 未改，结构化32冻结仍匹配。当前是下一片新验收RED，非完整预算修复或 Agent tool-schema缺口已复现。
+
+> 2026-10-22 structured 生产接入作者整组通过、独立复核中：`s05-structured-full11` 20 模块 **485pass/150warn/129.38s/exit0**，包含最终新50项和源内容在摘要期间改写拒绝。实际 `wire-red05` **1fail/38deselect/3warn/18.49s**（旧源码仍存模型槽位字符串）→`wire-green06` **39pass/3warn/18.81s/exit0**；原缺字段 Graph/AsyncSqliteSaver RED 同时转绿。旧夹具迁移 `compat-red07` **1fail/26warn/19.58s**，中间工具模型调用预期不符 `compat-green08` **1fail/178pass/33warn/55.06s**→`compat-green09` 八模块 **188pass/33warn/56.25s/exit0**。随后六种 SQLite 无效响应、四种有 seal 的无效父摘要组 `security-green10` **77pass/27warn/36.83s/exit0**（新49项+generations）；各组重叠不加，后加改写测试不冒充包含于188/77。只有合成模型、真实 Graph/隔离 SQLite，不叫真实 provider/OS重启。十二文件表、完整实际命令、门禁与32后端/10前端保护表见 `s05-structured-checkpoint-20261021-00/wiring-author-report.md` 及 wiring-*.json；既有01本人四模块只读复核已派，未提前独立接受。下文模块37pass/1deselect及未接入 RED 是历史，不再作为当前结果。
+
+> 2026-10-21 structured 模块推进，尚非生产接受：仓库真实 Graph/AsyncSqliteSaver `s05-structured-repo-red01` **1fail/3warn/18.75s/exit1**，缺字段 JSON 的拒绝尚未接入；新纯校验模块缺能力 RED `module-red02` **1fail/1deselect/3warn/18.59s**→`module-green03` **1pass/1deselect/3warn/18.96s/exit0**。最终 `s05-structured-module-security04` 使用 `-k 'not rejects_invalid_output'`，**37pass/1deselect/3warn/18.54s/exit0**；该1项就是明确保留的生产集成 RED，不隐藏成 xfail/不删除，不能称全38项通过。严格 schema、引用槽位/原文 grounding、未验证 completed 拒绝、UTF-8/绑定膨胀等只证明模块接口；尚无 DB 生命周期/生产多代接入证明。现有29后端/10前端保护 hash 全匹配，原断言未改；无重跑旧整组凑数/独立复核派发。新源码/测试、设计/完整命令见 `s05-structured-checkpoint-20261021-00/author-report.md`。下方“下一仓库RED尚未开始”是历史，当前仓库RED已固化但未 GREEN。
+
+> 2026-10-21 inherited指定软件独立接受：`s05-inherit-independent01` 四模块 **102pass/33warn/45.46s/exit0** 含最终28项，00全文/hash/actualcommands/四hash4/4核。独立报告SHA `C588FB61D4195617B1936899C5F3B6936C893DB713386343059B24663A4BCA6F`；与作者full08 433项/后加2项重叠不加。01idle22、无新agent/下载/仓库写入。下一外置结构化契约 `s05-structured-contract-probe01` **1fail/3warn/19.41s/exit1**：真实Graph/SQLite、当前narrative接受缺字段JSON并发布changedTrue14→11，是新九字段验证尚缺的RED，不是旧窄功能回归/原文丢失或工具执行。下一仓库RED/生产schema实现尚未开始，不重跑此已知外置红凑数；见 `s05-structured-content-probe-20261021-00/report.md`，四产品/test继续冻结。
+
+> 2026-10-21 inherited host checkpoint作者：`s05-inherit-full08` 19文件 **433pass/150warn/127.76s/exit0**，包含新模块当时26项；其后新增provider多批locator/超大UTF8摘要 `provider09` **2pass/26deselect/26warn/26.23s/exit0**，最终新28项，不把2项冒充full08包含/不加总。三个真实仓库RED：repo-red01 **1fail/26warn/20.09s**（新host marker缺失）；conversion-red03 **1fail/1deselect/26warn/19.45s**；transport-red06 **1fail/25deselect/26warn/19.04s**（nested任意字段被携带），均最小GREEN后兼容通过。green02 **1pass/26warn/19.73s**；security04三文件 **75pass/33warn/38.94s**；guards05新25项 **25pass/27warn/26.37s**；green07新26项 **26pass/27warn/26.48s**均exit0，重叠不累加。全部既有隔离runner+新E SQLite/cache/TEMP+ D Python/PyArrow/asyncio-only。四冻结表/完整命令见 `s05-inherited-checkpoint-20261021-00/author-report.md`，既有01本人四模块delta中，未计独立接受；真实Graph三代不是三段模型回放/OS重启/实网，也不是九字段结构化内容质量证明。
+
+> 2026-10-21 reader非作者指定四文件 `s05-reader-independent01` **73pass/32warn/36.73s/exit0**，00全文/hash/actualcommands及当前六hash6/6核验，独立报告SHA `1EFC8AF6B22221EECF54596ADCEF4F1B582EDDD26932541D20943425E39B86C3`；与作者407重叠不加，窄软件接受。01idle17，无新代理/GitNexus/下载/仓库写入。另外置 `s05-second-generation-probe01` **1pass/26warn/20.27s/exit0**：真实Graph/SQLite同进程重开、第二压缩changed=False、首11/追加前25/后25/旧事件可读，验证安全拒绝，不当多代实现通过或产品RED。源文件冻结；下一持久RED/结构化继承refs尚未实现，不重复此探针凑数。
+
+> 2026-10-21 模型历史reader作者完整组 `s05-reader-full08`：18文件 **407pass/149warn/122.07s/exit0**。新测试34项含真实ReasoningChatOpenAI outgoing payload、registry/disabled、真实create_agent+ToolNode+ToolRouter+SQLite/合成模型消费、错误locator/身份/删除同ID/UTF8预算/存储失败/并行ContextVar/最大64manifest与坏refs保原对象。三个实际RED：provider-red01 **1fail/3warn/82.12s**；tool-red03 **1fail/1deselect/26warn/20.26s**（新模块不存在，非已有reader回归）；registration-red05 **1fail/2deselect/26warn/20.09s**。定向GREEN02 **1pass/1deselect/3warn/27.24s**、04 **1pass/2deselect/26warn/19.85s**、06 **29pass/27warn/28.63s**、07 **2pass/29deselect/26warn/25.65s**均exit0，与407重叠不加。用既有run-tests.ps1、新E白名单副本和SQLite、D Python/PyArrow/asyncio-only，全TEMP/cache/appdata在E。六hash和完整命令见 `s05-history-reader-implement-20261021-00/author-report.md`；既有01本人四文件独立复核进行中，未计接受。非真实网络模型/用户库/OS重启/多代压缩。
+
+> 2026-10-21 后续普通writer外置特征探针：`s05-later-writer-probe01` 和补诊断 `probe02 -s` 均 **1pass/3warn/18.52s/exit0**，不加总。真实Graph+新E SQLite，节点挂起期间尝试压缩实际changed=False，原15/压缩后仍15/普通writer完结16，输入和回答保留；未复现全局旧writer P1、非产品RED、不据此关闭其他并发场景。源码未改。下一模型历史reader仅source-gate，无新pytest或实现通过结论。
+
+> 2026-10-21 checkpoint 非作者实际五文件结果已00核：`s05-publish-independent01` **87 passed / 31 warnings / 37.22s / exit0**，包含最终17项新SDK/Graph/SQLite回归及四旧模块；独立报告SHA `7F790E5E48174D3F8D53D79B9C77598DB0C1C3CB62AA6B93B36E4226694468F9`，实际命令/九hash前后和00当前9/9核过。与作者362重叠不加，指定软件接受，非完整S05/实网/OS重启/全部writer CAS。01误用wrapper自动下载3包/242added已中断保留缓存，非产品测试红/graph通过。稍后普通writer P1另项目外probe01正在实跑，不提前写通过或失败。
+
+> 2026-10-21 checkpoint 发布作者修复：E 隔离 `s05-publish-full11` 15 文件 **362 passed / 148 warnings / 110.17s / exit0**；它包含新16项与原14文件，真实 SDK/内存/SQLite/reopen/并发尾部/pending writes/失败回滚/取消提交边界/流中异步读，不与此前346或中途组累加。新增 actual create_agent + FakeMessagesListChatModel 单例 `agent12` **1pass/16deselect/3warn/20.05s/exit0** 在 full11 后加入，故不能称 full11包含它。持久repo-red02 1fail/3warn/19.00s、SQLite-red04 1fail/1deselect/3warn/19.78s、pending-red09 1fail/12deselect/3warn/19.06s 均已实际红绿；red01错路径0tests、stream-red06会话丢失仅缓存lastfailed，不编造统计。九文件作者表 `s05-checkpoint-publish-20261021-00/author-report.md`；01本人五文件独立复核已派，尚未接受本片。无真实模型/用户库/OS重启/全局线程CAS证明。
+
+> 2026-10-21 请求绑定/受限GET窄范围接受：最终 full-green09 **346pass/148warn/109.24s/exit0**；原01独立85pass/38warn/38.03s，加header新两文件增量 `s05-wire-header-independent02` **23pass/31warn/23.83s/exit0**（不加总）。00全文/hash/actualcommands核 `report-header-verified.md` SHA `CCF582D05B13FD355F7AB13CAB3588AE86CF0F08CDA9555E1687484ECA832A37`、当前两hash2/2与其他六未变；GET条件P1窄关闭，不是全球token日志治理。01 idle46，无活跃任务/测试。真实Graph/SQLite更新的后续红灯如下，不能用此窄范围接受遮盖。
+
+> 2026-10-21 接线首独立85pass/38warn/38.03s原命令已核；条件URLtoken P1另外加真实RED **1fail/22deselect/3warn/19.28s**。路由仅加header-only与query token拒绝后，最终 `s05-wire-full-green09` **346pass/148warn/109.24s/exit0**。这才是header收紧后的完整组，之前08/85对应旧两hash，均保留不累加/不冒充最新独立。01本人header-only两文件delta进行中；新scope hash与原8表兼容方式见作者报告，暂无新整体接受。
+
+> 2026-10-21 真实 checkpoint 后续探针（产品冻结未改）：外置 `s05-real-checkpoint-api-red01` 实际 **1fail/2deselect/3warn/21.67s**，CompiledStateGraph内存恢复sync update后await dict失败且14→15；sqlite-red04 **1fail/2deselect/3warn/22.44s**拒绝同步接口；正确async/reducer-red03 **1fail/2deselect/3warn/22.45s**原14/拟11/实15。reducer-red02 **1fail/2deselect/3warn/20.07s**是外置手工seed as_node歧义，已只修探针，非产品红。不是模型实网或用户数据损失；不能用346/合成Agent边界通过掩盖实际checkpoint失败，下一片持久回归与最小修复另授。
+
+> 2026-10-21 S05a 生产接线作者最终：`s05-wire-full-green08` 14 文件 **346 passed / 148 warnings / 107.39s / exit0**；前次 full-green07 为346/148/108.99s，不相加。持久仓库 red01 无绑定 **1fail/3warn/18.77s**、red02 有绑定 stub **1fail/1deselect/3warn/19.22s**、red03 转换丢 refs **1fail/3deselect/3warn/19.54s**、red04 缺读取 HTTP **1fail/3deselect/26warn/19.31s**、red05 错误封套 **1fail/22deselect/3warn/20.29s**均实际运行后最小修。中途1/2/4/51/66绿见作者report，不累加。full-green06 **1fail/22pass/31warn/26.28s**为新 fixture 未绑定 database.SessionLocal、真实 Sessions 表缺失；仅夹具补同一 SQLite 工厂。八文件冻结，01本人独立五文件组进行中，不提前接受。真实 ASGI/SQLite +假认证依赖/模型/Agent boundary，不是真 token/模型/浏览器或实际 LangGraph checkpoint 验证。
+
+> 2026-10-21 S05a 内部接缝指定软件接受：作者 323 项/93.81s、01 本人独立 `s05-archive-independent01` 三文件 **91 passed / 60 warnings / 33.04s / exit0**，00 已核实际 runner 输出、全文/hash `A1CCF124470CCE0CAFC0E9AACCBAFEBC5B653D204EDB889E7038C878E8E8F3FF` 和当前三 hash3/3。01 idle33，无 P1。下条“复核中”为此前记录，非当前任务。各组不累加，尚未接生产压缩。下一接线外置 `s05-archive-unbound-red01` 实际 **1 fail / 8.37s / exit1**：无持久化宿主绑定仍替换，属于待实现新不变量，不是本片回归失败或真实用户丢失；生产未改，下一步新 gate 和仓库持久 RED→GREEN。
+
+> 2026-10-21 S05a 内部档案接缝作者冻结：`s05-archive-lifecycle-red01` 私有设置值泄漏 **1 fail/1 deselected/3warn/19.42s**；新持久化 stub `red02` **1 fail/2 deselected/3warn/18.70s**；删除未清理新 namespace `red03` **1 fail/2 deselected/4warn/20.16s**。最小绿 3 项/19.94s，负面控制绿 45 项/27.93s；最终 `s05-archive-full-green03` 13 文件 **323 passed/143warn/93.81s/exit0**，各组重叠不加。真实 SQLite 保存/新 engine 重开、提交失败/删除回滚、范围/hash/权限/预算/容量与私有 namespace 已跑；不是独立 OS 进程或真实库/模型。作者报告 `s05-event-archive-seam-20261021-00/report.md`，01 本人短只读 delta 进行中，尚未独立接受；三个生产压缩 caller 未接此 seam，不宣称自动原文恢复。
+
+> 2026-10-21 S05 删除失效指定软件接受：`s05-delete-full-green05` 13 文件实际 **266 passed / 143 warnings / 95.48s / exit0**；既有 01 本人 `s05-delete-independent01` 指定五文件实际 **100 passed / 119 warnings / 27.39s / exit0**。报告 SHA `D51EFF27D269924189460EA34C59899A4B3C05C7CC6BCFA6758B1D301F7B6B1F` 已 00 全文/hash/actualcommands 核，六当前 hash 6/6；stream 第六文件仅独立 diff 审、由作者完整组实跑。包含 15 项新生命周期用例，重叠组不加。Settings marker 损坏/DB 异常失败关闭、删除重存/重建及事务失败均通过；没有真实模型/库/页面或物理 checkpoint 删除验证。独立首次范围澄清误读没有被计通过，确认实跑后才接受。
+
+> 2026-10-21 S05 会话删除失效作者回归进行中：仓库持久 RED `s05-delete-repo-red01` **1 failed / 1 passed / 26 warnings / 22.05s**；私有 Settings generation/快照核对补丁后，green01 六文件 **162 passed / 113 warnings / 26.23s**。空 marker RED **1 failed / 6 deselected / 26 warnings / 20.14s** → green02 新文件 **10 passed / 31 warnings / 20.57s**。扩组 green03 **1 fail/176 pass/119warn/27.67s**、full-green04 **1 fail/73 pass/33warn/25.09s**，均为旧 synthetic source/stream 测试未建 Settings 表；仅给两文件补真实 SQLite 夹具，原断言保留。full-green05 13 文件尚在运行，01 本人独立短 delta active，不能先称全绿或正式接受。现有软件阶段和新 15 项重叠不累加；报告 `s05-session-delete-implement-20261021-00/report.md`，未改真实库/网络模型/前端/AgentFactory。
+
+> 2026-10-21 S05 有界完整摘要输入指定软件接受：作者 `s05-input-full-green04` 12 文件 **251 passed / 136 warnings / 93.58s / exit0**；既有 01 本人独立 `s05-input-independent01` 三文件 **47 passed / 26 warnings / 22.31s / exit0**，报告 SHA `C3CA1A540724050B245E8D6D90506CC4178E864B1A061F63083FDD5B8D731E08` 已 00 全文/hash/实际命令核，四当前文件 hash 4/4。无 P1 发现；精确能力声明、固定/输出开销、超限不发送/不写 checkpoint 仅软件接受，各组重叠不累加。01 初次额度中断没有测试/报告，不算一次验收；额度恢复后同模型完成，无新代理或升级。普通 chat 500 字、提供商容量和 JSON 大字符串峰值内存/真实语义另列未验。
+
+> 2026-10-21 下一 S05 删除失效真实 RED：00 项目外 `s05-event-recovery-source-gate-20261021-00/test_session_delete_resume_probe.py`，`s05-delete-resume-probe-red02` 实际 **1 failed / 1 passed / 26 warnings / 20.54s / exit1**；真实 CRUD 删除后 GET404，真实 resume 仍未拒绝旧暂停快照。首 red01 的控制组 async-generator join 错误 **1 failed / 26 warnings / 21.92s** 是夹具错误，已只改外置脚本，不当产品红。未改生产删除逻辑/库，未消费删除组 SSE；报告源码证据和下一门禁见主计划。
+
+> 2026-10-21 S05 有界完整摘要输入作者冻结：`s05-input-red01` 第 620 字后约束 **1 failed / 3 warnings / 23.49s** → green01 **1 passed / 3 warnings / 20.70s**；red02 工具来源缺失 **1 failed / 1 passed / 3 warnings / 20.87s** → green02 连原 pair/failure **24 passed / 26 warnings / 22.83s**；red03 多模态误串化 **1 failed / 2 deselected / 3 warnings / 20.85s** → green03 三文件 **47 passed / 26 warnings / 23.06s / exit0**。25 项预算测试覆盖完整内容、UTF8/累计/工具参数、未知能力、固定/输出预留、实际 LLMClient 假 transport 与三 caller；旧断言保留，组不累加。12 文件兼容 `s05-input-full-green04` 运行中；既有 01 本人只读独立 delta active，暂未正式接受新范围。项目外完整命令/hash/边界见 `s05-bounded-summary-input-20261021-00/report.md`，没有真实模型/用户库/服务调用。
+
+> 2026-10-21 S05 工具组指定软件接受：01 独立 `s05-pair-independent-01` 实跑工具组/失败保留/流终止三文件，**39 passed / 26 warnings / 80.36 秒 / exit0**；00 已读实际命令完整输出、报告全文/hash（`5CA7ED739A3797D8E155E38D6E5D3E1F72CAB1610C36BC2A6C6B880A9BF9A2A2`）与两文件机器 hash 2/2，diff check0。结合作者 226 项回归，接受候选切分和无早期块保护的窄范围，组数不累加。没有新的 P1；独立报告明确跨两 AI 消息复用待决 ID 尚无单独冻结测试，不把代码分支当已实测覆盖。原 500 字输入缺口、完整预算/归档、真实长对话仍未验，产品继续冻结。
+
+> 2026-10-21 S05 工具组切分作者 GREEN：新 13 项按公开 compactor 与三真实 caller 测试，先后真实复现跨切点孤立返回（1 failed/22.82秒）、空早期块仍摘要（1 failed/1 passed/22.97秒）、未解析请求被摘要（1 failed/11 deselected/19.57秒）、重复 ID 半组丢失（1 failed/12 deselected/28.58秒），逐个最小修复。最终 `run-tests.ps1 -RunName s05-pair-full-green-05` 指定 11 文件 **226 passed / 136 warnings / 128.52 秒 / exit0**，source `BAADDDF9405C042C1B5C09532300B2CF8080ED2E9F075F8F557C7EA9CF9FCF1A` / test `08D6EBF944D59025DBEF88602339E0BD52520B522A49F66474BDE30B46146895` 冻结；命令/中途 37/21 兼容组和全部边界见 `s05-tool-pair-preservation-20261021-00/report.md`，不累加重叠结果。仅改原模块两函数及新测试，01 正独立只读 delta，暂不正式接受新范围；500 字 formatter 与预算/归档仍未修，无真实模型/库/页面/服务验证。
+
+> 2026-10-21 S05 成功压缩回放 RED：项目外 `s05-successful-compaction-replay-20261021-00/` 在真实候选模块上运行记录型假模型，**1 failed / 1 passed / 8.53 秒 / exit 1**；有效摘要控制通过，综合观测为 `constraint_visible=False`、`orphan_tools=['synthetic-call']`。前者为 500 字截断后的约束未进入摘要输入，后者为工具调用和返回跨切点失配。生产 SHA 仍 `A1FBBB9B45DCD9DCF3308F4E814C14810E5125D67522F79BABBB14ED68410CAB`，未改用户库或联网；不是已接受失败保留补丁回归。下一步先分离成对工具用例、门禁后最小修复，500 字预算输入另切片，不与下方已通过组相加。
+
+> 2026-10-21 独立接受：01 `s02-b2-s04-delta-review-20261021-01/report.md` SHA `0018E5C4F27C9362CA3A8336614F45D3D848C4D64A336A257F40DE5780D0B879` 已由 00 全文/hash/实际工具核，指定三文件 **80 passed / 112 warnings / 25.58 秒 / exit 0**，八冻结 hash 匹配。00 原独立进程外置探针复跑为 **3 passed / 29 warnings / 113.20 秒 / exit 0**，从原 1 failed/2 passed 转绿；四不同 PID 同一新 E SQLite 保存替换、重启读取、清空、重启空值通过，正常和清空后续跑行为通过。faulthandler 90 秒仅诊断等子进程，不是断言失败或超时中断。接受候选 B2 / S04 清空旧暂停快照的指定软件范围；不和作者 196/旧组累加，未做真实浏览器/模型/用户库/发布验收。精确命令及新源码 hash 见两作者报告，生产继续冻结。
+
+> 2026-10-21 B2 P1 / S04 作者联合 GREEN：`s02-b2-history-projection-implement-20261020-00/run-tests.ps1 -RunName memory-b2-compat-green-03`，九文件实际 **196 passed / 136 warnings / 31.07 秒 / exit 0**（B2/幂等 64、原记忆 38、新清空 16、上下文 9、来源快照 5、Skills 集成 64），不与下方 103/100 或旧 64 相加。01 首轮独立 56 passed / 57 warnings / 22.46 秒发现畸形 type 绕过，00 补八参数真实存储/旧行 GET 回归为 1 failed / 53 deselected / 4 warnings / 22.95 秒后最小修复；P2 文档疑问来自读取候选旧 docs，正式 main §5.16 已有相应契约。报告 `s02-b2-history-projection-review-20261020-01/report.md` SHA `D605AA21A35641DC732DC716CEA3EDDE0064ADD9DDA6A4BA2E5F2D8EC53C32DD` 已全文/hash/实际工具核。新 B2/S04 联合 delta 由 01 独立只读复核中，尚未正式接受完整 B2/S04。
+
+> S04 红绿细节：新回归清空后仍允许续跑 RED 1 failed / 28 warnings / 20.30 秒；首轮补丁联合原 memory 组 1 failed / 23 passed / 43 warnings / 24.15 秒，随后扩组 1 failed / 142 passed / 129 warnings / 126.56 秒，均因旧合成续跑测试未建 Settings 表，导致新 epoch 读取失败关闭。00 为两份旧测试加真实隔离 DB 夹具，不弱化任何原断言，才得到上述 196 全绿。新清空 16 项含清空→替换、失败事务/非法清空不误失效、旧请求再次暂停、标记私有/畸形/读取失败、两独立 engine 共用文件 SQLite、异步准备期间清空竞态。生产三文件及新模块/测试 hash、命令及未验边界见 `s04-clear-resume-implement-20261020-00/report.md`；没有修改真实用户库或 model，独立进程外置探针仍在回验，不把 faulthandler 的耗时诊断输出当产品断言失败。
+
+> 2026-10-20 实际 GREEN 与边界：00 B2 作者报告 `s02-b2-history-projection-implement-20261020-00/report.md` 记录真实 POST raw 字段入库 RED→GREEN，另含非法形状、合法点文件路径、异常关联/结果信封 RED→GREEN。最终新 B2 + 旧幂等 56、上下文 9、现有记忆 38 的同进程联合回归 **103 passed / 104 warnings / 24.44 秒 / exit 0**，命令为报告目录 `run-tests.ps1 -RunName final-mixed-02` 和报告所列六文件；不与旧组相加。首次 final-mixed-01 写错记忆测试文件名、收集零项，纠正调用后通过，非产品断言失败。B2 正由非作者 01 独立复核，暂不记完整 S02 通过。
+
+> 上下文失败保留指定软件范围：04 仅改 autocompact 无有效摘要返回原列表及新增 9 项测试；00 全文核作者报告 SHA `3F3C002943D9E4741B6AA22CACA6F41540E57D37833029DAF51872F1862511A4` 并独立运行原外置 5 项 + 新 9 项，**14 passed / 8.91 秒 / exit 0**。00 随后移除新增测试全局 sys.modules 配置替换，防同进程污染；最终上述 103 项联合通过。生产 SHA `A1FBBB9B45DCD9DCF3308F4E814C14810E5125D67522F79BABBB14ED68410CAB`，测试 SHA `29D35E2E88FAC0993428B24DC99C92B98080645C92789741EC7B45D3C626E7AE`。仅接受失败保留窄范围；未完成原事件归档、预算/消息配对、500 字限制修复、真实模型长对话或完整 S05。
+
+> S04 新外置探针事实：真实 E 文件 SQLite 四个独立后端进程保存替换→重启读→清空→重启空值通过，普通续跑控制通过；清空后原暂停请求仍送旧合成记忆为 RED。02 `s04-clear-resume-restart-probe-20261020-02/test_s04_memory_isolated_probe.py` 最终完整实际输出 **1 failed / 2 passed / 28 warnings / 83.85 秒 / exit 1**，其后线程漂移已撤权，未接受未交付报告。此轮无真实用户 DB/模型/浏览器；00 正补仓库回归并按计划修失效路径，不能把现有基线通过当成完整记忆闭环。
+
+> 2026-10-20 上下文失败保留 RED：00 在 E 盘项目外对真实候选 `autocompact`/恢复包装运行合成消息与假模型、记录型 Agent，结果 **4 failed / 1 passed / 8.61 秒 / exit 1**。异常三次耗尽、None client、空摘要、空白摘要均错误更新上下文并返回成功；正常有效摘要控制通过。报告 `s05-failure-preservation-red-20261020-00/report.md` SHA `C39913A1085F7FCF6A02190FCE6A4541D98D33C7E3DC1815B9FE387AFA7CFB0D`；生产文件 hash 仍 `6A751DCB…018E60`。这是真实函数行为 RED，不是安装/收集失败；只证明写回 fake checkpoint 的早期约束缺失，不声称用户真实 DB 记录丢失。无产品或仓库测试编辑，待 impact 后最小修复和独立复核。
+
+> 2026-10-20 手动记忆现有基线：00 全文/hash 核 02 `s04-memory-isolated-baseline-20261020-02/report.md`（SHA `2BCB892017F645CB5C3480745420E4DD598DC4E8E121CDF1F217F638B415FB21`），并读真实命令输出、当前核 17 项文件 hash 全部匹配。候选白名单 E 隔离后端三个指定文件 38 passed / 50 warnings / 83.04 秒 / exit 0；前端编辑器与设置 Store 两文件 29 passed / 20.16 秒 / exit 0，含非记忆 provider/retrieval 回归，不统称 29 条记忆案例。前端首次外置配置导入错误发生于收集前、0 tests，修正后实际通过；合成失败日志符合失败用例，不是产品失败。仅接受现有软件基线，不代表真实页面、独立进程重启、清空后旧暂停快照失效、分范围条目或完整 S04 完成。未改仓库源码/测试或真实数据，下一步只补 E 外置重启与清空续跑探针，不重跑本基线凑数。
+
+> 2026-10-19 B2 scope 已核（无测试）：05 报告 SHA `E0FEFF65336A3E89FC58A4000B4F5E00FAE7A029C46D45E99527C849CE9B3725` 已全文/hash 核，两树六关键文件 hash 当前匹配报告。POST 及消息列表/会话详情两个 GET 的活动记录入口只经源码核查；未运行 pytest、应用导入或数据库。GitNexus 完整缓存缺失、恢复区副本不完整，00 仅只读验证已有离线包版本 1.6.12 和 SHA `96391A6D…D141E1`，未恢复安装/下载/运行片段，不记 impact 通过；待真人一次确认后再处理工具恢复。
+
+> 2026-10-19 B1b 指定软件范围独立接受：00 全文/hash 核 04 `report-verified.md`（SHA-256 `119AD5E89863F51E7C67C42CAFD9DF461C75F5D2654833F92A5B08116C5628BA`），读独立定向 1 passed / 30 skipped / 6.37 秒（计时 7.186 秒）、原 prototype 探针 1 passed / 2.22 秒（3.162 秒）、完整组件 31 passed / 0 skipped / 2.52 秒（3.318 秒）、tsc exit 0 / 14.900 秒。测试前后十 hash/HEAD/status 不变，00 当前再核全部匹配。继承路径不显示、label 无法验证、raw 哨兵不显示；合法 own path 保持。各组重叠不相加，首次配置收集失败 0 tests 与产品断言结果分开。接受候选 UI 软件范围，不含真实浏览器/页面样式/服务器历史/真实存储/完整 S02/发布；P2 英文标签未修。05 已接 B2 只读范围/impact 门禁，无测试或实现权。
+
+> 2026-10-19 独立 delta 首轮停止不是产品测试失败：04 报告 `FDFD966E…F3AA0E` 未运行四项验证；其压缩后核验脚本预期组件 hash 末位为 6，实际/计划/作者报告均为 1。00 读实际工具记录并重算十 hash，写项目外机器可读 `baseline-00.json` 后明确恢复同一独立任务。新测试记录待 `report-verified.md`，保留首轮停止报告，不补写未执行结果、不重跑旧 100/后端组。
+
+> 2026-10-19 own path 作者续接验证完成：报告 SHA-256 `1685C435184C9505DDAC28BA32F5A9147BC00992C0ED951269560A10EB6BBBCD` 已由 00 全文/hash 核，读实际组件 31 passed / 0 skipped / 2.67 秒（命令计时 3.554 秒）、原 04 探针 1 passed / 2.24 秒（计时 3.108 秒）、tsc exit 0 / 计时 1.986 秒、diff check exit 0。探针标签为“无法验证”、DOM 无继承路径及 raw 参数结果哨兵。较早冷启动同组也过，重叠不相加；若干 PowerShell 解析失败与配置发现失败没有执行目标，与产品结果分开。当前十 hash 匹配且恢复 turn 无仓库 fileChange。04 已接独立 delta 验收，尚无独立通过；不是完整 B1b/S02/浏览器/真实用户存储或服务端历史出口通过。
+
+> 2026-10-19 恢复验证登记：10 月 15 日暂停前 own path 新组件回归实际 RED 1 failed / 30 skipped（3.07 秒）→ GREEN 1 passed / 30 skipped（2.20 秒），原 04 外置探针另一次因文件访问配置在收集前失败，0 tests，不当产品红灯或通过。00 读原 turn 并重算当前组件 `DE95BD7C…922AB1` / 测试 `DBB6EC86…C54EE`；05 本轮只续完整组件、tsc、原探针及项目外报告，无仓库源码/测试写权。尚无恢复后的测试结果，待作者交接及 04 独立 delta 复核，不标 B1b/S02 放行。
+
+> 2026-10-15 B1b 独立 30 通过但原型 path 门禁失败：00 全文/hash 核 04 报告 `27F741953AB43996D39AAF53A2E59E6AE6BDB374186244C901F4995D68F27EF3`，实读独立组件 30 passed / 0 skipped / 2.86 秒 / exit 0、tsc exit 0（命令 9.060 秒）。外置真实组件 `prototype-path.probe.test.tsx` 两次 exit 1；最终 1 failed / 2.10 秒，两个 soft 断言分别确认继承 path 进入 DOM 且状态误标成功，不算两个测试。raw args/result 哨兵未进入 DOM；十文件 hash 不变。05 仅获原 UI 两文件 own path 增量红绿权，未放行 B1b 或完整 S02。语言标签 P2 另记，未测真实浏览器/原型污染实网来源，不重跑旧 100 凑数。
+
+> 2026-10-15 B1b 作者结果已核、独立复核待交：00 全文/hash 核 `s02-b1b-safe-trace-ui-implement-20261015-05/report.md`（SHA-256 `3D41A58B59B9B748AF06D9EA84B5677E818F75F3761274BD715C1865213DC018`），实读隔离 hook 后现有组件 raw 参数 DOM 哨兵 RED 1 failed → GREEN 1 passed，最终完整组件 30 passed / 0 skipped / 3.43 秒 / exit 0、tsc exit 0（命令 9.831 秒），diff check exit 0。初始测试 hook 导入噪声、中间夹具默认值错误的 28/1 单独保留，不当最终产品失败；29 与 30 重叠不相加。组件/新测试 hash 与作者交接一致，B1a 八文件未变。04 已接非作者独立组件/tsc 与必要小探针，尚无独立结果，不标 B1b、完整 S02、浏览器或真实 SSE 通过；运行副本未同步。
+
+> 2026-10-15 B1a 指定软件范围独立接受：04 报告 SHA-256 `444FC6E00E81B22F7BB69194EE667FEB1A2F450559BD2150444B3B3BE84089BA` 已由 00 全文/hash 核，实际三文件 100 passed / 5.82 秒 / exit 0、真实 init 探针 4 passed / 2.61 秒 / exit 0、tsc exit 0 / 11.340 秒；八文件哈希前后与 00 当前复算一致。作者 100 与独立 100 分开记录，不相加；初版 95/1 红灯保留过程证据。软件范围仅候选前端投影/绑定/缓存，不含真实浏览器/用户存储/完整 S02/发布。已派 05 ActivityBlock + 新测试两文件 B1b 渲染红绿，暂无 B1b 测试结果；不重复已过 100/旧后端组凑数。
+
+> 2026-10-15 初始化联动窄修作者结果：报告 `095BB254…4DD8D` 已由 00 全文/hash 核；读实际三文件 100 passed / 5.30 秒 / exit 0，tsc exit 0 / 8.617 秒。旧迁移 RED 1 failed / 46 skipped、新空分片 RED 1 failed / 47 skipped → 二例 GREEN 2 passed / 46 skipped；另三初始化定向 GREEN 3 passed / 48 skipped。各组重叠不相加成更多覆盖。store/test 当前 hash 与交接一致，其他六文件未变；05 已结束写权释放。04 已接独立增量源码/联合复跑，尚无独立通过，不标完整 B1a/S02 通过，不重跑旧后端组凑数。
+
+> 2026-10-15 联合独立红灯：04 报告 SHA-256 `F3314FAB876A09685E097549E9EA799C1CFF13AD2C5656AE98C16DED13956D65` 已全文/hash 核。00 读实际三文件 95 pass / 1 fail / 4.41 秒 / exit 1，失败 `projects legacy session messages before migrating them into shards` 单独重跑 1 fail / 46 skip / 2.75 秒，缺分片导致断言读取 null。外置真实 init 探针 2 pass / 3.02 秒，无可见孤儿会话增加证据；tsc 报告 exit 0。最初 ESM 配置/测试发现错误未运行目标测试，与产品稳定红灯区分。八冻结哈希不变。05 已获 store/test 初始化两文件窄修，先真实红绿再联合/tsc，04 后续非作者复核；当前没有联合通过或完整 S02 放行。
+
+> 2026-10-15 两项修复待联合独立复核：00 已全文/hash 核 05 配额报告 `AFBE9E3C…6F8624`，实读最终 persistence 14 + helper 35 = 49 passed / 1.77 秒 / exit 0，tsc exit 0 / 命令 8.346 秒；此前新增测试 this 类型未标注 exit 2 保留过程记录。03 store 新回归实际 RED 后两例 GREEN / 45 skipped / 2.04 秒，未跑 store 整组/最终联合验收；其后漂移旧后端 P0-2 测试 1 passed 不算本轮，已要求只回范围清点后结束。四修复文件哈希由 00 当前重算冻结，04 已接非作者只读联合复跑及真实 init 小探针。尚无独立联合通过，不以作者绿色或旧 83 累加成完整验收；旧整体 legacy 初始化删除 ID 的内存/可见边界待核。
+
+> 2026-10-15 定向 RED 诊断已交接：报告 SHA-256 `AF2124081DD9189F2C9F2C2AA32C51F5C6FD19C1091AAAD5C5DD59BE7D2ED228` 已全文/hash 核。项目外真实 store/init 合成探针两次 exit 1，normal/resume 错配及迁移配额三项 RED、匹配名称对照通过；00 已读实际失败输出。错配只证实活动/内存步骤哨兵与误成功，POST/分片已有过滤，非真实泄露记录；迁移丢副本为 HEAD 原有问题。首次外部配置加载限制发生测试前，改项目外最小配置才实际执行。已派 03 store/test 与 05 persistence/test 两项分文件窄红绿；本轮修复尚无最终通过证据，联合验收须两作者冻结后独立运行，不累计旧 83 或重复后端组。
+
+> 2026-10-15 B1a 独立复核：05 项目外报告 SHA-256 `BE699F5294B725AA766623F63C39F4D1842B56F1894F0FDF6B47F4F622D17728` 已由 00 全文核验。实际独立三文件 83 passed / Vitest 16.64 秒 / exit 0，TypeScript exit 0（命令 14.593 秒），八文件哈希前后不变；不与作者 83 相加。初次临时目录存在检查 exit 1 发生在测试启动前，换唯一 E 根后通过。两项条件性源码发现（同 call_id 工具名错配、旧 key 迁移分片配额失败）尚无定向红灯，03 已接项目外真实入口离线复现，暂无仓库修复权；不是完整 B1a / S02 / 浏览器 / 真实数据验收。
+
+> 2026-10-15 恢复 / B1a 作者交接核验：00 已读 03 实际最终输出，`D:/Node.js/node.exe node_modules/vitest/vitest.mjs run src/stores/useChatStore.test.ts src/utils/skillTrace.test.ts src/utils/persistence.test.ts` 在候选 frontend 中 3 files / 83 passed，Vitest 5.15 秒，exit 0；最终 `node_modules/typescript/bin/tsc --noEmit -p tsconfig.app.json --pretty false` exit 0（命令 12.153 秒）。批准文件 diff check exit 0，行尾警告非失败。八文件当前 hash 与作者最终交接全一致。既有定向 RED、中间 GREEN 和测试夹具类型失败是过程记录，不能累加测试数或隐去失败。未运行真实服务、模型、浏览器、用户数据库；运行副本未同步。05 独立只读复核已派，独立结果尚无，不提前放行 B1a / S02，不重跑旧后端组凑数。
+
+> 2026-10-11 B1a impact 门禁：03 报告 `852C4C6F…16241` 已全文/hash 核；00 已读真实 impact 输出，保存 CRITICAL 67/16/17、读取 CRITICAL 19/1/13、保存体 HIGH 5/1/3（影响/直接/流程）。历史映射 UNKNOWN 以候选两处实际引用补核，不降为 LOW；候选 5 文件哈希不变，3 新文件不存在。未跑测试。00 已告警并另授 03 候选 8 文件窄实现，后续真实红绿与候选 store/helper/persistence/typecheck、05 独立复核待执行；不是主树 44、浏览器或全链验收。
+
+> 2026-10-11 B1a 范围保护：02 turn 再次转回旧 P0-3 保存调查，00 已撤销继续实现并要求只交范围回执。已读工具记录暂未见 fileChange，主树/候选各 5 文件 hash 不变且 3 个候选新文件不存在；未跑红绿或验收，不作全仓无变化证明。下方 B1a 条件授权已撤销，先核回执，不重复旧测试或派恢复。
+
+> 2026-10-11 B1a 登记：02 只读报告 SHA-256 `26654745C6DC850F60C10F0C5498E94103A1E63CE7C8F499872AB737C373E6D1` 已由 00 全文与两树 8 文件哈希核验，实际项目外目录为 s02-frontend-history-b-scope-align-20261011-02。没有运行测试，不把版本登记当验收。新 B1a 任务先 impact 门禁，后候选前端类型/helper/store/persistence 的窄红绿及现有依赖类型检查，HIGH/CRITICAL 须另批；尚无红绿结果。B1b 页面与 B2 CRUD 分别后续，主树 44 不复制到候选 43，不重跑旧后端组凑数。
+
+> 2026-10-11 SSE A 增量独立复核已接受指定范围：00 实读 05 两条命令输出，新增 9 项为 9 passed / 55 deselected / 26 warnings、21.38s、exit 0，来源快照文件 5 passed / 25 warnings、16.34s、exit 0，均无 skip。报告 SHA-256 1F935413…B1460、三候选哈希再次一致；额外 warning 来自隔离 TRANSFORMERS_CACHE，非新产品失败。完整 64 项仅作者/00 已读证据，不是本次独立重跑；不相加。00 接受后端 A 软件范围，前端/历史出口和完整 S02、真实模型/浏览器/数据库仍未验，运行副本未同步。02 下一任务只读版本登记、不跑测试，不因单步完成终止全计划。
+
+> 2026-10-11 内层成功字段窄修作者红绿已实读：两个 Skills 工具均通过真实 converter 复现缺失 data.success 误成功。选择器 `requires_explicit_boolean_inner_success or failure_without_metadata_or_data_success`：红灯 2 failed / 7 passed / 55 deselected / 25 warnings、12.12s、exit 1；修后 9 passed / 55 deselected / 25 warnings、15.95s、exit 0。完整 `test_chat_skills_integration.py` 为 64 passed / 25 warnings、11.49s，`test_chat_source_registry_snapshot.py` 为 5 passed / 25 warnings、10.46s，各 exit 0。均 D 盘已有 Python、E 独立 pytest/cache/appdata/TEMP/TMP、离线假数据；不是用户数据库、模型、浏览器或全量验证。00 核 helpers 40FFB65C…E4B9F / integration test A441B1EC…87DAD / adapter 未变；05 增量独立复核已派，尚未放行。不同组及旧快照不累加。
+
+> 2026-10-11 独立复跑证据已读、审查仍未放行：05 用 D:/python/python.exe 在两个唯一 E 假数据根运行完整 `backend/tests/test_chat_skills_integration.py -q --tb=short --disable-warnings -p no:cacheprovider --basetemp <各自新目录>`，真实输出分别 55 passed / 25 warnings、66.60s 和 26.84s，均 exit 0。配置 TEMP/TMP/HWRAG_APP_DATA_DIR、缓存及应用数据到 E，模型离线、进程测试凭据清除。第二次为同范围复跑，不相加。随后上下文压缩漂回旧 Explorer，00 已停止该方向并要求范围回执；指定独立报告尚不存在，最小相关 SSE 兼容组和独立审查结论未交，不能宣称 A 步已获独立放行。00 再核三候选文件哈希不变，未运行额外 pytest。
+
+> 2026-10-11 Skills SSE 安全投影 A 作者交接：仅 E 隔离候选三文件变更。00 实读作者定向组 `test_chat_skills_integration.py -k 'emit_skill_tool_call or emit_non_skill_tool_call or skill_tool_result_sse or fails_closed_on or skill_tool_failure_can_omit or non_skill_tool_result or manual_mode_loads_through_router'` 输出为 38 passed / 17 deselected / 25 warnings、13.88s、exit 0；作者红灯报告为 26 failed / 1 passed、exit 1。使用 D 盘现有 Python 与 E 盘合成数据、独立 TEMP/TMP、pytest/cache/HWRAG_APP_DATA_DIR，未测真实模型、用户数据库、浏览器、硬件或全量。00 核三文件哈希与交接一致（完整值见 development-plan.md 页首）；`git diff --check` 作者通过。05 独立只读复核及整文件复跑已派，尚未独立放行；不与旧 28/5/50 或中间复跑相加，不将本组当完整 S02 或运行副本通过。
+
+> 2026-10-10 新手动/参考资料页面验收未执行：07 在 Chrome 新标签窗口第一次取状态时被 Computer Use 的 URL 安全识别停止；未导航项目、导入/编辑技能、输入凭据或请求模型，无本轮会话/工具调用证据。不算 pytest 失败或产品验收通过。07 精确收停本轮自有 PID 15164/5056，00 再查均退出且 58080/55875 无监听；v3 清单仍 D0F5A2A8…A09649E、brand 停用、playwright 不存在。本轮不重试或绕过该工具停止，旧真实 Chrome 成功证据不作此次替代。
+
+> 2026-10-10 审计窄修独立复核通过：05 新回归 5 passed / 2 warnings、11.81s；`test_tool_router_request_spec.py` + `test_chat_skills_integration.py` + `test_skill_runtime_review.py` 组合 50 passed / 25 warnings、12.91s，各 exit 0。00 读取实际输出、核两文件 A326AE37…0BB166 / D83AAD78…83690 未变后接受指定范围。组合包含已验资源 28 项，不能累加成全量通过；仅内存 SQLite 及模拟工具链，不是真实旧库迁移、HTTP 工具或浏览器通过。
+
+> 2026-10-10 独立资源增量审查已过：03 精确 instruction-file-removed 一例 1 passed / 3 warnings、13.69s；整文件 28 passed / 2 warnings、13.36s，各 exit 0。00 实读命令结果并核 B65BF33B…E1995C9 未变，接受指定新增范围；非 Router audit/浏览器验收，组间不相加。
+
+02 审计持久化修复作者红→绿：真实 Router/Recorder/未替换 logger、fixture SessionLocal 与 SQLAlchemy SQLite 内存表，作者 4 failed / 1 passed、12.97s → 5 passed / 3 warnings、12.80s。修前 HITL deny 因不接受 call_id 未落行，修后实际 helper 投影保留 deny/false/PERMISSION_DENIED；旧脚本形态默认兼容。00 核两文件哈希 A326AE37…0BB166 / D83AAD78…83690 并读取实际输出。05 已派只读独立复核，当前仅作者通过，不是完整回归、真实旧库或浏览器通过；未运行 init_db/Alembic。
+
+> 2026-10-10 缺失说明文件作者交接：05 新增 instruction-file-removed（快照后只删除合成 SKILL.md，保留目录和资源），作者实际精确一例 1 passed / 2 warnings、14.50s，整文件 28 passed / 2 warnings、14.29s；00 读取实际输出并核 SHA-256 `B65BF33BA70FF8995EEE1892D5B2FC8D9CD64AF30FF7F70A7772CC340E1995C9`。首次 Windows 大小写检查测试假设失败不是产品失败，修正后通过；组间不累加。03 新增 delta 独立复审已派，尚未独立放行。
+
+> 审计诊断证据（2026-10-10）：00 读取 02 项目外报告/脚本并核哈希 27777626…86EEEE / 53A97F18…BC50F9，直接读取实际 7.514s 红灯输出（exit 1，四处结果字段不一致）。成功正常；技能结构化失败与 executor 异常在 Router/AuditRecord 为 false/EXEC_ERROR，旧签名 sink 却为 true/null；仅换扩展 sink 的反事实对照匹配。仅内存 sink 模拟，不是生产 SQLite 写入通过或权限绕过。02 后续窄修必须补真实 logger→SQLAlchemy 内存表回归先红后绿，不能把固定 legacy sink 的原脚本虚称修后通过；尚无修复运行结果。
+
+> 2026-10-10 独立资源复审已收：05 使用 D 盘 Python 3.13.13、E 假包/缓存/临时根及内存数据库，整文件两次退出码 0，分别 27 passed / 3 warnings / 0 skipped、44.26s 和 13.92s；00 直接读取实际输出并再核原哈希 9DB16FC30924AE4DC5286F73F083E1F9E8CF7CBB929746EB11454B29EBC1B0C2。与作者 27 项重叠不累加。新增第三个警告是 TRANSFORMERS_CACHE 隔离配置的弃用提示。条件放行仅涵盖现有用例，不覆盖单独删除 SKILL.md 或 Router audit 结果。
+
+05 后续仅获指定测试文件写权补“只删除整份 SKILL.md、保留包和资源”一例，生产代码冻结；该新增 delta 待另一个线程独立复核。02 审计诊断仍进行，未有修复结论。以上均非浏览器、主树或完整 S02 验收。
+
+> 2026-10-10 17:01（Asia/Shanghai）运行状态：02/05 上次任务均以 usage limit 错误结束，不是测试失败或审查通过。00 核对账户已允许普通使用，已按原边界续接两项任务；尚未收到恢复后的运行结果。历史作者测试与浏览器证据保留，不重复计数。
+
+> 2026-10-10 最新交接：02 最终资源回归整文件再次运行 27 passed / 2 warnings / 0 skipped、30.26s、exit 0，同哈希不累加；文件写权已释放。说明字段删除不等于 SKILL.md 文件删除，05 独立复审需明确未覆盖部分。03 旧配置测试不算审计诊断进展，诊断任务已撤销并改派 02 的项目外隔离红灯复现，目前尚无审计复现结果，未改任何生产代码。
+
+## 2026-10-10 S02 持久资源回归作者验证，独立复审已派
+
+00 读取 02 实际命令输出：快照后 package/instructions/resource 删除场景 3 passed / 18 deselected / 2 warnings；路径六例 6 passed / 21 deselected / 2 warnings；整文件 27 passed / 2 warnings / 29.29s，各 exit 0，组间重叠不相加。仅 E 盘自建假包与外部 marker、D 已有 Python、内存库/offline；不是实际模型或浏览器。五类路径返回 SKILL_PATH_INVALID，编码路径按原规则为 SKILL_RESOURCE_NOT_FOUND，没有改生产错误语义。
+
+00 独立核候选测试 SHA-256 `9DB16FC30924AE4DC5286F73F083E1F9E8CF7CBB929746EB11454B29EBC1B0C2`、diff 114 增/1 删。02 明确冻结，最后交接尚待；05 已获派独立只读复审/复跑，未出独立结论。03 仅负责审计失败误记复现，不把旧 P0-2 重跑计为该诊断通过。新增测试不自动进入已停浏览器运行副本或主树。
+
+## 2026-10-10 S02 页面报告及收停独立复核
+
+00 已读取 `E:/Desktop/agent-acceptance-artifacts/core-plan-20261006/p03-browser-resume-20261009/s01b-runtime-20261009/reports/s02-browser-matrix-20261010.md` 正文及收停更新，Get-FileHash 得到 `3A99F321DAE198C001262423400BFA149888CDAE6B9A672191CC2922655CE465`。Get-NetTCPConnection 全表筛 58080/55875 得空，Get-Process 全表筛 21528/26288 得空；Test-Path 显示数据库/SKILL.md 存在、启用 marker 不存在，命令 exit 0。没有删除数据或停止其他服务。下方最后审计/报告/收停待核状态由本节接续；候选新测试和审计诊断未完成，仍不能记总体验收通过。
+
+## 2026-10-10 停用加载失败与审计成功字段不一致
+
+07 只读核最后会话 `s1791611369084`：两条消息、activity done/4 steps/2 tool steps；两次 load_skill 分别指向测试前缀与 brand-guidelines，两步 status=error、结果匹配失败摘要而非成功摘要。对应 audit 19/20 却均为 allow/auto_allow/LOW、success=1、error_type=null。00 页面看到明确失败，不能用这两行 success=1 宣称已加载，也不代表权限绕过。原始 DB 未修改。
+
+03 已获派仅 E 项目外合成的实际 Router 复现与只读根因调查，未写生产代码或测试；报告/新测试结果待交。此记录修正上节“最后审计待交”，最终项目外报告与服务收停仍待核。
+
+## 2026-10-10 Chrome Skills 四个真实行为对照，最终报告待核
+
+00 实际页面输入、复用授权 Text 服务商；07 仅管理原 E 隔离服务并只读审计，未后端注入。手动会话 `s1791611032988` 用户 `2fd9aa4f-9b71-46d3-845c-711c9be7de99`、助手 `db6a9815-20e4-4b8d-b312-d3153598bcfd`：56.0s 终态，具体颜色及字体正确；07 核 audit 15/16 两次 load_skill 均成功，分别 manual_skill_selection/auto_allow，32/27ms，无其他工具。Activity 5 steps 含 thinking，不是五个工具；保留重复加载观察，不记为已修。
+
+自动无关会话 `s1791611141498` 用户 `136edaf5-bc64-41e8-a1ed-b233f5c3a186`：17+25 回答 42、3.7s；07 核两消息、activity done/1 step/0 tool、无 audit。关闭会话 `s1791611205668` 用户 `3e8b74aa-8e1d-42bb-b3a5-e0d47006af63`：1m14s 终态，如实说明无法加载；07 核两消息、两普通工具 list_kb_docs/search_history（audit 17/18 均成功），无 load_skill。关闭 Skills 不代表关闭 Agent/RAG/历史。
+
+页面停用确认后，新自动请求用户 `09b57786-f0af-4e71-a87c-ab39728f4bff`、助手 `82946c4b-607c-4c45-8d30-e3beea184bc1`：32.1s 终态，尝试测试前缀 ID 与 brand-guidelines 两次均失败，展开实际工具输出为 Skill operation failed，回答未假称成功。07 已核 `.enabled` 缺失及元数据/正文哈希不变，最后审计和报告待交。停用按钮点击曾工具超时，但后续页面明确显示技能已停用，未重复点击，不把交互超时当产品失败。截图仅为会话内 inline 证据，无虚构本地截图文件。
+
+07 已被通知精确收停本轮归属 PID 21528/26288，保留停用现场及数据库；最终无监听证据待核。02 仅在候选指定测试文件补持久安全回归，尚无新测试结果。四个真实对照不证明手动独特结构、缺失/超限/不支持模型实际页面、恶意模型矩阵或主树集成通过。
+
+## 2026-10-10 S02 只读矩阵交接与后续页面测试
+
+03 报告 `E:/Desktop/agent-acceptance-artifacts/core-plan-20261006/s02-readonly-acceptance-matrix-20261010-03/s02-agent-acceptance-matrix.md` 已由 00 完整读取并独立核 SHA-256 `DE78E9F6831CA7EB7CE424D1FA9C1D3913A7E9047D7F3CD0D0DFDE0C0FD70FFB`。00 复核候选 chat_routes.py、agent_factory.py、tool_router.py、skill_runtime.py 四份哈希与报告一致。
+
+03 使用 D 盘现有依赖、E 盘临时/应用数据及内存 checkpointer，离线定向 Runtime 18 passed / 3 warnings；Runtime + Chat 精选组 13 passed / 24 deselected / 26 warnings；InputBar.skills 3 passed，各 exit 0，重叠不累加。临时合成包的停用/off 与六种越界路径断言通过，但未形成持久回归。00 核交接及版本，不声称自己重跑这些测试。未执行真实模型、浏览器或硬件。
+
+真实 Chrome 自动相关正例来自此前联合报告，不是本矩阵新执行；手动、无关问题、关闭、停用后新请求已派 07 管理原隔离服务并由 00 操作页面，当前尚无新结果。快照后资源删除、异常页面、恶意模型样例及原始 reasoning 内容风险仍未验，源码展示链不能当泄密实证。不得把本矩阵记为 S02 总体验收。
+
+## 2026-10-10 Chrome 原句安装、页面启用、下一请求加载的联合证据
+
+07 报告保存于 `E:/Desktop/agent-acceptance-artifacts/core-plan-20261006/p03-browser-resume-20261009/s01b-runtime-20261009/reports/s01b-browser-retry-20261010.md`；00 完整读取，独立 Get-FileHash 得到 `790EEADA2EE4E44137FAD3DC0678EA027E0F0E03D841D54ECDD329E7EFD52259`。00 用 Get-NetTCPConnection 成功枚举 42 条监听后筛目标端口为空，用 Get-Process 全表筛目标 PID 为空，SQLite 与 `.enabled` 的 Test-Path 均为 true。首次直接查询已不存在的 PID 导致命令退出 1，后以全表筛选复核退出 0；不是产品失败。未停止其他进程或删除数据。
+
+00 通过受支持 Chrome 扩展操作页面，07 保持 E 隔离服务并用 SQLite `mode=ro` / `PRAGMA query_only=ON` 核证，不后端注入安装或凭据。会话 `s1791608153741` 保存四条消息；安装原句用户/助手 ID 为 `4c9c4625-c835-4d28-b704-f70dc4d73634` / `9cdc6356-e76d-4ce3-8846-af3f7776a253`，下一条加载请求为 `37624d6a-1dcf-4540-b9ab-dc58d777f0d7` / `37de4957-e2f8-4f23-a334-11cc0fd3d296`。
+
+07 实际只读命令输出：audit 13 `install_github_skill` / allow / explicit_chat_skill_install / low / 8034ms / success=1；audit 14 `load_skill` / allow / auto_allow / low / 35ms / success=1，无其他工具。安装后 SKILL.md 2,235 B、LICENSE.txt 11,345 B 及导入元数据落盘，`.enabled` 不存在；页面明确确认启用后 marker 出现。来源提交 `9d630808e4add0a7146de4af9384155d5dee350a`、路径 `skills/brand-guidelines`、import_hash `ddf22e788d6aa33e818ec59be85d4fba5aeda23075518dafc412bb90b7cc63ce` 与 SKILL.md SHA-256 `1120B3769E2985CEFB3D25BE981B1F914ABEBA57AE079B83C20C666C164FA9FE` 保持不变。解析 activity 的首次命令有引号语法错误，改为只读安全字段查询后成功；不是产品失败，也不计为测试用例。
+
+Chrome 实际显示 load_skill 输入 brand-guidelines、输出“Skill instructions loaded”，回答按技能列出主色/强调色、Poppins→Arial、Lora→Georgia；终态 19.9s。该 UI 输出未显示版本 SHA，版本证据来自固定安装元数据与未变正文哈希，不宣称页面展示了加载版本。刷新后四条消息正文、活动及设置页启用状态保留；模式重置关闭、侧栏时间/日期变化仅为待核观察。07 正整理项目外报告；当前接受正常闭环，不接受 S01b/S02 完整矩阵或主树发布。03 仅只读梳理剩余矩阵，不重复安装回归或扩大实现。
+
+## 2026-10-10 Chrome 真实安装阶段观察，独立取证待交
+
+07 在 E 隔离环境启动后端 PID 27012/58080 和前端 PID 30212/55875，启动记录见运行根的 `state/logs/processes-retry-20261010.json`。07 缺浏览器接口，00 通过受支持 Chrome 扩展实际控制独立验收标签，双方没有并行操作页面。00 在设置页添加授权测试服务商、点击验证后显示 193 个模型，默认 Text；新会话原句安装的用户消息 ID 为 `4c9c4625-c835-4d28-b704-f70dc4d73634`，回答 ID 为 `9cdc6356-e76d-4ce3-8846-af3f7776a253`。
+
+页面专用 `install_github_skill {}` 活动返回 brand-guidelines、提交 `9d630808e4add0a7146de4af9384155d5dee350a`、路径 `skills/brand-guidelines` 和 disabled，耗时 8.2s；回答 40.8s 终态，两条消息。Activity 3 项含两项 thinking，不代表调用三次工具。设置页随后显示该技能“支持”、启用开关关闭，未后端注入凭据或安装。07 正只读核对实际文件和审计，尚未交独立结论；启用及下一请求加载还未执行，不把当前页面观察记为全链路通过。
+
+## 2026-10-10 Skills 新运行清单独立核验与执行派发
+
+00 用 PowerShell 解析旧/新清单并逐项核对路径、长度和 SHA-256：497 项、5,406,388 字节，与候选及运行副本一致，零错误；无重复、绝对或越界路径，无新增/删除文件，仅 `backend/src/agent/tools/groups/skills/install_tool.py` 与 `backend/tests/test_chat_skills_install_tool.py` 两项 delta。禁止数据路径检查无命中；此检查不是动态安全测试。新版 `source-manifest-v2.json` SHA-256 `F841B58FBB3C8042933709E2BBA2DF181A94832EC466A9DDC7E1F4CD4CC8A1DA`；旧清单 `BFE6225C5D1DDD1798B6758961B98D47C642D4B4738049341E89EC6BDFCAD43C` 保留未改。核对时技能目录为空、58080/55875 无监听。
+
+清单位于 `E:/Desktop/agent-acceptance-artifacts/core-plan-20261006/p03-browser-resume-20261009/s01b-runtime-20261009`。00 已派 `S01B-BROWSER-RETRY-EXEC-20261010`，07 仅在该隔离环境前端配置凭据、真实 GitHub 原句安装，分别记录默认停用、页面启用和下一请求实际 load_skill；要求启动时显式设置 E 盘 TEMP/TMP 与 HWRAG_APP_DATA_DIR，并复核其他运行数据路径。此次浏览器结果尚待，未重跑或宣称主树最新聊天/Explorer 已通过；不将清单一致当作功能通过。
+
+## 2026-10-10 Skills 独立 R4 与页面准备放行
+
+02 只读复审候选原文件（未跟踪文件不能用空 git diff 代替审查），install_tool.py SHA `1AD785460FA0D0E10A43CAA69B1579A3D9CA77F98CB4B1697FD01AE89693CD60`、测试 SHA `BD494A13216A99C5BB1BA04E8363EA513C2E4C6779AA9CE3ECE0D47076444368` 与 00 再核一致。D:/python/python.exe pytest、独立 E 临时基目录、内存库/offline：安装单文件 25 passed / 25 warnings / 20.75s；安装/聊天/ALWAYS 三文件 48 passed / 25 warnings / 21.29s；平台/review 两文件 46 passed / 2 warnings / 20.22s，各 exit 0、测试重叠不相加。进程句柄失效后的结果通过实际重启命令取得，不将失效句柄当测试通过。
+
+无网络探针中 `../` 与 `%2e%2e` 子目录均被 SKILL_PATH_INVALID 拒绝；全角 `！/？/）/”` 会并入 URL，记录 P2 可预测目标边界，未证为越权安装，不能宣称所有标点均支持。候选无图谱，02 未更新或运行影响图，不称独立图谱验证。R4 只放行固定样例的受限真实页面，不是实网、模型工具选择或浏览器确认通过。
+
+07 已派新版运行清单准备，暂不启动服务/模型/安装；原 497 文件清单需与当前已审候选逐项比较，仅同步受影响已审文件，新清单 00 核对后再授权真实页面执行。候选 temp/真实数据/凭据/依赖不纳入，旧失败现场保留。P03 真实聊天库未迁移。
+
+## 2026-10-10 Explorer 独立 R2 条件放行
+
+03 独立只读运行 `D:/python/python.exe -m pytest tests/test_explorer_routes.py -q --tb=short --disable-warnings -p no:cacheprovider --basetemp E:/DevCaches/Temp/explorer-policy-compat-r2-20261010-1b6e9c2f4d5a4af4a6e3b2c7d9e1f005/pytest`，TEMP/TMP/应用数据在 E、SQLite 内存库、离线模型配置；Python 3.13.13，32 passed / 2 warnings / 0 skipped、exit 0。另在 E 假根确认 System32-notes 搜索可见、MySystem32 沿用现有子串拒绝。未运行真实系统/用户材料、浏览器、模型、硬件、全后端或 Python 3.10/3.11。
+
+两文件前后哈希不变，00 再核 search `10879653DAA8AAFD4B908F7F83CD0ECA76015493277B2AD88567C6056CD68854`、测试 `007AE55D6BE819A1F7E9D3536D445BD8E11F2FBEB00C56DD5754121D944A016F`。03 未重跑图谱，引用已有 stale/LOW/CRITICAL 警告并核源码，不能记作新图谱分析。00 接受静态本地目录假设下的窄修条件放行；恶意并发换 link 的 TOCTOU、504 不取消扫描线程、总扫描预算未收口，不称强隔离或总体验收。
+
+02 的 `P03-CONDITIONAL-SAVE-DESIGN-20261010` 已交，随机版本列/原子条件保存/冲突保留/兼容旧客户端局限为提议，未改代码、schema、API 或运行新方案测试。00 未授权迁移真实聊天库；隔离开发批准待用户选择。不能把此前竞态复现 4 项或既有 CRUD 3 项记作此设计验收通过。
+
+## 2026-10-10 Explorer 策略/兼容窄修交接
+
+05 已冻结两文件，00 实核 search SHA-256 `10879653DAA8AAFD4B908F7F83CD0ECA76015493277B2AD88567C6056CD68854`、测试 `007AE55D6BE819A1F7E9D3536D445BD8E11F2FBEB00C56DD5754121D944A016F`。独立 R2 已改派空闲 03，仅只读这两文件及隔离复跑；02 继续保存设计→Skills R4，不重复派同一审查。
+
+05 实际使用 `scripts/verify_backend_isolated.ps1 -Python D:/python/python.exe`：E 临时红灯 `test_search_skips_a_denied_resolved_junction_target` exit 1（read403 已成立，search 仍有假 marker）；修后该用例、近似目录允许、敏感文件组定向 10 passed / 2 warnings；完整 routes 32 passed / 2 warnings / 0 skipped，Windows junction 实际执行。隔离进程模拟删除 Path MRO 的 is_junction 后，四条 junction 用例 4 passed / 2 warnings，只证明测试不依赖该接口，不是 Python 3.10/3.11 实跑。不同范围不累加；本轮无真实系统/私人项目读写、无依赖安装或提交推送。独立 R2/浏览器/全仓尚待，旧 R1 30 项不替代此补丁审查。
+
+## 2026-10-10 Skills 中文安装修复交接
+
+03 回交 S01b 候选 install_tool.py 修复，00 实核 SHA-256 `1AD785460FA0D0E10A43CAA69B1579A3D9CA77F98CB4B1697FD01AE89693CD60`；测试文件现为 `BD494A13216A99C5BB1BA04E8363EA513C2E4C6779AA9CE3ECE0D47076444368`，03 称用例已存在于本轮红灯阶段，未在最后修复阶段再改。红灯 12 passed / 2 failed → 窄回归 14 passed / 25 warnings。`test_chat_skills_install_tool.py test_chat_skills_integration.py test_bypass_always_confirmation.py` 48 passed / 25 warnings；`test_skills_platform.py test_skills_platform_review.py` 46 passed / 2 warnings。不同选择器/快照不累加成全量通过；均假 GitHub、E 临时目录及内存状态，非真实模型/安装验收。02 独立后端 R4 已排，先交保存设计再复审。
+
+03 报现有 GitNexus 索引不含新文件，影响为 UNKNOWN；用候选 parser/prepare 与 chat_routes 调用补核，不能记为低风险。为运行固定 1.6.12 CLI，pnpm dlx 在 E 缓存创建临时工具树、下载 0；这是工具缓存写入，不等于没有副作用。主控已要求不再 dlx/npx、不擅自清理缓存；未改项目依赖清单。候选 temp 等未跟踪材料保留，更新页面副本仍按逐文件清单排除临时/隐私数据，不能整树复制。
+
+05 只读 followup 确认完整路径拒绝 helper 当前供 authorize_root/require_authorized_root/validate_path 调用，搜索仅复用单组件规则，故 E 假 System32 路径读/搜策略有缺口。GitNexus `_assert_not_system` impact CRITICAL（24 affected/16 processes），`is_denied_component` CRITICAL（13/16）；图谱仍落后一提交，search_content UNKNOWN 由实际 route 的 to_thread 调用补核。00 已明确高风险依赖警告，未授权更改这些 helper。05 本轮只读没有 pytest、新假根或源码写入；后续两文件窄修已单独批准，结果待交，不沿用 R1 30 项冒充新补丁通过。
+
+## 2026-10-10 聊天跨页面竞态合成复现
+
+02 在 `E:/DevCaches/Temp/p0-3-race-20261010-r1-510d55c8/crossTabRace.test.ts` 使用真实 store、全模拟 API 与 LocalStorage 运行四项，4/4 断言成立：陈旧本地覆盖服务器新内容/来源、本地确实较新可上传、同内容去重清标记、离线恢复陈旧副本仍覆盖。不是修复通过或真实双浏览器实测。00 实核隔离文件 SHA-256 `DE8306806E13ADA917FC3429E265F2F0F6C5EBA4C86C3CC2933159B70870C25E`，主树聊天三文件仍为已冻结哈希；未独立重跑此项目外复现。
+
+02 同轮前端 `vitest.cmd run src/stores/useChatStore.test.ts --reporter dot` 40 passed；后端 `pytest tests/test_crud_message_idempotency.py -q --tb=short -p no:cacheprovider --basetemp <E唯一临时目录>` 用测试自建内存 SQLite 3 passed，确认同 ID 可更新内容与来源，不提供写入版本保护。首次前端 regex 参数经 PowerShell/.cmd 解析失败，未启动测试，后改跑完整 store 通过；不计为产品用例失败。未写仓库文件、未读真实聊天库、未浏览器/模型联调。条件保存设计已派，尚无实施。
+
+## 2026-10-10 Explorer 独立复查 R1
+
+02 在 E 临时目录、SQLite 内存库及 offline 环境独立运行 routes，30 passed / 2 warnings，Windows junction 无 skip，两个目标哈希检查前后一致：search `F4A3D8AA5AA81A7D41BCC3D13B1CDDCB6619044CA44460ED0EF07BE1D25BCE55`，测试 `8688654B5773E450FCE1E70908F208A59FB0A73412E45E9E47028137BD5E5A55`。首次未建 basetemp 父目录的 30 项 setup error 在修环境后重跑，不归因于产品。合成根内 `.git` junction 搜索为空，移除 link 后目标仍存在。
+
+仅 E 假根内 System32 名称目录/junction 有搜索命中，是否违反完整路径策略尚由 05 核契约；未扫描真实系统目录。测试 helper Path.is_junction 的最低版本与 README Python 3.10+ 有兼容缺口，本次只有 3.13.13 实跑，不宣称 3.10/3.11 通过。此次独立审查不是全仓、浏览器或策略一致性全验；05 当前只读，不改源码。02 已转入隔离复现聊天陈旧 pending 风险，尚无结果。
+
+## 2026-10-10 搜索窄修交接与调度证据更正
+
+03 聊天三文件独立人工复核中间交接：实际复跑前端 44、内存库后端 6 通过，哈希与冻结值一致；API 投影不带本地 pending 字段、CRUD 重试不重放 SSE 的路径有覆盖。但提出陈旧标签页同 ID pending 自动 POST 覆盖另一页新服务端内容/来源的条件性风险，目前仅源码推断，未双浏览器或模拟复现。02 在 Explorer 审查后独立只读复现已派，未批准新接口/源码更改。03 尝试审查子代理遇 OS error 112 未启动，未清理磁盘数据；本轮是人工审查，不声称双代理审查。
+
+05 已回交主树 `backend/src/explorer/search.py` 与 `backend/tests/test_explorer_routes.py`，仅搜索真实根包含性和 visited 去重/防环及四条直接回归。00 实核 SHA-256 分别为 `F4A3D8AA5AA81A7D41BCC3D13B1CDDCB6619044CA44460ED0EF07BE1D25BCE55`、`8688654B5773E450FCE1E70908F208A59FB0A73412E45E9E47028137BD5E5A55`，差异为搜索 35 行和测试/helpers 172 行。05 报 routes 全部 30 passed / 2 warnings / 0 skipped；新增用例定向 4 passed / 26 deselected / 2 warnings / 0 skipped，均 exit 0。同一 E 临时假 junction 根外 marker 修前可见，修后 `[]`；未用真实用户材料。00 当前核对文件而非独立重跑测试；02 独立只读复审已派，不能计为审查或浏览器通过。
+
+05 本轮平台 503 为执行服务中断，恢复后交付，不计作产品回归失败。00 只读核对 02/03/05 原始 user 记录，P0-3、P0-2、Explorer 原文分别时间为 2026-09-24 05:39:01、05:38:21、05:38:36 UTC；此前称其为今天新增任务不准确。已有结果保留，当前唯一写者以 development-plan.md 页首为准：03 先聊天审查再 Skills 两文件修复，02 独立复审，05 搜索补丁冻结。下方历史写权变更不用于再次派发。
+
+## 2026-10-10 Explorer 主树与冻结候选复核
+
+05 在两树相同 `e61b8a65` 加各自补丁下只读复验，未改文件。主树 `tests/test_explorer_routes.py` 为 26 passed / 2 warnings；五个关联前端文件 13 passed。候选后端同组 33 passed / 2 warnings，Windows junction 实际运行未跳过；六个关联前端文件 20 passed、TypeScript 退出 0。20 项与此前 19 项检查范围不同，具体文件分母待完整交接说明，不按增长一项推断有新代码。
+
+只含假文件的 `E:/DevCaches/Temp/explorer-junction-main-red-7c609568720a4d13a641b75fc1815cc1`：05 报告主树 `search_content()` 返回根外 `fake-explorer-outside-marker`，候选同一树返回空列表。00 实核候选 search SHA-256 `D411DAB5462CD9B7D2ACBD4EE2D97882819641B8A6B05E12A4ACAFA0D43A3CA4` 与首轮独立 review 一致，主树搜索和 routes 测试文件原无既存差异。已登记 05 仅精确接入这两文件，先 impact/保留红灯、后同假树绿灯/完整 routes 回归，未回交接入后结果；不能记为主树已修或发布通过。
+
+所有回收/文件测试限定 E 临时假根及 mock；当前产品 `%LOCALAPPDATA%` 回收区不迁移、不操作。既有 session 根授权、首次配置、Agent 非黑名单文件访问口径不改；前端缓存警告和 i18n 候选仍保留未接入。
+
+## 2026-10-09 S01b 后端独立复核 R3 与页面接续
+
+当前排期更正：05 回交直接真人 Explorer P0-6/P0-5 范围，未修改 Skills；00 已撤销 02/04/05 的安装两文件写权，03 在聊天独立审查交接后唯一实施安装窄修，02 后续独立后端审查。05 当前只读核主树与已有 33/19 项 Explorer 候选差异，未获准重做方案/补丁，所有测试回收根用 `HWRAG_APP_DATA_DIR` 指向 E 临时目录，不迁移或触碰实际 `%LOCALAPPDATA%` 回收材料。
+
+2026-10-10 最新更正：02 回交本线程直接真人 P0-3 指令原文，00 撤回此前“任务漂移”判断；该轮完成聊天补丁，不涉及 Skills 安装文件。已报前端 44 项、TypeScript、后端内存库 6 项通过，尚待 03 独立审查且没有浏览器联调。00 当前核对主树三文件 SHA-256：`useChatStore.ts` = `7A2108F3C54F969E85F01D3B1CDAAD7B49AFF4B8657FAB91C62A64F68E047A37`；`useChatStore.test.ts` = `F77CA86D6661C0D3A3536E09C36E7784A9A72E0C372C88608D6E73D4CF3E30C7`；`test_chat_routes_resume_terminal.py` = `06849F146AD66C633F88333A531CE361A7E4FC8683A2FE44F88C5EF0003A3850`。内部本地字段 `__hwrag_pending_save` 据交接不进入 API，由 03 核实。S01b 原四 store 仍为 43 项旧快照，不得混称已同步；Skills 两文件现由 05 唯一实现，02/04 写权已取消。
+
+调度与版本边界：02 当前活跃轮次回到聊天刷新恢复测试，尚未确认承接主控的 Skills 窄修纠偏。00 实核主树 `useChatStore.test.ts` 当前 SHA-256 为 `C559ECEE412EFD895372432C04E88A0A16D6DEAD77C081F86E490C5B2F8994D4`，已不同于此前 43 项快照；同一检查点三份 store 产品源码哈希仍一致。新增测试尚无通过交接，不计作 Skills 测试或新的完整聊天门禁。保留改动、不覆盖、不并行引入另一 Skills 写者，等待线程明确承接或释放。
+
+停止后 07 回交：独立会话 `s1791561242361` 两条消息，页面已停止；`backend/data/skills` 为空，未产生导入标记或启用文件。audit 12 项为目录列举/只读命令/读取/grep/webfetch，无 `install_github_skill`；UI 18 项另含 thinking 等，不与 audit 数量相等。实际提问第一行是“请安装这个技能，默认保持停用，不要启用。只安装这个固定提交和目录：”，skills_mode=off、每次询问、Text。07 报告正则后向边界不接受“安装这个”导致意图未识别；04 正独立复现，尚未记为修复通过。截图仅内联可见，未取得支持的持久化接口，不编造磁盘截图证据。
+
+最终报告 `E:/Desktop/agent-acceptance-artifacts/core-plan-20261006/p03-browser-resume-20261009/s01b-stall-report-20261010.md`，00 实核 SHA-256 `B724601FC5EDFDACF57E6C6458775A75082114818DFEBF940C900AC6F39F1AEF`；原自有 PID 27264/28880 已退出，00 核验 58080/55875 无监听，保留数据库、origin 和缓存。00 接受内联截图为补充，不声称有 PNG 文件。04 未写候选而因任务范围待确认退出当前修复，02 接手两文件窄修，03 待修后独立审查；此人员调整不将静态归因变成已复现或已修复。
+
+页面接续现象：07 在独立 IAB 设置页验证服务商成功（193 模型）并选中 Text；固定提交安装请求约两分钟，Activity 显示 18 项，获取说明/许可后仍显示生成中，未取得专用安装成功证据。Activity 数量不是写入或安装计数。00 已要求通过页面停止一次、保留脱敏工具轨迹，核验文件/audit/实际终态，不重发。04 接只读复现诊断；根因、是否实际写入与能否正常停止尚待证据，不能计为安装成功或安全漏洞。
+
+02 对 `E:/Desktop/agent-worktrees/skills-chat-install-s01b-20261009` 的后端安装、授权、请求注入、路由及导入事务做只读复核，HEAD 为 `e61b8a65` 加冻结未提交补丁；02 曾写前端四 store，没有写此次被审查的后端。未发现阻止受限页面验收的 P0，结论为有条件放行，不是完整安全或实网验收。
+
+- `test_chat_skills_install_tool.py`、`test_chat_skills_integration.py`、`test_bypass_always_confirmation.py`：34 passed / 25 warnings / 13.97 秒。
+- `test_skills_platform.py`、`test_skills_platform_review.py`：46 passed / 2 warnings / 13.77 秒。
+- 首次因复核者错误设置 `PYTEST_DISABLE_PLUGIN_AUTOLOAD` 而缺异步插件；清除后原测试重跑通过，没有修改测试或安装依赖。只用假 GitHub、临时目录、内存检查点，不访问私人数据库、模型、真实 GitHub 或硬件，不与既有 116 项重复累加。
+- 合成授权顺序检查不等同 MCP/ALWAYS 混合 Agent/SSE 联调。聊天拒绝 partial 包的仅安装，而设置页支持停用导入，记录为兼容行为差异，未改产品规则。
+
+00 已派 07 使用现有 E 盘 497 文件隔离副本，先重新核对清单，再经页面配置授权测试服务商、实际预览受支持包、聊天安装且默认停用、明确启用、下一请求实际加载；优先 Chrome 工具，受限则独立 IAB 并单列。此处仅记录已派任务，真实安装/加载尚未回交，不得写成通过。样例固定 `anthropics/skills` 提交 `9d630808e4add0a7146de4af9384155d5dee350a` 的 `skills/brand-guidelines`，不执行脚本或依赖，不迁移目录，不改主树和候选源码。
+
+## 2026-10-09 当前定向证据与复验入口
+
+本节区分实际测试、主控文件核对和未执行验收；不同快照的数量不累加成全量通过数。
+
+- 02 最新 `useChatStore.test.ts` 与 `useSessionStore.test.ts` 共 **42 passed**，`tsc -b --pretty false` 和 `git diff --check` 通过。覆盖首发建会、401 提示、创建失败恢复、创建期间并发输入、保存重试与去重。后端 `test_crud_message_idempotency.py` 3 项、`test_chat_routes_resume_terminal.py` 2 项是此前内存 SQLite 定向结果。00 本次仅复核哈希，没有重跑测试。
+- 04 按序运行 A/B/C：`test_tool_api_permission_gate.py` **36 passed / 25 warnings**；`test_git_snapshot_undo_isolation.py` **7 passed / 25 warnings**；`test_tool_router_request_spec.py` 加 `test_agent_factory_request_tool_config.py` **4 passed / 25 warnings**。通过 `scripts/verify_backend_isolated.ps1` 在 E 盘副本运行；B 的 Git 行为只在 pytest 临时仓库。04 本轮无源码修改，未运行全量、真实模型或硬件测试。
+- 03 在 S01b 独立树此前的工厂目标组为 **7 passed / 25 warnings**，早于后续 Router/安装补丁，不代表当前 S01b 组合通过。
+- 07 修后浏览器尝试受启动策略拒绝，未启动隔离 Chrome 或发送模型请求。报告：`E:/Desktop/agent-acceptance-artifacts/core-plan-20261006/p03-browser-20261009/acceptance-report.md`。此前受控模型页面结果不替代修后真实模型验收。
+- 07 接续使用独立 origin `127.0.0.1:55873` 的内置浏览器，页面新增服务商。实际端点值含中文时 fetch 未能发出 `/api/models` 请求；页面修正准确 ASCII 端点后，上游 `/models` 返回 **200**（12.7 秒），页面显示 **193 个模型**。本机凭据保存经历初次 401、登录 200、保存 200。未记录密钥值；尚不能归因端点值变化是产品还是输入残留。已选择 Text，首发/刷新结果待回交，不把模型列表验证算成聊天成功。
+- 03 本轮只读比较三棵树，没有运行测试。指出主工作区及 S01b 未包含 S01a 的实际聊天 ALWAYS/bypass 闸门；04 将补齐依赖后重跑确认前不执行及 allow/deny/stop 流程。现有 A 的 36 项不能单独证明该流程。
+- 05 专用 Explorer 树从 `e61b8a65` 创建，`test_explorer_routes.py` 基线 **26 passed / 2 warnings**。临时 junction 夹具观察到 `is_symlink=False`、`is_junction=True` 且解析越出项目根，修复回归尚未运行；只使用假 marker，不读取私人数据。
+- 07 阶段交接：在 `E:/DevCaches/chat-first-send-20261009` 冻结副本（后端 58080、IAB 55873）使用真实 Text 首发，服务端创建会话，回答正常完成，UI 与隔离 SQLite 均保存 user/assistant 各一条；刷新前后仍两条且无重复，tool_calls 与 tool_audit 均为 0。四文件哈希仍与下表一致。Activity 徽标“1 工具”但展开只有 thinking，记为待调查的计数显示疑点，不算真实工具执行。异常分支和 Chrome 独立验收不包含在本次通过项。
+- 00 已读取上述阶段报告：`E:/Desktop/agent-acceptance-artifacts/core-plan-20261006/p03-browser-resume-20261009/acceptance-report.md`，当时 SHA-256 为 `8F2A6199BF5C612F06CF4F848F33CD550A35C2D3D80D655FC2656E94C579B330`。报告记录本次回答约 44.6 秒；不是检索速度或整体性能基线。后续异常续测会追加报告，哈希须重新核对。
+- 02 尊重新的真人 P0-3 授权，重跑相同前端 **42 passed**、内存 SQLite 后端 **5 passed**，未修改文件、未复现保存缺陷。补测缺口为真实 done SSE（尤其 stop 的失败终态）与部分写入失败、刷新和 CRUD 重试组合，已安排独立树测试；不重放模型请求。
+- 02 新增单条 stop 终态/部分写入失败/刷新/CRUD-only 重试用例后报告 **43 passed**、TypeScript 退出码 0，后端内存库 **5 passed / 7 warnings**；无产品源码修改。03 只读比较确认仅新增 105 行测试、未弱化旧断言。02 已按批准用 apply_patch 精确纳入 E 主树并实跑相同 **43/5 项及 TypeScript**；00 核对最新测试文件 SHA-256 为 `FABD715F26404B48B45F703E4DBBE61BDF10E0211052CA07133FCC684FB46CA9`，其余三个文件仍与下表一致。下表旧测试哈希仍用于标识 07 浏览器的冻结输入，不混同最新测试文件。模拟 SSE/CRUD 不是浏览器故障验收。
+- 路径偏差：02 曾误用默认托管入口在 C 盘建立聊天测试候选，已停止其写入/运行、保留不清理。代码和 Junction 元数据位于 C，依赖目标为 E 主树，tsbuildinfo/Vitest cache 与 Node compile cache 实际在 E；没有安装依赖或更改真实数据库。不以 TEMP 设置掩盖该路径偏差，后续复验已回 E 盘。
+- 07 最终阶段报告追加受控注入限制后 SHA-256 为 `8BF8C5DC28D2B30BB58CCE10C0E7488DEF640C1FB06F02D915B47A90641B6F5B`；00 复核 58080/55873/55874 无监听。故障注入未落地，不算 401/503 页面通过；测试 DB、独立 origin 配置及缓存保留。
+- 05 Explorer 最终候选 `E:/Desktop/agent-worktrees/explorer-p0-20261009` 的 7 文件差异：后端 `test_explorer_routes.py` **30 passed / 2 warnings**，前端四文件 **16 passed**，两个 TypeScript 项目、目标文件 ESLint、diff 检查退出码 0。后端 basetemp 为 `E:/DevCaches/Temp/explorer-p0-backend-final-20261009`，仅临时项目/外目录/回收区及假 marker；junction 修前红、修后绿。草稿写入失败、保存中输入与恢复冲突是组件/mock 测试，未做真实浏览器或全量套件，独立审查待完成。
+- 04 S01b 依赖整合：E 盘隔离脚本副本运行七组后端回归 **116 passed / 25 warnings**（直接 API、实际模拟聊天 bypass 确认、工厂请求配置、Router、Skills 平台、安装工具、聊天集成）；直接 API 单组 **36 passed / 25 warnings**、平台单组 **36 passed / 2 warnings** 为同补丁窄检查，不与 116 累加。前端 E 盘临时副本 `SkillsManager.test.tsx` **9 passed**，已有依赖链接、未安装。包含通用确认与安装专用 grant、兼容诊断；不含真实模型/GitHub/浏览器/硬件或完整套件。02 后续四 store 对齐及 03 整体独立审查尚待回交。
+- 03 Explorer 独立只读审查：冻结 7 文件，diff 检查退出码 0，未重跑 05 的 30/16 项。00 逐项核对其交接哈希一致，无阻断集成发现；P2 为 zh/en 缺 `draftPersistenceFailed` key、搜索缺正常成功命中及根内 junction/循环覆盖，另缺磁盘写入成功但草稿缓存失败组合。05 接续补测；旧数量不是补测后结果。图谱使用 E 盘既有 e61 scratch，未知调用结合源码核实，未重建索引。
+- 02 已在 S01b 候选仅对齐四个批准 store：两文件 Vitest **43 passed**、`tsc -b --pretty false` 退出码 0、后端消息幂等与续跑终态 **5 passed**（内存 SQLite/模拟 Agent）；没有浏览器联调。00 实核四文件 SHA-256 与当前 E 主树相同，API 类型、契约和 04 原补丁未动，依赖通过候选 node_modules Junction 复用 E 主树。此为对齐后局部复验，不与 04 的 116 项拼成全量套件。
+- 07 S01b 只读环境预检报告 `E:/Desktop/agent-acceptance-artifacts/core-plan-20261006/p03-browser-resume-20261009/s01b-preflight-20261009.md`：已有 D/E 运行时/依赖可用，58080/55875 空闲；未启动服务、模型、导入或测试。初选 `define-goal` 固定旧 SHA 的仓库弃用且资源目录导致 partial，主控拒绝将其当 supported 安装启用成功样例，继续选包。03 回报真人 P0-2 后，Skills 后端独立复核转 02，候选仍冻结。03 的主树单组隔离 1 项通过仅为顺序配置证据；并发与冲突验收未完成，空选择语义不变。
+- 03 新并发配置回归仅修改主树 `test_agent_factory_request_tool_config.py`，用 barrier 核验 A/B 检索及模拟 Web 同时执行、参数/凭据/来源隔离，默认 registry 实例作错误哨兵；单组 **1 passed / 25 warnings / 16.40 秒**，Router 加工厂组 **4 passed / 25 warnings / 13.60 秒**。均由隔离脚本在 E 临时副本运行，不访问真实模型/用户 KB。00 核对当前测试 SHA-256 `53B2A9572B07024398817E85BA5DF45B81DD0C34C834685A33D9CEE7CF6D2C5F`。没有生产源码修复；S01b 工厂测试仍保留自己的旧快照及注入测试，增量待精确集成。空选择冲突验收未实施。
+- 05 Explorer P2 最终定向：后端 routes **33 passed / 2 warnings**，真实 Windows 根内/越界/祖先 junction 均执行、未跳过；前端五文件 **19 passed**（原四文件加 locale），两个 TypeScript 项目、八个前端目标文件 lint、diff 检查退出码 0。locale 修前 zh/en 两项红、补字典后绿。磁盘 API 成功/缓存失败为模拟测试，旧缓存可能恢复陈旧 dirty 草稿的边界仍保留。00 核对 search/actions/persistence 生产哈希与首轮审查一致，routes 测试新哈希为 `1F33582684FD8504AE1E491232DAF92944711AA85B2512BDB1942D1226330DF8`；未重跑全量或真实浏览器。
+- 07 新样例与副本报告 `E:/Desktop/agent-acceptance-artifacts/core-plan-20261006/p03-browser-resume-20261009/s01b-preflight-followup-20261009.md`；00 独立核对运行目录 `s01b-runtime-20261009/source` 的 497 项文件与候选及 source-manifest.json 全部匹配、显式禁止路径 0。run-plan.json 记录未启进程/模型/导入、无 C 盘绝对环境路径字段。官方 brand-guidelines 固定 SHA、2 文件 13,580 B 的 supported 状态仅静态预期，不是实际导入证据；等待 02 审查放行。
+
+00 于 2026-10-09 核对的四文件 SHA-256 与 02 最终交接一致：
+
+| 文件 | SHA-256 |
+| --- | --- |
+| `frontend/src/stores/useChatStore.ts` | `02EF23BEE66D6703500F9E01C3B7D9A1E62416170A20BA147B98B48E58323966` |
+| `frontend/src/stores/useChatStore.test.ts` | `5F5B3D12664BFF190ABC607B74D39A8FC05C328F8E020C50A7BD9EB679740929` |
+| `frontend/src/stores/useSessionStore.ts` | `0C478A5EC9799B3A99E26A281E766F37F00632EA418BBE1005B12CCFE4A4904F` |
+| `frontend/src/stores/useSessionStore.test.ts` | `5D1791F86FF78D156CFC1DD4CA6FA520B3794A43D16455098672EFD8664088CC` |
+
+07 接续验收先核对上述版本，再从页面配置服务商、完成真实 Text 首发与刷新；建会/保存失败、并发输入和确认分支使用受控故障单列。数据、缓存及临时目录使用 D/E 盘。当前发布门禁未完成。
+
+> 以下保留此前测试记录，其中 2026-10-05 发布门禁与修前 606 项快照、67 项失败轨迹分别列出；不代表页首新增改动的全量结果。浏览器、硬件和 RAG 质量分别记录。
+
+## 2026-10-07 Skills 兼容诊断恢复后独立复核
+
+用户恢复此前暂停的开发后，仅对隔离分支 `codex/skills-chat-import-20261006` 的资源目录兼容诊断补丁做代码复核和窄回归。主控核对候选 `format.py` 与 `test_skills_platform.py` 的 SHA-256 和交接一致；没有把补丁合并回主线。
+
+- 实际运行：`test_skills_platform.py`、`test_skill_runtime_review.py`，**52 passed / 0 failed，2 warnings，30.14 秒，退出码 0**。Python 为 `D:/python/python.exe`；临时数据库及 `TEMP/TMP` 位于全新 E 盘目录，关闭字节码和 pytest 缓存写入，模型下载离线。
+- 额外四种路径规范化拒绝断言通过，不计入上述 52 项，也不是完整 GitHub 路径遍历端到端验收。
+- 未发现阻断问题；目录提示将原始大小写折叠的显示精度问题保留为非阻断体验项。读取白名单与脚本禁执行边界未扩大。
+- 精确命令、源码哈希和边界见项目外报告 `E:/Desktop/agent-acceptance-artifacts/core-plan-20261006/preflight/S01a-compat-independent-review-20261007.md`。本轮未运行前端、全量后端、真实 GitHub、模型或硬件测试；07 的浏览器回验另行记录，当前不能宣布 S01a 全部通过。
+
+## 2026-10-07 Skills 页面导入验收
+
+S01a 页面导入验收通过，范围仅为导入管理与资源清单，不包含聊天安装、真实模型使用或 Agent 读取资料。07 的普通 Chrome 报告为 `E:/Desktop/agent-acceptance-artifacts/core-plan-20261006/s01-browser/S01a-browser-resume-20261007.md`，最终 SHA-256 为 `28AD709DA2DCC7FA37772E326BACC93DA2D9090D6A39CC7FA8343D274097EDDF`。
+
+- 固定 `anthropics/skills@683bc88e56f3e09ba94f7055977f3d3aa499f202` 的 `internal-comms`：部分兼容及目录警告、默认停用、启用刷新保持、重复导入 409 不覆盖、取消删除通过；非 GitHub 主机 400、真实不存在仓库的页面 404 通过。先前空候选提示与受控断连恢复证据保留在旧报告，未混作本轮重复测试。
+- 固定 `openai/skills@49f948faa9258a0c61caceaf225e179651397431` 的 `skills/.curated/playwright`：页面导入成功，刷新仍停用；9 个文件、22,850 字节，其中两个 UTF-8 `references/*.md` 标为可读取。07 核对 9/9 Git blob 与固定提交一致，00 独立核对当前安装文件 9/9 SHA-256 与清单一致。该目录被官方标为过时，仅作固定验收样例；脚本、安装命令和 eval 示例均未执行。
+- `skill-creator` 正文超出既有 32 KiB 限制而未导入，不能作为成功样例，也未放宽限制。两份数据库及已存在测试包保持报告中的哈希；00 最终检查隔离端口 5175/58082 均无监听。隔离工作树保留启用的 `internal-comms` 和停用的 `playwright`，没有写入原工作区技能目录。
+- 本轮没有输入服务商密钥、调用模型或进行新自动化测试。离线缓存中重排器加载失败与 Skills 导入验收无关，也不能据此宣称 RAG 已验收。Agent 实际资料读取留待 S02，S01b 聊天安装尚未实现；版本仍未提交/合并/推送。
 
 ## 2026-10-05 最终修复后软件发布门禁
 

@@ -27,6 +27,7 @@ class ToolContext:
     request_tools: dict[str, Any] = field(default_factory=dict, repr=False)
     mcp_authorization: Any = field(default=None, repr=False)
     rag_source_registry: Any = field(default=None, repr=False, compare=False)
+    tool_observation_scope: Any = field(default=None, repr=False, compare=False)
 
 
 class PermissionAskError(Exception):
@@ -56,8 +57,8 @@ class PermissionDenyError(Exception):
 class ContextLimitError(Exception):
     """Raised when cumulative Agent tokens exceed context_window * MAX_TOKEN_RATIO.
 
-    Carries the cumulative token count and the configured limit so sse_adapter
-    can build a precise error SSE event before falling back to the LLM stream.
+    Carries the cumulative token count and configured limit. Callers propagate
+    this error to terminate the current request or Agent path.
     """
 
     def __init__(self, cumulative: int, limit: int):

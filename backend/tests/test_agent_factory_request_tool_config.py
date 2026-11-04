@@ -6,6 +6,7 @@ base, make network calls, or write audit records.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
 
@@ -95,6 +96,11 @@ async def test_interleaved_agent_requests_use_their_own_tool_config(monkeypatch)
     monkeypatch.setattr(settings, "tavily_api_key", "registry-default-key")
 
     retrieval_calls: list[dict] = []
+    first_retrieval_queries = {"request-a-1", "request-b-1"}
+    first_retrieval_arrivals: set[str] = set()
+    first_retrieval_ready = asyncio.Event()
+    active_retrievals = 0
+    max_active_retrievals = 0
     mock_results = [
         _fake_search_result("kb-a", 1, 0.91),
         _fake_search_result("kb-a", 2, 0.56),
@@ -102,29 +108,46 @@ async def test_interleaved_agent_requests_use_their_own_tool_config(monkeypatch)
         _fake_search_result("kb-b", 1, 0.83),
         _fake_search_result("kb-b", 2, 0.66),
         _fake_search_result("kb-b", 3, 0.18),
+        _fake_search_result("kb-c", 1, 0.99),
     ]
 
     async def fake_search_docs_core(query, top_k, kb_ids, threshold, doc_filter):
-        retrieval_calls.append(
-            {
-                "query": query,
-                "top_k": top_k,
-                "kb_ids": kb_ids,
-                "threshold": threshold,
-                "doc_filter": doc_filter,
-            }
-        )
-        selected = [
-            result
-            for result in mock_results
-            if (not kb_ids or result.kb_id in kb_ids)
-            and result.score >= threshold
-        ]
-        return selected[:top_k]
+        nonlocal active_retrievals, max_active_retrievals
+        active_retrievals += 1
+        max_active_retrievals = max(max_active_retrievals, active_retrievals)
+        try:
+            if query in first_retrieval_queries:
+                first_retrieval_arrivals.add(query)
+                if first_retrieval_queries.issubset(first_retrieval_arrivals):
+                    first_retrieval_ready.set()
+                await asyncio.wait_for(first_retrieval_ready.wait(), timeout=2)
+            retrieval_calls.append(
+                {
+                    "query": query,
+                    "top_k": top_k,
+                    "kb_ids": kb_ids,
+                    "threshold": threshold,
+                    "doc_filter": doc_filter,
+                }
+            )
+            selected = [
+                result
+                for result in mock_results
+                if (not kb_ids or result.kb_id in kb_ids)
+                and result.score >= threshold
+            ]
+            return selected[:top_k]
+        finally:
+            active_retrievals -= 1
 
     monkeypatch.setattr(search_module, "search_docs_core", fake_search_docs_core)
 
     web_calls: list[dict] = []
+    first_web_queries = {"request-a-web-1", "request-b-web-1"}
+    first_web_arrivals: set[str] = set()
+    first_web_ready = asyncio.Event()
+    active_web_requests = 0
+    max_active_web_requests = 0
 
     class FakeAsyncClient:
         def __init__(self, *args, **kwargs):
@@ -137,8 +160,28 @@ async def test_interleaved_agent_requests_use_their_own_tool_config(monkeypatch)
             return None
 
         async def post(self, url, *, json, headers):
-            web_calls.append({"url": url, "api_key": json["api_key"]})
-            return _FakeResponse()
+            nonlocal active_web_requests, max_active_web_requests
+            active_web_requests += 1
+            max_active_web_requests = max(
+                max_active_web_requests, active_web_requests,
+            )
+            try:
+                query = json["query"]
+                if query in first_web_queries:
+                    first_web_arrivals.add(query)
+                    if first_web_queries.issubset(first_web_arrivals):
+                        first_web_ready.set()
+                    await asyncio.wait_for(first_web_ready.wait(), timeout=2)
+                web_calls.append(
+                    {
+                        "query": query,
+                        "url": url,
+                        "api_key": json["api_key"],
+                    }
+                )
+                return _FakeResponse()
+            finally:
+                active_web_requests -= 1
 
     monkeypatch.setattr(web_search_module.httpx, "AsyncClient", FakeAsyncClient)
 
@@ -164,34 +207,62 @@ async def test_interleaved_agent_requests_use_their_own_tool_config(monkeypatch)
         permission_mode="default",
         session_id="session-b",
     )
+    request_c = SimpleNamespace(
+        top_k=1,
+        kb_ids=None,
+        relevance_threshold=0.5,
+        tool_keys={},
+        permission_mode="default",
+        session_id="session-c",
+    )
 
     tools_a = {tool.name: tool for tool in agent_factory.build_tool_specs(request_a)}
     tools_b = {tool.name: tool for tool in agent_factory.build_tool_specs(request_b)}
+    tools_c = {tool.name: tool for tool in agent_factory.build_tool_specs(request_c)}
     context_a = tools_a["search_docs"]._ctx
     context_b = tools_b["search_docs"]._ctx
     assert context_a.rag_source_registry is not context_b.rag_source_registry
 
-    result_a1 = await tools_a["search_docs"].ainvoke({"query": "request-a-1"})
-    await tools_a["web_search"].ainvoke({"query": "request-a-web-1"})
-    result_b1 = await tools_b["search_docs"].ainvoke({"query": "request-b-1"})
-    await tools_b["web_search"].ainvoke({"query": "request-b-web-1"})
-    result_a2 = await tools_a["search_docs"].ainvoke({"query": "request-a-2"})
-    await tools_a["web_search"].ainvoke({"query": "request-a-web-2"})
-    result_b2 = await tools_b["search_docs"].ainvoke({"query": "request-b-2"})
-    await tools_b["web_search"].ainvoke({"query": "request-b-web-2"})
+    async def run_request(tools, label):
+        first_result = await tools["search_docs"].ainvoke(
+            {"query": f"{label}-1"},
+        )
+        await tools["web_search"].ainvoke({"query": f"{label}-web-1"})
+        second_result = await tools["search_docs"].ainvoke(
+            {"query": f"{label}-2"},
+        )
+        await tools["web_search"].ainvoke({"query": f"{label}-web-2"})
+        return first_result, second_result
 
-    expected_retrieval = [
-        {"query": "request-a-1", "top_k": 2, "kb_ids": ["kb-a"], "threshold": 0.5, "doc_filter": ""},
-        {"query": "request-b-1", "top_k": 1, "kb_ids": ["kb-b"], "threshold": 0.7, "doc_filter": ""},
-        {"query": "request-a-2", "top_k": 2, "kb_ids": ["kb-a"], "threshold": 0.5, "doc_filter": ""},
-        {"query": "request-b-2", "top_k": 1, "kb_ids": ["kb-b"], "threshold": 0.7, "doc_filter": ""},
-    ]
-    expected_web_calls = [
-        {"url": "https://request-a.invalid/api/search", "api_key": "request-a-key"},
-        {"url": "https://request-b.invalid/api/search", "api_key": "request-b-key"},
-        {"url": "https://request-a.invalid/api/search", "api_key": "request-a-key"},
-        {"url": "https://request-b.invalid/api/search", "api_key": "request-b-key"},
-    ]
+    (result_a1, result_a2), (result_b1, result_b2) = await asyncio.gather(
+        run_request(tools_a, "request-a"),
+        run_request(tools_b, "request-b"),
+    )
+    result_c = await tools_c["search_docs"].ainvoke({"query": "request-c-no-kb"})
+
+    expected_retrieval = {
+        "request-a-1": {"top_k": 2, "kb_ids": ["kb-a"], "threshold": 0.5, "doc_filter": ""},
+        "request-b-1": {"top_k": 1, "kb_ids": ["kb-b"], "threshold": 0.7, "doc_filter": ""},
+        "request-a-2": {"top_k": 2, "kb_ids": ["kb-a"], "threshold": 0.5, "doc_filter": ""},
+        "request-b-2": {"top_k": 1, "kb_ids": ["kb-b"], "threshold": 0.7, "doc_filter": ""},
+        "request-c-no-kb": {"top_k": 1, "kb_ids": None, "threshold": 0.5, "doc_filter": ""},
+    }
+    observed_retrieval = {
+        call["query"]: {
+            key: value for key, value in call.items() if key != "query"
+        }
+        for call in retrieval_calls
+    }
+    expected_web_calls = {
+        "request-a-web-1": ("https://request-a.invalid/api/search", "request-a-key"),
+        "request-a-web-2": ("https://request-a.invalid/api/search", "request-a-key"),
+        "request-b-web-1": ("https://request-b.invalid/api/search", "request-b-key"),
+        "request-b-web-2": ("https://request-b.invalid/api/search", "request-b-key"),
+    }
+    observed_web_calls = {
+        call["query"]: (call["url"], call["api_key"])
+        for call in web_calls
+    }
     observed_source_kbs = {
         "request-a-1": {
             event["kb_id"]
@@ -209,24 +280,37 @@ async def test_interleaved_agent_requests_use_their_own_tool_config(monkeypatch)
             event["kb_id"]
             for event in _source_events(result_b2, "call-b-2")
         },
+        "request-c-no-kb": {
+            event["kb_id"]
+            for event in _source_events(result_c, "call-c-no-kb")
+        },
     }
 
     failures: list[str] = []
-    if retrieval_calls != expected_retrieval:
+    if observed_retrieval != expected_retrieval:
         failures.append(
             "retrieval received default/shared settings instead of each request: "
-            f"{retrieval_calls!r}"
+            f"{observed_retrieval!r}"
         )
-    if web_calls != expected_web_calls:
+    if observed_web_calls != expected_web_calls:
         failures.append(
             "web_search received default/shared credentials instead of each request: "
             f"{web_calls!r}"
         )
+    if max_active_retrievals < 2 or max_active_web_requests < 2:
+        failures.append(
+            "the request tools were not held concurrently at the controlled barriers: "
+            f"retrieval={max_active_retrievals}, web={max_active_web_requests}"
+        )
+    default_search = registry.get("search_docs")
+    if default_search is None or default_search is tools_a["search_docs"] or default_search is tools_b["search_docs"]:
+        failures.append("the test did not retain a distinct process-default search tool")
     expected_source_kbs = {
         "request-a-1": {"kb-a"},
         "request-b-1": {"kb-b"},
         "request-a-2": set(),
         "request-b-2": set(),
+        "request-c-no-kb": set(),
     }
     if observed_source_kbs != expected_source_kbs:
         failures.append(

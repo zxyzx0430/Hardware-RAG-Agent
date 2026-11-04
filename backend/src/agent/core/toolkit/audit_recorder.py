@@ -13,6 +13,7 @@ Spec: industrial-tool-runtime §ADDED Requirements (AuditRecorder).
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 from dataclasses import dataclass
@@ -78,21 +79,48 @@ class AuditRecord:
 
 
 def _redact_args(args: dict) -> dict:
-    """Redact sensitive values in tool args before logging.
+    """Normalize and recursively redact tool args before logging.
 
     Two layers: key-name match → whole value redacted; command/cmd value →
     regex redact embedded API keys / tokens (sk- / Bearer / --token / ...).
+    Nested Pydantic models are converted to JSON-safe values first.
     """
     if not isinstance(args, dict):
         return args
-    redacted = {}
-    for k, v in args.items():
-        if any(p in k.lower() for p in _SENSITIVE_KEY_PATTERNS):
-            redacted[k] = "***REDACTED***"
-        elif k.lower() in _COMMAND_ARG_KEYS and isinstance(v, str):
-            redacted[k] = _redact_command_value(v)
+    json_safe_args = json.loads(
+        json.dumps(
+            args,
+            ensure_ascii=False,
+            allow_nan=False,
+            default=lambda value: value.model_dump(mode="json"),
+        )
+    )
+    redacted: dict[str, Any] = {}
+    pending: list[tuple[Any, Any]] = [(json_safe_args, redacted)]
+    while pending:
+        source, target = pending.pop()
+        if isinstance(source, dict):
+            for key, value in source.items():
+                key_text = str(key)
+                key_lower = key_text.lower()
+                if any(pattern in key_lower for pattern in _SENSITIVE_KEY_PATTERNS):
+                    target[key_text] = "***REDACTED***"
+                elif key_lower in _COMMAND_ARG_KEYS and isinstance(value, str):
+                    target[key_text] = _redact_command_value(value)
+                elif isinstance(value, (dict, list)):
+                    nested: Any = {} if isinstance(value, dict) else [None] * len(value)
+                    target[key_text] = nested
+                    pending.append((value, nested))
+                else:
+                    target[key_text] = value
         else:
-            redacted[k] = v
+            for index, value in enumerate(source):
+                if isinstance(value, (dict, list)):
+                    nested = {} if isinstance(value, dict) else [None] * len(value)
+                    target[index] = nested
+                    pending.append((value, nested))
+                else:
+                    target[index] = value
     return redacted
 
 

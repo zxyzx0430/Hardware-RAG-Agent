@@ -50,7 +50,7 @@
 import { create } from "zustand";
 import type { Message, SourceRef, ActivityStep, Session, ContentPart, TodoItem } from "../types/session";
 import type { ChatRequest, ChatSSEEvent, Attachment, BackendMessage } from "../types/api";
-import { loadFromStorage, saveToStorage, saveSessionMessages, loadSessionMessages, removeSessionMessages, migrateMessagesToShards } from "../utils/persistence";
+import { loadFromStorage, saveToStorage, saveSessionMessages as writeSessionMessages, loadSessionMessages, removeSessionMessages, migrateMessagesToShards } from "../utils/persistence";
 import { post, on } from "../utils/broadcast";
 import { useAppStore } from "./useAppStore";
 import { useSessionStore, CONTEXT_WINDOW_256K } from "./useSessionStore";
@@ -259,7 +259,40 @@ function _kbScopeIssueMessage(issue: KbScopeIssue): string {
 }
 
 const PENDING_SAVE_PREFIX = "hwrag_pending_save_";
+const LOCAL_PENDING_SAVE_FIELD = "__hwrag_pending_save";
 const _messageSaveQueues = new Map<string, Promise<void>>();
+const _localMessageSnapshotFailures = new Set<string>();
+const _localStatusRefreshQueued = new Set<string>();
+
+function _scheduleLocalSaveStatusRefresh(sessionId: string): void {
+  if (_localStatusRefreshQueued.has(sessionId)) return;
+  _localStatusRefreshQueued.add(sessionId);
+  queueMicrotask(() => {
+    _localStatusRefreshQueued.delete(sessionId);
+    const status = _localMessageSnapshotFailures.has(sessionId)
+      ? "pending"
+      : _pendingSaveStatus(sessionId);
+    const state = useChatStore.getState();
+    if (state.pendingSaveBySession[sessionId] === status) return;
+    useChatStore.setState((currentState) => {
+      const next = { ...currentState.pendingSaveBySession };
+      if (status) next[sessionId] = status;
+      else delete next[sessionId];
+      return { pendingSaveBySession: next };
+    });
+  });
+}
+
+function saveSessionMessages(sessionId: string, msgs: unknown): boolean {
+  const hadLocalFailure = _localMessageSnapshotFailures.has(sessionId);
+  const persisted = writeSessionMessages(sessionId, msgs);
+  if (persisted) _localMessageSnapshotFailures.delete(sessionId);
+  else _localMessageSnapshotFailures.add(sessionId);
+  if (!persisted || hadLocalFailure) _scheduleLocalSaveStatusRefresh(sessionId);
+  return persisted;
+}
+
+type LocallyTrackedMessage = Message & { __hwrag_pending_save?: true };
 
 function _pendingSaveStorageKey(sessionId: string): string {
   return `${PENDING_SAVE_PREFIX}${encodeURIComponent(sessionId)}`;
@@ -275,14 +308,16 @@ function _loadPendingSaveIds(sessionId: string): string[] {
   }
 }
 
-function _storePendingSaveIds(sessionId: string, ids: string[]): void {
+function _storePendingSaveIds(sessionId: string, ids: string[]): boolean {
   try {
     const uniqueIds = [...new Set(ids)];
     const key = _pendingSaveStorageKey(sessionId);
     if (uniqueIds.length > 0) localStorage.setItem(key, JSON.stringify(uniqueIds));
     else localStorage.removeItem(key);
+    return true;
   } catch {
     // The message shard remains the recovery source if the marker cannot be written.
+    return false;
   }
 }
 
@@ -290,23 +325,95 @@ function _rememberPendingSaveIds(sessionId: string, ids: string[]): void {
   _storePendingSaveIds(sessionId, [..._loadPendingSaveIds(sessionId), ...ids]);
 }
 
+function _localPendingSaveIds(messages: Message[]): string[] {
+  return messages
+    .filter((message) => (message as LocallyTrackedMessage)[LOCAL_PENDING_SAVE_FIELD] === true)
+    .map((message) => message.id);
+}
+
+function _markLocalPendingSaveIds(sessionId: string, ids: string[]): boolean {
+  const marking = new Set(ids);
+  if (marking.size === 0) return true;
+  let persisted = false;
+  useChatStore.setState((state) => {
+    const sessionMessages = state.sessionMessages[sessionId];
+    const current = sessionMessages && sessionMessages.length > 0
+      ? sessionMessages
+      : state.activeSessionId === sessionId
+        ? state.messages
+        : sessionMessages ?? [];
+    const mark = (message: Message): Message => marking.has(message.id)
+      ? { ...message, [LOCAL_PENDING_SAVE_FIELD]: true } as Message
+      : message;
+    const nextMessages = current.map(mark);
+    const nextActiveMessages = state.activeSessionId === sessionId
+      ? state.messages.map(mark)
+      : undefined;
+    persisted = saveSessionMessages(sessionId, nextMessages);
+    return {
+      sessionMessages: { ...state.sessionMessages, [sessionId]: nextMessages },
+      ...(nextActiveMessages ? { messages: nextActiveMessages } : {}),
+    };
+  });
+  return persisted;
+}
+
+function _clearLocalPendingSaveIds(sessionId: string, ids: string[]): boolean {
+  const clearing = new Set(ids);
+  if (clearing.size === 0) return true;
+  let persisted = false;
+  useChatStore.setState((state) => {
+    const sessionMessages = state.sessionMessages[sessionId];
+    const current = sessionMessages && sessionMessages.length > 0
+      ? sessionMessages
+      : state.activeSessionId === sessionId
+        ? state.messages
+        : sessionMessages ?? [];
+    const clear = (message: Message): Message => {
+      if (!clearing.has(message.id)) return message;
+      const tracked = { ...message } as LocallyTrackedMessage;
+      delete tracked[LOCAL_PENDING_SAVE_FIELD];
+      return tracked;
+    };
+    const nextMessages = current.map(clear);
+    const nextActiveMessages = state.activeSessionId === sessionId
+      ? state.messages.map(clear)
+      : undefined;
+    persisted = saveSessionMessages(sessionId, nextMessages);
+    if (!persisted) return {};
+    return {
+      sessionMessages: { ...state.sessionMessages, [sessionId]: nextMessages },
+      ...(nextActiveMessages ? { messages: nextActiveMessages } : {}),
+    };
+  });
+  return persisted;
+}
+
 function _clearPendingSaveIds(sessionId: string, ids: string[]): string[] {
   const clearing = new Set(ids);
-  const remaining = _loadPendingSaveIds(sessionId).filter((id) => !clearing.has(id));
-  _storePendingSaveIds(sessionId, remaining);
-  return remaining;
+  const current = _loadPendingSaveIds(sessionId);
+  const remaining = current.filter((id) => !clearing.has(id));
+  return _storePendingSaveIds(sessionId, remaining) ? remaining : current;
 }
 
 function _pendingSaveStatus(sessionId: string): "saving" | "pending" | undefined {
   if (_messageSaveQueues.has(sessionId)) return "saving";
-  return _loadPendingSaveIds(sessionId).length > 0 ? "pending" : undefined;
+  const messages = useChatStore.getState().sessionMessages[sessionId] || [];
+  return _localMessageSnapshotFailures.has(sessionId)
+    || _loadPendingSaveIds(sessionId).length > 0
+    || _localPendingSaveIds(messages).length > 0
+    ? "pending"
+    : undefined;
 }
 
 function _loadPendingSaveStatuses(): Record<string, "pending"> {
   const sessions = loadFromStorage("sessions", [] as { id: string }[]);
   if (!Array.isArray(sessions)) return {};
   return Object.fromEntries(
-    sessions.filter((session) => _loadPendingSaveIds(session.id).length > 0)
+    sessions.filter((session) =>
+      _loadPendingSaveIds(session.id).length > 0
+      || _localPendingSaveIds(loadSessionMessages<Message[]>(session.id, [])).length > 0
+    )
       .map((session) => [session.id, "pending" as const])
   );
 }
@@ -325,6 +432,110 @@ function _messageSavePayload(message: Message): Record<string, unknown> {
   };
 }
 
+function _withMessageId(message: Message, id: string): Message {
+  if (message.id === id) return message;
+  return {
+    ...message,
+    id,
+    ...(message.sources
+      ? {
+          sources: message.sources.map((source) =>
+            source.messageId === message.id ? { ...source, messageId: id } : source
+          ),
+        }
+      : {}),
+  };
+}
+
+function _remapPendingLocalMessageIds(sessionId: string, idMap: Map<string, string>): void {
+  if (idMap.size === 0) return;
+  const remapMessages = (messages: Message[]) => messages.map((message) => {
+    const id = idMap.get(message.id);
+    return id ? _withMessageId(message, id) : message;
+  });
+
+  useChatStore.setState((state) => {
+    const sessionMessages = state.sessionMessages[sessionId];
+    const current = sessionMessages && sessionMessages.length > 0
+      ? sessionMessages
+      : state.activeSessionId === sessionId
+        ? state.messages
+        : sessionMessages ?? [];
+    const nextMessages = remapMessages(current);
+    const nextActiveMessages = state.activeSessionId === sessionId
+      ? remapMessages(state.messages)
+      : undefined;
+    saveSessionMessages(sessionId, nextMessages);
+    return {
+      sessionMessages: { ...state.sessionMessages, [sessionId]: nextMessages },
+      ...(nextActiveMessages ? { messages: nextActiveMessages } : {}),
+    };
+  });
+
+  _storePendingSaveIds(
+    sessionId,
+    _loadPendingSaveIds(sessionId).map((id) => idMap.get(id) ?? id),
+  );
+}
+
+const _confirmedMessageSnapshots = new Map<string, string>();
+const MAX_CONFIRMED_MESSAGE_SNAPSHOTS = 2048;
+
+function _messageSaveKey(sessionId: string, messageId: string): string {
+  return `${sessionId}\u0000${messageId}`;
+}
+
+function _isMessageSaveConfirmed(sessionId: string, message: Message): boolean {
+  return _confirmedMessageSnapshots.get(_messageSaveKey(sessionId, message.id))
+    === JSON.stringify(_messageSavePayload(message));
+}
+
+function _rememberMessageSaveConfirmed(sessionId: string, message: Message): void {
+  const key = _messageSaveKey(sessionId, message.id);
+  if (!_confirmedMessageSnapshots.has(key) && _confirmedMessageSnapshots.size >= MAX_CONFIRMED_MESSAGE_SNAPSHOTS) {
+    const oldestKey = _confirmedMessageSnapshots.keys().next().value;
+    if (oldestKey !== undefined) _confirmedMessageSnapshots.delete(oldestKey);
+  }
+  _confirmedMessageSnapshots.set(key, JSON.stringify(_messageSavePayload(message)));
+}
+
+function _rememberConfirmedBackendMessages(sessionId: string, messages: BackendMessage[]): void {
+  for (const backendMessage of messages.slice(-2)) {
+    _rememberMessageSaveConfirmed(sessionId, mapBackendMessage(backendMessage));
+  }
+}
+
+function _updateSessionMetaAfterPersistedMessages(sessionId: string, messages: Message[]): void {
+  try {
+    const msgCount = messages.filter(
+      (message) => message.role === "user" || (message.role === "assistant" && message.content),
+    ).length;
+    const lastUserMessage = messages.filter((message) => message.role === "user").pop();
+    const userText = lastUserMessage
+      ? typeof lastUserMessage.content === "string"
+        ? lastUserMessage.content
+        : lastUserMessage.content.filter((part) => part.type === "text").map((part) => part.text).join(" ")
+      : "";
+    const currentSession = useSessionStore.getState().sessions.find((session) => session.id === sessionId);
+    const title = currentSession?.title?.startsWith("新对话") && userText
+      ? userText.slice(0, 30).replace(/\n/g, " ")
+      : undefined;
+
+    useSessionStore.getState().updateSessionMeta(sessionId, {
+      msgCount,
+      preview: userText.slice(0, 60) || "(图片)",
+      ...(title ? { title } : {}),
+    });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    try {
+      getLog()("warn", "chat", `会话摘要同步失败（消息已保存）: ${sessionId} - ${errorMessage}`);
+    } catch {
+      // Local summary and its logging are best effort after the message write succeeds.
+    }
+  }
+}
+
 function _isMessageSaveSnapshotCurrent(sessionId: string, messages: Message[]): boolean {
   const currentById = new Map(
     (useChatStore.getState().sessionMessages[sessionId] || []).map((message) => [message.id, message])
@@ -336,8 +547,28 @@ function _isMessageSaveSnapshotCurrent(sessionId: string, messages: Message[]): 
   });
 }
 
+function _saveCurrentLocalSnapshot(sessionId: string): boolean {
+  const state = useChatStore.getState();
+  const sessionMessages = state.sessionMessages[sessionId];
+  const messages = sessionMessages && sessionMessages.length > 0
+    ? sessionMessages
+    : state.activeSessionId === sessionId
+      ? state.messages
+      : sessionMessages ?? [];
+  return saveSessionMessages(sessionId, messages);
+}
+
 function _clearSavedMessageIdsIfCurrent(sessionId: string, messages: Message[]): string[] {
-  if (!_isMessageSaveSnapshotCurrent(sessionId, messages)) return _loadPendingSaveIds(sessionId);
+  const pendingIds = _loadPendingSaveIds(sessionId);
+  if (!_isMessageSaveSnapshotCurrent(sessionId, messages)) {
+    return [...new Set([...pendingIds, ..._localPendingSaveIds(useChatStore.getState().sessionMessages[sessionId] || [])])];
+  }
+  if (!_clearLocalPendingSaveIds(sessionId, messages.map((message) => message.id))) {
+    return [...new Set([
+      ..._loadPendingSaveIds(sessionId),
+      ..._localPendingSaveIds(useChatStore.getState().sessionMessages[sessionId] || []),
+    ])];
+  }
   return _clearPendingSaveIds(sessionId, messages.map((message) => message.id));
 }
 
@@ -351,7 +582,26 @@ function _matchesBackendMessage(local: Message, backend: BackendMessage): boolea
 async function _postMessagesWithSessionRecovery(sessionId: string, messages: Message[]): Promise<void> {
   const postMessages = async () => {
     for (const message of messages) {
+      // A prior queued save may have confirmed this exact snapshot while this
+      // request was waiting. Do not issue the same CRUD POST twice; keep newer
+      // local snapshots pending until their own save completes.
+      if (_isMessageSaveConfirmed(sessionId, message)) {
+        if (
+          _isMessageSaveSnapshotCurrent(sessionId, [message])
+          && _clearLocalPendingSaveIds(sessionId, [message.id])
+        ) {
+          _clearPendingSaveIds(sessionId, [message.id]);
+        }
+        continue;
+      }
       await apiPost(`sessions/${sessionId}/messages`, _messageSavePayload(message));
+      _rememberMessageSaveConfirmed(sessionId, message);
+      if (
+        _isMessageSaveSnapshotCurrent(sessionId, [message])
+        && _clearLocalPendingSaveIds(sessionId, [message.id])
+      ) {
+        _clearPendingSaveIds(sessionId, [message.id]);
+      }
     }
   };
 
@@ -532,6 +782,119 @@ function mapBackendMessage(m: BackendMessage): Message {
 
 
 export const useChatStore = create<ChatState>((set, get) => {
+  type InitialComposerSnapshot = {
+    sessionId: string;
+    draft: string;
+    attachments: Attachment[];
+    quoted?: Message;
+  };
+  let initialSessionSendInProgress = false;
+  let pendingInitialComposers: InitialComposerSnapshot[] = [];
+
+  function captureInitialComposer(
+    sessionId: string,
+    content: string,
+    attachments?: Attachment[],
+    quoted?: Message,
+  ): InitialComposerSnapshot {
+    const state = get();
+    return {
+      sessionId,
+      draft: state.drafts[sessionId] ?? content,
+      attachments: state.sessionAttachments[sessionId] ?? attachments ?? [],
+      quoted,
+    };
+  }
+
+  function mergeInitialQuotes(quotes: Array<Message | undefined>): Message | undefined {
+    const uniqueQuotes = [...new Map(
+      quotes.filter((quote): quote is Message => Boolean(quote)).map((quote) => [quote.id, quote])
+    ).values()];
+    if (uniqueQuotes.length === 0) return undefined;
+    if (uniqueQuotes.length === 1) return uniqueQuotes[0];
+
+    return {
+      id: `recovered-quotes-${uniqueQuotes.map((quote) => quote.id).join("-")}`,
+      role: "system",
+      content: uniqueQuotes.map((quote, index) => {
+        const text = typeof quote.content === "string"
+          ? quote.content
+          : quote.content.map((part) => part.type === "text" ? part.text : "[图片引用，详见原消息]").join("\n");
+        return `引用 ${index + 1}（${quote.role}）：\n${text}`;
+      }).join("\n\n"),
+      timestamp: Math.max(...uniqueQuotes.map((quote) => quote.timestamp)),
+    };
+  }
+
+  function mergeInitialComposerSnapshots(snapshots: InitialComposerSnapshot[]): InitialComposerSnapshot | null {
+    const first = snapshots[0];
+    if (!first) return null;
+    const attachments = [...new Map(
+      snapshots.flatMap((snapshot) => snapshot.attachments).map((attachment) => [attachment.id, attachment])
+    ).values()];
+    return {
+      sessionId: first.sessionId,
+      draft: snapshots.map((snapshot) => snapshot.draft).filter(Boolean).join("\n\n"),
+      attachments,
+      quoted: mergeInitialQuotes(snapshots.map((snapshot) => snapshot.quoted)),
+    };
+  }
+
+  function restoreInitialComposers(snapshots: InitialComposerSnapshot[]): void {
+    const merged = mergeInitialComposerSnapshots(snapshots);
+    if (!merged) return;
+
+    const state = get();
+    const currentDraft = state.drafts[merged.sessionId];
+    const drafts = [merged.draft, currentDraft]
+      .filter((draft, index, all): draft is string => Boolean(draft) && all.indexOf(draft) === index);
+    if (drafts.length > 0) state.setDraft(merged.sessionId, drafts.join("\n\n"));
+
+    const attachments = [...new Map([
+      ...merged.attachments,
+      ...(state.sessionAttachments[merged.sessionId] || []),
+    ].map((attachment) => [attachment.id, attachment])).values()];
+    if (attachments.length > 0) state.setSessionAttachments(merged.sessionId, attachments);
+
+    const appState = useAppStore.getState();
+    const quoted = mergeInitialQuotes([
+      ...snapshots.map((snapshot) => snapshot.quoted),
+      appState.quotedMsg || undefined,
+    ]);
+    if (quoted) appState.setQuotedMsg(quoted);
+  }
+
+  function movePendingComposerToSession(snapshot: InitialComposerSnapshot, sessionId: string): void {
+    const state = get();
+    const pending = mergeInitialComposerSnapshots(pendingInitialComposers);
+    const currentDraft = state.drafts[snapshot.sessionId];
+    const draftToMove = [
+      pending?.draft,
+      currentDraft && currentDraft !== snapshot.draft && currentDraft !== pending?.draft ? currentDraft : "",
+    ].filter(Boolean).join("\n\n");
+    const currentAttachments = state.sessionAttachments[snapshot.sessionId];
+    const attachmentsToMove = [...new Map([
+      ...(pending?.attachments || []),
+      ...(currentAttachments && currentAttachments !== snapshot.attachments ? currentAttachments : []),
+    ].map((attachment) => [attachment.id, attachment])).values()];
+
+    set((current) => {
+      const drafts = { ...current.drafts };
+      const sessionAttachments = { ...current.sessionAttachments };
+      delete drafts[snapshot.sessionId];
+      delete sessionAttachments[snapshot.sessionId];
+      if (draftToMove) drafts[sessionId] = draftToMove;
+      if (attachmentsToMove.length > 0) sessionAttachments[sessionId] = attachmentsToMove;
+      return { drafts, sessionAttachments };
+    });
+
+    const pendingQuotes = pendingInitialComposers.map((composer) => composer.quoted);
+    const currentQuote = useAppStore.getState().quotedMsg;
+    const quoted = mergeInitialQuotes([...pendingQuotes, currentQuote || undefined]);
+    if (quoted) useAppStore.getState().setQuotedMsg(quoted);
+    pendingInitialComposers = [];
+  }
+
   async function verifyKbScopeForSession(sessionId: string, ids: string[]): Promise<boolean> {
     if (ids.length === 0) return true;
     try {
@@ -561,6 +924,23 @@ export const useChatStore = create<ChatState>((set, get) => {
       else delete next[sessionId];
       return { pendingSaveBySession: next };
     });
+  }
+
+  function _markResumeAssistantPending(sessionId: string): void {
+    const state = get();
+    const messages = state.activeSessionId === sessionId
+      ? state.messages
+      : state.sessionMessages[sessionId] || [];
+    const assistant = messages[messages.length - 1];
+    if (assistant?.role !== "assistant") return;
+
+    if (!_localPendingSaveIds(messages).includes(assistant.id)) {
+      _markLocalPendingSaveIds(sessionId, [assistant.id]);
+    }
+    if (!_loadPendingSaveIds(sessionId).includes(assistant.id)) {
+      _rememberPendingSaveIds(sessionId, [assistant.id]);
+    }
+    updatePendingSaveStatus(sessionId, _pendingSaveStatus(sessionId) ?? "pending");
   }
 
   /** Truncate messages to truncatedCount, sync to sessionMessages + backend, then resend.
@@ -804,8 +1184,13 @@ export const useChatStore = create<ChatState>((set, get) => {
           streamingSteps: [],
           streamingSources: [],
           streamingTodos: [],
+          // Awaiting confirmation is paused; terminal outcomes must release stream ownership.
+          streamingSessionId: outcome === "awaiting_confirmation" ? s.streamingSessionId : null,
+          streamingStartTime: outcome === "awaiting_confirmation" ? s.streamingStartTime : null,
           currentSseRequest: null,
           _lastAgentPayload: outcome === "awaiting_confirmation" ? s._lastAgentPayload : null,
+          // A terminal error wins over any confirmation request emitted earlier in this resume.
+          ...(outcome === "error" ? { pendingConfirm: null } : {}),
           streamingError: outcome === "error"
             ? (s.streamingError ?? { code: "ERROR", message: errorMessage || "Agent 恢复未能完成", detail: "" })
             : outcome === "success" || outcome === "stopped" ? null : s.streamingError,
@@ -816,20 +1201,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     // The resume stream has reached a terminal event. Save the completed
     // user/assistant pair through the same idempotent path as ordinary chat.
     void get().persistLastTurn(sid).then((saved) => {
-      if (!saved) return;
-      const finalMessages = get().sessionMessages[sid] || [];
-      const userMessages = finalMessages.filter((message) => message.role === "user");
-      const lastUser = userMessages[userMessages.length - 1];
-      const userText = lastUser
-        ? (typeof lastUser.content === "string"
-            ? lastUser.content
-            : lastUser.content.filter((part) => part.type === "text").map((part) => part.text).join(" "))
-        : "";
-      useSessionStore.getState().updateSessionMeta(sid, {
-        msgCount: finalMessages.filter((message) => message.role === "user" || (message.role === "assistant" && message.content)).length,
-        preview: userText.slice(0, 60) || "(图片)",
-      });
-      post("messages_changed", sid);
+      if (saved) post("messages_changed", sid);
     });
   }
 
@@ -843,11 +1215,14 @@ export const useChatStore = create<ChatState>((set, get) => {
       const msgs = loadSessionMessages<Message[]>(s.id, []);
       if (msgs.length > 0) sm[s.id] = msgs;
     }
-    // 兼容旧格式：如果分片为空但旧 key 存在，迁移
+    // Keep legacy sessions visible while migrating any shards missing locally.
     const raw = loadFromStorage("messages", {} as Record<string, Message[]>);
-    if (raw && typeof raw === "object" && !Array.isArray(raw) && Object.keys(sm).length === 0 && Object.keys(raw).length > 0) {
-      migrateMessagesToShards(raw);
-      return raw;
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+      const legacySessions = Object.fromEntries(
+        Object.entries(raw).filter(([sessionId]) => !sm[sessionId]?.length)
+      );
+      migrateMessagesToShards(legacySessions);
+      return { ...legacySessions, ...sm };
     }
     return sm;
   })(),
@@ -995,6 +1370,18 @@ export const useChatStore = create<ChatState>((set, get) => {
     apiSSE("agent-sandbox/resume", { payload, decision, ...(callId ? { call_id: callId } : {}) }, {
       onEvent: (event) => {
         const evt = event as ChatSSEEvent;
+        if (
+          evt.type === "text"
+          || evt.type === "thinking"
+          || evt.type === "source"
+          || evt.type === "tool_call"
+          || evt.type === "tool_result"
+        ) {
+          // Resume updates an assistant row that already exists on the server.
+          // Mark its local snapshot dirty before applying the event so refresh
+          // reconciles it by the same stable ID instead of accepting stale data.
+          _markResumeAssistantPending(sid);
+        }
         if (evt.type === "error") {
           resumeOutcome = "error";
           resumeErrorMessage = evt.message;
@@ -1053,6 +1440,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     try {
       const data = await apiGet<{ messages: BackendMessage[] }>(`sessions/${sessionId}/messages`);
       let backendMessages = data?.messages || [];
+      _rememberConfirmedBackendMessages(sessionId, backendMessages);
 
       // Do not persist a snapshot while a stream is still changing it.
       if (get().isStreaming && get().streamingSessionId === sessionId) {
@@ -1065,10 +1453,13 @@ export const useChatStore = create<ChatState>((set, get) => {
       // IDs make this safe even if the previous request committed but lost its reply.
       const localMessages = get().sessionMessages[sessionId] || cached;
       const backendIds = new Set(backendMessages.map((message) => message.id));
+      const backendById = new Map(backendMessages.map((message) => [message.id, message]));
       const pendingIds = new Set(_loadPendingSaveIds(sessionId));
+      for (const id of _localPendingSaveIds(localMessages)) pendingIds.add(id);
       const legacyMatchedLocalIds = new Set<string>();
       const legacyUpdateBackendIdByLocalId = new Map<string, string>();
       const matchedBackendIds = new Set<string>();
+      let confirmedPendingWrite = false;
       const rolesRemainAligned = localMessages.length === backendMessages.length
         && localMessages.every((message, index) => message.role === backendMessages[index]?.role);
       localMessages.forEach((localMessage, index) => {
@@ -1104,24 +1495,62 @@ export const useChatStore = create<ChatState>((set, get) => {
           matchedBackendIds.add(exactMatch.id);
         }
       });
-      const recoveryMessages = localMessages.filter(
-        (message) => pendingIds.has(message.id)
-          || (!backendIds.has(message.id) && !legacyMatchedLocalIds.has(message.id))
-      );
+      const recoveryMessages = localMessages.filter((message) => {
+        const backendMessage = backendById.get(message.id);
+        const pendingWriteIsConfirmed = pendingIds.has(message.id)
+          && ((backendMessage !== undefined && _matchesBackendMessage(message, backendMessage))
+            || legacyMatchedLocalIds.has(message.id));
+        if (pendingWriteIsConfirmed) {
+          _rememberMessageSaveConfirmed(sessionId, message);
+          const localSnapshotCleared = _clearLocalPendingSaveIds(sessionId, [message.id]);
+          const remainingIds = localSnapshotCleared
+            ? _clearPendingSaveIds(sessionId, [message.id])
+            : _loadPendingSaveIds(sessionId);
+          if (localSnapshotCleared && !remainingIds.includes(message.id)) {
+            confirmedPendingWrite = true;
+            pendingIds.delete(message.id);
+            return false;
+          }
+          return true;
+        }
+        return pendingIds.has(message.id)
+          || (!backendIds.has(message.id) && !legacyMatchedLocalIds.has(message.id));
+      });
       if (recoveryMessages.length > 0) {
-        const recoveryIds = recoveryMessages.map((message) => message.id);
+        const recoveryIdMap = new Map(
+          recoveryMessages.flatMap((message) => {
+            const backendId = legacyUpdateBackendIdByLocalId.get(message.id);
+            return backendId ? [[message.id, backendId] as const] : [];
+          })
+        );
+        _remapPendingLocalMessageIds(sessionId, recoveryIdMap);
         const recoveryWrites = recoveryMessages.map((message) => {
-          const backendId = legacyUpdateBackendIdByLocalId.get(message.id);
-          return backendId ? { ...message, id: backendId } : message;
+          const backendId = recoveryIdMap.get(message.id);
+          return backendId ? _withMessageId(message, backendId) : message;
         });
+        const recoveryIds = recoveryWrites.map((message) => message.id);
+        _markLocalPendingSaveIds(sessionId, recoveryIds);
         _rememberPendingSaveIds(sessionId, recoveryIds);
         updatePendingSaveStatus(sessionId, "saving");
         try {
           await _postMessagesWithSessionRecovery(sessionId, recoveryWrites);
-          _clearSavedMessageIdsIfCurrent(sessionId, recoveryMessages);
+          const recoverySnapshotIsCurrent = _isMessageSaveSnapshotCurrent(sessionId, recoveryWrites);
+          const remainingPendingIds = _clearSavedMessageIdsIfCurrent(sessionId, recoveryWrites);
           updatePendingSaveStatus(sessionId, _pendingSaveStatus(sessionId));
           const refreshed = await apiGet<{ messages: BackendMessage[] }>(`sessions/${sessionId}/messages`);
           backendMessages = refreshed?.messages || [];
+          _rememberConfirmedBackendMessages(sessionId, backendMessages);
+          if (
+            recoverySnapshotIsCurrent
+            && remainingPendingIds.length === 0
+            && _loadPendingSaveIds(sessionId).length === 0
+            && _localPendingSaveIds(get().sessionMessages[sessionId] || []).length === 0
+          ) {
+            _updateSessionMetaAfterPersistedMessages(
+              sessionId,
+              get().sessionMessages[sessionId] || localMessages,
+            );
+          }
         } catch (syncErr) {
           // Keep a durable marker so refresh can retry only the save request.
           _rememberPendingSaveIds(sessionId, recoveryIds);
@@ -1129,18 +1558,32 @@ export const useChatStore = create<ChatState>((set, get) => {
           const syncMessage = syncErr instanceof Error ? syncErr.message : String(syncErr);
           getLog()("warn", "chat", `恢复未保存消息失败: ${sessionId} - ${syncMessage}`);
         }
-      } else if (pendingIds.size > 0) {
+      } else if (_loadPendingSaveIds(sessionId).length > 0) {
         updatePendingSaveStatus(sessionId, "pending");
+      }
+      if (
+        confirmedPendingWrite
+        && _loadPendingSaveIds(sessionId).length === 0
+        && _localPendingSaveIds(get().sessionMessages[sessionId] || []).length === 0
+      ) {
+        _updateSessionMetaAfterPersistedMessages(sessionId, localMessages);
       }
 
       let msgs: Message[] = backendMessages.map(mapBackendMessage);
       const remainingPending = new Set(_loadPendingSaveIds(sessionId));
+      for (const id of _localPendingSaveIds(get().sessionMessages[sessionId] || cached)) {
+        remainingPending.add(id);
+      }
       if (remainingPending.size > 0) {
         // Keep the local version of unsaved messages, including one that shares
-        // an ID with an older partially saved Agent answer.
+        // an ID with an older partially saved Agent answer. Legacy messages
+        // already matched by role/content are represented by their backend IDs.
         const merged = new Map(msgs.map((message) => [message.id, message]));
         for (const message of get().sessionMessages[sessionId] || cached) {
-          if (remainingPending.has(message.id) || !merged.has(message.id)) {
+          if (
+            remainingPending.has(message.id)
+            || (!merged.has(message.id) && !legacyMatchedLocalIds.has(message.id))
+          ) {
             merged.set(message.id, message);
           }
         }
@@ -1187,20 +1630,69 @@ export const useChatStore = create<ChatState>((set, get) => {
     const msgs = get().sessionMessages[sessionId] || [];
     if (msgs.length < 2) return false;
     const lastTwo = msgs.slice(-2);
-    const messageIds = lastTwo.map((message) => message.id);
+    const messagesToSave = lastTwo.filter((message) => !_isMessageSaveConfirmed(sessionId, message));
+    if (messagesToSave.length === 0) {
+      const snapshotIsCurrent = _isMessageSaveSnapshotCurrent(sessionId, lastTwo);
+      const lastTwoIds = lastTwo.map((message) => message.id);
+      const hadPendingMarkers = lastTwoIds.some((id) =>
+        _loadPendingSaveIds(sessionId).includes(id)
+        || _localPendingSaveIds(get().sessionMessages[sessionId] || []).includes(id)
+      );
+      let localSnapshotPersisted = !hadPendingMarkers;
+      if (snapshotIsCurrent) {
+        if (hadPendingMarkers) {
+          localSnapshotPersisted = _clearLocalPendingSaveIds(sessionId, lastTwoIds);
+          if (localSnapshotPersisted) _clearPendingSaveIds(sessionId, lastTwoIds);
+        } else {
+          localSnapshotPersisted = _saveCurrentLocalSnapshot(sessionId);
+        }
+      }
+      const remainingPendingIds = new Set(_loadPendingSaveIds(sessionId));
+      const remainingLocalPendingIds = new Set(_localPendingSaveIds(get().sessionMessages[sessionId] || []));
+      const lastTwoRemainPending = lastTwoIds.some((id) =>
+        remainingPendingIds.has(id) || remainingLocalPendingIds.has(id)
+      );
+      const saved = snapshotIsCurrent && localSnapshotPersisted && !lastTwoRemainPending;
+      updatePendingSaveStatus(sessionId, _pendingSaveStatus(sessionId));
+      if (saved && remainingPendingIds.size === 0 && remainingLocalPendingIds.size === 0) {
+        _updateSessionMetaAfterPersistedMessages(
+          sessionId,
+          get().sessionMessages[sessionId] || lastTwo,
+        );
+      }
+      return saved;
+    }
+
+    const messageIds = messagesToSave.map((message) => message.id);
+    _markLocalPendingSaveIds(sessionId, messageIds);
     _rememberPendingSaveIds(sessionId, messageIds);
     updatePendingSaveStatus(sessionId, "saving");
     try {
-      await _postMessagesWithSessionRecovery(sessionId, lastTwo);
+      await _postMessagesWithSessionRecovery(sessionId, messagesToSave);
       const snapshotIsCurrent = _isMessageSaveSnapshotCurrent(sessionId, lastTwo);
-      if (snapshotIsCurrent) _clearPendingSaveIds(sessionId, messageIds);
-      updatePendingSaveStatus(sessionId, _pendingSaveStatus(sessionId));
+      let localSnapshotPersisted = false;
       if (snapshotIsCurrent) {
+        localSnapshotPersisted = _clearLocalPendingSaveIds(sessionId, lastTwo.map((message) => message.id));
+        if (localSnapshotPersisted) _clearPendingSaveIds(sessionId, lastTwo.map((message) => message.id));
+      }
+      const lastTwoAreConfirmed = lastTwo.every((message) => _isMessageSaveConfirmed(sessionId, message));
+      const remainingPendingIds = new Set(_loadPendingSaveIds(sessionId));
+      const remainingLocalPendingIds = new Set(_localPendingSaveIds(get().sessionMessages[sessionId] || []));
+      const lastTwoRemainPending = lastTwo.some((message) =>
+        remainingPendingIds.has(message.id) || remainingLocalPendingIds.has(message.id)
+      );
+      const saved = snapshotIsCurrent && localSnapshotPersisted && lastTwoAreConfirmed && !lastTwoRemainPending;
+      updatePendingSaveStatus(sessionId, _pendingSaveStatus(sessionId));
+      if (saved && remainingPendingIds.size === 0 && remainingLocalPendingIds.size === 0) {
+        _updateSessionMetaAfterPersistedMessages(
+          sessionId,
+          get().sessionMessages[sessionId] || lastTwo,
+        );
         getLog()("ok", "chat", `已持久化会话 ${sessionId} 最后两条消息到后端`);
       } else {
         getLog()("debug", "chat", `会话 ${sessionId} 的旧保存快照已完成，保留较新消息的待保存标记`);
       }
-      return snapshotIsCurrent;
+      return saved;
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       updatePendingSaveStatus(sessionId, _pendingSaveStatus(sessionId) ?? "pending");
@@ -1214,20 +1706,69 @@ export const useChatStore = create<ChatState>((set, get) => {
     if (!sessionId) return;
     const localMessages = get().sessionMessages[sessionId] || [];
     const pendingIds = new Set(_loadPendingSaveIds(sessionId));
-    const retryMessages = pendingIds.size > 0
+    for (const id of _localPendingSaveIds(localMessages)) pendingIds.add(id);
+    const retryCandidates = pendingIds.size > 0
       ? localMessages.filter((message) => pendingIds.has(message.id))
       : localMessages.slice(-2);
-    if (retryMessages.length === 0) return;
+    const alreadyConfirmed = retryCandidates.filter((message) => _isMessageSaveConfirmed(sessionId, message));
+    if (alreadyConfirmed.length > 0) {
+      const confirmedIds = alreadyConfirmed.map((message) => message.id);
+      if (
+        _isMessageSaveSnapshotCurrent(sessionId, alreadyConfirmed)
+        && _clearLocalPendingSaveIds(sessionId, confirmedIds)
+      ) {
+        _clearPendingSaveIds(sessionId, confirmedIds);
+      }
+    }
+    const retryMessages = retryCandidates.filter((message) => !_isMessageSaveConfirmed(sessionId, message));
+    if (retryMessages.length === 0) {
+      const snapshotIsCurrent = _isMessageSaveSnapshotCurrent(sessionId, retryCandidates);
+      const localSnapshotPersisted = snapshotIsCurrent && _saveCurrentLocalSnapshot(sessionId);
+      const pendingIdsRemain = _loadPendingSaveIds(sessionId).length > 0
+        || _localPendingSaveIds(get().sessionMessages[sessionId] || []).length > 0;
+      const retrySaveCompleted = snapshotIsCurrent && localSnapshotPersisted && !pendingIdsRemain;
+      updatePendingSaveStatus(sessionId, _pendingSaveStatus(sessionId));
+      if (retrySaveCompleted) {
+        _updateSessionMetaAfterPersistedMessages(sessionId, localMessages);
+        post("messages_changed", sessionId);
+      }
+      return;
+    }
 
     const retryIds = retryMessages.map((message) => message.id);
+    _markLocalPendingSaveIds(sessionId, retryIds);
     _rememberPendingSaveIds(sessionId, retryIds);
     updatePendingSaveStatus(sessionId, "saving");
     try {
       await _postMessagesWithSessionRecovery(sessionId, retryMessages);
       const snapshotIsCurrent = _isMessageSaveSnapshotCurrent(sessionId, retryMessages);
-      if (snapshotIsCurrent) _clearPendingSaveIds(sessionId, retryIds);
+      const localSnapshotPersisted = snapshotIsCurrent
+        && _clearLocalPendingSaveIds(sessionId, retryIds);
+      const remainingPendingIds = localSnapshotPersisted
+        ? _clearPendingSaveIds(sessionId, retryIds)
+        : _loadPendingSaveIds(sessionId);
+      const remainingLocalPendingIds = _localPendingSaveIds(get().sessionMessages[sessionId] || []);
+      const retryMessagesAreConfirmed = retryMessages.every((message) => _isMessageSaveConfirmed(sessionId, message));
+      const retryMessagesRemainPending = retryIds.some((id) =>
+        remainingPendingIds.includes(id) || remainingLocalPendingIds.includes(id)
+      );
+      const retrySaveCompleted = snapshotIsCurrent
+        && localSnapshotPersisted
+        && retryMessagesAreConfirmed
+        && !retryMessagesRemainPending;
       updatePendingSaveStatus(sessionId, _pendingSaveStatus(sessionId));
-      if (snapshotIsCurrent) post("messages_changed", sessionId);
+      if (
+        retrySaveCompleted
+        && remainingPendingIds.length === 0
+        && _loadPendingSaveIds(sessionId).length === 0
+        && remainingLocalPendingIds.length === 0
+      ) {
+        _updateSessionMetaAfterPersistedMessages(
+          sessionId,
+          get().sessionMessages[sessionId] || localMessages,
+        );
+      }
+      if (retrySaveCompleted) post("messages_changed", sessionId);
     } catch (err) {
       updatePendingSaveStatus(sessionId, _pendingSaveStatus(sessionId) ?? "pending");
       const errMsg = err instanceof Error ? err.message : String(err);
@@ -1335,9 +1876,23 @@ export const useChatStore = create<ChatState>((set, get) => {
   },
 
   sendMessage: async (content, attachments, quoted, skills) => {
-    const { messages, isStreaming, activeSessionId, selectedKbIds, kbScopeIssue } = get();
+    const initialState = get();
+    let { messages, activeSessionId } = initialState;
+    const { isStreaming, selectedKbIds, kbScopeIssue } = initialState;
+    const initialSessionSend = !activeSessionId;
+    const initialComposerSnapshot = initialSessionSend
+      ? captureInitialComposer(activeSessionId, content, attachments, quoted)
+      : null;
+    if (initialSessionSend && initialSessionSendInProgress) {
+      if (initialComposerSnapshot) pendingInitialComposers.push(initialComposerSnapshot);
+      return;
+    }
+    if (initialSessionSend) pendingInitialComposers = [];
     // 允许只有附件没有文字（如只发图片）
     if (isStreaming || _sendValidationInProgress) {
+      if (initialSessionSend && _sendValidationInProgress) {
+        if (initialComposerSnapshot) pendingInitialComposers.push(initialComposerSnapshot);
+      }
       useToastStore.getState().showWarning(
         _sendValidationInProgress ? "正在验证知识库范围，请稍候" : "正在生成中，请先停止当前回答"
       );
@@ -1346,6 +1901,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     if (!content.trim() && (!attachments || attachments.length === 0)) return;
     if (kbScopeIssue && kbScopeIssue !== "verification_failed") {
       useToastStore.getState().showWarning(_kbScopeIssueMessage(kbScopeIssue));
+      if (initialComposerSnapshot) queueMicrotask(() => restoreInitialComposers([initialComposerSnapshot]));
       return;
     }
     if (selectedKbIds.length > 0) {
@@ -1358,6 +1914,11 @@ export const useChatStore = create<ChatState>((set, get) => {
       }
       if (!scopeIsValid) {
         useToastStore.getState().showWarning(_kbScopeIssueMessage(get().kbScopeIssue));
+        if (initialComposerSnapshot) {
+          const snapshotsToRestore = [initialComposerSnapshot, ...pendingInitialComposers];
+          pendingInitialComposers = [];
+          restoreInitialComposers(snapshotsToRestore);
+        }
         return;
       }
     }
@@ -1367,7 +1928,28 @@ export const useChatStore = create<ChatState>((set, get) => {
       : [];
     if (skillsMode === "manual" && skillIds.length === 0) {
       useToastStore.getState().showWarning("手动 Skills 模式至少需要一个技能");
+      if (initialComposerSnapshot) queueMicrotask(() => restoreInitialComposers([initialComposerSnapshot]));
       return;
+    }
+    if (initialSessionSend) {
+      initialSessionSendInProgress = true;
+      try {
+        const createdSessionId = await useSessionStore.getState().newSession({ requirePersisted: true });
+        if (!createdSessionId) throw new Error("后端未创建会话，请重试");
+        activeSessionId = createdSessionId;
+        messages = get().sessionMessages[createdSessionId] || [];
+        movePendingComposerToSession(initialComposerSnapshot!, createdSessionId);
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        const snapshotsToRestore = [initialComposerSnapshot!, ...pendingInitialComposers];
+        pendingInitialComposers = [];
+        restoreInitialComposers(snapshotsToRestore);
+        getLog()("warn", "chat", `首发前创建会话失败，未发送聊天请求: ${errorMessage}`);
+        useToastStore.getState().showError("新建会话失败，输入已保留，请重试");
+        return;
+      } finally {
+        initialSessionSendInProgress = false;
+      }
     }
     // SubTask 8.4: abort 后台 SSE（避免两个流并发导致消息损坏）
     const currentBackgroundSseRequests = get().backgroundSseRequests;
@@ -1917,11 +2499,6 @@ export const useChatStore = create<ChatState>((set, get) => {
           getLog()("ok", "chat", `回答完成 (${(durationMs / 1000).toFixed(1)}s)${usage ? ` tokens=${usage.totalTokens}` : ''}`);
         }
 
-        // 提前计算 metaUpdate 参数；updateSessionMeta 延迟到 persistLastTurn 完成后执行，
-        // 避免 updateSessionMeta 触发 AppRoot useEffect → fetchMessages 在 persistLastTurn
-        // 完成前用后端旧数据覆盖 messages（流式内容消失 bug 的根因）。
-        let pendingMetaUpdate: { msgCount: number; preview: string; title?: string } | null = null;
-
         set((s) => {
           const sid = requestSessionId;
           const isActive = s.activeSessionId === sid;
@@ -1970,28 +2547,6 @@ export const useChatStore = create<ChatState>((set, get) => {
           const updatedSM = { ...s.sessionMessages, [sid]: finalMessages };
           saveSessionMessages(sid, finalMessages);
 
-          // 更新会话元数据
-          const msgCount = finalMessages.filter((m) => m.role === "user" || (m.role === "assistant" && m.content)).length;
-          const lastUserMsg = finalMessages.filter((m) => m.role === "user").pop();
-          // 从 ContentPart[] 或 string 中提取文本用于 preview/title
-          const extractText = (content: string | import("../types/session").ContentPart[]): string => {
-            if (typeof content === "string") return content;
-            return content.filter((p) => p.type === "text").map((p) => p.text).join(" ");
-          };
-          const userText = lastUserMsg ? extractText(lastUserMsg.content) : "";
-          const preview = userText.slice(0, 60) || "(图片)";
-          const sessionStore = useSessionStore.getState();
-          const currentSession = sessionStore.sessions.find((x) => x.id === sid);
-          const title = currentSession?.title?.startsWith("新对话") && userText
-            ? userText.slice(0, 30).replace(/\n/g, " ")
-            : undefined;
-          // 不在此处调用 updateSessionMeta，避免触发 AppRoot useEffect → fetchMessages 竞态
-          pendingMetaUpdate = {
-            msgCount,
-            preview,
-            ...(title ? { title } : {}),
-          };
-
           // 只有当前活跃会话是请求会话时，才修改 isStreaming/currentSseRequest
           if (isActive) {
             return {
@@ -2034,11 +2589,8 @@ export const useChatStore = create<ChatState>((set, get) => {
             };
           }
         });
-        // 先持久化到后端，完成后再更新会话元数据（消除 fetchMessages 竞态）
+        // 会话元数据仅在 persistLastTurn 确认 CRUD 写入成功后更新。
         void get().persistLastTurn(requestSessionId).then((saved) => {
-          if (pendingMetaUpdate) {
-            useSessionStore.getState().updateSessionMeta(requestSessionId, pendingMetaUpdate);
-          }
           // 多 tab 同步：通知其他 tab 此会话消息已变化
           if (saved) post('messages_changed', requestSessionId);
         });
@@ -2459,10 +3011,21 @@ on('session_deleted', (payload) => {
 // 自动持久化 sessionMessages（debounce，避免 SSE 期间频繁写入）
 let _persistTimer: ReturnType<typeof setTimeout> | null = null;
 const _pendingShards: Map<string, Message[]> = new Map();
+const _localShardSaveFailureNotified = new Set<string>();
 
 function flushPendingShards() {
   for (const [sid, msgs] of _pendingShards) {
-    saveSessionMessages(sid, msgs);
+    if (saveSessionMessages(sid, msgs)) {
+      _localShardSaveFailureNotified.delete(sid);
+      continue;
+    }
+    useChatStore.setState((state) => ({
+      pendingSaveBySession: { ...state.pendingSaveBySession, [sid]: "pending" },
+    }));
+    if (!_localShardSaveFailureNotified.has(sid)) {
+      _localShardSaveFailureNotified.add(sid);
+      useToastStore.getState().showError("本地消息快照保存失败；当前未保存消息可能无法在刷新后恢复，请在当前页面重试保存。");
+    }
   }
   _pendingShards.clear();
   _persistTimer = null;

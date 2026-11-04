@@ -15,12 +15,15 @@ Spec: docs/superpowers/specs/2026-06-30-agent-react-design.md §2 (architecture)
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
+import threading
 import time
+import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from langchain_core.tools import BaseTool
 
@@ -37,6 +40,14 @@ from src.agent.telemetry import (
     emit_agent_timing,
     new_agent_instance_id,
     utc_timestamp,
+)
+from src.agent.compact.writer_lifecycle import (
+    CheckpointResetOutcome,
+    QuarantineReason,
+    WriterLease,
+    WriterLifecycleError,
+    WriterLifecycleRegistry,
+    WriterScope,
 )
 
 logger = logging.getLogger(__name__)
@@ -72,8 +83,8 @@ _TOOL_GROUP_EXECUTION = "execution"
 class AgentConfig:
     """Configuration for building a hardware RAG agent.
 
-    Bundles the 7 create_hardware_agent params into a single object so call
-    sites don't have to thread credentials/temperature/max_tokens/HITL flag
+    Bundles the create_hardware_agent inputs so call sites don't have to
+    thread credentials, token limits, context overrides, and Agent settings
     through every function signature (P2-I-1 parameter encapsulation).
     """
     model: str
@@ -87,6 +98,24 @@ class AgentConfig:
     skills_mode: str = "off"
     skills_catalog: list[dict] = field(default_factory=list)
     skills_context: list[dict] = field(default_factory=list)
+    context_window_override: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AgentWriterBinding:
+    """Factory-proven graph/saver scope for one caller-owned request epoch.
+
+    Callers acquire a lease with ``registry.acquire(current_scope())`` and
+    retain it through the native run. ``current_scope`` is synchronous and
+    rebuilds the same graph/saver/request binding from the caller's epoch
+    authority after awaits. Call it before acquisition and after awaits. This
+    binding does not fence legacy writers or direct reset calls.
+    """
+
+    registry: WriterLifecycleRegistry = field(repr=False)
+    scope: WriterScope
+    current_scope: Callable[[], WriterScope] = field(repr=False)
+    _factory_token: object = field(repr=False, compare=False)
 
 
 # ═══════════════════════════════════════════
@@ -100,8 +129,8 @@ async def create_hardware_agent_from_config(config: AgentConfig) -> Any:
     project LLMClient is not a BaseChatModel). The prebuilt agent binds tools
     internally, so we pass the raw LLM (not a bind_tools result).
 
-    Args:
-        config: AgentConfig holding model/credentials/tools/HITL flag.
+        Args:
+            config: AgentConfig holding model, credentials, tools, and limits.
 
     Returns:
         CompiledStateGraph (langgraph). Call `.astream(events, config=...)` on it.
@@ -124,11 +153,13 @@ async def create_hardware_agent_from_config(config: AgentConfig) -> Any:
         llm = _build_llm(
             config.model, config.api_key, config.base_url,
             config.temperature, config.max_tokens,
+            config.context_window_override,
         )
         interrupt_before = ["tools"] if config.enable_hitl else []
         try:
             from langchain.agents import create_agent
             from src.agent.exceptions import ToolContext
+            checkpointer = await _get_checkpointer()
             agent = create_agent(
                 model=llm,
                 tools=config.tools,
@@ -140,7 +171,7 @@ async def create_hardware_agent_from_config(config: AgentConfig) -> Any:
                 ),
                 middleware=(_TOKEN_MIDDLEWARE,),
                 context_schema=ToolContext,
-                checkpointer=await _get_checkpointer(),
+                checkpointer=checkpointer,
                 interrupt_before=interrupt_before,
             )
         except ImportError as exc:
@@ -150,6 +181,12 @@ async def create_hardware_agent_from_config(config: AgentConfig) -> Any:
             # bind_tools errors (model lacks function calling) surface here.
             logger.error("create_agent failed (model may not support tools): %s", exc)
             raise
+        try:
+            _register_factory_graph(agent, checkpointer)
+        except Exception as exc:
+            # Lifecycle tracking is opt-in. Preserve legacy Agent creation, but
+            # binding construction will refuse an unregistered graph.
+            logger.warning("agent writer lifecycle provenance unavailable: %s", exc)
         try:
             setattr(agent, AGENT_INSTANCE_ID_ATTR, agent_instance_id)
             instance_id_attached = True
@@ -188,12 +225,14 @@ async def create_hardware_agent(
     skills_mode: str = "off",
     skills_catalog: list[dict] | None = None,
     skills_context: list[dict] | None = None,
+    context_window_override: int | None = None,
 ) -> Any:
     """Backward-compat shim around create_hardware_agent_from_config (P2-I-1).
 
-    Preserves the original 7-arg signature so existing call sites
-    (chat_routes /api/agent-sandbox/resume) keep working. New code should
-    construct an AgentConfig and call create_hardware_agent_from_config.
+    Keeps existing call sites (chat_routes /api/agent-sandbox/resume) working;
+    the optional context override is appended for backward compatibility. New
+    code should construct an AgentConfig and call
+    create_hardware_agent_from_config.
     """
     config = AgentConfig(
         model=model, api_key=api_key, base_url=base_url, tools=tools,
@@ -202,6 +241,7 @@ async def create_hardware_agent(
         skills_mode=skills_mode,
         skills_catalog=skills_catalog or [],
         skills_context=skills_context or [],
+        context_window_override=context_window_override,
     )
     return await create_hardware_agent_from_config(config)
 
@@ -213,6 +253,22 @@ _global_checkpointer: Any = None
 # context-manager object alive for the process lifetime so the aiosqlite connection
 # is not torn down after the first __aenter__ call.
 _global_checkpointer_cm: Any = None
+
+# The async initializer lock is process-wide and independent of an asyncio
+# event loop. Contending loops yield while another caller initializes the
+# saver, so only one actual checkpointer can be published.
+_checkpointer_init_lock = threading.Lock()
+
+# The writer registry is bound once to the exact process checkpointer object.
+_writer_lifecycle_lock = threading.RLock()
+_writer_lifecycle_saver: Any = None
+_writer_lifecycle_registry: WriterLifecycleRegistry | None = None
+
+# id(graph) avoids graph equality/hash semantics; weakrefs prove identity while
+# avoiding a process-lifetime strong reference to every compiled graph.
+_factory_graph_lock = threading.RLock()
+_factory_graph_savers: dict[int, tuple[Any, Any]] = {}
+_agent_writer_binding_token = object()
 
 # Path to the SQLite checkpoint database (SqliteSaver mode).
 _SQLITE_CHECKPOINT_PATH = (
@@ -228,17 +284,154 @@ async def _get_checkpointer() -> Any:
     for the astream path. Falls back to InMemorySaver on failure.
     """
     global _global_checkpointer
-    if _global_checkpointer is None:
-        cp_type = _read_checkpointer_type()
-        if cp_type == "sqlite":
-            _global_checkpointer = await _build_sqlite_checkpointer()
-            saver_type = type(_global_checkpointer).__name__
-            logger.info("checkpointer=%s path=%s", saver_type, _SQLITE_CHECKPOINT_PATH)
-        else:
-            from langgraph.checkpoint.memory import InMemorySaver
-            _global_checkpointer = InMemorySaver()
-            logger.info("checkpointer=InMemorySaver (agent_checkpointer_type=%s)", cp_type)
-    return _global_checkpointer
+    while not _checkpointer_init_lock.acquire(blocking=False):
+        await asyncio.sleep(0.01)
+    try:
+        if _global_checkpointer is None:
+            cp_type = _read_checkpointer_type()
+            if cp_type == "sqlite":
+                _global_checkpointer = await _build_sqlite_checkpointer()
+                saver_type = type(_global_checkpointer).__name__
+                logger.info("checkpointer=%s path=%s", saver_type, _SQLITE_CHECKPOINT_PATH)
+            else:
+                from langgraph.checkpoint.memory import InMemorySaver
+                _global_checkpointer = InMemorySaver()
+                logger.info("checkpointer=InMemorySaver (agent_checkpointer_type=%s)", cp_type)
+        return _global_checkpointer
+    finally:
+        _checkpointer_init_lock.release()
+
+
+def _writer_registry_for_saver(saver: object) -> WriterLifecycleRegistry:
+    """Return the sole process registry, bound to the exact global saver."""
+    global _writer_lifecycle_saver, _writer_lifecycle_registry
+    with _writer_lifecycle_lock:
+        if saver is None or saver is not _global_checkpointer:
+            raise WriterLifecycleError(
+                "writer registry saver differs from the process checkpointer"
+            )
+        if _writer_lifecycle_registry is None:
+            if _writer_lifecycle_saver is not None:
+                raise WriterLifecycleError("writer registry binding is inconsistent")
+            registry = WriterLifecycleRegistry(known_savers=(saver,))
+            _writer_lifecycle_saver = saver
+            _writer_lifecycle_registry = registry
+        elif _writer_lifecycle_saver is not saver:
+            raise WriterLifecycleError(
+                "process checkpointer identity changed after writer registry binding"
+            )
+        return _writer_lifecycle_registry
+
+
+def _register_factory_graph(agent: object, saver: object) -> None:
+    """Record exact factory graph/saver provenance using a weak identity key."""
+    _writer_registry_for_saver(saver)
+    graph_id = id(agent)
+
+    def forget_graph(graph_ref: Any) -> None:
+        with _factory_graph_lock:
+            prior = _factory_graph_savers.get(graph_id)
+            if prior is not None and prior[0] is graph_ref:
+                _factory_graph_savers.pop(graph_id, None)
+
+    try:
+        graph_ref = weakref.ref(agent, forget_graph)
+    except TypeError as exc:
+        raise WriterLifecycleError(
+            "factory graph cannot be weakly identity-tracked"
+        ) from exc
+
+    with _factory_graph_lock:
+        prior = _factory_graph_savers.get(graph_id)
+        if prior is not None:
+            prior_graph = prior[0]()
+            if prior_graph is agent:
+                if prior[1] is not saver:
+                    raise WriterLifecycleError(
+                        "factory graph was returned with a different saver"
+                    )
+                return
+            if prior_graph is not None:
+                raise WriterLifecycleError("factory graph identity tracking conflicted")
+        _factory_graph_savers[graph_id] = (graph_ref, saver)
+
+
+def _factory_saver_for_graph(agent: object) -> object:
+    """Require a live graph identity registered by this factory."""
+    with _factory_graph_lock:
+        registered = _factory_graph_savers.get(id(agent))
+        if registered is None or registered[0]() is not agent:
+            raise WriterLifecycleError(
+                "writer binding requires a live graph returned by this factory"
+            )
+        return registered[1]
+
+
+def _build_writer_scope(
+    agent: object,
+    saver: object,
+    owner_key: str,
+    request_scope_token: object,
+    epoch_provider: Callable[[], object],
+) -> WriterScope:
+    """Build a scope using only caller-owned request and epoch authority."""
+    epoch = epoch_provider()
+    if inspect.isawaitable(epoch):
+        close = getattr(epoch, "close", None)
+        if callable(close):
+            close()
+        raise WriterLifecycleError("epoch_provider must be synchronous")
+    return WriterScope(
+        owner_key=owner_key,
+        graph=agent,
+        saver=saver,
+        request_scope=request_scope_token,
+        epoch=epoch,
+        epoch_generation=None,
+    )
+
+
+def build_agent_writer_binding(
+    agent: object,
+    *,
+    owner_key: str,
+    request_scope_token: object,
+    epoch_provider: Callable[[], object],
+) -> AgentWriterBinding:
+    """Build a lifecycle binding for a factory graph and host-owned epoch.
+
+    ``request_scope_token`` must be a stable, opaque identity object owned by
+    the caller. ``epoch_provider`` must synchronously return the authoritative
+    epoch token on every call (an opaque object or the persistent empty/UUID
+    hex token); no counter is invented here. The returned ``current_scope``
+    reconstructs that exact graph/saver/request binding after awaits.
+    """
+    if not callable(epoch_provider):
+        raise WriterLifecycleError("epoch_provider must be callable")
+    saver = _factory_saver_for_graph(agent)
+    registry = _writer_registry_for_saver(saver)
+
+    def current_scope() -> WriterScope:
+        if _factory_saver_for_graph(agent) is not saver:
+            raise WriterLifecycleError("factory graph/saver identity changed")
+        if _writer_registry_for_saver(saver) is not registry:
+            raise WriterLifecycleError("process writer registry identity changed")
+        observed = _build_writer_scope(
+            agent, saver, owner_key, request_scope_token, epoch_provider,
+        )
+        if _factory_saver_for_graph(agent) is not saver:
+            raise WriterLifecycleError("factory graph/saver identity changed")
+        if _writer_registry_for_saver(saver) is not registry:
+            raise WriterLifecycleError("process writer registry identity changed")
+        return observed
+
+    scope = current_scope()
+    return AgentWriterBinding(
+        registry=registry,
+        scope=scope,
+        current_scope=current_scope,
+        _factory_token=_agent_writer_binding_token,
+    )
 
 
 def _read_checkpointer_type() -> str:
@@ -275,22 +468,401 @@ async def _build_sqlite_checkpointer() -> Any:
 
 
 async def reset_thread_checkpoint(thread_id: str) -> None:
-    """Clear stale checkpointer state for a thread to prevent INVALID_CHAT_HISTORY.
+    """Legacy thread-id-only reset API; fail closed without touching a saver.
 
-    If a prior request died mid-tool-execution (SSE disconnect / exception),
-    the checkpoint holds an AIMessage(tool_calls) without a matching ToolMessage.
-    LangGraph rejects this on the next request. Frontend sends full history
-    each turn, so clearing stale state is safe; HITL resume is unaffected
-    because it operates within the same request lifecycle.
-
-    langgraph 1.x: AsyncSqliteSaver has an async delete_thread API; InMemorySaver
-    still uses the sync storage/writes filtering fallback below.
+    A thread ID alone cannot prove writer ownership, run quiescence, or a
+    conditional reset acknowledgement. Use
+    ``reset_thread_checkpoint_for_writer`` with its factory binding and active
+    lease for a protected reset.
     """
-    cp = await _get_checkpointer()
-    if await _try_delete_thread(cp, thread_id):
+    raise WriterLifecycleError(
+        "unguarded checkpoint reset is disabled; use "
+        "reset_thread_checkpoint_for_writer with a factory binding and active lease"
+    )
+
+
+async def reset_thread_checkpoint_for_writer(
+    binding: AgentWriterBinding,
+    lease: WriterLease,
+) -> None:
+    """Reset one idle bound thread through an owned SQLite transaction.
+
+    A shared lifecycle reservation excludes runs and competing host resets for
+    this lease. ACK requires a committed transaction and exact empty readback
+    of both checkpoint and pending-write tables. InMemorySaver and unknown
+    saver implementations are refused before invoking any mutation API.
+    """
+    saver = _assert_agent_writer_binding(binding, lease)
+    scope = binding.scope
+    token = binding.registry.begin_checkpoint_reset(lease, scope)
+    reservation_open = True
+
+    try:
+        saver = _assert_agent_writer_binding(binding, lease)
+        from langgraph.checkpoint.memory import InMemorySaver
+        from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+        if type(saver) is InMemorySaver:
+            binding.registry.finish_checkpoint_reset(
+                lease,
+                scope,
+                token,
+                outcome=CheckpointResetOutcome.NOT_ATTEMPTED,
+            )
+            reservation_open = False
+            raise WriterLifecycleError(
+                "checkpoint reset is unsupported for InMemorySaver: it has no "
+                "owned lock and atomic complete-state readback"
+            )
+        if type(saver) is not AsyncSqliteSaver:
+            raise WriterLifecycleError(
+                "checkpoint reset requires the exact installed AsyncSqliteSaver"
+            )
+        _validate_bound_async_sqlite_saver(saver)
+        _assert_agent_writer_binding(binding, lease)
+        binding.registry.mark_checkpoint_reset_started(lease, scope, token)
+        task = asyncio.create_task(
+            _reset_bound_thread_checkpoint(saver, binding, lease),
+            name="agent-checkpoint-reset",
+        )
+    except BaseException:
+        if reservation_open:
+            _quarantine_checkpoint_reset(binding, lease, scope, token)
+        raise
+
+    cancellation: asyncio.CancelledError | None = None
+    task_error: BaseException | None = None
+    while True:
+        try:
+            await asyncio.shield(task)
+            break
+        except asyncio.CancelledError as exc:
+            if cancellation is None:
+                cancellation = exc
+            if task.done():
+                break
+        except BaseException as exc:
+            task_error = exc
+            break
+
+    try:
+        if task_error is not None:
+            raise task_error
+        task.result()
+        _assert_agent_writer_binding(binding, lease)
+        binding.registry.finish_checkpoint_reset(
+            lease,
+            scope,
+            token,
+            outcome=CheckpointResetOutcome.ACKNOWLEDGED,
+        )
+        reservation_open = False
+    except BaseException:
+        if reservation_open:
+            _quarantine_checkpoint_reset(binding, lease, scope, token)
+            reservation_open = False
+        if cancellation is not None:
+            raise cancellation
+        raise
+
+    if cancellation is not None:
+        raise cancellation
+
+
+def _assert_agent_writer_binding(
+    binding: AgentWriterBinding,
+    lease: WriterLease,
+) -> object:
+    if (
+        type(binding) is not AgentWriterBinding
+        or binding._factory_token is not _agent_writer_binding_token
+        or binding.registry is not _writer_lifecycle_registry
+        or not isinstance(binding.scope, WriterScope)
+    ):
+        raise WriterLifecycleError("reset requires a binding created by this factory")
+    saver = _factory_saver_for_graph(binding.scope.graph)
+    if saver is not binding.scope.saver:
+        raise WriterLifecycleError("bound graph/saver identity changed")
+    _writer_registry_for_saver(saver)
+    observed_scope = binding.current_scope()
+    binding.registry.assert_scope(lease, observed_scope)
+    return saver
+
+
+def _quarantine_agent_writer_binding(
+    binding: AgentWriterBinding,
+    lease: WriterLease,
+) -> None:
+    if (
+        type(binding) is not AgentWriterBinding
+        or binding._factory_token is not _agent_writer_binding_token
+        or not isinstance(binding.registry, WriterLifecycleRegistry)
+        or not isinstance(binding.scope, WriterScope)
+    ):
         return
-    _clear_storage(cp, thread_id)
-    _clear_writes(cp, thread_id)
+    try:
+        binding.registry.quarantine(
+            lease,
+            binding.scope,
+            reason=QuarantineReason.WRITE_OUTCOME_UNKNOWN,
+        )
+    except WriterLifecycleError:
+        # A stale/foreign lease or existing quarantine is already fail-closed.
+        pass
+
+
+def _validate_bound_async_sqlite_saver(saver: object) -> None:
+    """Reject saver/connection substitutions before any reset mutation."""
+    import aiosqlite
+
+    if (
+        type(getattr(saver, "conn", None)) is not aiosqlite.Connection
+        or type(getattr(saver, "lock", None)) is not asyncio.Lock
+        or getattr(saver, "loop", None) is not asyncio.get_running_loop()
+        or getattr(saver, "is_setup", None) is not True
+    ):
+        raise WriterLifecycleError(
+            "AsyncSqliteSaver connection, lock, loop, or initialized schema is "
+            "not the exact supported binding"
+        )
+
+
+def _quarantine_checkpoint_reset(
+    binding: AgentWriterBinding,
+    lease: WriterLease,
+    scope: WriterScope,
+    token: object,
+) -> None:
+    try:
+        binding.registry.finish_checkpoint_reset(
+            lease,
+            scope,
+            token,
+            outcome=CheckpointResetOutcome.UNKNOWN,
+        )
+    except BaseException:
+        pass
+    _quarantine_agent_writer_binding(binding, lease)
+
+
+async def _reset_bound_thread_checkpoint(
+    saver: object,
+    binding: AgentWriterBinding,
+    lease: WriterLease,
+) -> None:
+    """Delete and prove one thread empty under the exact saver-owned lock."""
+    _validate_bound_async_sqlite_saver(saver)
+    connection = saver.conn  # type: ignore[attr-defined]
+    thread_id = binding.scope.owner_key
+    owns_transaction = False
+
+    async with saver.lock:  # type: ignore[attr-defined]
+        _assert_agent_writer_binding(binding, lease)
+        _validate_bound_async_sqlite_saver(saver)
+        if type(connection.in_transaction) is not bool or connection.in_transaction is not False:
+            raise WriterLifecycleError(
+                "checkpoint reset refused because the saver connection already "
+                "has a transaction"
+            )
+
+        try:
+            _assert_agent_writer_binding(binding, lease)
+            begin_cursor = await connection.execute("BEGIN IMMEDIATE")
+            if type(connection.in_transaction) is bool and connection.in_transaction is True:
+                owns_transaction = True
+            try:
+                _assert_agent_writer_binding(binding, lease)
+                if not owns_transaction:
+                    raise WriterLifecycleError(
+                        "SQLite did not confirm the reset-owned BEGIN IMMEDIATE"
+                    )
+            finally:
+                await begin_cursor.close()
+                _assert_agent_writer_binding(binding, lease)
+
+            _require_owned_reset_transaction(connection)
+            for table, expected_columns in _RESET_TABLE_SCHEMAS:
+                rows = await _checkpoint_reset_fetchall(
+                    connection,
+                    binding,
+                    lease,
+                    f"PRAGMA table_info({table})",
+                )
+                if not _checkpoint_reset_schema_matches(rows, expected_columns):
+                    raise WriterLifecycleError(
+                        f"installed AsyncSqliteSaver {table} schema is not the "
+                        "exact supported layout"
+                    )
+                _require_owned_reset_transaction(connection)
+
+            _assert_agent_writer_binding(binding, lease)
+            _require_owned_reset_transaction(connection)
+            await _checkpoint_reset_execute(
+                connection,
+                binding,
+                lease,
+                "DELETE FROM checkpoints WHERE thread_id = ?",
+                (thread_id,),
+            )
+            _require_owned_reset_transaction(connection)
+
+            _assert_agent_writer_binding(binding, lease)
+            _require_owned_reset_transaction(connection)
+            await _checkpoint_reset_execute(
+                connection,
+                binding,
+                lease,
+                "DELETE FROM writes WHERE thread_id = ?",
+                (thread_id,),
+            )
+            _require_owned_reset_transaction(connection)
+
+            if not await _checkpoint_reset_thread_is_empty(
+                connection, binding, lease, thread_id,
+            ):
+                raise WriterLifecycleError(
+                    "checkpoint reset transaction readback found remaining rows"
+                )
+            _require_owned_reset_transaction(connection)
+
+            _assert_agent_writer_binding(binding, lease)
+            _require_owned_reset_transaction(connection)
+            await connection.commit()
+            _assert_agent_writer_binding(binding, lease)
+            if type(connection.in_transaction) is not bool or connection.in_transaction is not False:
+                raise WriterLifecycleError(
+                    "SQLite commit did not confirm completion of the owned reset"
+                )
+            owns_transaction = False
+
+            if not await _checkpoint_reset_thread_is_empty(
+                connection, binding, lease, thread_id,
+            ):
+                raise WriterLifecycleError(
+                    "checkpoint reset post-commit readback found remaining rows"
+                )
+            _assert_agent_writer_binding(binding, lease)
+        except BaseException:
+            if owns_transaction:
+                try:
+                    if type(connection.in_transaction) is bool and connection.in_transaction is True:
+                        await connection.rollback()
+                        owns_transaction = False
+                        _assert_agent_writer_binding(binding, lease)
+                        if type(connection.in_transaction) is not bool or connection.in_transaction is not False:
+                            raise WriterLifecycleError(
+                                "SQLite rollback did not close the owned reset transaction"
+                            )
+                    elif type(connection.in_transaction) is bool and connection.in_transaction is False:
+                        owns_transaction = False
+                except BaseException:
+                    pass
+            raise
+
+    _assert_agent_writer_binding(binding, lease)
+
+
+_RESET_TABLE_SCHEMAS = {
+    "checkpoints": (
+        ("thread_id", "TEXT", 1, None, 1),
+        ("checkpoint_ns", "TEXT", 1, "''", 2),
+        ("checkpoint_id", "TEXT", 1, None, 3),
+        ("parent_checkpoint_id", "TEXT", 0, None, 0),
+        ("type", "TEXT", 0, None, 0),
+        ("checkpoint", "BLOB", 0, None, 0),
+        ("metadata", "BLOB", 0, None, 0),
+    ),
+    "writes": (
+        ("thread_id", "TEXT", 1, None, 1),
+        ("checkpoint_ns", "TEXT", 1, "''", 2),
+        ("checkpoint_id", "TEXT", 1, None, 3),
+        ("task_id", "TEXT", 1, None, 4),
+        ("idx", "INTEGER", 1, None, 5),
+        ("channel", "TEXT", 1, None, 0),
+        ("type", "TEXT", 0, None, 0),
+        ("value", "BLOB", 0, None, 0),
+    ),
+}
+
+
+def _require_owned_reset_transaction(connection: object) -> None:
+    if type(getattr(connection, "in_transaction", None)) is not bool or connection.in_transaction is not True:
+        raise WriterLifecycleError(
+            "checkpoint reset no longer owns an active SQLite transaction"
+        )
+
+
+def _checkpoint_reset_schema_matches(rows: object, expected: tuple) -> bool:
+    if not isinstance(rows, (list, tuple)):
+        return False
+    try:
+        observed = tuple(
+            (
+                row[1],
+                str(row[2]).upper(),
+                row[3],
+                row[4],
+                row[5],
+            )
+            for row in rows
+        )
+    except (IndexError, TypeError):
+        return False
+    return observed == expected
+
+
+async def _checkpoint_reset_execute(
+    connection: object,
+    binding: AgentWriterBinding,
+    lease: WriterLease,
+    statement: str,
+    parameters: tuple = (),
+) -> None:
+    _assert_agent_writer_binding(binding, lease)
+    cursor = await connection.execute(statement, parameters)  # type: ignore[attr-defined]
+    try:
+        _assert_agent_writer_binding(binding, lease)
+    finally:
+        await cursor.close()
+        _assert_agent_writer_binding(binding, lease)
+
+
+async def _checkpoint_reset_fetchall(
+    connection: object,
+    binding: AgentWriterBinding,
+    lease: WriterLease,
+    statement: str,
+    parameters: tuple = (),
+) -> list:
+    _assert_agent_writer_binding(binding, lease)
+    cursor = await connection.execute(statement, parameters)  # type: ignore[attr-defined]
+    try:
+        _assert_agent_writer_binding(binding, lease)
+        rows = await cursor.fetchall()
+        _assert_agent_writer_binding(binding, lease)
+        return rows
+    finally:
+        await cursor.close()
+        _assert_agent_writer_binding(binding, lease)
+
+
+async def _checkpoint_reset_thread_is_empty(
+    connection: object,
+    binding: AgentWriterBinding,
+    lease: WriterLease,
+    thread_id: str,
+) -> bool:
+    for table in ("checkpoints", "writes"):
+        rows = await _checkpoint_reset_fetchall(
+            connection,
+            binding,
+            lease,
+            f"SELECT 1 FROM {table} WHERE thread_id = ? LIMIT 1",
+            (thread_id,),
+        )
+        if rows:
+            return False
+    return True
 
 
 async def _try_delete_thread(cp: Any, thread_id: str) -> bool:
@@ -359,6 +931,7 @@ def _key_thread_id(key: Any) -> str:
 def _build_llm(
     model: str, api_key: str, base_url: str,
     temperature: float, max_tokens: int,
+    context_window_override: int | None = None,
 ) -> Any:
     """Wrap OpenAI-compatible endpoint as ReasoningChatOpenAI.
 
@@ -372,6 +945,7 @@ def _build_llm(
         base_url=base_url,
         temperature=temperature,
         max_completion_tokens=max_tokens,
+        context_window_override=context_window_override,
     )
 
 
@@ -422,6 +996,16 @@ def build_tool_specs(
     if any(tool.name in existing_names or tool.mcp_info is None for tool in mcp_tools):
         raise ValueError("Invalid external tool snapshot")
     tool_list.extend(mcp_tools)
+    if getattr(ctx, "tool_observation_scope", None) is not None:
+        from src.agent.tools.groups.retrieval.read_tool_observation import (
+            ReadToolObservationTool,
+        )
+
+        if any(tool.name == "read_tool_observation" for tool in tool_list):
+            raise ValueError(
+                "Tool observation reader name conflicts with a registered tool"
+            )
+        tool_list.append(ReadToolObservationTool())
 
     from src.agent.skill_runtime import (
         ImportSkillTool,

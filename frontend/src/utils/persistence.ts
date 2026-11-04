@@ -40,15 +40,23 @@ export function removeFromStorage(key: keyof typeof KEYS): void {
 }
 
 /** 按 session 分片存储消息 */
-export function saveSessionMessages(sessionId: string, msgs: unknown): void {
+export function saveSessionMessages(sessionId: string, msgs: unknown): boolean {
   try {
-    localStorage.setItem(`${MSG_PREFIX}${sessionId}`, JSON.stringify(msgs));
+    const serialized = JSON.stringify(msgs);
+    if (typeof serialized !== "string") return false;
+    localStorage.setItem(`${MSG_PREFIX}${sessionId}`, serialized);
+    return true;
   } catch (e) {
     if (e instanceof DOMException && (e.name === "QuotaExceededError" || e.code === 22)) {
       console.error(`[persistence] 存储空间不足: msg_${sessionId}`);
-      const event = new CustomEvent("storage-quota-exceeded", { detail: { key: `msg_${sessionId}` } });
-      window.dispatchEvent(event);
+      try {
+        const event = new CustomEvent("storage-quota-exceeded", { detail: { key: `msg_${sessionId}` } });
+        window.dispatchEvent(event);
+      } catch {
+        // Persistence still reports failure when browser event APIs are unavailable.
+      }
     }
+    return false;
   }
 }
 
@@ -72,14 +80,19 @@ export function removeSessionMessages(sessionId: string): void {
 }
 
 /** 从旧格式 (hwrag_session_messages) 迁移到分片格式 */
-export function migrateMessagesToShards(sessionMessages: Record<string, unknown>): void {
-  Object.entries(sessionMessages).forEach(([sid, msgs]) => {
-    saveSessionMessages(sid, msgs);
-  });
-  // 迁移完成后删除旧 key
+export function migrateMessagesToShards(sessionMessages: Record<string, unknown>): boolean {
+  const entries = Object.entries(sessionMessages);
+  let allShardsSaved = true;
+  for (const [sid, msgs] of entries) {
+    if (!saveSessionMessages(sid, msgs)) allShardsSaved = false;
+  }
+  if (!allShardsSaved) return false;
+
+  // Remove the old source only after every shard has been written successfully.
   try {
     localStorage.removeItem(KEYS.messages);
+    return true;
   } catch {
-    // ignore
+    return false;
   }
 }

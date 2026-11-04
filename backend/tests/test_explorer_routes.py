@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier
@@ -41,6 +43,38 @@ def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 def auth_headers(session_token: str = "valid-session") -> dict[str, str]:
     return {"Authorization": f"Bearer {session_token}"}
+
+
+def _resolves_to_target(link: Path, target: Path) -> bool:
+    try:
+        return link.resolve(strict=True) == target.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return False
+
+
+def _create_test_junction(link: Path, target: Path) -> None:
+    if link.exists() or link.is_symlink():
+        raise AssertionError(f"refusing to create a test junction over an existing path: {link}")
+    result = subprocess.run(
+        ["cmd.exe", "/c", "mklink", "/J", str(link), str(target)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        if _resolves_to_target(link, target):
+            os.rmdir(link)
+        pytest.skip(f"could not create a temporary junction: {result.stderr}")
+    if not _resolves_to_target(link, target):
+        raise AssertionError(f"test junction did not resolve to its fake target: {link}")
+
+
+def _remove_test_junction(link: Path, target: Path) -> None:
+    if not _resolves_to_target(link, target):
+        raise AssertionError(f"refusing to remove a junction with an unexpected target: {link}")
+    os.rmdir(link)
+    if link.exists() or not target.exists():
+        raise AssertionError("junction removal affected an unexpected path")
 
 
 def test_explorer_rejects_unauthenticated_open_search_and_write(workspace) -> None:
@@ -168,6 +202,225 @@ def test_authorized_root_can_open_tree_and_read_normal_file(workspace) -> None:
     assert opened.json()["tree"][0]["path"] == str(root)
     assert read.status_code == 200
     assert read.json()["content"] == normal_file.read_bytes().decode("utf-8")
+
+
+def test_search_finds_a_matching_file_inside_the_authorized_root(workspace) -> None:
+    client, root, _ = workspace
+    marker = "explorer-normal-search-marker"
+    file_path = root / "firmware.py"
+    file_path.write_text(f"# {marker}\n", encoding="utf-8")
+    opened = client.post(
+        "/api/explorer/open", headers=auth_headers(), json={"path": str(root)}
+    )
+    response = client.post(
+        "/api/explorer/search",
+        headers=auth_headers(),
+        json={"root_path": str(root), "query": marker},
+    )
+
+    assert opened.status_code == 200
+    assert response.status_code == 200
+    assert response.json()["data"]["results"] == [
+        {
+            "path": str(file_path),
+            "name": file_path.name,
+            "line_number": 1,
+            "line_text": f"# {marker}",
+            "match_count": 1,
+        }
+    ]
+
+
+def test_search_skips_a_denied_resolved_junction_target(workspace, monkeypatch) -> None:
+    if os.name != "nt":
+        pytest.skip("Windows junction behavior is platform-specific")
+
+    client, root, _ = workspace
+    target = root / "System32"
+    target.mkdir()
+    marker = "explorer-denied-resolved-junction-marker"
+    target_file = target / "marker.txt"
+    target_file.write_text(marker, encoding="utf-8")
+    junction = root / "linked-system-files"
+    _create_test_junction(junction, target)
+    try:
+        assert _resolves_to_target(junction, target)
+        opened = client.post(
+            "/api/explorer/open", headers=auth_headers(), json={"path": str(root)}
+        )
+        read = client.get(
+            "/api/explorer/read",
+            headers=auth_headers(),
+            params={"path": str(target_file)},
+        )
+        path_type = type(root)
+        original_iterdir = path_type.iterdir
+
+        def only_expose_the_junction(path: Path):
+            if path == root:
+                return iter([junction])
+            return original_iterdir(path)
+
+        monkeypatch.setattr(path_type, "iterdir", only_expose_the_junction)
+        search = client.post(
+            "/api/explorer/search",
+            headers=auth_headers(),
+            json={"root_path": str(root), "query": marker},
+        )
+
+        assert opened.status_code == 200
+        assert read.status_code == 403
+        assert search.status_code == 200
+        assert search.json()["data"]["results"] == []
+    finally:
+        _remove_test_junction(junction, target)
+
+
+def test_search_keeps_system32_near_match_directory_searchable(workspace) -> None:
+    client, root, _ = workspace
+    marker = "explorer-normal-near-match-marker"
+    file_path = root / "System32-notes" / "normal.txt"
+    file_path.parent.mkdir()
+    file_path.write_text(marker, encoding="utf-8")
+    opened = client.post(
+        "/api/explorer/open", headers=auth_headers(), json={"path": str(root)}
+    )
+    read = client.get(
+        "/api/explorer/read",
+        headers=auth_headers(),
+        params={"path": str(file_path)},
+    )
+    search = client.post(
+        "/api/explorer/search",
+        headers=auth_headers(),
+        json={"root_path": str(root), "query": marker},
+    )
+
+    assert opened.status_code == 200
+    assert read.status_code == 200
+    assert read.json()["content"] == marker
+    assert search.status_code == 200
+    assert [item["path"] for item in search.json()["data"]["results"]] == [
+        str(file_path)
+    ]
+
+
+def test_search_does_not_follow_a_junction_outside_the_authorized_root(workspace) -> None:
+    if os.name != "nt":
+        pytest.skip("Windows junction behavior is platform-specific")
+
+    client, root, _ = workspace
+    outside = root.parent / "outside"
+    outside.mkdir()
+    marker = "explorer-outside-junction-marker"
+    outside_file = outside / "marker.txt"
+    outside_file.write_text(marker, encoding="utf-8")
+    junction = root / "linked-outside"
+    _create_test_junction(junction, outside)
+    try:
+        assert _resolves_to_target(junction, outside)
+        opened = client.post(
+            "/api/explorer/open", headers=auth_headers(), json={"path": str(root)}
+        )
+        response = client.post(
+            "/api/explorer/search",
+            headers=auth_headers(),
+            json={"root_path": str(root), "query": marker},
+        )
+
+        assert opened.status_code == 200
+        assert response.status_code == 200
+        assert response.json()["data"]["results"] == []
+        assert outside_file.read_text(encoding="utf-8") == marker
+    finally:
+        _remove_test_junction(junction, outside)
+
+
+def test_search_follows_an_in_root_junction_without_duplicate_hits(
+    workspace, monkeypatch
+) -> None:
+    if os.name != "nt":
+        pytest.skip("Windows junction behavior is platform-specific")
+
+    client, root, _ = workspace
+    target = root / "real-source"
+    target.mkdir()
+    marker = "explorer-internal-junction-marker"
+    target_file = target / "linked-source.py"
+    target_file.write_text(f"# {marker}\n", encoding="utf-8")
+    junction = root / "linked-source"
+    _create_test_junction(junction, target)
+    try:
+        assert _resolves_to_target(junction, target)
+        opened = client.post(
+            "/api/explorer/open", headers=auth_headers(), json={"path": str(root)}
+        )
+        assert opened.status_code == 200
+
+        path_type = type(root)
+        original_iterdir = path_type.iterdir
+
+        def only_expose_the_junction(path: Path):
+            if path == root:
+                return iter([junction])
+            return original_iterdir(path)
+
+        monkeypatch.setattr(path_type, "iterdir", only_expose_the_junction)
+        response = client.post(
+            "/api/explorer/search",
+            headers=auth_headers(),
+            json={"root_path": str(root), "query": marker},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["data"]["results"] == [
+            {
+                "path": str(junction / target_file.name),
+                "name": target_file.name,
+                "line_number": 1,
+                "line_text": f"# {marker}",
+                "match_count": 1,
+            }
+        ]
+    finally:
+        _remove_test_junction(junction, target)
+
+
+def test_search_stops_at_a_junction_to_an_ancestor_without_duplicate_hits(workspace) -> None:
+    if os.name != "nt":
+        pytest.skip("Windows junction behavior is platform-specific")
+
+    client, root, _ = workspace
+    nested = root / "nested"
+    nested.mkdir()
+    marker = "explorer-ancestor-loop-marker"
+    marker_file = root / "root-marker.txt"
+    marker_file.write_text(f"# {marker}\n", encoding="utf-8")
+    junction = nested / "back-to-root"
+    _create_test_junction(junction, root)
+    try:
+        opened = client.post(
+            "/api/explorer/open", headers=auth_headers(), json={"path": str(root)}
+        )
+        response = client.post(
+            "/api/explorer/search",
+            headers=auth_headers(),
+            json={"root_path": str(root), "query": marker, "max_results": 3},
+        )
+
+        assert opened.status_code == 200
+        assert response.status_code == 200
+        assert response.json()["data"]["results"] == [
+            {
+                "path": str(marker_file),
+                "name": marker_file.name,
+                "line_number": 1,
+                "line_text": f"# {marker}",
+                "match_count": 1,
+            }
+        ]
+    finally:
+        _remove_test_junction(junction, root)
 
 
 def test_folder_picker_browse_does_not_grant_project_access(workspace) -> None:

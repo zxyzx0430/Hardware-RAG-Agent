@@ -15,6 +15,7 @@ from src.agent import hitl_handler
     ("decision", "handler_terminal", "expected_done"),
     [
         ("allow", False, {"type": "done", "success": True, "usage": None}),
+        ("deny", False, {"type": "done", "success": True, "usage": None}),
         ("stop", True, {"type": "done", "success": False, "reason": "user stopped"}),
     ],
 )
@@ -24,7 +25,10 @@ def test_resume_generator_emits_one_terminal_event(
     handler_terminal: bool,
     expected_done: dict,
 ) -> None:
-    async def fake_resume_agent_after_user(*_args):
+    monkeypatch.setattr(chat_routes, "read_session_delete_epoch", lambda _session_id: "session-epoch")
+    monkeypatch.setattr(chat_routes, "read_memory_clear_epoch", lambda: "memory-epoch")
+
+    async def fake_resume_agent_after_user(*_args, **_kwargs):
         yield sse_event("text", {"content": "partial"})
         if handler_terminal:
             yield sse_event("done", {"success": False, "reason": "user stopped"})
@@ -42,6 +46,10 @@ def test_resume_generator_emits_one_terminal_event(
         req=request,
         call_counter=Counter(),
         model="test-model",
+        request_snapshot=chat_routes.AgentRequestSnapshot(
+            session_delete_epoch="session-epoch",
+            memory_clear_epoch="memory-epoch",
+        ),
     )
 
     async def collect_events() -> list[dict]:
