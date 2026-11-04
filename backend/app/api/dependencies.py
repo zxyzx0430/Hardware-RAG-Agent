@@ -27,6 +27,28 @@ def get_session_token(
     return None
 
 
+def require_session(
+    authorization: Optional[str] = Header(default=None),
+) -> str:
+    """Require a configured provider and a valid Bearer token.
+
+    Unlike current_user this has no first-run anonymous branch and does not
+    read ``?token=``, so it is safe for process-spawning endpoints.
+    """
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"success": False, "error": {"code": "AUTH_REQUIRED", "message": "未提供认证 token"}},
+        )
+    token = authorization.split(" ", 1)[1].strip()
+    if not token or not get_provider_key_by_session(token):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"success": False, "error": {"code": "AUTH_INVALID", "message": "token 无效或已过期"}},
+        )
+    return token
+
+
 def current_user(
     token: Optional[str] = Depends(get_session_token),
 ) -> dict:

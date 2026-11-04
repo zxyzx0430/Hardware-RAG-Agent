@@ -7,22 +7,30 @@ pio_runner 不自动触发编译：若 /api/upload 只传 code 而无 binary_pat
 本路由层先调 compile_firmware 拿 binary_path 再调 upload_firmware。
 """
 
-import json
 import logging
 import uuid
-from typing import Any, AsyncIterator
+from typing import AsyncIterator, Literal
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
-from app.api.sse import sse_event
+from app.api.build_registry import lookup_build, register_build
+from app.api.build_sse import (
+    build_not_found_stream as _build_not_found_stream,
+    error_done as _error_done,
+    extract_binary_path as _extract_binary_path,
+    is_done_sse_event as _is_done_sse_event,
+    sse_from_event as _sse_from_event,
+)
+from app.api.dependencies import require_session
 from app.api.locks import (
     disconnect_active_serial,
     get_port_lock,
     reserve_port_for_upload,
     release_port_after_upload,
 )
+from src.hardware.build_validation import validate_lib_deps, validate_options
 from src.hardware.pio_runner import (
     CompileRequest as PioCompileRequest,
     UploadRequest as PioUploadRequest,
@@ -42,16 +50,32 @@ router = APIRouter(prefix="/api")
 # ═══════════════════════════════════════════
 
 
+MAX_CODE_CHARS: int = 512 * 1024
+
+
 class BuildRequest(BaseModel):
-    code: str
+    code: str = Field(max_length=MAX_CODE_CHARS)
     board: str = "esp32-s3-devkitc-1"
     platform: str = "espressif32"
     framework: str = "arduino"
     lib_deps: list[str] = []
     options: dict = {}
+    confirm: Literal[True]
+
+    @field_validator("lib_deps")
+    @classmethod
+    def _check_lib_deps(cls, value: list[str]) -> list[str]:
+        return validate_lib_deps(value)
+
+    @field_validator("options")
+    @classmethod
+    def _check_options(cls, value: dict) -> dict:
+        return validate_options(value)
 
 
 class UploadRequest(BaseModel):
+    """Internal upload job (built from a server-side build record)."""
+
     code: str = ""
     binary_path: str = ""
     board: str = "esp32-s3-devkitc-1"
@@ -62,6 +86,14 @@ class UploadRequest(BaseModel):
     options: dict = {}
 
 
+class UploadHttpRequest(BaseModel):
+    """HTTP upload only accepts a server-issued build id."""
+
+    build_id: str = Field(min_length=1, max_length=64)
+    port: str = ""
+    confirm: Literal[True]
+
+
 # ═══════════════════════════════════════════
 # 辅助函数
 # ═══════════════════════════════════════════
@@ -70,37 +102,6 @@ class UploadRequest(BaseModel):
 def _generate_session_id() -> str:
     """生成唯一 session id（用于临时项目目录名）。"""
     return uuid.uuid4().hex
-
-
-def _sse_from_event(event: dict[str, Any]) -> str:
-    """把 pio_runner event dict 转为 sse_event 字符串。"""
-    event_type = event.get("type", "unknown")
-    data = {k: v for k, v in event.items() if k != "type"}
-    return sse_event(event_type, data)
-
-
-def _is_done_sse_event(event_text: str) -> bool:
-    """Return whether an encoded SSE event is the terminal ``done`` event."""
-    for line in event_text.splitlines():
-        if not line.startswith("data: "):
-            continue
-        try:
-            return json.loads(line[6:]).get("type") == "done"
-        except (json.JSONDecodeError, AttributeError):
-            return False
-    return False
-
-
-def _error_done(code: str, message: str) -> str:
-    """构造错误 done SSE 事件。"""
-    return sse_event("done", {"success": False, "error": {"code": code, "message": message}})
-
-
-def _extract_binary_path(event: dict[str, Any]) -> str:
-    """从 done 事件提取 binary_path；失败/缺失返回 ""。"""
-    if not event.get("success"):
-        return ""
-    return event.get("binary_path") or ""
 
 
 def _make_compile_request(payload: BuildRequest | UploadRequest) -> PioCompileRequest:
@@ -129,12 +130,26 @@ def _check_upload_input(payload: UploadRequest) -> str | None:
 
 
 @router.post("/build")
-async def build_firmware(payload: BuildRequest):
+async def build_firmware(
+    payload: BuildRequest,
+    token: str = Depends(require_session),
+):
     """编译固件（SSE 流式返回编译进度 + PlatformIO 原始日志）。"""
 
     async def event_generator() -> AsyncIterator[str]:
         req = _make_compile_request(payload)
         async for event in pio_compile_firmware(req):
+            if event.get("type") == "done" and _extract_binary_path(event):
+                event = {
+                    **event,
+                    "build_id": register_build(
+                        event["binary_path"], token,
+                        board=payload.board,
+                        platform=payload.platform,
+                        framework=payload.framework,
+                        lib_deps=tuple(payload.lib_deps),
+                    ),
+                }
             yield _sse_from_event(event)
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
@@ -146,16 +161,32 @@ async def build_firmware(payload: BuildRequest):
 
 
 @router.post("/upload")
-async def upload_firmware(payload: UploadRequest, request: Request):
+async def upload_firmware(
+    payload: UploadHttpRequest,
+    request: Request,
+    token: str = Depends(require_session),
+):
     """烧录固件到设备（SSE 流式返回烧录进度）。
 
-    支持两种入参：
-    - binary_path 非空：直接烧录已编译固件
-    - 仅 code：先编译再烧录（透传 compile 事件后接 upload 事件）
+    只接受服务端签发的 build_id；binary_path 与编译参数来自构建记录，
+    客户端无法指定任意固件或 ini 选项。
     """
+    record = lookup_build(payload.build_id, token)
+    if record is None:
+        return StreamingResponse(
+            _build_not_found_stream(), media_type="text/event-stream"
+        )
+    job = UploadRequest(
+        binary_path=record.binary_path,
+        board=record.board,
+        platform=record.platform,
+        framework=record.framework,
+        lib_deps=list(record.lib_deps),
+        port=payload.port,
+    )
 
     async def event_generator() -> AsyncIterator[str]:
-        async for ev in _stream_upload(payload, request):
+        async for ev in _stream_upload(job, request):
             yield ev
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")

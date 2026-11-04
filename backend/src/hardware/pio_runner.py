@@ -21,6 +21,13 @@ from typing import Any, AsyncIterator
 
 import serial.tools.list_ports
 
+from src.agent.path_resolver import resolve_guard_path
+from src.hardware.build_validation import (
+    sanitize_session_id,
+    validate_lib_deps,
+    validate_options,
+)
+
 logger = logging.getLogger(__name__)
 
 # === Board id -> PlatformIO board name ===
@@ -37,7 +44,6 @@ STM32_DEFAULT_UPLOAD_PROTOCOL: str = "serial"
 DEFAULT_COMPILE_TIMEOUT_S: int = 600
 DEFAULT_UPLOAD_TIMEOUT_S: int = 120
 HEARTBEAT_INTERVAL_S: float = 15.0
-ALLOWED_BINARY_PREFIX: str = ".build/tmp/"
 BUILD_TMP_ROOT: str = ".build/tmp"
 DEFAULT_UPLOAD_SPEED: int = 921600
 DEFAULT_CLEANUP_AGE_HOURS: int = 24
@@ -161,12 +167,13 @@ def _resolve_env_name(board: str) -> str:
 
 
 def _validate_binary_path(binary_path: str) -> bool:
-    """True if path is under .build/tmp/ (path traversal protection)."""
-    norm = Path(os.path.normpath(binary_path))
-    prefix = Path(os.path.normpath(ALLOWED_BINARY_PREFIX))
+    """True if the resolved path is a firmware.bin under .build/tmp/."""
+    resolved = resolve_guard_path(binary_path)
+    if not resolved or os.path.basename(resolved) != "firmware.bin":
+        return False
+    root = os.path.realpath(BUILD_TMP_ROOT)
     try:
-        norm.relative_to(prefix)
-        return True
+        return os.path.commonpath([resolved, root]) == root
     except ValueError:
         return False
 
@@ -184,6 +191,8 @@ def _validate_port(port: str) -> tuple[bool, list[str]]:
 def _ini_lines(board: str, platform: str, options: dict[str, Any],
                lib_deps: tuple[str, ...] = (), framework: str = DEFAULT_FRAMEWORK) -> list[str]:
     """Build platformio.ini lines based on platform + framework."""
+    options = validate_options(options)
+    lib_deps = tuple(validate_lib_deps(lib_deps))
     fw = _resolve_framework(platform, framework)
     lines = [
         f"[env:{_resolve_env_name(board)}]",
@@ -413,7 +422,7 @@ async def _ensure_proc_killed(proc: asyncio.subprocess.Process) -> None:
 
 def _create_temp_project(req: CompileRequest) -> Path:
     """Create .build/tmp/{session}/ with src/main.cpp + platformio.ini."""
-    project_dir = Path(BUILD_TMP_ROOT) / req.session_id
+    project_dir = Path(BUILD_TMP_ROOT) / sanitize_session_id(req.session_id)
     src_dir = project_dir / "src"
     src_dir.mkdir(parents=True, exist_ok=True)
     (src_dir / "main.cpp").write_text(req.code, encoding="utf-8")
@@ -513,11 +522,11 @@ def _check_upload_preflight(req: UploadRequest) -> dict[str, Any] | None:
 
 def _resolve_project_dir(binary_path: str) -> Path | None:
     """Derive project dir from binary_path. None if invalid shape."""
-    parts = Path(os.path.normpath(binary_path)).parts
-    # Expected: ('.build', 'tmp', '{session}', '.pio', 'build', '{env}', 'firmware.bin')
-    if len(parts) < 3:
+    path = Path(os.path.normpath(binary_path))
+    if path.name != "firmware.bin" or len(path.parents) < 4:
         return None
-    return Path(parts[0], parts[1], parts[2])
+    # .../{session}/.pio/build/{env}/firmware.bin -> parents[3] = {session}
+    return path.parents[3]
 
 
 def _ensure_upload_port(project_dir: Path, req: UploadRequest) -> None:

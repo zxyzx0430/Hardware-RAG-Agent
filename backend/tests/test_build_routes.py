@@ -17,8 +17,23 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api import build_routes
+from app.api import build_registry, build_routes
+from app.api.dependencies import require_session
 from app.main import create_app
+
+TEST_TOKEN = "test-session-token"
+
+
+def _register_build(binary_path: str = ".build/tmp/abc/.pio/build/esp32s3/firmware.bin") -> str:
+    """Create a server-side build record for upload tests."""
+    return build_registry.register_build(
+        binary_path,
+        TEST_TOKEN,
+        board="esp32-s3",
+        platform="esp32",
+        framework="arduino",
+        lib_deps=(),
+    )
 
 
 # ═══════════════════════════════════════════
@@ -32,6 +47,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     with patch.object(build_routes, "cleanup_old_builds", AsyncMock(return_value=0)):
         c = TestClient(create_app())
+        c.app.dependency_overrides[require_session] = lambda: TEST_TOKEN
         yield c
 
 
@@ -42,10 +58,12 @@ def _clear_upload_locks():
     locks._port_locks.clear()
     locks._uploading_ports.clear()
     locks._active_serial.clear()
+    build_registry.clear_builds()
     yield
     locks._port_locks.clear()
     locks._uploading_ports.clear()
     locks._active_serial.clear()
+    build_registry.clear_builds()
 
 
 def _parse_sse(response_text: str) -> list[dict]:
@@ -102,7 +120,7 @@ class TestBuildEndpoint:
         with patch.object(build_routes, "pio_compile_firmware", _fake_compile_success):
             response = client.post(
                 "/api/build",
-                json={"code": "void setup(){} void loop(){}", "board": "esp32-s3"},
+                json={"code": "void setup(){} void loop(){}", "board": "esp32-s3", "confirm": True},
             )
 
         assert response.status_code == 200
@@ -118,13 +136,14 @@ class TestBuildEndpoint:
         done = events[-1]
         assert done["success"] is True
         assert done["binary_path"].endswith("firmware.bin")
+        assert done["build_id"]
 
     def test_build_endpoint_failed(self, client):
         """POST /api/build with failing compile yields done(success=False, COMPILE_FAILED)."""
         with patch.object(build_routes, "pio_compile_firmware", _fake_compile_failed):
             response = client.post(
                 "/api/build",
-                json={"code": "broken code", "board": "esp32-s3"},
+                json={"code": "broken code", "board": "esp32-s3", "confirm": True},
             )
 
         assert response.status_code == 200
@@ -229,8 +248,9 @@ class TestUploadEndpoint:
         assert terminal_state == {"lock_held": False, "upload_reserved": False}
 
     def test_upload_with_binary_path(self, client):
-        """POST /api/upload with binary_path calls upload_firmware only (no compile)."""
+        """POST /api/upload with a server build id calls upload only."""
         calls = {"compile": 0, "upload": 0}
+        build_id = _register_build()
 
         async def fake_compile(req):
             calls["compile"] += 1
@@ -245,11 +265,7 @@ class TestUploadEndpoint:
              patch.object(build_routes, "pio_upload_firmware", fake_upload):
             response = client.post(
                 "/api/upload",
-                json={
-                    "binary_path": ".build/tmp/abc/.pio/build/esp32s3/firmware.bin",
-                    "board": "esp32-s3",
-                    "port": "COM3",
-                },
+                json={"build_id": build_id, "port": "COM3", "confirm": True},
             )
 
         assert response.status_code == 200
@@ -262,99 +278,50 @@ class TestUploadEndpoint:
         assert types[-1] == "done"
         assert events[-1]["success"] is True
 
-    def test_upload_with_code_only(self, client):
-        """POST /api/upload with only code first compiles then uploads."""
-        calls = {"compile": 0, "upload": 0}
-
-        async def fake_compile(req):
-            calls["compile"] += 1
-            async for ev in _fake_compile_success(req):
-                yield ev
-
-        async def fake_upload(req):
-            calls["upload"] += 1
-            async for ev in _fake_upload_success(req):
-                yield ev
-
-        with patch.object(build_routes, "pio_compile_firmware", fake_compile), \
-             patch.object(build_routes, "pio_upload_firmware", fake_upload):
-            response = client.post(
-                "/api/upload",
-                json={
-                    "code": "void setup(){} void loop(){}",
-                    "board": "esp32-s3",
-                    "port": "COM3",
-                },
-            )
-
-        assert response.status_code == 200
-        assert calls["compile"] == 1
-        assert calls["upload"] == 1
-
-        events = _parse_sse(response.text)
-        types = [e["type"] for e in events]
-        # Should have at least 2 thinking events (compile + upload) and end with done
-        assert types.count("thinking") >= 2
-        assert types.count("done") == 1
-        assert any(e.get("content") == "编译成功，准备开始烧录..." for e in events)
-        assert types[-1] == "done"
-        assert events[-1]["success"] is True
-
-    def test_upload_compile_failure_has_one_terminal_event(self, client):
-        """A compile failure ends upload; successful compile itself is not terminal."""
-        calls = {"upload": 0}
-
-        async def fake_compile(req):
-            async for event in _fake_compile_failed(req):
-                yield event
-
-        async def fake_upload(req):
-            calls["upload"] += 1
-            async for event in _fake_upload_success(req):
-                yield event
-
-        with patch.object(build_routes, "pio_compile_firmware", fake_compile), \
-             patch.object(build_routes, "pio_upload_firmware", fake_upload):
-            response = client.post(
-                "/api/upload",
-                json={"code": "broken code", "port": "COM3"},
-            )
-
-        events = _parse_sse(response.text)
-        done_events = [event for event in events if event["type"] == "done"]
-        assert response.status_code == 200
-        assert calls["upload"] == 0
-        assert len(done_events) == 1
-        assert done_events[0]["success"] is False
-        assert done_events[0]["error"]["code"] == "COMPILE_FAILED"
-
-    def test_upload_invalid_args(self, client):
-        """POST /api/upload with neither code nor binary_path returns INVALID_ARGS."""
+    def test_upload_rejects_client_binary_path_and_code(self, client):
+        """Upload no longer accepts client-supplied paths or source code."""
         response = client.post(
             "/api/upload",
-            json={"port": "COM3"},  # no code, no binary_path
+            json={
+                "binary_path": ".build/tmp/abc/.pio/build/esp32s3/firmware.bin",
+                "code": "void setup(){} void loop(){}",
+                "port": "COM3",
+                "confirm": True,
+            },
+        )
+
+        assert response.status_code == 422
+
+    def test_upload_rejects_missing_build_id(self, client):
+        """A client cannot start an upload without a server-issued build id."""
+        response = client.post(
+            "/api/upload",
+            json={"port": "COM3", "confirm": True},
+        )
+
+        assert response.status_code == 422
+
+    def test_upload_unknown_build_id_returns_error_sse(self, client):
+        """An unknown build id yields a BUILD_NOT_FOUND done event."""
+        response = client.post(
+            "/api/upload",
+            json={"build_id": "unknown", "port": "COM3", "confirm": True},
         )
 
         assert response.status_code == 200
         events = _parse_sse(response.text)
-        done = events[-1]
-        assert done["type"] == "done"
-        assert done["success"] is False
-        assert done["error"]["code"] == "INVALID_ARGS"
+        assert events[-1]["error"]["code"] == "BUILD_NOT_FOUND"
 
     def test_upload_port_busy(self, client):
         """A concurrent upload reservation returns PORT_BUSY."""
         from app.api import locks
+        build_id = _register_build()
         assert locks.reserve_port_for_upload("COM3")
 
         try:
             response = client.post(
                 "/api/upload",
-                json={
-                    "binary_path": ".build/tmp/abc/.pio/build/esp32s3/firmware.bin",
-                    "board": "esp32-s3",
-                    "port": "COM3",
-                },
+                json={"build_id": build_id, "port": "COM3", "confirm": True},
             )
         finally:
             locks.release_port_after_upload("COM3")

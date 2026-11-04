@@ -171,3 +171,102 @@ class TestCommandPolicy:
                 messages=[{"role": "user", "content": "hi"}],
                 permission_mode="root",
             )
+
+
+class TestBuildBoundary:
+    @pytest.fixture
+    def client(self):
+        from fastapi.testclient import TestClient
+        from app.main import create_app
+
+        return TestClient(create_app())
+
+    @pytest.fixture
+    def authed_client(self, client):
+        from app.api.dependencies import require_session
+
+        client.app.dependency_overrides[require_session] = lambda: "test-token"
+        yield client
+        client.app.dependency_overrides.clear()
+
+    def test_build_requires_session(self, client) -> None:
+        response = client.post(
+            "/api/build",
+            json={"code": "void setup(){}", "confirm": True},
+        )
+        assert response.status_code == 401
+
+    def test_build_requires_explicit_confirmation(self, authed_client) -> None:
+        response = authed_client.post("/api/build", json={"code": "void setup(){}"})
+        assert response.status_code == 422
+
+    @pytest.mark.parametrize(
+        "options",
+        [
+            {"extra_scripts": "pre:evil.py"},
+            {"platform_packages": "symlink://C:/evil"},
+            {"build_flags": "-DSAFE\n[machine]\nextra_scripts=pre:evil.py"},
+            {"upload_speed": "9600; Remove-Item x"},
+        ],
+    )
+    def test_build_options_are_whitelisted(self, authed_client, options) -> None:
+        response = authed_client.post(
+            "/api/build",
+            json={"code": "void setup(){}", "options": options, "confirm": True},
+        )
+        assert response.status_code == 422
+
+    @pytest.mark.parametrize(
+        "lib_deps",
+        [
+            ["https://github.com/evil/lib"],
+            ["file://C:/evil"],
+            ["evil/lib\n[machine]\nextra_scripts=pre:evil.py"],
+            ["a/b; Remove-Item x"],
+        ],
+    )
+    def test_lib_deps_reject_urls_paths_and_injection(
+        self, authed_client, lib_deps
+    ) -> None:
+        response = authed_client.post(
+            "/api/build",
+            json={"code": "void setup(){}", "lib_deps": lib_deps, "confirm": True},
+        )
+        assert response.status_code == 422
+
+    def test_upload_rejects_client_binary_path(self, authed_client) -> None:
+        response = authed_client.post(
+            "/api/upload",
+            json={"binary_path": ".build/tmp/x/firmware.bin", "confirm": True},
+        )
+        assert response.status_code == 422
+
+    def test_upload_rejects_foreign_build_id(self, authed_client) -> None:
+        from app.api import build_registry
+
+        build_registry.clear_builds()
+        build_id = build_registry.register_build(
+            ".build/tmp/x/.pio/build/esp32s3/firmware.bin",
+            "other-token",
+            board="esp32-s3",
+            platform="esp32",
+            framework="arduino",
+            lib_deps=(),
+        )
+        response = authed_client.post(
+            "/api/upload",
+            json={"build_id": build_id, "port": "COM1", "confirm": True},
+        )
+        events = [
+            line for line in response.text.splitlines()
+            if '"BUILD_NOT_FOUND"' in line
+        ]
+        assert events
+        build_registry.clear_builds()
+
+    def test_session_id_traversal_is_rejected(self) -> None:
+        from src.hardware.build_validation import BuildInputError, sanitize_session_id
+
+        for value in ["..", "../..", "C:\\Windows", "a/b", ""]:
+            with pytest.raises(BuildInputError):
+                sanitize_session_id(value)
