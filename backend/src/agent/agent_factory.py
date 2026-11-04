@@ -1195,24 +1195,24 @@ def build_tool_specs(
             )
         tool_list.append(ReadToolObservationTool())
 
-    from src.agent.skill_runtime import (
-        ImportSkillTool,
-        LoadSkillTool,
-        PreviewSkillImportTool,
-        ReadSkillResourceTool,
-    )
-    skill_tools = [
-        LoadSkillTool(skills_runtime),
-        ReadSkillResourceTool(skills_runtime),
-        PreviewSkillImportTool(skills_runtime, skill_importer),
-        ImportSkillTool(skills_runtime, skill_importer),
-    ]
-    existing_names = {tool.name for tool in tool_list}
-    if any(tool.name in existing_names for tool in skill_tools):
-        raise ValueError("Skills tool name conflicts with a registered tool")
-    tool_list.extend(skill_tools)
-    tool_list = _filter_disabled_tools(tool_list)
     if skills_mode != "off":
+        from src.agent.skill_runtime import (
+            ImportSkillTool,
+            LoadSkillTool,
+            PreviewSkillImportTool,
+            ReadSkillResourceTool,
+        )
+        skill_tools = [
+            LoadSkillTool(skills_runtime),
+            ReadSkillResourceTool(skills_runtime),
+            PreviewSkillImportTool(skills_runtime, skill_importer),
+            ImportSkillTool(skills_runtime, skill_importer),
+        ]
+        existing_names = {tool.name for tool in tool_list}
+        if any(tool.name in existing_names for tool in skill_tools):
+            raise ValueError("Skills tool name conflicts with a registered tool")
+        tool_list.extend(skill_tools)
+        tool_list = _filter_disabled_tools(tool_list)
         required_skill_tools = {"load_skill", "read_skill_resource"}
         missing_skill_tools = required_skill_tools - {tool.name for tool in tool_list}
         if missing_skill_tools:
