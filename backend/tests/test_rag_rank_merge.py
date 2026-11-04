@@ -233,6 +233,12 @@ def test_vector_threshold_does_not_filter_bm25_only_candidates(monkeypatch, thre
             [_search_result("vector-hit", 0.9)] if score_threshold == 0.0 else []
         )
     )
+    # search() now captures and re-verifies the enabled document scope before
+    # fusing, so the scope and its signature must be stable for the whole call.
+    manager.get_search_cache_signature = lambda _kb_ids=None: (1, (("kb-one", True),))
+    manager._get_searchable_document_ids = lambda _kb_ids: {
+        "kb-one": frozenset({"vector-hit", "bm25-only"}),
+    }
     monkeypatch.setattr(
         manager,
         "_bm25_search",

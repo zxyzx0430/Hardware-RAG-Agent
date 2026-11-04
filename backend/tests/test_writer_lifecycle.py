@@ -5,6 +5,7 @@ import pickle
 from threading import Barrier
 
 import pytest
+from langgraph.runtime import RunControl
 
 from src.agent.compact.writer_lifecycle import (
     LeaseState,
@@ -30,35 +31,31 @@ class _EqualReference:
         return True
 
 
-class _FakeNativeRunControl:
+class _FakeNativeRunControl(RunControl):
     def __init__(self, *, fail_after_request=False, mark_requested=True):
-        self.drain_requested = False
-        self.drain_reason = None
+        super().__init__()
         self.requests = []
         self.fail_after_request = fail_after_request
         self.mark_requested = mark_requested
 
-    def request_drain(self, reason):
+    def request_drain(self, reason="shutdown"):
         self.requests.append(reason)
         if self.mark_requested:
-            self.drain_requested = True
-            self.drain_reason = reason
+            super().request_drain(reason)
         if self.fail_after_request:
             raise RuntimeError("native drain request outcome is uncertain")
 
 
-class _NonWeakrefableNativeRunControl:
-    __slots__ = ("drain_requested", "drain_reason", "requests")
+class _NonWeakrefableNativeRunControl(RunControl):
+    __slots__ = ("requests",)
 
     def __init__(self):
-        self.drain_requested = False
-        self.drain_reason = None
+        super().__init__()
         self.requests = []
 
-    def request_drain(self, reason):
+    def request_drain(self, reason="shutdown"):
         self.requests.append(reason)
-        self.drain_requested = True
-        self.drain_reason = reason
+        super().request_drain(reason)
 
 
 def _native_control(**kwargs):
@@ -370,18 +367,27 @@ def test_live_native_control_capacity_refuses_runs_without_evicting_evidence():
     )
 
 
-def test_non_weakrefable_native_controls_are_rejected_without_retention():
+def test_non_weakrefable_native_controls_are_retained_and_not_reused():
     scope = _scope()
     registry = _registry_for(scope)
     lease = registry.acquire(scope)
+    control = _NonWeakrefableNativeRunControl()
 
-    with pytest.raises(WriterRunError, match="support weak references"):
-        registry.begin_run(lease, scope, _NonWeakrefableNativeRunControl())
+    handle = registry.begin_run(lease, scope, control)
 
-    assert lease._run_generation == 0
-    assert registry._owners[scope.owner_key].active_run is None
+    assert handle.native_control is control
+    assert control in registry._strong_native_controls
     assert registry._native_control_refs == []
-    assert not hasattr(registry, "_native_controls_without_weakrefs")
+
+    registry.finish_run(
+        lease,
+        scope,
+        handle,
+        joined=True,
+        outcome=RunOutcome.KNOWN_TERMINAL,
+    )
+    with pytest.raises(WriterRunError):
+        registry.begin_run(lease, scope, control)
 
 
 def test_native_control_contract_is_required_before_starting_a_run():
@@ -393,7 +399,7 @@ def test_native_control_contract_is_required_before_starting_a_run():
         registry.begin_run(lease, scope, object())
 
     already_draining = _native_control()
-    already_draining.drain_requested = True
+    already_draining.request_drain("shutdown")
     with pytest.raises(WriterRunError):
         registry.begin_run(lease, scope, already_draining)
 
