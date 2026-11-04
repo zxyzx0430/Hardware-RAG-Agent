@@ -212,10 +212,11 @@ async def test_commit_failure_rolls_back_without_acknowledging(monkeypatch):
 
 @pytest.mark.skip(
     reason=(
-        "unterminable: reset_thread_checkpoint_for_writer's while-loop catches "
-        "CancelledError and keeps re-awaiting the shielded task, so neither "
-        "asyncio.wait_for, asyncio.timeout nor pytest-timeout can stop it "
-        "(agent_factory.py:535-546). Un-skip once cancellation propagates."
+        "blocked by an unrelated pre-existing defect: _RESET_TABLE_SCHEMAS is a "
+        "dict but agent_factory.py:732 iterates it as (table, columns) pairs, so "
+        "the owned reset raises ValueError before reaching commit and this test "
+        "waits forever on commit_entered. Cancellation now propagates; re-enable "
+        "once the schema loop reads .items()."
     ),
 )
 @pytest.mark.asyncio
@@ -360,5 +361,117 @@ async def test_reset_reservation_rejects_same_lease_run_and_second_reset(monkeyp
 
         allow_commit.set()
         await reset_task
+    finally:
+        await connection.close()
+
+
+def _hang_reset(monkeypatch, *, abandoned: asyncio.Event | None = None):
+    """Replace the owned reset transaction with one that never joins."""
+
+    async def hang(*_args, **_kwargs):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            if abandoned is not None:
+                abandoned.set()
+            raise
+
+    started = asyncio.Event()
+    monkeypatch.setattr(factory, "_reset_bound_thread_checkpoint", hang)
+    return started
+
+
+@pytest.mark.asyncio
+async def test_wait_for_cancels_reset_within_join_grace(monkeypatch):
+    connection, _saver, registry, binding, lease = await _bound_case(monkeypatch)
+    try:
+        monkeypatch.setattr(factory, "_RESET_CANCEL_GRACE_S", 0.05)
+        monkeypatch.setattr(factory, "_RESET_ABANDON_WAIT_S", 0.05)
+        _hang_reset(monkeypatch)
+
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(
+                factory.reset_thread_checkpoint_for_writer(binding, lease),
+                timeout=0.05,
+            )
+        with pytest.raises(WriterQuarantinedError):
+            registry.begin_checkpoint_reset(lease, binding.scope)
+    finally:
+        await connection.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_reset_quarantines_and_abandons_unjoined_task(monkeypatch):
+    connection, _saver, registry, binding, lease = await _bound_case(monkeypatch)
+    try:
+        monkeypatch.setattr(factory, "_RESET_CANCEL_GRACE_S", 0.05)
+        monkeypatch.setattr(factory, "_RESET_ABANDON_WAIT_S", 0.05)
+        abandoned = asyncio.Event()
+        started = _hang_reset(monkeypatch, abandoned=abandoned)
+
+        reset_task = asyncio.create_task(
+            factory.reset_thread_checkpoint_for_writer(binding, lease)
+        )
+        await started.wait()
+        reset_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await reset_task
+
+        await asyncio.wait_for(abandoned.wait(), timeout=1.0)
+        with pytest.raises(WriterQuarantinedError):
+            registry.begin_checkpoint_reset(lease, binding.scope)
+    finally:
+        await connection.close()
+
+
+@pytest.mark.asyncio
+async def test_reset_join_deadline_quarantines_without_cancellation(monkeypatch):
+    connection, _saver, registry, binding, lease = await _bound_case(monkeypatch)
+    try:
+        monkeypatch.setattr(factory, "_RESET_JOIN_TIMEOUT_S", 0.05)
+        monkeypatch.setattr(factory, "_RESET_ABANDON_WAIT_S", 0.05)
+        _hang_reset(monkeypatch)
+
+        with pytest.raises(WriterLifecycleError, match="did not join"):
+            await factory.reset_thread_checkpoint_for_writer(binding, lease)
+        with pytest.raises(WriterQuarantinedError):
+            registry.begin_checkpoint_reset(lease, binding.scope)
+    finally:
+        await connection.close()
+
+
+@pytest.mark.asyncio
+async def test_cancel_joins_completed_cleanup_before_propagating(monkeypatch):
+    connection, _saver, registry, binding, lease = await _bound_case(monkeypatch)
+    try:
+        entered = asyncio.Event()
+        allow_finish = asyncio.Event()
+
+        async def wait_then_finish(*_args, **_kwargs):
+            entered.set()
+            await allow_finish.wait()
+
+        monkeypatch.setattr(factory, "_reset_bound_thread_checkpoint", wait_then_finish)
+        reset_task = asyncio.create_task(
+            factory.reset_thread_checkpoint_for_writer(binding, lease)
+        )
+        await entered.wait()
+        reset_task.cancel()
+        await asyncio.sleep(0)
+        assert not reset_task.done()
+
+        allow_finish.set()
+        with pytest.raises(asyncio.CancelledError):
+            await reset_task
+
+        # The join finished, so the reservation was ACKed and can be reused.
+        token = registry.begin_checkpoint_reset(lease, binding.scope)
+        registry.finish_checkpoint_reset(
+            lease,
+            binding.scope,
+            token,
+            outcome=CheckpointResetOutcome.NOT_ATTEMPTED,
+        )
     finally:
         await connection.close()
