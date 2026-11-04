@@ -211,9 +211,17 @@ class TokenUsage(Base):
     model = Column(String, nullable=False, index=True)
     provider = Column(String, default="", nullable=True)
     session_id = Column(String, nullable=True, index=True)
+    trace_id = Column(String(64), nullable=True, index=True)
+    run_id = Column(String(64), nullable=True, index=True)
+    call_id = Column(String(64), nullable=True)
     prompt_tokens = Column(Integer, default=0)
     completion_tokens = Column(Integer, default=0)
+    cached_tokens = Column(Integer, default=0)
     total_tokens = Column(Integer, default=0)
+    cost_usd = Column(Float, default=0.0)
+    latency_ms = Column(Integer, nullable=True)
+    status = Column(String(32), default="ok")
+    source = Column(String(32), default="")
     created_at = Column(DateTime, default=datetime.datetime.now(datetime.timezone.utc))
 
 
@@ -242,6 +250,8 @@ class ToolAudit(Base):
     call_id = Column(String(64), nullable=True)
     success = Column(Boolean, default=True)
     error_type = Column(String(64), nullable=True)
+    trace_id = Column(String(64), nullable=True, index=True)
+    result_hash = Column(String(64), nullable=True)
 
 
 class SessionTombstone(Base):

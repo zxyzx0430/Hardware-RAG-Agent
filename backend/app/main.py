@@ -43,6 +43,7 @@ from app.api.explorer_routes import router as explorer_router
 from prometheus_client import Counter, Histogram, make_asgi_app
 from src.config.settings import settings
 from src.config.local_network import validate_local_bind_host
+from src.observability.trace import new_trace, reset_trace, set_trace
 from app.db.database import init_db
 
 # 请求体大小限制（默认 20MB，可通过环境变量 MAX_BODY_SIZE 覆盖）
@@ -143,25 +144,40 @@ class _RequestLogMiddleware:
             await self.app(scope, receive, send)
             return
 
-        request_id = str(uuid.uuid4())
+        incoming = {
+            key.decode("latin-1").lower(): value.decode("latin-1")
+            for key, value in scope.get("headers", [])
+        }
+        request_id = (
+            incoming.get("x-trace-id")
+            or incoming.get("x-request-id")
+            or str(uuid.uuid4())
+        )
+        trace = new_trace(request_id)
+        token = set_trace(trace)
         start_ns = time.time_ns()
         status_code = 0
 
-        # 注入 request_id 到 scope.state，路由中可通过 request.state.request_id 访问
+        # Expose the same trace id to routes and to the SSE frame builder.
         if "state" not in scope:
             scope["state"] = {}
-        scope["state"]["request_id"] = request_id
+        scope["state"]["request_id"] = trace.trace_id
+        scope["state"]["trace_id"] = trace.trace_id
 
         async def _send(message):
             nonlocal status_code
             if message["type"] == "http.response.start":
                 status_code = message.get("status", 0)
                 headers = list(message.get("headers", []))
-                headers.append((b"x-request-id", request_id.encode()))
+                headers.append((b"x-request-id", trace.trace_id.encode()))
+                headers.append((b"x-trace-id", trace.trace_id.encode()))
                 message = {**message, "headers": headers}
             await send(message)
 
-        await self.app(scope, receive, _send)
+        try:
+            await self.app(scope, receive, _send)
+        finally:
+            reset_trace(token)
 
         elapsed_ms = (time.time_ns() - start_ns) / 1_000_000
         _LOGGER.info(
@@ -170,7 +186,7 @@ class _RequestLogMiddleware:
             scope.get("path", "?"),
             status_code,
             elapsed_ms,
-            request_id,
+            trace.trace_id,
         )
         # B9: observe HTTP request latency (skip when metrics disabled)
         if _HTTP_REQUEST_HISTOGRAM is not None:

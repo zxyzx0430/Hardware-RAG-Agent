@@ -799,3 +799,9 @@ Vite 的 advisory 报告 Prism chunk 621.06 kB、主 bundle 1,020.16 kB（minifi
 | `backend/tests/test_skills_native_agent.py` | `91CFBAAEEC3CA4B76304CFB5F7D4C59677F31AA9E8440E14B0F13D74E5E92BF7` |
 
 本次仅覆盖上述 13 个后端路径及前端 Vitest、TypeScript 和 Vite build；不是全后端、实网或端到端验收。没有访问真实 GitHub、模型、服务、DB 或用户 Skills 数据，也没有完成完整 HTTP SSE/resume E2E。浏览器与实机行为未由本轮构建/自动化结果替代验收。
+
+## W5 质量门禁（2026-11-05）
+
+- E2E 骨架：`python scripts/ci/run_e2e.py`（临时 SQLite/Chroma、离线 HF）。
+- 评测门禁：`python scripts/ci/run_eval_gate.py`（离线校验 30+5 题；`--report` 检查四指标阈值）。
+- 两者归 W5；`.github/workflows/ci.yml` 的 job 接线归 W1。

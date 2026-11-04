@@ -2479,3 +2479,16 @@
 - 有没有 mock 占位规则，避免一方空等另一方？
 
 如果以上任一问题答案是否定的，这个接口就不应直接进入联调。
+
+## 9. 可观测字段（W5，2026-11-05）
+
+- HTTP 响应头同时返回 `x-request-id` 与 `x-trace-id`，二者值相同；请求可带
+  `x-trace-id`/`x-request-id` 透传上游 trace。
+- SSE 帧在请求 trace 上下文中增加 `id: <trace_id>:<seq>`，data JSON 增加
+  `trace_id` 与 `seq`；无 trace 上下文的直接调用保持旧格式。
+- `token_usage` 新增 `trace_id`/`run_id`/`call_id`/`cached_tokens`/`cost_usd`/
+  `latency_ms`/`status`/`source`；旧字段不变。
+- `tool_audit` 新增 `trace_id`/`result_hash`；`call_id`/`success`/`error_type`
+  现在由 `log_tool_call` 接收并落库。
+- Agent 路径的 `done.usage` 仍未填充；归属 `chat_routes`/`sse_adapter`，
+  由 W5 后续批次或对应线程处理。

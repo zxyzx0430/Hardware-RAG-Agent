@@ -24,6 +24,7 @@ from app.db.models import Settings as SettingsModel, TokenUsage
 from src.agent.prompts import append_long_term_memory
 from src.config.settings import settings
 from src.llm.client import ChatMessage
+from src.observability.trace import current_trace_id
 
 logger = logging.getLogger(__name__)
 
@@ -201,21 +202,34 @@ def _record_token_usage(
     provider: str,
     session_id: str | None,
     usage_data: dict,
+    *,
+    trace_id: str | None = None,
+    run_id: str | None = None,
+    call_id: str | None = None,
+    cached_tokens: int = 0,
+    cost_usd: float = 0.0,
+    latency_ms: int | None = None,
+    status: str = "ok",
+    source: str = "",
 ) -> None:
-    """记录 Token 用量到数据库（失败不抛异常，仅 warning）。
-
-    参数：
-        usage_data: {prompt_tokens, completion_tokens, total_tokens}
-    """
+    """记录 Token 用量到数据库（失败不抛异常，仅 warning）。"""
     try:
         with get_db_ctx() as db:
             record = TokenUsage(
                 model=model,
                 provider=provider or "",
                 session_id=session_id or "",
+                trace_id=trace_id or current_trace_id(),
+                run_id=run_id,
+                call_id=call_id,
                 prompt_tokens=usage_data.get("prompt_tokens", 0),
                 completion_tokens=usage_data.get("completion_tokens", 0),
+                cached_tokens=usage_data.get("cached_tokens", cached_tokens),
                 total_tokens=usage_data.get("total_tokens", 0),
+                cost_usd=cost_usd,
+                latency_ms=latency_ms,
+                status=status,
+                source=source,
             )
             db.add(record)
     except Exception as db_err:
