@@ -71,6 +71,10 @@ from app.db.models import Settings as SettingsModel
 from app.db.models import SessionOwnerBinding
 from app.db.models import SessionIncarnation
 from app.db.models import CONTEXT_WINDOW_256K
+from app.db.models import Feedback as FeedbackModel
+from app.db.models import TokenUsage as TokenUsageModel
+from app.db.models import ToolAudit as ToolAuditModel
+from app.db.models import SessionTombstone
 from app.api.tool_observations import purge_session_observations
 
 db_router = APIRouter(prefix="/api")
@@ -402,6 +406,8 @@ def create_session(payload: SessionCreate, db: DBSession = Depends(get_db), user
         # If the client supplied an ID, preserve the existing retry behavior.
         # The write lock makes this check and any new owner binding serializable.
         if payload.id:
+            if _session_is_tombstoned(db, payload.id):
+                raise _fail("SESSION_DELETED", f"会话已删除: {payload.id}", status_code=410)
             existing = db.query(SessionModel).filter(SessionModel.id == payload.id).first()
             if existing:
                 existing_binding = db.query(SessionOwnerBinding).filter(
@@ -689,12 +695,14 @@ def patch_session(session_id: str, payload: SessionUpdate, db: DBSession = Depen
 
 
 @db_router.delete("/sessions/{session_id}")
-def delete_session(session_id: str, db: DBSession = Depends(get_db), user: dict = Depends(current_user_optional)) -> dict:
-    """删除会话及其所有消息（级联删除）。"""
+async def delete_session(session_id: str, db: DBSession = Depends(get_db), user: dict = Depends(current_user_optional)) -> dict:
+    """删除会话及其所有派生数据（级联 + tombstone）。"""
     try:
         _begin_session_write(db)
         s = db.query(SessionModel).filter(SessionModel.id == session_id).first()
         if not s:
+            if _session_is_tombstoned(db, session_id):
+                return _ok({"id": session_id, "deleted": True})
             logger.warning("会话删除失败: id=%s 不存在", session_id)
             raise _fail("NOT_FOUND", f"会话不存在: {session_id}", status_code=404)
 
@@ -707,24 +715,11 @@ def delete_session(session_id: str, db: DBSession = Depends(get_db), user: dict 
             except PermissionError as exc:
                 raise _fail("FORBIDDEN", "无权删除该会话", status_code=403) from exc
 
-        logger.info("会话已删除: id=%s", session_id)
-        rolling_history_id_is_valid = (
-            type(session_id) is str
-            and 1 <= len(session_id) <= 128
-            and not any(ord(char) < 32 or ord(char) == 127 for char in session_id)
-        )
-        stage_session_delete_epoch(db, session_id, datetime.datetime.utcnow())
-        if rolling_history_id_is_valid:
-            rolling_prefix = rolling_history_session_prefix(session_id)
-            db.query(SettingsModel).filter(
-                func.substr(SettingsModel.key, 1, len(rolling_prefix)) == rolling_prefix,
-            ).delete(synchronize_session=False)
-        db.query(SettingsModel).filter(
-            SettingsModel.key.startswith(_session_prefix(session_id), autoescape=True),
-        ).delete(synchronize_session=False)
-        # The cascade removes the session itself, so there is no surviving revision to bump.
+        _purge_session_rows(db, session_id)
         db.delete(s)
         db.commit()
+        await _purge_session_runtime(session_id)
+        logger.info("会话已删除: id=%s", session_id)
         return _ok({"id": session_id, "deleted": True})
     except Exception:
         db.rollback()
@@ -924,6 +919,8 @@ def create_message(session_id: str, payload: MessageCreate, db: DBSession = Depe
     """在会话中添加或幂等更新一条消息。"""
     try:
         _begin_session_write(db)
+        if _session_is_tombstoned(db, session_id):
+            raise _fail("SESSION_DELETED", f"会话已删除: {session_id}", status_code=410)
         _require_session_owner_if_bound(db, session_id, user)
         s = db.query(SessionModel).filter(SessionModel.id == session_id).first()
         if not s:
