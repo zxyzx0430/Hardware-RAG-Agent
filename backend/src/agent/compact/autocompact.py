@@ -28,7 +28,10 @@ from src.agent.exceptions import ContextLimitError
 from src.agent.prompts import MAX_TOKEN_RATIO
 from src.agent.request_budget import estimate_message_tokens, estimated_messages_tokens
 from src.llm.client import LLMClient
-from src.llm.model_registry import MODEL_CONTEXT_WINDOWS, MODEL_MAX_TOKENS
+from src.llm.model_registry import (
+    MODEL_CONTEXT_WINDOWS, MODEL_MAX_TOKENS, get_max_tokens,
+    get_registered_max_tokens,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1961,3 +1964,214 @@ async def _call_fallback_llm(model: str, question: str) -> str:
     client = LLMClient()
     response = await client.chat(question, model=model)
     return response.content or ""
+
+
+_SUMMARY_CATEGORY_KEYS: tuple[str, ...] = (
+    "confirmed_facts",
+    "untrusted_tool_observations",
+    "decisions",
+    "open_tasks",
+    "uncertainties",
+)
+_SUMMARY_MAX_ITEMS_PER_CATEGORY: int = 64
+_SUMMARY_MAX_CONTENT_CHARS: int = 500
+
+def _unique_summary_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Reject duplicate JSON keys instead of accepting the last value silently."""
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("structured summary contains a duplicate JSON key")
+        result[key] = value
+    return result
+
+
+def _reject_summary_json_constant(value: str) -> None:
+    raise ValueError(f"structured summary contains invalid JSON constant: {value}")
+
+
+def _validate_summary_references(
+    value: Any,
+    *,
+    source_roles: list[str],
+) -> list[int]:
+    if type(value) is not list or not value:
+        raise ValueError("structured summary source_refs must be a nonempty list")
+    if any(
+        type(reference) is not int or reference < 0 or reference >= len(source_roles)
+        for reference in value
+    ):
+        raise ValueError("structured summary contains an invalid source reference")
+    if value != sorted(set(value)):
+        raise ValueError("structured summary source_refs must be sorted and unique")
+    return value
+
+
+def _validate_summary_item(
+    value: Any,
+    *,
+    source_roles: list[str],
+    source_contents: list[Any] | None,
+    category: str,
+) -> tuple[dict[str, Any], int]:
+    expected_keys = (
+        {"text", "source_refs", "result_state"}
+        if category == "untrusted_tool_observations"
+        else {"text", "source_refs"}
+    )
+    if type(value) is not dict or set(value) != expected_keys:
+        raise ValueError(f"structured summary {category} entry has an invalid shape")
+    text = value.get("text")
+    if type(text) is not str or not text.strip():
+        raise ValueError(f"structured summary {category} entry has empty text")
+    source_refs = _validate_summary_references(
+        value.get("source_refs"), source_roles=source_roles,
+    )
+    referenced_roles = [source_roles[reference] for reference in source_refs]
+    if category == "untrusted_tool_observations":
+        if value.get("result_state") != "returned_untrusted":
+            raise ValueError("tool observation state cannot imply success or approval")
+        if "tool" not in referenced_roles:
+            raise ValueError("tool observation has no ToolMessage source")
+        if source_contents is not None:
+            for reference in source_refs:
+                if source_roles[reference] != "tool":
+                    continue
+                for tool_text in _tool_message_text_values(
+                    source_contents[reference],
+                ):
+                    if (
+                        (len(tool_text) >= 32 and tool_text in text)
+                        or (len(tool_text) < 32 and text.strip() == tool_text)
+                    ):
+                        raise ValueError(
+                            "tool observation summary copied complete tool output"
+                        )
+        normalized = {
+            "text": text,
+            "source_refs": source_refs,
+            "result_state": "returned_untrusted",
+        }
+    else:
+        if category in ("confirmed_facts", "decisions") and "tool" in referenced_roles:
+            raise ValueError(f"{category} cannot cite an untrusted tool result")
+        normalized = {"text": text, "source_refs": source_refs}
+    return normalized, len(text)
+
+
+def _tool_message_text_values(content: Any) -> list[str]:
+    """Collect full textual tool-body values to reject verbatim body copying."""
+    if type(content) is not str:
+        return []
+    try:
+        envelope = json.loads(content)
+    except (TypeError, ValueError, RecursionError):
+        envelope = content
+
+    values: list[str] = []
+    pending = [envelope]
+    while pending:
+        value = pending.pop()
+        if type(value) is str:
+            stripped = value.strip()
+            if stripped:
+                values.append(stripped)
+        elif type(value) is dict:
+            pending.extend(value.values())
+        elif type(value) is list:
+            pending.extend(value)
+    return values
+
+
+def _validate_structured_summary(
+    summary: str,
+    *,
+    source_roles: list[str],
+    source_contents: list[Any] | None = None,
+) -> dict[str, Any]:
+    """Parse the strict, source-linked summary returned by the summarizer."""
+    if type(summary) is not str or not summary.strip():
+        raise ValueError("structured summary is empty or not text")
+    document = json.loads(
+        summary,
+        object_pairs_hook=_unique_summary_json_object,
+        parse_constant=_reject_summary_json_constant,
+    )
+    expected_keys = {"user_goal", *_SUMMARY_CATEGORY_KEYS}
+    if type(document) is not dict or set(document) != expected_keys:
+        raise ValueError("structured summary has missing or unknown fields")
+
+    user_goal = document["user_goal"]
+    if (
+        type(user_goal) is not dict
+        or set(user_goal) != {"text", "source_refs"}
+        or type(user_goal.get("text")) is not str
+        or not user_goal["text"].strip()
+    ):
+        raise ValueError("structured summary user_goal has an invalid shape")
+    user_goal_refs = _validate_summary_references(
+        user_goal.get("source_refs"), source_roles=source_roles,
+    )
+    if "human" not in [source_roles[reference] for reference in user_goal_refs]:
+        raise ValueError("structured summary user_goal has no user message source")
+
+    normalized: dict[str, Any] = {
+        "user_goal": {
+            "text": user_goal["text"],
+            "source_refs": user_goal_refs,
+        },
+    }
+    content_chars = len(user_goal["text"])
+    for category in _SUMMARY_CATEGORY_KEYS:
+        items = document[category]
+        if type(items) is not list or len(items) > _SUMMARY_MAX_ITEMS_PER_CATEGORY:
+            raise ValueError(f"structured summary {category} must be a bounded list")
+        normalized_items: list[dict[str, Any]] = []
+        for item in items:
+            normalized_item, item_chars = _validate_summary_item(
+                item,
+                source_roles=source_roles,
+                source_contents=source_contents,
+                category=category,
+            )
+            normalized_items.append(normalized_item)
+            content_chars += item_chars
+        normalized[category] = normalized_items
+    if content_chars > _SUMMARY_MAX_CONTENT_CHARS:
+        raise ValueError("structured summary exceeds its text budget")
+    return normalized
+
+
+def _resolve_summary_budget(llm_client: Any) -> Any:
+    """Resolve the exact model and output cap used by the supported LLM client."""
+    if type(llm_client) is not LLMClient:
+        raise ContextLimitError(cumulative=1, limit=0)
+
+    summary_model = llm_client.model
+    configured_max_tokens = llm_client.max_tokens
+    if (
+        type(summary_model) is not str
+        or not summary_model
+        or type(configured_max_tokens) is not int
+        or configured_max_tokens <= 0
+    ):
+        raise ContextLimitError(cumulative=1, limit=0)
+    registered_max_tokens = get_registered_max_tokens(summary_model)
+    effective_model_max_tokens = get_max_tokens(summary_model)
+    if (
+        type(registered_max_tokens) is not int
+        or registered_max_tokens <= 0
+        or type(effective_model_max_tokens) is not int
+        or effective_model_max_tokens != registered_max_tokens
+    ):
+        raise ContextLimitError(cumulative=1, limit=0)
+
+    requested_max_tokens = min(configured_max_tokens, effective_model_max_tokens)
+    return resolve_context_budget(
+        summary_model,
+        context_window_override=None,
+        requested_max_tokens=requested_max_tokens,
+    )
+
+
+
