@@ -270,3 +270,67 @@ class TestBuildBoundary:
         for value in ["..", "../..", "C:\\Windows", "a/b", ""]:
             with pytest.raises(BuildInputError):
                 sanitize_session_id(value)
+
+
+class TestAuthAndMCPBoundary:
+    def test_first_store_key_requires_console_code(self, monkeypatch, tmp_path) -> None:
+        from fastapi.testclient import TestClient
+        from app.api import auth, setup_code
+        from app.main import create_app
+
+        monkeypatch.setattr(auth, "STORE_PATH", tmp_path / "keys_store.json")
+        monkeypatch.setattr(auth, "ENCRYPTION_KEY_PATH", tmp_path / "enc_key")
+        monkeypatch.setattr(setup_code, "SETUP_CODE_PATH", tmp_path / "setup_code")
+        monkeypatch.setattr(setup_code, "_cache", "")
+        client = TestClient(create_app())
+        payload = {"provider": "test", "api_key": "sk-synthetic"}
+
+        assert client.post("/api/auth/store-key", json=payload).status_code == 403
+        payload["setup_code"] = setup_code.get_setup_code()
+        response = client.post("/api/auth/store-key", json=payload)
+        assert response.status_code == 200
+        assert response.json()["data"]["session_token"]
+
+    @pytest.mark.parametrize(
+        "config",
+        [
+            {"id": "x", "command": "powershell.exe"},
+            {"id": "x", "command": "cmd.exe"},
+            {"id": "x", "command": "bash", "args": ["-c", "id"]},
+            {"id": "x", "command": "python", "args": ["-c", "print(1)"]},
+            {"id": "x", "command": "python", "env": {"LD_PRELOAD": "x"}},
+        ],
+    )
+    def test_mcp_config_rejects_shells_and_inline_code(self, config) -> None:
+        from pydantic import ValidationError
+        from app.api.mcp_routes import MCPServerConfig
+
+        with pytest.raises(ValidationError):
+            MCPServerConfig.model_validate(config, strict=True)
+
+    def test_mcp_allows_module_launch(self) -> None:
+        import sys
+        from app.api.mcp_routes import MCPServerConfig
+
+        config = MCPServerConfig.model_validate(
+            {"id": "x", "command": sys.executable, "args": ["-m", "some_server"]},
+            strict=True,
+        )
+        assert config.args == ["-m", "some_server"]
+
+    @pytest.mark.parametrize(
+        ("method", "path"),
+        [
+            ("post", "/api/mcp/servers"),
+            ("get", "/api/mcp/servers"),
+            ("get", "/api/agent-sandbox/audit"),
+            ("get", "/api/agent-sandbox/policy"),
+        ],
+    )
+    def test_sensitive_routes_require_session(self, method, path) -> None:
+        from fastapi.testclient import TestClient
+        from app.main import create_app
+
+        client = TestClient(create_app())
+        kwargs = {"json": {"id": "x", "command": "python"}} if method == "post" else {}
+        assert getattr(client, method)(path, **kwargs).status_code == 401

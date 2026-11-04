@@ -15,15 +15,15 @@ def get_session_token(
     request: Request,
     authorization: Optional[str] = Header(default=None),
 ) -> Optional[str]:
-    """从 Authorization Bearer 或 query 参数 ?token= 提取 session_token。"""
+    """从 Authorization Bearer 或 monitor WebSocket 的 ?token= 提取 token."""
     # 1. Authorization: Bearer <token>
     if authorization and authorization.lower().startswith("bearer "):
         return authorization.split(" ", 1)[1].strip()
-    # 2. Query 参数（用于 WebSocket / SSE）
-    token = request.query_params.get("token")
-    if token:
-        return token
-    # 3. X-API-Key 兼容（旧客户端直传 API Key，无 session_token）
+    # 2. Query 参数只用于无法设置 header 的 WebSocket 串口监视器
+    if request.url.path.startswith("/api/monitor/"):
+        token = request.query_params.get("token")
+        if token:
+            return token
     return None
 
 

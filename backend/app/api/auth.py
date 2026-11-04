@@ -12,6 +12,8 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Request, Header
 from pydantic import BaseModel
 from cryptography.fernet import Fernet
+
+from app.api.setup_code import clear_setup_code, require_setup_code
 from src.config.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -177,12 +179,17 @@ def resolve_credentials(payload, request) -> dict:
     return {"api_key": api_key, "base_url": base_url, "model": model, "provider": provider}
 
 
-def _require_auth(authorization: Optional[str], store: dict) -> None:
+def _require_auth(
+    authorization: Optional[str],
+    store: dict,
+    setup_code: str = "",
+) -> None:
     """内联鉴权检查(避免与 dependencies.py 循环导入)。
 
-    无 providers 时跳过(首次配置场景);有 providers 时校验 Bearer token。
+    无 providers 时必须提供本地一次性确认码；已有 providers 时校验 Bearer token。
     """
     if not store.get("providers"):
+        require_setup_code(setup_code)
         return
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(401, detail={"success": False, "error": {"code": "AUTH_REQUIRED", "message": "未提供认证 token"}})
@@ -195,6 +202,7 @@ class StoreKeyRequest(BaseModel):
     provider: str
     api_key: str
     base_url: str = ""
+    setup_code: str = ""
 
 class LoginRequest(BaseModel):
     """登录请求：用 api_key 换取 session_token，provider 可选。
@@ -217,8 +225,11 @@ async def store_key(req: StoreKeyRequest, authorization: Optional[str] = Header(
         raise HTTPException(400, detail="API Key 不能为空")
     with _store_lock:
         store = _load_store()
-        _require_auth(authorization, store)
+        first_provider = not store.get("providers")
+        _require_auth(authorization, store, req.setup_code)
     token = store_provider_key(req.provider, req.api_key.strip(), req.base_url)
+    if first_provider:
+        clear_setup_code()
     logger.info("API Key 已存储: provider=%s", req.provider)
     return {"success": True, "data": {"session_token": token, "provider": req.provider}}
 

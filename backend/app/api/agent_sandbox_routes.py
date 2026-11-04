@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session as DBSession
 
-from app.api.dependencies import current_user
+from app.api.dependencies import require_session
 from app.db.database import get_db
 from app.db.models import Settings as SettingsModel
 
@@ -39,7 +39,10 @@ class PolicyUpdate(BaseModel):
 
 
 @router.get("/policy")
-def get_policy(db: DBSession = Depends(get_db)) -> dict:
+def get_policy(
+    db: DBSession = Depends(get_db),
+    _token: str = Depends(require_session),
+) -> dict:
     """Read current permission_mode from settings table."""
     row = db.query(SettingsModel).filter(SettingsModel.key == POLICY_KEY).first()
     mode = row.value if row else DEFAULT_POLICY
@@ -50,7 +53,7 @@ def get_policy(db: DBSession = Depends(get_db)) -> dict:
 def update_policy(
     payload: PolicyUpdate,
     db: DBSession = Depends(get_db),
-    user: dict = Depends(current_user),
+    _token: str = Depends(require_session),
 ) -> dict:
     """Update permission_mode in settings table (requires auth)."""
     mode = payload.permission_mode
@@ -82,6 +85,7 @@ def get_audit_logs(
     tool_name: str | None = None,
     decision: str | None = None,
     risk_level: str | None = None,
+    _token: str = Depends(require_session),
 ) -> dict:
     """Query tool-call audit logs with optional filters."""
     from src.agent.audit_logger import query_logs

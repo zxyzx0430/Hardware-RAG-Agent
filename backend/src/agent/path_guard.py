@@ -51,7 +51,7 @@ DENY_PATTERNS: tuple[str, ...] = (
     ".git", ".vscode", ".idea", ".claude",
     # 配置文件与密钥存储（硬拒绝，任何权限模式）
     "settings.json", ".env", ".env*",
-    ".enc_key", ".enc_key*", "keys_store*",
+    ".enc_key", ".enc_key*", "keys_store*", ".setup_code",
     # 证书/密钥（有扩展名）
     "*.key", "*.pem", "*.pfx", "*.p12", "*.keystore", "*.jks", "*.kdbx",
     # 凭证文件名（无扩展名）
