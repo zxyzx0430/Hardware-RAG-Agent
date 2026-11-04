@@ -21,7 +21,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.api import kb_routes
-from app.db.models import KnowledgeBase, KnowledgeDoc
+from app.db.models import BigChunk, KnowledgeBase, KnowledgeDoc
 from src.rag.chunking.base import ChunkResult
 
 
@@ -106,6 +106,7 @@ def isolated_index(monkeypatch, tmp_path):
     )
     KnowledgeBase.__table__.create(engine)
     KnowledgeDoc.__table__.create(engine)
+    BigChunk.__table__.create(engine)
     session_factory = sessionmaker(bind=engine, expire_on_commit=False)
     with session_factory() as db:
         db.add(KnowledgeBase(

@@ -4,7 +4,6 @@
 所有响应统一 {success, data} 格式（对齐 api-contract.md §2.3）。
 """
 
-import datetime
 import math
 import logging
 import uuid
@@ -30,7 +29,12 @@ logger = logging.getLogger(__name__)
 from app.db.models import Session as SessionModel
 from app.db.models import Message as MessageModel
 from app.db.models import Settings as SettingsModel
+from app.db.models import SessionTombstone
+from app.db.models import Feedback as FeedbackModel
+from app.db.models import TokenUsage as TokenUsageModel
+from app.db.models import ToolAudit as ToolAuditModel
 from app.db.models import CONTEXT_WINDOW_256K
+from app.api.tool_observations import purge_session_observations
 
 db_router = APIRouter(prefix="/api")
 
@@ -119,6 +123,8 @@ def create_session(payload: SessionCreate, db: DBSession = Depends(get_db), user
     """创建新会话。"""
     # 如果前端传了 id 且后端不存在同 id 会话，则使用前端 id（支持本地回退会话补录）
     if payload.id:
+        if _session_is_tombstoned(db, payload.id):
+            raise _fail("SESSION_DELETED", f"会话已删除: {payload.id}", status_code=410)
         existing = db.query(SessionModel).filter(SessionModel.id == payload.id).first()
         if existing:
             return _ok(_serialize_session(existing))
@@ -252,20 +258,74 @@ def patch_session(session_id: str, payload: SessionUpdate, db: DBSession = Depen
 
 
 @db_router.delete("/sessions/{session_id}")
-def delete_session(session_id: str, db: DBSession = Depends(get_db), user: dict = Depends(current_user_optional)) -> dict:
-    """删除会话及其所有消息（级联删除）。"""
+async def delete_session(session_id: str, db: DBSession = Depends(get_db), user: dict = Depends(current_user_optional)) -> dict:
+    """删除会话及其所有派生数据（级联 + tombstone）。"""
     s = db.query(SessionModel).filter(SessionModel.id == session_id).first()
     if not s:
+        if _session_is_tombstoned(db, session_id):
+            return _ok({"id": session_id, "deleted": True})
         logger.warning("会话删除失败: id=%s 不存在", session_id)
         raise _fail("NOT_FOUND", f"会话不存在: {session_id}", status_code=404)
+    _purge_session_rows(db, session_id)
+    db.delete(s)
+    db.commit()
+    await _purge_session_runtime(session_id)
     logger.info("会话已删除: id=%s", session_id)
-    stage_session_delete_epoch(db, session_id, datetime.datetime.utcnow())
+    return _ok({"id": session_id, "deleted": True})
+
+
+def _session_is_tombstoned(db: DBSession, session_id: str) -> bool:
+    return db.query(SessionTombstone.session_id).filter(
+        SessionTombstone.session_id == session_id
+    ).first() is not None
+
+
+def _write_tombstone(db: DBSession, session_id: str, now, epoch: str) -> None:
+    row = db.query(SessionTombstone).filter(
+        SessionTombstone.session_id == session_id
+    ).first()
+    if row is None:
+        db.add(SessionTombstone(session_id=session_id, deleted_at=now, epoch=epoch))
+        return
+    row.deleted_at = now
+    row.epoch = epoch
+
+
+def _purge_session_rows(db: DBSession, session_id: str) -> None:
+    """Delete session-scoped rows in the caller's transaction."""
+    now = utc_now()
+    epoch = stage_session_delete_epoch(db, session_id, now)
+    _write_tombstone(db, session_id, now, epoch)
+    for model in (FeedbackModel, TokenUsageModel, ToolAuditModel):
+        db.query(model).filter(model.session_id == session_id).delete(
+            synchronize_session=False,
+        )
+    purge_session_observations(db, session_id)
     db.query(SettingsModel).filter(
         SettingsModel.key.startswith(_session_prefix(session_id), autoescape=True),
     ).delete(synchronize_session=False)
-    db.delete(s)
-    db.commit()
-    return _ok({"id": session_id, "deleted": True})
+
+
+async def _purge_session_runtime(session_id: str) -> None:
+    """Best-effort cleanup outside the database transaction."""
+    try:
+        from src.agent.agent_factory import delete_thread_checkpoint
+
+        await delete_thread_checkpoint(session_id)
+    except Exception:
+        logger.warning("checkpoint cleanup deferred: %s", session_id)
+    try:
+        from src.agent.tools.groups.execution.todo_write import clear_session_todos
+
+        clear_session_todos(session_id)
+    except Exception:
+        logger.warning("todo cleanup failed: %s", session_id)
+    try:
+        from app.api.chat_routes import _clear_pending_request_snapshot
+
+        _clear_pending_request_snapshot(session_id)
+    except Exception:
+        logger.warning("pending cleanup failed: %s", session_id)
 
 # ═══════════════════════════════════════════
 # Message CRUD
@@ -318,6 +378,8 @@ def list_messages(session_id: str, db: DBSession = Depends(get_db), user: dict =
 @db_router.post("/sessions/{session_id}/messages")
 def create_message(session_id: str, payload: MessageCreate, db: DBSession = Depends(get_db), user: dict = Depends(current_user_optional)) -> dict:
     """在会话中添加或幂等更新一条消息。"""
+    if _session_is_tombstoned(db, session_id):
+        raise _fail("SESSION_DELETED", f"会话已删除: {session_id}", status_code=410)
     s = db.query(SessionModel).filter(SessionModel.id == session_id).first()
     if not s:
         raise _fail("NOT_FOUND", f"会话不存在: {session_id}", status_code=404)

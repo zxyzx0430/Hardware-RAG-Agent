@@ -442,6 +442,37 @@ def list_tool_observations(
         return None
 
 
+def purge_session_observations(db: Any, session_id: str) -> int:
+    """Delete one session's observation metadata and bodies from Settings."""
+    from app.db.models import Settings
+
+    if type(session_id) is not str or not session_id:
+        return 0
+    session_digest = _session_digest(session_id)
+    pattern = f"{_META_PREFIX}%:{session_digest}:%"
+    rows = db.query(Settings.key).filter(Settings.key.like(pattern)).all()
+    meta_keys: list[str] = []
+    body_keys: list[str] = []
+    for (key,) in rows:
+        if type(key) is not str:
+            continue
+        digest = key.rsplit(":", 1)[-1]
+        if _DIGEST_PATTERN.fullmatch(digest) is None:
+            continue
+        meta_keys.append(key)
+        body_keys.append(f"{_BODY_PREFIX}{digest}")
+    deleted = 0
+    if meta_keys:
+        deleted += db.query(Settings).filter(Settings.key.in_(meta_keys)).delete(
+            synchronize_session=False,
+        )
+    if body_keys:
+        deleted += db.query(Settings).filter(Settings.key.in_(body_keys)).delete(
+            synchronize_session=False,
+        )
+    return deleted
+
+
 def _valid_scope(scope: ToolObservationScope | None) -> bool:
     if (
         type(scope) is not ToolObservationScope
