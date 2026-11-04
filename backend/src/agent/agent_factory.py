@@ -481,6 +481,14 @@ async def reset_thread_checkpoint(thread_id: str) -> None:
     )
 
 
+# Bounded join for the owned checkpoint-reset task. The reset must finish (or be
+# quarantined) before the lease can be released, but waiting forever would swallow
+# cancellation from asyncio.wait_for/timeout and pytest-timeout.
+_RESET_JOIN_TIMEOUT_S: float = 30.0
+_RESET_CANCEL_GRACE_S: float = 5.0
+_RESET_ABANDON_WAIT_S: float = 1.0
+
+
 async def reset_thread_checkpoint_for_writer(
     binding: AgentWriterBinding,
     lease: WriterLease,
@@ -532,18 +540,42 @@ async def reset_thread_checkpoint_for_writer(
 
     cancellation: asyncio.CancelledError | None = None
     task_error: BaseException | None = None
-    while True:
-        try:
-            await asyncio.shield(task)
+    deadline = time.monotonic() + _RESET_JOIN_TIMEOUT_S
+    join_timed_out = False
+    while not task.done():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            join_timed_out = True
             break
+        try:
+            # asyncio.wait does not cancel the awaited task, unlike wait_for, so
+            # the owned reset keeps its join and cleanup window.
+            await asyncio.wait({task}, timeout=remaining)
         except asyncio.CancelledError as exc:
             if cancellation is None:
                 cancellation = exc
-            if task.done():
-                break
-        except BaseException as exc:
-            task_error = exc
-            break
+                # First cancellation keeps the join, but bounds it to a grace
+                # window so the caller can still observe its own cancel.
+                deadline = min(
+                    deadline, time.monotonic() + _RESET_CANCEL_GRACE_S,
+                )
+    if task.done() and task_error is None and not task.cancelled():
+        task_error = task.exception()
+
+    if join_timed_out:
+        logger.error(
+            "checkpoint reset join timed out after %.1fs (cancel_requested=%s)",
+            _RESET_JOIN_TIMEOUT_S,
+            cancellation is not None,
+        )
+        _quarantine_checkpoint_reset(binding, lease, scope, token)
+        reservation_open = False
+        await _abandon_checkpoint_reset_task(task)
+        if cancellation is not None:
+            raise cancellation
+        raise WriterLifecycleError(
+            "checkpoint reset did not join within its deadline"
+        )
 
     try:
         if task_error is not None:
@@ -567,6 +599,22 @@ async def reset_thread_checkpoint_for_writer(
 
     if cancellation is not None:
         raise cancellation
+
+
+async def _abandon_checkpoint_reset_task(task: asyncio.Task) -> None:
+    """Cancel a reset that outlived its join deadline and wait briefly.
+
+    The writer is already quarantined when this runs, so a late commit or a
+    failed rollback cannot be acknowledged or reused. Cancellation here reaches
+    the reset's own rollback path; any failure is swallowed by design.
+    """
+    if task.done():
+        return
+    task.cancel()
+    try:
+        await asyncio.wait_for(asyncio.shield(task), timeout=_RESET_ABANDON_WAIT_S)
+    except BaseException:
+        pass
 
 
 def _assert_agent_writer_binding(
