@@ -423,25 +423,7 @@ class HardwareVectorStore:
         ids_to_delete = collection.get("ids", [])
         if ids_to_delete:
             self.db.delete(ids=ids_to_delete)
-        self._delete_big_chunks_by_doc(doc_id)
         return len(ids_to_delete)
-
-    def _delete_big_chunks_by_doc(self, doc_id: str) -> None:
-        """Delete big_chunks rows by doc_id. Non-blocking on failure."""
-        db = SessionLocal()
-        try:
-            db.query(BigChunk).filter(BigChunk.doc_id == doc_id).delete(
-                synchronize_session=False
-            )
-            db.commit()
-        except Exception:
-            db.rollback()
-            logger.warning(
-                f"[BigChunk] delete failed for doc {doc_id} (non-blocking)",
-                exc_info=True,
-            )
-        finally:
-            db.close()
 
     def get_chunks_by_doc(self, doc_id: str) -> list[dict]:
         """Retrieve all chunks for a given doc_id. Returns list of dicts with id, content, metadata."""
@@ -485,14 +467,16 @@ class HardwareVectorStore:
             logger.exception(f"按 small_chunk_id 查询失败: {small_chunk_id}")
             return None
 
-    def delete_collection(self):
-        """清空当前 collection。"""
+    def delete_collection(self) -> bool:
+        """清空当前 collection；失败返回 False，调用方保留 DB 记录。"""
         try:
             self.db.delete_collection()
             self._db = None
             logger.info(f"已清空 collection: {self.collection_name}")
+            return True
         except Exception as e:
-            logger.exception(f"清空 collection 失败")
+            logger.exception(f"清空 collection 失败: {e}")
+            return False
 
     def ingest_chunks(self, chunks: list, doc_id: str) -> int:
         """Ingest pre-chunked data (ChunkResult list) into ChromaDB + big_chunks table.

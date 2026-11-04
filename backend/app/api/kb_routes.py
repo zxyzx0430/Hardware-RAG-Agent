@@ -878,7 +878,10 @@ def _delete_document_sync(requested_doc_id: str) -> dict:
                                     },
                                 }
 
-                    # Step 2: Delete DB record (vectors already cleaned).
+                    # Step 2: Delete DB rows (vectors already cleaned).
+                    db.query(BigChunk).filter(
+                        BigChunk.doc_id == actual_doc_id
+                    ).delete(synchronize_session=False)
                     db.delete(record)
 
                     # Rebuild BM25 before releasing the mutation lock.

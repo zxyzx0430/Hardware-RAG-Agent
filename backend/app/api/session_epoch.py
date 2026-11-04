@@ -40,7 +40,7 @@ def read_session_delete_epoch(session_id: str | None) -> str | None:
     return None
 
 
-def stage_session_delete_epoch(db, session_id: str, now) -> None:
+def stage_session_delete_epoch(db, session_id: str, now) -> str:
     """Stage invalidation with deletion; the caller owns the transaction."""
     key = _session_epoch_key(session_id)
     value = uuid.uuid4().hex
@@ -48,3 +48,4 @@ def stage_session_delete_epoch(db, session_id: str, now) -> None:
     db.execute(statement.on_conflict_do_update(
         index_elements=[Settings.key], set_={"value": value, "updated_at": now},
     ))
+    return value

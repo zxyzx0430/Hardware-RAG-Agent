@@ -838,24 +838,33 @@ class KnowledgeBaseManager:
             self.invalidate_search_cache()
             mutation_started = True
 
-            # Delete ChromaDB collection
+            # Delete ChromaDB collection first; keep DB rows when it fails.
             store = self._get_store(kb)
             if store:
                 try:
-                    store.delete_collection()
+                    collection_deleted = store.delete_collection()
                 except Exception:
-                    logger.warning(f"Failed to delete ChromaDB collection for {kb_id}")
+                    logger.exception("ChromaDB collection delete failed for KB %s", kb_id)
+                    return False
+                if collection_deleted is False:
+                    logger.warning("ChromaDB collection delete failed for KB %s", kb_id)
+                    return False
 
-            # Delete BM25 index file
-            bm25_path = BM25_DIR / f"{kb.collection_name}.pkl"
-            if bm25_path.exists():
-                bm25_path.unlink()
-
-            # Delete DB records
+            # Delete DB rows in one transaction.
             db.query(KnowledgeDoc).filter(KnowledgeDoc.kb_id == kb_id).delete()
-            self._delete_big_chunks_by_kb(kb_id)
+            db.query(BigChunk).filter(BigChunk.kb_id == kb_id).delete(
+                synchronize_session=False,
+            )
             db.delete(kb)
             db.commit()
+
+            # Delete BM25 index file after the DB commit.
+            bm25_path = BM25_DIR / f"{kb.collection_name}.pkl"
+            if bm25_path.exists():
+                try:
+                    bm25_path.unlink()
+                except Exception:
+                    logger.warning("Failed to delete BM25 index for KB %s", kb_id)
 
             # Clear caches
             self._stores.pop(kb_id, None)
@@ -867,23 +876,6 @@ class KnowledgeBaseManager:
         finally:
             if mutation_started:
                 self.invalidate_search_cache()
-            db.close()
-
-    def _delete_big_chunks_by_kb(self, kb_id: str) -> None:
-        """Delete big_chunks rows by kb_id in a separate session. Non-blocking."""
-        db = self._db_factory()
-        try:
-            db.query(BigChunk).filter(BigChunk.kb_id == kb_id).delete(
-                synchronize_session=False
-            )
-            db.commit()
-        except Exception:
-            db.rollback()
-            logger.warning(
-                f"[BigChunk] delete failed for kb {kb_id} (non-blocking)",
-                exc_info=True,
-            )
-        finally:
             db.close()
 
     def toggle_kb(self, kb_id: str, enabled: bool) -> bool:

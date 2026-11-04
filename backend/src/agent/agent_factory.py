@@ -937,6 +937,18 @@ async def _try_delete_thread(cp: Any, thread_id: str) -> bool:
         return False
 
 
+async def delete_thread_checkpoint(thread_id: str) -> bool:
+    """Best-effort checkpoint removal for a deleted session."""
+    if not isinstance(thread_id, str) or not thread_id:
+        return False
+    try:
+        cp = await _get_checkpointer()
+        return await _try_delete_thread(cp, thread_id)
+    except Exception as exc:
+        logger.warning("checkpoint delete failed thread_id=%s: %s", thread_id, exc)
+        return False
+
+
 def _clear_storage(cp: Any, thread_id: str) -> None:
     """Remove the thread's checkpoint entries from checkpointer.storage.
 
