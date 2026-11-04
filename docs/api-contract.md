@@ -2001,6 +2001,8 @@
         "session_id": "s3ed52d63",
         "role": "user",
         "content": "I2C NACK 怎么排查？",
+        "seq": 1,
+        "created_at": "2026-11-04T02:00:00Z",
         "session_title": "STM32 I2C 调试"
       }
     ],
@@ -2009,8 +2011,8 @@
 }
 ```
 
-- 后端约束：优先用 SQLite FTS5（`messages_fts` 表，按 `rank` 排序）；FTS5 不可用时 fallback 到 `LIKE` 查询。无 `current_user` 依赖。
-- 更新时间：2026-07-01
+- 后端约束：只使用 `messages_fts`，按 `messages_fts.rowid = messages.rowid` 关联并按 `rank` 排序；FTS5 不可用或返回空结果时 fallback 到 `LIKE`。Agent 的 `search_history` 工具复用同一查询。无 `current_user` 依赖。
+- 更新时间：2026-11-04
 
 ### 5.35 KB 补充端点（rename / config / chunks / export / import）
 

@@ -1,9 +1,11 @@
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from app.db.database import SessionLocal
+from src.agent.session_search import search_messages
 
 router = APIRouter(prefix="/api/search", tags=["search"])
+
+CONTENT_PREVIEW_CHARS = 200
 
 
 class SearchRequest(BaseModel):
@@ -13,42 +15,16 @@ class SearchRequest(BaseModel):
 
 @router.post("")
 def search(req: SearchRequest):
-    with SessionLocal() as db:
-        # 尝试使用 SQLite FTS5 全文搜索
-        try:
-            rows = db.execute(
-                """
-                SELECT m.id, m.session_id, m.role, m.content, s.title
-                FROM messages_fts f
-                JOIN messages m ON m.id = f.rowid
-                JOIN sessions s ON m.session_id = s.id
-                WHERE messages_fts MATCH ?
-                ORDER BY rank
-                LIMIT ?
-                """,
-                (req.query, req.limit),
-            ).fetchall()
-        except Exception:
-            # FTS5 不可用时 fallback 到 LIKE
-            rows = db.execute(
-                """
-                SELECT m.id, m.session_id, m.role, m.content, s.title
-                FROM messages m
-                JOIN sessions s ON m.session_id = s.id
-                WHERE m.content LIKE ?
-                LIMIT ?
-                """,
-                (f"%{req.query}%", req.limit),
-            ).fetchall()
-
-    results = []
-    for r in rows:
-        content = r[3] or ""
-        results.append({
-            "message_id": r[0],
-            "session_id": r[1],
-            "role": r[2],
-            "content": content[:200],
-            "session_title": r[4],
-        })
+    results = [
+        {
+            "message_id": hit["message_id"],
+            "session_id": hit["session_id"],
+            "role": hit["role"],
+            "content": hit["content"][:CONTENT_PREVIEW_CHARS],
+            "created_at": hit["created_at"],
+            "seq": hit["seq"],
+            "session_title": hit["session_title"],
+        }
+        for hit in search_messages(req.query, req.limit)
+    ]
     return {"success": True, "data": {"results": results, "total": len(results)}}
