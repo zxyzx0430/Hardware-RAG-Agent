@@ -325,7 +325,9 @@ async def test_chat_agent_builder_reuses_runtime_and_passes_only_expected_contex
     def fake_build_tools(_payload, *, skills_runtime=None, mcp_tools=(), tool_context=None):
         captured["tool_runtime"] = skills_runtime
         captured["tool_context"] = tool_context
-        return []
+        # enable_hitl is derived from "are there tools at all", so a tool must
+        # exist for the HITL assertion below to mean anything.
+        return [object()]
 
     async def fake_create_hardware_agent(**kwargs):
         captured.update(kwargs)
@@ -429,8 +431,20 @@ async def test_resume_restores_original_skills_runtime_and_permission_snapshot(
 
     skill_snapshot = SimpleNamespace(id="synthetic-safe", content_hash="hash-123")
     runtime = SimpleNamespace(mode="manual", snapshots=(skill_snapshot,))
+    # The resume path refuses a snapshot whose epochs cannot be re-verified, so
+    # both the snapshot and the live readers are pinned to the same values.
+    monkeypatch.setattr(
+        chat_routes, "read_session_delete_epoch", lambda _session_id: "session-epoch",
+    )
+    monkeypatch.setattr(chat_routes, "read_memory_clear_epoch", lambda: "memory-epoch")
+    # The resume path rejects a paused request whose principal differs from the
+    # verified caller, so the snapshot must be pinned to this user.
+    user = {"anonymous": False, "provider": "synthetic", "api_key": "synthetic-key"}
     snapshot = chat_routes.AgentRequestSnapshot(
         long_term_memory="Synthetic original memory",
+        principal_id=chat_routes._verified_principal_id(user),
+        session_delete_epoch="session-epoch",
+        memory_clear_epoch="memory-epoch",
         permission_mode="default",
         kb_ids=("synthetic-kb",),
         top_k=6,
@@ -491,7 +505,7 @@ async def test_resume_restores_original_skills_runtime_and_permission_snapshot(
         decision="allow",
     )
 
-    response = await chat_routes.resume_agent(resume, request, user={})
+    response = await chat_routes.resume_agent(resume, request, user=user)
     async for _event in response.body_iterator:
         pass
 
