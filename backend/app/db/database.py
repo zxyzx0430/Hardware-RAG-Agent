@@ -31,6 +31,11 @@ engine = create_engine(DATABASE_URL, echo=False, connect_args={"check_same_threa
 def _set_sqlite_pragma(dbapi_connection, connection_record):
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.execute("PRAGMA busy_timeout=5000")
+    try:
+        cursor.execute("PRAGMA journal_mode=WAL")
+    except Exception as exc:
+        _LOGGER.debug("WAL mode unavailable: %s", exc)
     cursor.close()
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -164,4 +169,7 @@ def init_db():
             # FTS5 不可用时静默降级（search_routes.py 有 LIKE fallback）
             __import__("logging").getLogger(__name__).warning(f"FTS5 初始化失败，将降级为 LIKE 查询: {e}")
 
+        from app.db.schema_w3 import apply_w3_schema
+
+        apply_w3_schema(conn)
         conn.commit()
