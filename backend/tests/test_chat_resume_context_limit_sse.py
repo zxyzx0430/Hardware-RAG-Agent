@@ -12,6 +12,21 @@ from app.api.sse import sse_event
 from src.agent import hitl_handler
 from src.agent.exceptions import ContextLimitError
 
+# The resume generator refuses to run without a request snapshot whose epochs
+# still match the current store, so the fixture supplies both halves.
+_SNAPSHOT = chat_routes.AgentRequestSnapshot(
+    session_delete_epoch="session-epoch",
+    memory_clear_epoch="memory-epoch",
+)
+
+
+@pytest.fixture(autouse=True)
+def _stable_epochs(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        chat_routes, "read_session_delete_epoch", lambda _session_id: "session-epoch",
+    )
+    monkeypatch.setattr(chat_routes, "read_memory_clear_epoch", lambda: "memory-epoch")
+
 
 def _decode_events(frames: list[str]) -> list[dict]:
     return [
@@ -74,6 +89,7 @@ def test_resume_context_limit_emits_failed_terminal_and_does_not_retry(
         req=request,
         call_counter=Counter(),
         model="test-model",
+        request_snapshot=_SNAPSHOT,
     )
 
     async def collect() -> list[dict]:
@@ -140,6 +156,7 @@ def test_resume_other_exception_keeps_agent_resume_failed_code(
         req=request,
         call_counter=Counter(),
         model="test-model",
+        request_snapshot=_SNAPSHOT,
     )
 
     async def collect() -> list[dict]:
