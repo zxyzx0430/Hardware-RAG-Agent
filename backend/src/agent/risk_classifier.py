@@ -91,7 +91,7 @@ _UNVERIFIED_WRITE_OPTIONS: tuple[re.Pattern[str], ...] = (
     # boundary-delimited prefix that can resolve to an external helper.
     re.compile(
         r"(?i)(?:^|[\s\"'])--"
-        r"(?:ext(?:-d(?:i(?:f)?)?)?|textc(?:o(?:n(?:v)?)?)?)"
+        r"(?:ext(?:-d(?:i(?:f(?:f)?)?)?)?|textc(?:o(?:n(?:v)?)?)?)"
         r"(?=\s|=|[\"']|$)"
     ),
 )
