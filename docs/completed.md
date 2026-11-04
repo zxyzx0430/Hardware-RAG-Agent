@@ -9,7 +9,7 @@
 - owner-bound legacy 会话的 history-mode 返回 `server_history: true`，可走服务端历史 + 图内压缩，保存仍走 legacy Message 接口；未绑定 owner 的旧会话继续使用客户端历史。通用工具输出支持归档与回读，mid-run summary 和 HITL 续跑的 source sidecar 从真实图状态重建。
 - 定向隔离测试：后端 **248 passed / 17 skipped / 1 failed**；失败项是 `test_crud_message_idempotency.test_history_mode_bootstraps_empty_owner_history_and_reads_back_pointer` 的内存 SQLite fixture 未安装 `message_source_generations` 触发器，属于测试夹具缺口（生产启动会安装触发器），不是 append-v1 产品路径。前端 server-history **10 passed**、useSessionStore **4 passed**、`tsc -b` 退出码 0。
 - 候选工作区扩展的旧 `useChatStore.test.ts` 仍有 32 项失败，集中在既有 Skills/聊天事件、usage 和 resume 路径；主工作树同一测试文件 42 项通过，未发现这些失败由本轮 server-history 改动直接导致，但仍属当前候选工作区未收口项。完整后端套件为 **73 failed / 1166 passed / 17 skipped**，失败集中在候选既有 memory/session resume、RAG rank、Skills 安全与 MCP/webfetch 等区域，详见 [测试说明](testing.md)。
-- 顺带修复 `deepseek-reasoner` / `deepseek-r1` 未在模型注册表登记、导致请求预算 fail-closed 的问题；真正未知模型仍保持 fail-closed，没有为了通过测试放宽预算校验。
+- 顺带修复 `deepseek-reasoner` / `deepseek-r1` 未在模型注册表登记、导致请求预算 fail-closed 的问题；真正未知模型不再静默 fail-closed，而是有显式 `context_window_override` 时使用 `min(override, 1,048,576)` 并标记 `budget_source=explicit_override`，无 override 时使用 32K 保守默认并标记 `budget_source=conservative_default`；解析结果写入日志审计。没有为了通过测试放宽预算校验。
 - 未验证：真实模型服务、浏览器端到端、实体硬件与烧录、新电脑空白安装。自动测试通过不代表这些验收已完成。
 - 边界：普通对话历史和已发布 checkpoint 由 SQLite 持久化，刷新或进程重启后可由服务端历史重建；HITL 待确认快照仍在进程内存中，进程重启后不能续跑该次确认。Provider 明确返回 context overflow 时的“压缩后重试一次”辅助函数尚未接入流式路由，当前依赖本地预算 fail closed；超出单代 64 个 source slot 的极端历史会继续多代压缩，无法建立 V3 source 绑定时回退图内摘要并保留原始 Message 行。
 
