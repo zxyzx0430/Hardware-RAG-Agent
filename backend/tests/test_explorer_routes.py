@@ -120,6 +120,7 @@ def test_first_provider_setup_can_be_followed_by_an_authenticated_project_open(
     monkeypatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(auth, "_load_store", lambda: {"providers": {}, "sessions": {}})
+    monkeypatch.setattr(auth, "require_setup_code", lambda _code: None)
     monkeypatch.setattr(
         auth, "store_provider_key", lambda provider, _key, _base: "new-session"
     )
