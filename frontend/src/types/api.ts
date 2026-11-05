@@ -204,7 +204,22 @@ export interface ContextCompressingSSEEvent {
   message?: string;
 }
 
-export type ChatSSEEvent =
+/** Metadata attached to every persisted SSE event (and to the `id:` line). */
+export interface RunEventMeta {
+  /** Run that produced this event. */
+  run_id?: string;
+  /** Monotonic per-run sequence. Absent on non-persisted events (heartbeat). */
+  seq?: number;
+}
+
+/** First persisted event of a run. */
+export interface RunStartedSSEEvent extends RunEventMeta {
+  type: 'run_started';
+  run_id: string;
+  seq: number;
+}
+
+export type ChatSSEEvent = RunEventMeta & (
   | ThinkingSSEEvent
   | TextSSEEvent
   | ToolCallSSEEvent
@@ -217,7 +232,44 @@ export type ChatSSEEvent =
   | HeartbeatSSEEvent
   | ContextCompressingSSEEvent
   | DoneSSEEvent
-  | ErrorSSEEvent;
+  | ErrorSSEEvent
+  | RunStartedSSEEvent
+);
+
+/** Lifecycle of a persisted chat run. */
+export type RunStatus =
+  | 'running'
+  | 'awaiting_confirmation'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'interrupted';
+
+/** Persisted HITL approval row, as returned by the run state endpoint. */
+export interface PendingApprovalRecord {
+  id: string;
+  run_id: string;
+  call_id: string;
+  tool_name: string;
+  args: Record<string, unknown> | string;
+  risk_level?: 'low' | 'medium' | 'high';
+  status: 'pending' | 'allowed' | 'denied' | 'stopped' | 'expired' | string;
+  created_at?: string;
+  expires_at?: string | null;
+  decided_at?: string | null;
+}
+
+/** Response from GET /api/runs/{run_id}. */
+export interface RunStateResponse {
+  id?: string;
+  run_id?: string;
+  session_id?: string;
+  status: RunStatus;
+  last_event_seq?: number;
+  error_code?: string | null;
+  error_message?: string | null;
+  pending_approvals?: PendingApprovalRecord[];
+}
 
 export interface ModelsRequest {
   base_url: string;
