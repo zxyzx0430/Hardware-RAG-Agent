@@ -476,7 +476,7 @@ def create_session(payload: SessionCreate, db: DBSession = Depends(get_db), user
             message_revision=0,
             branch_from_session_id=payload.branch_from_session_id,
             branch_from_message_id=payload.branch_from_message_id,
-            context_window=payload.context_window,
+            context_window=_cap_agent_session_context_window(payload.context_window),
         )
         logger.info("创建会话: id=%s title=%s", sid, payload.title)
         db.add(session)
@@ -648,7 +648,9 @@ def update_session(session_id: str, payload: SessionUpdate, db: DBSession = Depe
         if payload.branch_from_message_id is not None:
             s.branch_from_message_id = payload.branch_from_message_id
         if payload.context_window is not None:
-            s.context_window = payload.context_window
+            s.context_window = _cap_agent_session_context_window(
+                payload.context_window,
+            )
         logger.info("会话已更新: id=%s", session_id)
         s.updated_at = datetime.datetime.utcnow()
         db.commit()

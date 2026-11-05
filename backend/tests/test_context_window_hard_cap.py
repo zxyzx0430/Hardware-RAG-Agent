@@ -13,6 +13,7 @@ from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
 
 from app.api import crud
+from app.db.models import Session as SessionModel
 from src.agent import context_guard
 from src.agent.context_guard import resolve_context_budget
 from src.agent.exceptions import ContextLimitError
@@ -155,23 +156,38 @@ class _FakeDB:
         self.added = []
         self.commits = 0
 
-    def query(self, _model):
+    def query(self, model):
+        self._model = model
         return self
 
     def filter(self, *_criteria):
         return self
 
     def first(self):
-        return self.row
+        return self.row if self._model is SessionModel else None
 
     def add(self, row):
         self.added.append(row)
 
-    def flush(self):
+    def flush(self, *_args):
         return None
 
     def commit(self):
         self.commits += 1
+
+    def rollback(self):
+        return None
+
+    def in_transaction(self):
+        return False
+
+    def get_bind(self):
+        return SimpleNamespace(
+            dialect=SimpleNamespace(name="sqlite"),
+        )
+
+    def execute(self, *_args, **_kwargs):
+        return None
 
 
 def _session_row(context_window: int):
