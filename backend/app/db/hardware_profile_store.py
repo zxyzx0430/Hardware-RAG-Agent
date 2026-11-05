@@ -27,7 +27,7 @@ from app.db.hardware_profile_models import DEFAULT_PROFILE_CONFIDENCE, HardwareP
 logger = logging.getLogger(__name__)
 
 DEFAULT_SEARCH_LIMIT = 5
-MAX_SEARCH_LIMIT = 20
+MAX_SEARCH_LIMIT = 200
 MAX_SEARCH_QUERY_CHARS = 200
 MAX_PROFILE_ID_CHARS = 128
 MAX_NAME_CHARS = 256

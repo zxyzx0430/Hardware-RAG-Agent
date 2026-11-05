@@ -545,7 +545,9 @@ def _run_profile_route_check(check: Check, backend_probe: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _run_live_frontend(check: Check, work_dir: Path, startup_timeout: int) -> dict:
+def _run_live_frontend(
+    check: Check, work_dir: Path, startup_timeout: int, *, keep_running: bool = False,
+) -> dict:
     evidence: dict = {"started": False}
     node_modules = FRONTEND_DIR / "node_modules"
     if not node_modules.is_dir():
@@ -608,8 +610,11 @@ def _run_live_frontend(check: Check, work_dir: Path, startup_timeout: int) -> di
             )
         return evidence
     finally:
-        _stop_process(process)
-        evidence["process_exit_code"] = process.returncode if process else None
+        if not keep_running:
+            _stop_process(process)
+            evidence["process_exit_code"] = process.returncode if process else None
+        else:
+            evidence["_process"] = process if evidence.get("started") else None
 
 
 # ---------------------------------------------------------------------------
@@ -752,6 +757,9 @@ def _browser_flow(page, shot_dir: Path, frontend_url: str) -> dict:
         page.screenshot(path=str(shot_dir / "browser-05-no-content-input.png"))
         raise BrowserStepError("memory content input not found")
     editor.fill(marker)
+    scope_key = _first_visible(page, ['input[id$="-scope-key"]'])
+    if scope_key is not None:
+        scope_key.fill("browser-acceptance-project")
     evidence["steps"].append("filled memory content")
 
     if not _click_button(page, ["保存记忆", "Save memory"]):
@@ -805,7 +813,7 @@ def _browser_flow(page, shot_dir: Path, frontend_url: str) -> dict:
     evidence["steps"].append("opened hardware profile panel")
 
     profile_name = f"BROWSER-PROFILE-{int(time.time())}"
-    if not _click_button(page, ["新建档案", "New profile"]):
+    if not _click_button(page, ["新增档案", "新建档案", "New profile"]):
         page.screenshot(path=str(shot_dir / "browser-16-no-new-profile.png"))
         raise BrowserStepError("hardware profile new button not found")
     page.wait_for_timeout(400)
@@ -1136,7 +1144,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.with_frontend:
         frontend_check = Check("frontend-live", required_for_pass=False)
         live_frontend = _run_live_frontend(
-            frontend_check, work_dir, args.startup_timeout
+            frontend_check, work_dir, args.startup_timeout,
+            keep_running=args.browser,
         )
     else:
         frontend_check = Check("frontend-live", required_for_pass=False)
@@ -1153,6 +1162,9 @@ def main(argv: list[str] | None = None) -> int:
         browser_check = Check("browser-acceptance", required_for_pass=False)
         browser_check.block("not requested (use --browser; requires frontend deps)")
     checks.append(browser_check)
+    _frontend_process = live_frontend.pop("_process", None)
+    if _frontend_process is not None:
+        _stop_process(_frontend_process)
 
     try:
         verdict, _summary = _write_report(

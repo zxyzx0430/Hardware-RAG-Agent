@@ -35,7 +35,7 @@ def _validation_error(exc: Exception) -> HTTPException:
 @router.get("")
 def list_profiles(
     q: str = Query(default="", max_length=256),
-    limit: int = Query(default=50, ge=1, le=200),
+    limit: int = Query(default=100, ge=1, le=200),
     _user: dict = Depends(current_user),
 ) -> dict[str, Any]:
     store = HardwareProfileStore()
