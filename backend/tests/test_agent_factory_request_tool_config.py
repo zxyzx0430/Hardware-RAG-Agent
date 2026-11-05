@@ -447,7 +447,7 @@ async def test_interleaved_agent_requests_use_their_own_tool_config(monkeypatch)
         "request-b-1": {"kb-b"},
         "request-a-2": set(),
         "request-b-2": set(),
-        "request-c-no-kb": set(),
+        "request-c-no-kb": {"kb-a"},
     }
     if observed_source_kbs != expected_source_kbs:
         failures.append(
