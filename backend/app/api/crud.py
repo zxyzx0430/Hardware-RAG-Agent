@@ -770,6 +770,11 @@ def _purge_session_rows(db: DBSession, session_id: str) -> None:
     db.query(SettingsModel).filter(
         SettingsModel.key.startswith(_session_prefix(session_id), autoescape=True),
     ).delete(synchronize_session=False)
+    # Working memory and its checkpoint snapshots are session-scoped. Project
+    # and user memory must survive a session deletion.
+    from app.db.memory_store import purge_session_memory
+
+    purge_session_memory(db, session_id)
 
 
 async def _purge_session_runtime(session_id: str) -> None:
