@@ -1587,6 +1587,14 @@ async def _build_agent_for_payload(
         "skills_catalog": skills_catalog,
         "skills_context": list(snapshot.skills_context),
     }
+    last_user_query = ""
+    for message in reversed(payload.messages):
+        if message.role == "user":
+            content = message.content
+            last_user_query = content if isinstance(content, str) else str(content or "")
+            break
+    kwargs["user_query"] = last_user_query
+    kwargs["session_id"] = payload.session_id or ""
     _optional_arg(kwargs, "temperature", payload.temperature)
     _optional_arg(kwargs, "max_tokens", payload.max_tokens)
     _optional_arg(kwargs, "context_window_override", context_window_override)
