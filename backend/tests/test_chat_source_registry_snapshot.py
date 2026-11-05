@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from unittest.mock import AsyncMock
 from types import SimpleNamespace
 
 import pytest
@@ -46,6 +47,22 @@ class _NoopAuditRecorder:
 class _FakeMcpManager:
     def connected_tool_specs_snapshot(self) -> tuple[()]:
         return ()
+
+
+class _FakeWriterBinding:
+    """Minimal host binding for synthetic agents outside the factory."""
+
+    def __init__(self):
+        self.scope = SimpleNamespace(owner_key="synthetic-thread")
+        self.registry = SimpleNamespace(
+            assert_scope=lambda *_a, **_k: None,
+            acquire=lambda _scope: object(),
+            release=lambda *_a, **_k: None,
+            quarantine=lambda *_a, **_k: None,
+        )
+
+    def current_scope(self):
+        return self.scope
 
 
 class _ControlledAgent:
@@ -183,6 +200,22 @@ async def test_pause_resume_restores_registry_and_new_same_session_request_reset
         "base_url": "",
     })
     monkeypatch.setattr(chat_routes, "_AGENT_PATH_AVAILABLE", True)
+    monkeypatch.setattr(
+        chat_routes, "_build_request_writer_binding",
+        lambda *_a, **_k: _FakeWriterBinding(),
+    )
+    monkeypatch.setattr(
+        chat_routes, "_acquire_request_writer_lease", lambda _binding: object(),
+    )
+
+    async def no_writer_reset(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(agent_factory, "reset_thread_checkpoint_for_writer", no_writer_reset)
+    monkeypatch.setattr(
+        hitl_handler, "_detect_tools_interrupt",
+        AsyncMock(return_value=[]),
+    )
 
     results = [
         _fake_result("kb-a", 1, 0.95),
@@ -300,7 +333,10 @@ async def test_resume_rejects_missing_or_invalid_registry_snapshot(
     context = agent_factory._build_tool_ctx(_request(session_id, ["kb-a"], 2, 0.5))
     authorization = _Revocable()
     context.mcp_authorization = authorization
+    session_epoch, memory_epoch = chat_routes._capture_request_snapshot_epochs(session_id)
     snapshot = chat_routes.AgentRequestSnapshot(
+        session_delete_epoch=session_epoch,
+        memory_clear_epoch=memory_epoch,
         permission_mode="default",
         kb_ids=("kb-a",),
         top_k=2,

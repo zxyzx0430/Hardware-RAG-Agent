@@ -19,14 +19,24 @@ from app.db.models import Session as SessionModel
 
 
 @pytest.fixture()
-def client() -> Generator[TestClient, None, None]:
+def client(monkeypatch) -> Generator[TestClient, None, None]:
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
     TestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    from sqlalchemy import event
+
+    @event.listens_for(engine, "connect")
+    def _enable_foreign_keys(dbapi_connection, _record):
+        dbapi_connection.execute("PRAGMA foreign_keys=ON")
+
     Base.metadata.create_all(bind=engine)
+    from app.db import database
+
+    monkeypatch.setattr(database, "engine", engine)
+    database._ensure_message_source_generation_schema()
 
     with TestingSession() as db:
         db.add(SessionModel(id="session-1", title="新对话", model="test"))

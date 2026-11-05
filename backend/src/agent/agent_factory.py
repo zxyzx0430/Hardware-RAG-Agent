@@ -1158,6 +1158,7 @@ def build_tool_specs(
     """
     ensure_default_tools_registered()
     skills_mode = getattr(payload, "skills_mode", "off") or "off"
+    explicit_runtime = skills_runtime is not None
     if skills_runtime is None and tool_context is not None:
         skills_runtime = getattr(tool_context, "skills_runtime", None)
     if skills_mode == "off":
@@ -1188,7 +1189,7 @@ def build_tool_specs(
             )
         tool_list.append(ReadToolObservationTool())
 
-    if skills_mode != "off":
+    if skills_mode != "off" or explicit_runtime:
         from src.agent.skill_runtime import (
             ImportSkillTool,
             LoadSkillTool,
@@ -1230,6 +1231,7 @@ def build_tool_specs(
         raise ValueError(
             f"Duplicate tool names in final request tool list: {duplicate_names}"
         )
+    ctx.skills_allowed_tools = frozenset(tool.name for tool in tool_list)
     request_tool_ids = {id(tool) for tool in request_tools}
     included_request_tools = tuple(
         tool for tool in tool_list if id(tool) in request_tool_ids

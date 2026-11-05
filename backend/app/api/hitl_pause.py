@@ -161,6 +161,13 @@ def record_pause(
         _RECEIPTS[key] = (receipt, now + ttl)
 
 
+def has_recorded_pause(key: tuple[str, str, str]) -> bool:
+    now = time.monotonic()
+    with _LOCK:
+        _prune(now)
+        return key in _RECEIPTS
+
+
 def require_and_consume(
     key: tuple[str, str, str], receipt: PauseReceipt,
 ) -> None:

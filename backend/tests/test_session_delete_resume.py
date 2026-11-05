@@ -1,6 +1,7 @@
 """Deleting a persisted session invalidates its old paused Agent request."""
 
 from dataclasses import replace
+from unittest.mock import AsyncMock
 from types import SimpleNamespace
 
 import httpx
@@ -43,8 +44,29 @@ def session_app(monkeypatch):
         from app.api.sse import sse_event
         yield sse_event("text", {"content": "synthetic resumed answer"})
 
+    class _FakeWriterBinding:
+        def __init__(self):
+            self.scope = SimpleNamespace(owner_key="synthetic-thread")
+            self.registry = SimpleNamespace(
+                assert_scope=lambda *_a, **_k: None,
+                acquire=lambda _scope: object(),
+                release=lambda *_a, **_k: None,
+                quarantine=lambda *_a, **_k: None,
+            )
+
+        def current_scope(self):
+            return self.scope
+
     from src.agent import hitl_handler
     monkeypatch.setattr(chat_routes, "_AGENT_PATH_AVAILABLE", True)
+    monkeypatch.setattr(
+        chat_routes, "_build_request_writer_binding",
+        lambda *_a, **_k: _FakeWriterBinding(),
+    )
+    monkeypatch.setattr(
+        chat_routes, "_acquire_request_writer_lease", lambda _binding: object(),
+    )
+    monkeypatch.setattr(hitl_handler, "_detect_tools_interrupt", AsyncMock(return_value=[]))
     monkeypatch.setattr(chat_routes, "_build_agent_for_payload", build)
     monkeypatch.setattr(chat_routes, "_resolve_creds", lambda *_args: {"model": "synthetic"})
     monkeypatch.setattr(chat_routes, "build_agent_config", lambda *_args: {})
@@ -100,12 +122,12 @@ async def test_deleted_request_cannot_be_restored_by_reinsert_or_same_id_recreat
         await client.delete("/api/sessions/delete-resume-a")
         chat_routes._store_pending_request_snapshot(old_payload.session_id, old_snapshot)
         assert chat_routes._get_pending_request_snapshot(old_payload.session_id) is None
-        assert (await client.post("/api/sessions", json={"id": "delete-resume-a"})).status_code == 200
+        assert (await client.post("/api/sessions", json={"id": "delete-resume-a"})).status_code == 410
         chat_routes._store_pending_request_snapshot(old_payload.session_id, old_snapshot)
         with pytest.raises(HTTPException) as error:
             await resume_request(old_payload)
         assert error.value.status_code == 409 and session_app.captured == []
-        fresh_payload, _fresh_snapshot = paused_request()
+        fresh_payload, _fresh_snapshot = paused_request("delete-resume-b")
         assert '"type": "done"' in await resume_request(fresh_payload)
         assert len(session_app.captured) == 1
 
@@ -214,7 +236,7 @@ async def test_delete_during_async_preparation_does_not_restamp_old_request(sess
             assert (await client.delete(f"/api/sessions/{payload.session_id}")).status_code == 200
             return None, None
 
-        async def agent_stream(_payload, _creds, long_term_memory=None, request_snapshot=None):
+        async def agent_stream(_payload, _creds, long_term_memory=None, request_snapshot=None, **_kwargs):
             observed.append(request_snapshot.session_delete_epoch)
             chat_routes._store_pending_request_snapshot(payload.session_id, replace(
                 request_snapshot, tool_context=old_snapshot.tool_context,
@@ -230,9 +252,10 @@ async def test_delete_during_async_preparation_does_not_restamp_old_request(sess
         monkeypatch.setattr(chat_routes, "make_client", lambda **_kwargs: object())
         monkeypatch.setattr(chat_routes, "_run_agent_stream", agent_stream)
         request = Request({"type": "http", "method": "POST", "path": "/api/chat", "headers": []})
-        response = await chat_routes.chat_sse(payload, request, user={})
-        _events = [chunk async for chunk in response.body_iterator]
-    assert observed == [old_snapshot.session_delete_epoch]
+        with pytest.raises(HTTPException) as error:
+            await chat_routes.chat_sse(payload, request, user={})
+    assert error.value.status_code == 503
+    assert observed == []
     assert chat_routes._get_pending_request_snapshot(payload.session_id) is None
 
 
@@ -255,10 +278,11 @@ async def test_delete_generation_is_observed_by_another_file_database_engine(ses
         with pytest.raises(HTTPException) as error:
             await resume_request(payload)
         assert error.value.status_code == 409 and session_app.captured == []
-        # A later, newly captured request can use the surviving generation.
-        with factory_b() as db:
+        # Tombstones survive the engine boundary and keep the ID retired.
+        with factory_b() as db, pytest.raises(HTTPException) as recreate_error:
             crud.create_session(crud.SessionCreate(id=payload.session_id), db=db, user=None)
-        fresh_payload, _fresh_snapshot = paused_request()
+        assert recreate_error.value.status_code == 410
+        fresh_payload, _fresh_snapshot = paused_request("delete-resume-b")
         assert '"type": "done"' in await resume_request(fresh_payload)
     finally:
         engine_a.dispose()

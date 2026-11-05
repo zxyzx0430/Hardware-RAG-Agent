@@ -19,6 +19,35 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
+@pytest.fixture
+async def writer_bound_saver(monkeypatch):
+    """Give factory graphs a supported, isolated AsyncSqliteSaver."""
+    import aiosqlite
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+    from src.agent import agent_factory
+
+    conn = await aiosqlite.connect(":memory:")
+    saver = AsyncSqliteSaver(conn)
+    await saver.setup()
+    monkeypatch.setattr(agent_factory, "_global_checkpointer", saver)
+    monkeypatch.setattr(agent_factory, "_global_checkpointer_cm", None)
+    monkeypatch.setattr(agent_factory, "_writer_lifecycle_saver", None)
+    monkeypatch.setattr(agent_factory, "_writer_lifecycle_registry", None)
+    monkeypatch.setattr(agent_factory, "_factory_graph_savers", {})
+    try:
+        yield saver
+    finally:
+        await conn.close()
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _ensure_global_schema():
+    """Create the process-wide schema so direct route calls can read epochs."""
+    from app.db.database import init_db
+
+    init_db()
+
+
 @pytest.fixture(autouse=True)
 def _bypass_auth():
     """所有测试绕过 auth —— 测试不应依赖 keys_store.json 磁盘状态。

@@ -3,6 +3,7 @@
 import asyncio
 import json
 from collections import Counter
+from types import SimpleNamespace
 
 from fastapi import Request
 import pytest
@@ -60,11 +61,14 @@ def _configure_chat_route(monkeypatch, run_agent_stream, counters: dict[str, int
 async def _collect_events(monkeypatch, run_agent_stream, counters: dict[str, int]) -> list[dict]:
     _configure_chat_route(monkeypatch, run_agent_stream, counters)
     payload = chat_routes.ChatRequest(
-        messages=[chat_routes.ChatMessageSchema(role="user", content="synthetic question")],
+        messages=[chat_routes.ChatMessageSchema(role="user", content="synthetic question", message_id="m-synthetic")],
         use_agent=True,
         session_id="synthetic-context-limit-sse-test",
     )
-    response = await chat_routes.chat_sse(payload, _request(), user={})
+    response = await chat_routes.chat_sse(
+        payload, _request(),
+        user={"anonymous": False, "provider": "synthetic", "api_key": "synthetic-key"},
+    )
     chunks = []
     async for chunk in response.body_iterator:
         chunks.append(chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk)
@@ -102,7 +106,7 @@ def test_pre_send_compaction_failure_stops_before_agent_stream_and_fallback(monk
         counters["agent_build"] += 1
         return object()
 
-    async def compaction_failure(_messages, _creds, _context_window):
+    async def compaction_failure(_messages, _creds, _context_window, **_kwargs):
         raise ContextLimitError(cumulative=101, limit=80)
 
     async def forbidden_agent_stream(*_args, **_kwargs):
@@ -110,8 +114,33 @@ def test_pre_send_compaction_failure_stops_before_agent_stream_and_fallback(monk
         raise AssertionError("pre-send compaction failure must precede Agent streaming")
         yield  # Keep the async-generator interface explicit.
 
+    class _FakeWriterBinding:
+        def __init__(self):
+            self.scope = SimpleNamespace(owner_key="synthetic-thread")
+            self.registry = SimpleNamespace(
+                assert_scope=lambda *_a, **_k: None,
+                acquire=lambda _scope: object(),
+                release=lambda *_a, **_k: None,
+                quarantine=lambda *_a, **_k: None,
+            )
+
+        def current_scope(self):
+            return self.scope
+
+    async def no_writer_reset(*_args, **_kwargs):
+        return None
+
     monkeypatch.setattr(agent_factory, "reset_thread_checkpoint", no_op_reset)
-    monkeypatch.setattr(chat_routes, "_request_snapshot_from_payload", lambda *_args: object())
+    monkeypatch.setattr(
+        chat_routes, "_build_request_writer_binding",
+        lambda *_a, **_k: _FakeWriterBinding(),
+    )
+    monkeypatch.setattr(
+        chat_routes, "_acquire_request_writer_lease", lambda _binding: object(),
+    )
+    monkeypatch.setattr(
+        agent_factory, "reset_thread_checkpoint_for_writer", no_writer_reset,
+    )
     monkeypatch.setattr(chat_routes, "_ensure_skills_runtime", lambda snapshot: snapshot)
     monkeypatch.setattr(chat_routes, "_payload_with_request_snapshot", lambda payload, _snapshot: payload)
     monkeypatch.setattr(
@@ -123,8 +152,8 @@ def test_pre_send_compaction_failure_stops_before_agent_stream_and_fallback(monk
     )
     monkeypatch.setattr(chat_routes, "_build_agent_for_payload", build_agent)
     monkeypatch.setattr(chat_routes, "build_agent_config", lambda _session_id: {})
-    monkeypatch.setattr(chat_routes, "_build_agent_messages", lambda _payload: [{"role": "user", "content": "synthetic"}])
-    monkeypatch.setattr(chat_routes, "_session_context_window", lambda _session_id: 100)
+    monkeypatch.setattr(chat_routes, "_build_agent_messages", lambda _payload: [{"role": "user", "content": "synthetic question", "message_id": None}])
+    monkeypatch.setattr(chat_routes, "_session_context_window", lambda _session_id: 32768)
     monkeypatch.setattr(chat_routes, "_dicts_to_langchain_messages", lambda messages: messages)
     monkeypatch.setattr(autocompact, "should_autocompact", lambda *_args: True)
     monkeypatch.setattr(chat_routes, "_run_autocompact", compaction_failure)
@@ -156,14 +185,18 @@ def test_midrun_compaction_failure_keeps_prior_text_and_stops_without_retry(monk
 
 
 def test_sse_adapter_propagates_midrun_compaction_failure_and_closes_agent_stream(monkeypatch):
+    from langgraph.errors import GraphDrained
     from src.agent import sse_adapter
+    from tests.stream_writer_lease_support import authenticated_test_stream
 
     observed = {"continued_after_failure": False, "closed": False}
 
     class FakeAgent:
-        async def astream(self, *_args, **_kwargs):
+        async def astream(self, *_args, control=None, **_kwargs):
             try:
                 yield "updates", {"node": {"messages": []}}
+                if control is not None and control.drain_requested:
+                    raise GraphDrained("context_compaction")
                 observed["continued_after_failure"] = True
             finally:
                 observed["closed"] = True
@@ -174,14 +207,17 @@ def test_sse_adapter_propagates_midrun_compaction_failure_and_closes_agent_strea
     monkeypatch.setattr(sse_adapter, "_do_compact", failed_compaction)
     state = {"needs_compact": True, "token_limit": 80}
 
-    async def collect():
+    async def collect(agent, config):
         return [
             event async for event in sse_adapter._iter_agent_sse(
-                FakeAgent(), {}, {}, Counter(), {}, state,
+                agent, {}, config, Counter(), {}, state,
             )
         ]
 
-    with pytest.raises(ContextLimitError):
-        asyncio.run(collect())
+    with authenticated_test_stream(
+        monkeypatch, FakeAgent(), business_session_id="midrun-compaction-test",
+    ) as (agent, config, _queue_id):
+        with pytest.raises(ContextLimitError):
+            asyncio.run(collect(agent, config))
 
     assert observed == {"continued_after_failure": False, "closed": True}

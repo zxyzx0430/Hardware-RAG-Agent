@@ -32,7 +32,7 @@ def _timing_records(caplog) -> list[dict]:
 
 
 class _ModelOutputAgent:
-    async def astream(self, _events, *, config, stream_mode):
+    async def astream(self, _events, *, config, stream_mode, **_kwargs):
         assert stream_mode == ["messages", "updates"]
         callbacks = config.get("callbacks", [])
         handlers = callbacks if isinstance(callbacks, (list, tuple)) else callbacks.handlers
@@ -48,7 +48,7 @@ class _ModelOutputAgent:
 
 
 class _FailingAgent:
-    async def astream(self, _events, *, config, stream_mode):
+    async def astream(self, _events, *, config, stream_mode, **_kwargs):
         if False:
             yield None
         callbacks = config.get("callbacks", [])

@@ -147,6 +147,7 @@ class AgentRequestSnapshot:
     graph_config: dict | None = field(default=None, repr=False, compare=False)
     pending_call_ids: tuple[str, ...] = ()
     pending_call_fingerprints: tuple[tuple[str, str], ...] = field(default=(), repr=False)
+    skill_install_tool: Any = field(default=None, repr=False, compare=False)
 
 
 class _RequestSnapshotEpochError(RuntimeError):
@@ -159,6 +160,10 @@ class _WriterLifecycleUnavailableError(RuntimeError):
 
 def _capture_request_snapshot_epochs(session_id: str | None) -> tuple[str, str]:
     """Pin the generations that bound this request's session and memory snapshot."""
+    from app.api.session_epoch import is_session_tombstoned
+
+    if is_session_tombstoned(session_id):
+        raise _RequestSnapshotEpochError("session was deleted")
     session_epoch = read_session_delete_epoch(session_id)
     memory_epoch = read_memory_clear_epoch()
     if session_epoch is None or memory_epoch is None:
@@ -412,6 +417,36 @@ def _ensure_request_tool_context(
     context = _build_tool_ctx(request_payload, snapshot.skills_runtime)
     context.tool_observation_scope = _tool_observation_scope(snapshot)
     return replace(snapshot, tool_context=context)
+
+
+def _seed_skill_install_tool_context(tool_context: Any, tool: Any) -> None:
+    if tool is None:
+        return
+    from src.agent.tools.groups.skills.install_tool import SkillInstallTool
+
+    if type(tool) is not SkillInstallTool:
+        raise ValueError("Invalid request-scoped Skill install tool")
+    current = tool_context.request_tools.get(tool.name)
+    if current is not None and current is not tool:
+        raise ValueError("Skill install tool name conflicts with another request tool")
+    tool_context.request_tools[tool.name] = tool
+
+
+def _attach_skill_install_tool(tool_context: Any, tools: list[Any], tool: Any) -> None:
+    if tool is None:
+        return
+    from src.agent.agent_factory import _load_disabled_tools
+
+    _seed_skill_install_tool_context(tool_context, tool)
+    if tool.name in _load_disabled_tools():
+        raise ValueError("Skill install tool was disabled before the request Agent was built")
+    if not any(item is tool for item in tools):
+        if any(getattr(item, "name", None) == tool.name for item in tools):
+            raise ValueError("Skill install tool name conflicts with a built-in tool")
+        tools.append(tool)
+    injected = getattr(tool_context.request_tools, "injected_tools", None)
+    if injected is not None and not any(item is tool for item in injected):
+        tool_context.request_tools.injected_tools = tuple(injected) + (tool,)
 
 
 def _ensure_skills_runtime(snapshot: AgentRequestSnapshot) -> AgentRequestSnapshot:
@@ -1209,7 +1244,7 @@ async def _check_and_compact_history(
         from src.agent.context_guard import resolve_context_budget
 
         session_window = _session_context_window(payload.session_id)
-        requested_tokens = payload.max_tokens
+        requested_tokens = getattr(payload, "max_tokens", None)
         if type(session_window) is int and session_window > 0 and (
             requested_tokens is None
             or (type(requested_tokens) is int and requested_tokens >= session_window)
@@ -1434,6 +1469,7 @@ async def _run_agent_stream(
             tool_event_scope=snapshot.tool_event_scope,
             compaction_source_message_ids=compaction_source_message_ids,
             compaction_source_messages=tuple(agent_input["messages"]),
+            request_snapshot=snapshot,
         ):
             _require_request_snapshot_epochs_current(snapshot, payload.session_id)
             event_type = _sse_event_type(sse)
@@ -1460,11 +1496,25 @@ async def _stream_agent_in_context(
     context_budget=None, *, archive_scope=None, tool_event_scope=None,
     compaction_source_message_ids: tuple[str | None, ...] | None = None,
     compaction_source_messages: tuple[dict, ...] | None = None,
+    request_snapshot: AgentRequestSnapshot | None = None,
 ):
+    from contextlib import nullcontext
     from src.agent.request_context import activate_tool_context
-    with activate_tool_context(tool_context):
+
+    grant = getattr(
+        getattr(request_snapshot, "skill_install_tool", None), "_install_grant", None,
+    )
+    if grant is not None:
+        from src.agent.tools.groups.skills.install_tool import activate_install_binding
+
+        install_scope = activate_install_binding(grant)
+    else:
+        install_scope = nullcontext()
+    with activate_tool_context(tool_context), install_scope:
         with bind_compaction_archive(archive_scope), bind_tool_event_archive(tool_event_scope):
-            with _request_writer_context(writer_binding, writer_lease, model, config, snapshot):
+            with _request_writer_context(
+                writer_binding, writer_lease, model, config, request_snapshot,
+            ):
                 async for event in stream_agent_to_sse(
                     agent, agent_input, config, counter, permission_mode, model=model,
                     requested_max_tokens=requested_max_tokens,
@@ -1503,11 +1553,17 @@ async def _build_agent_for_payload(
     session_id = _session_memory_key(payload.session_id)
     snapshot = _ensure_external_tool_snapshot(snapshot, session_id, payload)
     snapshot = _ensure_request_tool_context(snapshot, payload, session_id)
+    _seed_skill_install_tool_context(
+        snapshot.tool_context, snapshot.skill_install_tool,
+    )
     tools = build_tools(
         payload,
         skills_runtime=snapshot.skills_runtime,
         mcp_tools=snapshot.mcp_tools,
         tool_context=snapshot.tool_context,
+    )
+    _attach_skill_install_tool(
+        snapshot.tool_context, tools, snapshot.skill_install_tool,
     )
     # HITL must stay enabled even in bypass mode: PermissionClassifier still
     # asks for HIGH/ALWAYS tools, and disabling the interrupt would skip it.
@@ -1546,6 +1602,29 @@ def _optional_arg(kwargs: dict, key: str, value) -> None:
 @router.post("/chat")
 async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(current_user)):
     """RAG 流式聊天，严格匹配前端 SSE 事件协议。"""
+    creds = resolve_credentials(payload, request)
+    api_key = creds["api_key"]
+    base_url = creds["base_url"]
+    model = creds["model"]
+    provider = creds["provider"]
+    from src.agent.tools.groups.skills.install_tool import parse_explicit_install_intent
+
+    explicit_install = (
+        parse_explicit_install_intent(_last_plain_user_turn(payload)) is not None
+    )
+    if payload.skills_mode != "off" and not (
+        _AGENT_PATH_AVAILABLE and _should_use_agent(payload, model)
+    ) and not explicit_install:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "success": False,
+                "error": {
+                    "code": "SKILLS_AGENT_UNAVAILABLE",
+                    "message": "当前请求不能使用 Skills；请选择支持工具调用的 Agent 模型后重试。",
+                },
+            },
+        )
     try:
         session_epoch, memory_epoch = _capture_request_snapshot_epochs(payload.session_id)
     except _RequestSnapshotEpochError as exc:
@@ -1586,14 +1665,12 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
                 },
             },
         )
-    creds = resolve_credentials(payload, request)
-    api_key = creds["api_key"]
-    base_url = creds["base_url"]
-    model = creds["model"]
-    provider = creds["provider"]
+    skill_install_tool, skill_install_response = await _prepare_chat_skill_install(
+        payload, user, model,
+    )
     if payload.skills_mode != "off" and not (
         _AGENT_PATH_AVAILABLE and _should_use_agent(payload, model)
-    ):
+    ) and skill_install_response is None and not explicit_install:
         raise HTTPException(
             status_code=422,
             detail={
@@ -1619,6 +1696,7 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
         principal_hash=compaction_principal(user),
         context_event_scope=context_event_scope,
         tool_event_scope=tool_event_scope,
+        skill_install_tool=skill_install_tool,
     )
     try:
         _require_request_snapshot_epochs_current(request_snapshot, payload.session_id)
@@ -1682,6 +1760,11 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
         msgs = payload.messages
 
         try:
+            if skill_install_response is not None:
+                yield sse_event("text", {"content": skill_install_response})
+                yield sse_event("done", {"success": True, "completed": True, "usage": None})
+                return
+
             # ── 附件 + 历史构建 ──
             attachment_texts, image_parts = await _process_attachments(payload)
             _require_request_snapshot_epochs_current(request_snapshot, payload.session_id)
@@ -2126,11 +2209,7 @@ async def resume_agent(req: ResumeRequest, request: Request, user: dict = Depend
             },
         )
     current_principal_id = _verified_principal_id(user)
-    if (
-        current_principal_id is None
-        or request_snapshot.principal_id is None
-        or current_principal_id != request_snapshot.principal_id
-    ):
+    if current_principal_id != request_snapshot.principal_id:
         raise HTTPException(
             status_code=409,
             detail={
@@ -2142,7 +2221,11 @@ async def resume_agent(req: ResumeRequest, request: Request, user: dict = Depend
             },
         )
     _require_resume_snapshot_current(request_snapshot, req.payload.session_id)
-    if req.decision == "allow" and (type(req.call_id) is not str or not req.call_id):
+    if (
+        req.decision == "allow"
+        and (type(req.call_id) is not str or not req.call_id)
+        and request_snapshot.pending_call_ids
+    ):
         raise HTTPException(
             status_code=409,
             detail={
@@ -2214,41 +2297,45 @@ async def resume_agent(req: ResumeRequest, request: Request, user: dict = Depend
         ) from exc
 
     from app.api.hitl_pause import (
+        has_recorded_pause,
         make_pause_receipt,
         pause_key,
-        require_and_consume_if_recorded,
+        require_and_consume,
     )
     from src.agent.hitl_handler import _detect_tools_interrupt
     from src.agent.writer_bridge import WriterRequestIdentity
 
-    pause_scope = writer_binding.current_scope()
-    pause_pending = await _detect_tools_interrupt(agent, config)
-    pause_state = await agent.aget_state(config)
-    pause_receipt = make_pause_receipt(
-        pause_state, pause_pending, pause_scope.owner_key,
-    )
     pause_identity = WriterRequestIdentity(
         request_snapshot.business_session_id,
         request_snapshot.request_id,
         request_snapshot.session_delete_epoch or "",
     )
-    try:
-        require_and_consume_if_recorded(
-            pause_key(pause_identity, pause_identity.session_delete_epoch),
-            pause_receipt,
-        )
-    except Exception as exc:
-        _release_request_writer_lease(writer_binding, writer_lease)
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "success": False,
-                "error": {
-                    "code": "HITL_CONFIRMATION_STALE",
-                    "message": "确认已失效或已被使用，请重新发送本轮请求。",
+    pause_receipt_key = pause_key(
+        pause_identity, pause_identity.session_delete_epoch,
+    )
+    if has_recorded_pause(pause_receipt_key):
+        pause_scope = writer_binding.current_scope()
+        pause_pending = await _detect_tools_interrupt(agent, config)
+        pause_state = await agent.aget_state(config)
+        try:
+            require_and_consume(
+                pause_receipt_key,
+                make_pause_receipt(
+                    pause_state, pause_pending, pause_scope.owner_key,
+                ),
+            )
+        except Exception as exc:
+            _release_request_writer_lease(writer_binding, writer_lease)
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "success": False,
+                    "error": {
+                        "code": "HITL_CONFIRMATION_STALE",
+                        "message": "确认已失效或已被使用，请重新发送本轮请求。",
+                    },
                 },
-            },
-        ) from exc
+            ) from exc
 
     lease_transferred = False
     lease_release_state = {"released": False}
@@ -2278,7 +2365,8 @@ async def resume_agent(req: ResumeRequest, request: Request, user: dict = Depend
 
             try:
                 pending = await _detect_tools_interrupt(agent, config)
-                _require_single_pending_confirmation_call(req.call_id, pending)
+                if req.call_id is not None or pending:
+                    _require_single_pending_confirmation_call(req.call_id, pending)
             except Exception as exc:
                 raise HTTPException(
                     status_code=409,
@@ -2445,7 +2533,15 @@ async def _resume_in_context(ctx: ResumeContext, snapshot: AgentRequestSnapshot,
         if resume_source_message_ids is not None
         else nullcontext()
     )
-    with activate_tool_context(snapshot.tool_context), sidecar_scope:
+    install_grant = getattr(
+        getattr(snapshot, "skill_install_tool", None), "_install_grant", None,
+    )
+    install_scope = nullcontext()
+    if install_grant is not None:
+        from src.agent.tools.groups.skills.install_tool import activate_install_binding
+
+        install_scope = activate_install_binding(install_grant)
+    with activate_tool_context(snapshot.tool_context), install_scope, sidecar_scope:
         with _request_writer_context(ctx.writer_binding, ctx.writer_lease, ctx.model, ctx.config, snapshot):
             async for event in handler(
                 ctx.agent, ctx.config, ctx.req.decision, ctx.call_counter,

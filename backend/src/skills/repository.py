@@ -818,7 +818,7 @@ class SkillRepository:
         *,
         _install_nonce: str | None = None,
         _operation_id: str | None = None,
-        _enabled: bool = False,
+        _enabled: bool = True,
         claude_adapter: bool = False,
     ) -> dict[str, Any]:
         """Install validated package bytes and keep host state outside the package."""
@@ -886,6 +886,11 @@ class SkillRepository:
             compatibility = parsed.compatibility_status
         if compatibility == "review_required":
             raise SkillValidationError("Skill package cannot be imported until its format is corrected", code="SKILL_REVIEW_REQUIRED")
+        if _operation_id is not None and _enabled and compatibility != "supported":
+            raise SkillValidationError(
+                "Enable-on-install requires a fully supported Skill package",
+                code="SKILL_REVIEW_REQUIRED",
+            )
 
         cleaned_source = {
             "provider": "github",
@@ -1123,22 +1128,16 @@ class SkillRepository:
         with _LOCK:
             self._assert_root_safe()
             for child in sorted(self.root.iterdir(), key=lambda item: item.name.casefold()):
-                if (
-                    self._is_link_or_reparse(child)
-                    or not child.is_dir()
-                    or not _SKILL_ID_RE.fullmatch(child.name)
-                ):
+                if self._is_link_or_reparse(child) or not child.is_dir():
                     continue
                 try:
+                    self._validate_id(child.name)
                     directory = self._skill_directory(child.name, must_exist=True)
-                    metadata_path = self._actual_named_child(directory, IMPORT_METADATA_FILENAME)
-                    if metadata_path is None:
-                        continue
-                    self._assert_safe_file(metadata_path, directory)
-                    metadata = json.loads(self._read_limited(metadata_path, 16 * 1024).decode("utf-8"))
+                    metadata = self._management_state(directory)
                 except (OSError, ValueError, SkillValidationError, json.JSONDecodeError):
                     continue
-                if isinstance(metadata, dict) and metadata.get("_operation_id") == operation_id:
+                source = metadata.get("source") if isinstance(metadata, dict) else None
+                if isinstance(source, dict) and source.get("_operation_id") == operation_id:
                     matches.append(child.name)
             if len(matches) > 1:
                 raise SkillConflictError("An install operation ID appears in multiple package records.")
@@ -1274,7 +1273,7 @@ class SkillRepository:
                     return None
                 if not isinstance(value, dict) or value.get("provider") != "github":
                     raise ValueError("invalid managed source metadata")
-                return {key: item for key, item in value.items() if key != "_install_nonce"}
+                return {key: item for key, item in value.items() if not key.startswith("_")}
             path = self._actual_named_child(directory, IMPORT_METADATA_FILENAME)
             if path is None:
                 return None
@@ -1283,7 +1282,7 @@ class SkillRepository:
             value = json.loads(raw.decode("utf-8"))
             if not isinstance(value, dict) or value.get("provider") != "github":
                 raise ValueError("invalid source metadata")
-            return {key: item for key, item in value.items() if key != "_install_nonce"}
+            return {key: item for key, item in value.items() if not key.startswith("_")}
         except Exception:
             issues.append({"code": "SKILL_SOURCE_METADATA_INVALID", "severity": "error", "message": "Imported source metadata is unreadable."})
             return None

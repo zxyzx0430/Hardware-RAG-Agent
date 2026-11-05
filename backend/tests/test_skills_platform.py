@@ -251,12 +251,12 @@ def test_host_operation_id_install_is_atomic_enabled_and_idempotent(tmp_path):
     )
     assert first[0]["id"] == "operation-skill"
     assert first[0]["enabled"] is True
-    assert (tmp_path / "skills" / "operation-skill" / ".enabled").is_file()
     assert "_operation_id" not in first[0]["source"]
-    metadata = json.loads(
-        (tmp_path / "skills" / "operation-skill" / ".skill-import.json").read_text(encoding="utf-8")
+    state = json.loads(
+        (tmp_path / "skills-state" / "operation-skill.json").read_text(encoding="utf-8")
     )
-    assert metadata["_operation_id"] == operation_id
+    assert state["enabled"] is True
+    assert state["source"]["_operation_id"] == operation_id
     calls_after_install = len(transport.calls)
 
     replay = importer.import_skills(

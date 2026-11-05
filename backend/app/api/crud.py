@@ -856,12 +856,14 @@ def list_messages(
             return [
                 {
                     "id": message.id,
+                    "seq": message.seq,
                     "role": message.role,
                     "content": message.content,
+                    "status": message.status,
                     "sources": message.sources or [],
                     "tool_calls": message.tool_calls or [],
                     "activity": project_skill_activity(message.activity),
-                    "created_at": message.created_at.isoformat() if message.created_at else "",
+                    "created_at": to_utc_iso_z(message.created_at) if message.created_at else "",
                 }
                 for message in messages
             ]
@@ -871,7 +873,13 @@ def list_messages(
         if (limit is None and before_id is None and expected_revision is None
                 and expected_incarnation_id is None):
             msgs = query.order_by(MessageModel.created_at).all()
-            return _ok({"messages": _serialize(msgs)})
+            session_version = db.query(SessionModel.version).filter(
+                SessionModel.id == session_id,
+            ).scalar()
+            return _ok({
+                "messages": _serialize(msgs),
+                "version": int(session_version or 0),
+            })
 
         current_revision = db.query(SessionModel.message_revision).filter(
             SessionModel.id == session_id
@@ -975,6 +983,7 @@ def create_message(session_id: str, payload: MessageCreate, db: DBSession = Depe
             activity=normalized_activity,
         )
         if payload_changed:
+            s.version = (getattr(s, "version", 0) or 0) + 1
             msg.role = payload.role
             msg.content = payload.content
             msg.sources = payload.sources
@@ -992,9 +1001,10 @@ def create_message(session_id: str, payload: MessageCreate, db: DBSession = Depe
         db.flush()
         result = _ok({
             "id": mid,
+            "seq": msg.seq,
             "role": payload.role,
             "content": payload.content,
-            "created_at": msg.created_at.isoformat() if msg.created_at else "",
+            "created_at": to_utc_iso_z(msg.created_at) if msg.created_at else "",
         })
         db.commit()
         return result
@@ -1493,7 +1503,11 @@ def update_settings(payload: dict, db: DBSession = Depends(get_db), user: dict =
             )
     now = datetime.datetime.utcnow()
     if payload.get("longTermMemory") == "":
-        stage_memory_clear_epoch(db, now)
+        previous = db.query(SettingsModel).filter(
+            SettingsModel.key == "longTermMemory",
+        ).first()
+        if previous is not None and previous.value:
+            stage_memory_clear_epoch(db, now)
     for key, value in payload.items():
         existing = db.query(SettingsModel).filter(SettingsModel.key == key).first()
         val_str = str(value) if value is not None else None

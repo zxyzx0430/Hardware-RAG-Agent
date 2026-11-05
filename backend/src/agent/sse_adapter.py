@@ -439,6 +439,13 @@ async def _iter_agent_sse(
     tool intermediate events (compile_log / progress / thinking / heartbeat)
     are merged into the stream in real time.
     """
+    token_limit = state.get("token_limit", 0)
+    if (
+        state.get("needs_compact")
+        and type(token_limit) is int and token_limit > 0
+        and _CUMULATIVE_TOKENS.get() >= token_limit
+    ):
+        raise ContextLimitError(cumulative=_CUMULATIVE_TOKENS.get(), limit=token_limit)
     agent_config = _with_skill_proof_callback(config)
     tool_event_queue: asyncio.Queue | None = state.get("tool_event_queue")
     from src.agent.writer_bridge import (

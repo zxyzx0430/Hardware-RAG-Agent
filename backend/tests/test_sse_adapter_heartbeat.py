@@ -1,4 +1,5 @@
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,8 +16,11 @@ async def test_agent_stream_emits_heartbeat_while_waiting(monkeypatch):
             await release.wait()
             yield "messages", "finished"
 
+    monkeypatch.setattr(sse_adapter, "assert_current", lambda *_args: None)
     stream = sse_adapter._merge_agent_and_tool_events(
-        SilentAgent(), {}, {}, asyncio.Queue()
+        SilentAgent(), {}, {}, asyncio.Queue(),
+        agent_config={}, run=SimpleNamespace(native_control=None),
+        join_failed={"value": False},
     )
     try:
         event = await asyncio.wait_for(stream.__anext__(), timeout=0.2)

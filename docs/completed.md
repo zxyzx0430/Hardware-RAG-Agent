@@ -2,6 +2,12 @@
 
 > 更新日期：2026-11-04。这里记录当前状态，不充当开发路线图。日期 1–3、Skills/记忆/MCP 和 RAG P0 属于 `codex/day1-3-baseline` 历史版本；测试结果分别注明所依据的隔离快照。提交与推送状态以 Git 记录为准；不将功能实现或软件测试混称为全面验收。
 
+## 2026-11-05 合并后完整后端门禁
+
+在 `context-rebased` 工作树完成基线 writer 生命周期、上下文压缩、服务端历史、Skills 显式安装预检与 HITL 恢复的合并修复。完整后端套件实际运行结果为 **1440 passed / 42 skipped / 0 failed**（400.01 秒，退出码 0）；此前 248 passed / 1 failed 与 73 failed 是不同阶段的快照，已被本次完整运行取代但不删除。
+
+本轮明确了删除会话的墓碑不可重建（同 ID create 返回 410），旧 pending 请求仍以 409 失效；恢复入口只在确实记录过 pause receipt 时重算并单次消费回执，不放松 writer owner/epoch/lease 校验。Skills 显式安装预检已重新接回 `/chat` 主链路，并在 resume 时恢复 request-scoped install 工具。真实模型、浏览器 E2E、实体硬件/烧录和空白机安装仍未验证。
+
 ## 2026-11-04 上下文压缩与服务端历史
 
 - 长会话的模型历史改由服务端按 owner/session 读取全部持久化 user/assistant 行。前端在 `history_mode: "server"` 下只发送当前 user 轮和紧邻的 quote system 消息，不再受客户端 200 条历史上限约束；服务端无法确认 owner-bound 历史时返回 `HISTORY_UNAVAILABLE` 失败终态，不静默降级为只回答当前问题。

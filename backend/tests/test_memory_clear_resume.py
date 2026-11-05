@@ -1,6 +1,7 @@
 """Saved-memory deletion must invalidate old pending requests, not replay them."""
 
 from dataclasses import replace
+from unittest.mock import AsyncMock
 from types import SimpleNamespace
 
 import pytest
@@ -35,7 +36,7 @@ def memory_app(monkeypatch):
     app.dependency_overrides[current_user_optional] = lambda: None
     captured = []
 
-    async def build(_payload, _creds, long_term_memory=None, request_snapshot=None):
+    async def build(_payload, _creds, long_term_memory=None, request_snapshot=None, **_kwargs):
         captured.append(long_term_memory)
         return object()
 
@@ -43,8 +44,29 @@ def memory_app(monkeypatch):
         from app.api.sse import sse_event
         yield sse_event("text", {"content": "synthetic resumed answer"})
 
+    class _FakeWriterBinding:
+        def __init__(self):
+            self.scope = SimpleNamespace(owner_key="synthetic-thread")
+            self.registry = SimpleNamespace(
+                assert_scope=lambda *_a, **_k: None,
+                acquire=lambda _scope: object(),
+                release=lambda *_a, **_k: None,
+                quarantine=lambda *_a, **_k: None,
+            )
+
+        def current_scope(self):
+            return self.scope
+
     from src.agent import hitl_handler
     monkeypatch.setattr(chat_routes, "_AGENT_PATH_AVAILABLE", True)
+    monkeypatch.setattr(
+        chat_routes, "_build_request_writer_binding",
+        lambda *_a, **_k: _FakeWriterBinding(),
+    )
+    monkeypatch.setattr(
+        chat_routes, "_acquire_request_writer_lease", lambda _binding: object(),
+    )
+    monkeypatch.setattr(hitl_handler, "_detect_tools_interrupt", AsyncMock(return_value=[]))
     monkeypatch.setattr(chat_routes, "_build_agent_for_payload", build)
     monkeypatch.setattr(chat_routes, "_resolve_creds", lambda *_args: {"model": "synthetic"})
     monkeypatch.setattr(chat_routes, "build_agent_config", lambda *_args: {})
@@ -197,7 +219,7 @@ async def test_clear_during_async_preparation_cannot_restamp_old_memory(memory_a
         assert memory_app.client.put("/api/settings", json={"longTermMemory": ""}).status_code == 200
         return None, None
 
-    async def agent_stream(_payload, _creds, long_term_memory=None, request_snapshot=None):
+    async def agent_stream(_payload, _creds, long_term_memory=None, request_snapshot=None, **_kwargs):
         observed.append(request_snapshot.memory_clear_epoch)
         chat_routes._store_pending_request_snapshot(payload.session_id, replace(
             request_snapshot, tool_context=old.tool_context,
@@ -213,7 +235,8 @@ async def test_clear_during_async_preparation_cannot_restamp_old_memory(memory_a
     monkeypatch.setattr(chat_routes, "make_client", lambda **_kwargs: object())
     monkeypatch.setattr(chat_routes, "_run_agent_stream", agent_stream)
     request = Request({"type": "http", "method": "POST", "path": "/api/chat", "headers": []})
-    response = await chat_routes.chat_sse(payload, request, user={})
-    _events = [chunk async for chunk in response.body_iterator]
-    assert observed == [old.memory_clear_epoch]
+    with pytest.raises(HTTPException) as error:
+        await chat_routes.chat_sse(payload, request, user={})
+    assert error.value.status_code == 503
+    assert observed == []
     assert chat_routes._get_pending_request_snapshot(payload.session_id) is None

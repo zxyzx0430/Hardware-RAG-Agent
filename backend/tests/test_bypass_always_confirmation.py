@@ -109,7 +109,7 @@ def _fake_model(tool_name: str) -> _HistoryAwareModel:
     return _HistoryAwareModel(tool_name=tool_name)
 
 
-def _install_agent_fakes(monkeypatch, tool_type, model):
+def _install_agent_fakes(monkeypatch, tool_type, model, saver):
     from app.api import chat_routes
     from src.agent import agent_factory, audit_logger, sse_helpers
     from src.mcp import manager as manager_module
@@ -122,8 +122,11 @@ def _install_agent_fakes(monkeypatch, tool_type, model):
         instances.append(tool)
         return [tool]
 
-    monkeypatch.setattr(agent_factory, "_global_checkpointer", InMemorySaver())
+    monkeypatch.setattr(agent_factory, "_global_checkpointer", saver)
     monkeypatch.setattr(agent_factory, "_global_checkpointer_cm", None)
+    monkeypatch.setattr(agent_factory, "_writer_lifecycle_saver", None)
+    monkeypatch.setattr(agent_factory, "_writer_lifecycle_registry", None)
+    monkeypatch.setattr(agent_factory, "_factory_graph_savers", {})
     monkeypatch.setattr(agent_factory, "_assemble_all_tools", assemble)
     monkeypatch.setattr(agent_factory, "_build_llm", lambda *_args: model)
     monkeypatch.setattr(sse_helpers, "_load_session_context_window", lambda _sid: 128000)
@@ -140,13 +143,13 @@ def _install_agent_fakes(monkeypatch, tool_type, model):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("decision", ["allow", "deny", "stop"])
-async def test_bypass_always_tool_waits_for_user_decision(monkeypatch, decision):
+async def test_bypass_always_tool_waits_for_user_decision(monkeypatch, decision, writer_bound_saver):
     from app.api import chat_routes
     from app.api.dependencies import current_user
 
     tool = _SideEffectProbe()
     model = _fake_model(tool.name)
-    _audit, instances, creds = _install_agent_fakes(monkeypatch, _SideEffectProbe, model)
+    _audit, instances, creds = _install_agent_fakes(monkeypatch, _SideEffectProbe, model, writer_bound_saver)
     payload = chat_routes.ChatRequest(
         messages=[{"role": "user", "content": "Synthetic request"}],
         use_agent=True,
@@ -183,6 +186,7 @@ async def test_bypass_always_tool_waits_for_user_decision(monkeypatch, decision)
                 json={
                     "payload": payload.model_dump(exclude_none=True),
                     "decision": decision,
+                    **({"call_id": "synthetic-call"} if decision == "allow" else {}),
                 },
             )
         assert response.status_code == 200
@@ -205,12 +209,12 @@ async def test_bypass_always_tool_waits_for_user_decision(monkeypatch, decision)
 
 
 @pytest.mark.asyncio
-async def test_bypass_without_always_tool_keeps_running_without_confirmation(monkeypatch):
+async def test_bypass_without_always_tool_keeps_running_without_confirmation(monkeypatch, writer_bound_saver):
     from app.api import chat_routes
 
     tool = _OrdinaryProbe()
     model = _fake_model(tool.name)
-    _audit, instances, creds = _install_agent_fakes(monkeypatch, _OrdinaryProbe, model)
+    _audit, instances, creds = _install_agent_fakes(monkeypatch, _OrdinaryProbe, model, writer_bound_saver)
     payload = chat_routes.ChatRequest(
         messages=[{"role": "user", "content": "Synthetic request"}],
         use_agent=True,

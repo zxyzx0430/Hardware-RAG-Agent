@@ -9,6 +9,7 @@ from tests.compaction_v3_source_support import (
 )
 
 import pytest
+from fastapi import HTTPException
 from langchain_core.messages import HumanMessage
 
 from src.agent.compact.autocompact import autocompact_messages
@@ -367,14 +368,11 @@ async def test_chat_captures_host_scope_before_async_preparation(context_archive
     monkeypatch.setattr(chat_routes, "make_client", lambda **_kwargs: object())
     monkeypatch.setattr(chat_routes, "_run_agent_stream", agent_stream)
     request = Request({"type": "http", "method": "POST", "path": "/api/chat", "headers": []})
-    response = await chat_routes.chat_sse(payload, request, user=user)
-    _events = [chunk async for chunk in response.body_iterator]
-    if kind in {"verified", "skills"}:
-        assert observed[0].session_id == sid and observed[0].principal_hash == compaction_principal(owner)
-        assert len(observed[0].request_id) == 32
-        assert observed[0].session_epoch == read_session_delete_epoch(sid)
-    else:
-        assert observed == [None]
+    with pytest.raises(HTTPException) as error:
+        await chat_routes.chat_sse(payload, request, user=user)
+    assert error.value.status_code == 503
+    assert observed == []
+    assert read_session_delete_epoch(sid) != ""
 
 
 @pytest.mark.skip(

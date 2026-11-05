@@ -60,8 +60,13 @@ def authenticated_test_stream(monkeypatch, stream_double, *, business_session_id
     def _test_astream(graph, *args, **kwargs):
         if graph is agent:
             events = args[0] if args else kwargs.pop("input")
+            forwarded = {
+                key: value for key, value in kwargs.items()
+                if key not in {"config", "stream_mode", "input"}
+            }
             return stream_double.astream(
                 events, config=kwargs["config"], stream_mode=kwargs["stream_mode"],
+                **forwarded,
             )
         return original_astream(graph, *args, **kwargs)
 

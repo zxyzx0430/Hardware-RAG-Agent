@@ -198,10 +198,16 @@ def _load_session_context_window(session_id: str) -> int | None:
     """Read context_window from the session row, if the column exists."""
     if not session_id or session_id == "?":
         return None
+    from sqlalchemy.exc import SQLAlchemyError
     from app.db.database import SessionLocal
     from app.db.models import Session as SessionModel
-    with SessionLocal() as db:
-        row = db.query(SessionModel).filter(SessionModel.id == session_id).first()
+    try:
+        with SessionLocal() as db:
+            row = db.query(SessionModel).filter(SessionModel.id == session_id).first()
+    except SQLAlchemyError:
+        # A missing/unmigrated session table only means the window is unknown;
+        # the budget falls back to its conservative default.
+        return None
     return getattr(row, "context_window", None) if row else None
 
 

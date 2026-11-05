@@ -103,8 +103,12 @@ def resolve_context_budget(
         output_tokens = None
     if output_tokens is None:
         raise ContextLimitError(cumulative=0, limit=0)
+    # A usable prompt window must survive even when the session window is tiny.
+    output_tokens = min(output_tokens, max(1, effective_window // 4))
 
-    framing_tokens = AGENT_PROTOCOL_FRAMING_TOKEN_RESERVE
+    framing_tokens = min(
+        AGENT_PROTOCOL_FRAMING_TOKEN_RESERVE, max(1, effective_window // 8),
+    )
     prompt_window = effective_window - output_tokens - framing_tokens
     if prompt_window <= 0:
         raise ContextLimitError(cumulative=1, limit=0)

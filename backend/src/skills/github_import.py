@@ -214,11 +214,14 @@ class GitHubSkillImporter:
         *,
         operation_id: str | None = None,
         enable: bool = False,
+        claude_adapter: bool = False,
     ) -> list[dict[str, Any]]:
         if not isinstance(source, Mapping):
             raise SkillValidationError("source must be an object", code="GITHUB_SOURCE_INVALID")
         if not isinstance(enable, bool):
             raise SkillValidationError("enable must be a boolean", code="GITHUB_SOURCE_INVALID")
+        if not isinstance(claude_adapter, bool):
+            raise SkillValidationError("claude_adapter must be a boolean", code="SKILL_ADAPTER_INVALID")
         if operation_id is not None and not re.fullmatch(r"[0-9a-f]{64}", operation_id):
             raise SkillValidationError("Install operation ID is invalid", code="SKILL_PACKAGE_INVALID")
         if enable and operation_id is None:
@@ -331,7 +334,10 @@ class GitHubSkillImporter:
                 nonce = uuid.uuid4().hex
                 install_nonces.append(nonce)
                 installed.append({"id": skill_id, "_install_nonce": nonce})
-                install_options: dict[str, Any] = {"_install_nonce": nonce}
+                install_options: dict[str, Any] = {
+                    "_install_nonce": nonce,
+                    "claude_adapter": claude_adapter,
+                }
                 if operation_id is not None:
                     install_options.update({"_operation_id": operation_id, "_enabled": enable})
                 imported = self.repository.install_package(files, package_source, **install_options)

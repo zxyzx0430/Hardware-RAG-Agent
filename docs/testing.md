@@ -2,6 +2,21 @@
 
 > 更新日期：2026-11-04。记录修复后的最终软件门禁，并单列修复前 606 项快照与 67 项失败轨迹；浏览器、硬件和 RAG 全量质量评测仍分别记录，不混作软件测试结论。
 
+## 2026-11-05 合并后完整后端门禁
+
+在 `context-rebased` 工作树运行完整后端套件，环境为 E 盘显式 `TEMP`/`TMP`、独立 `SQLITE_DB_PATH`、`AGENT_CHECKPOINTER_TYPE=memory`、`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`、`HF_HUB_OFFLINE=1`、`TRANSFORMERS_OFFLINE=1`，并显式加载 `-p asyncio -p pytest_timeout`。
+
+命令：
+
+```bash
+python -m pytest tests -q -p asyncio -p pytest_timeout
+```
+
+结果：**1440 passed / 42 skipped / 0 failed**，3,417 warnings，400.01 秒，退出码 0。42 skipped 沿用既有标记（含被真实 writer/SSE 验收取代的旧 StateGraph 夹具和已被 V3 契约取代的 legacy summary/pre-send 用例），本轮没有为通过测试放宽 owner、epoch、writer-lease、HITL 回执或 source-registry 校验。此前 248 passed / 1 failed 与 73 failed 快照保留为历史记录，不覆盖本次完整结果。
+
+真实模型服务、浏览器端到端、实体硬件/烧录和新电脑空白安装仍未验证；自动测试通过不代表这些验收完成。
+
+
 ## 2026-11-04 上下文压缩与服务端历史定向验证
 
 本轮在 E 盘隔离副本中验证服务端历史、预发送/图内压缩、工具输出归档、HITL/刷新恢复和前端 server-history 契约。运行前显式设置 `TEMP`/`TMP` 到可写 E 盘目录，并使用 `SQLITE_DB_PATH`、`AGENT_CHECKPOINTER_TYPE=memory`、`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`、`HF_HUB_OFFLINE=1`、`TRANSFORMERS_OFFLINE=1`。由于禁用了插件自动加载，必须显式追加 `-p asyncio`；否则 `asyncio_mode` 未注册，大量 async 测试会批量失败，不能把那类结果当成产品回归。
