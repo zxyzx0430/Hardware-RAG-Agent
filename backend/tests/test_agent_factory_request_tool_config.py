@@ -472,3 +472,19 @@ async def test_interleaved_agent_requests_use_their_own_tool_config(monkeypatch)
         failures.append(f"request B source IDs were not request-local: {data_b1['results']!r}")
 
     assert not failures, "\n".join(failures)
+
+
+def test_build_tool_specs_adds_only_one_observation_reader(monkeypatch):
+    from src.agent.tools.groups.retrieval.read_tool_observation import (
+        ReadToolObservationTool,
+    )
+
+    base_tool = ReadToolObservationTool()
+    _patch_minimal_tool_builder(monkeypatch, [base_tool])
+    context = ToolContext(tool_observation_scope=object())
+
+    tools = agent_factory.build_tool_specs(
+        SimpleNamespace(skills_mode="off"), tool_context=context,
+    )
+
+    assert [tool.name for tool in tools].count("read_tool_observation") == 1

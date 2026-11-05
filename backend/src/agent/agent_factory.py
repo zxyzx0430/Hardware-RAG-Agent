@@ -1181,17 +1181,6 @@ def build_tool_specs(
     if any(tool.name in existing_names or tool.mcp_info is None for tool in mcp_tools):
         raise ValueError("Invalid external tool snapshot")
     tool_list.extend(mcp_tools)
-    if getattr(ctx, "tool_observation_scope", None) is not None:
-        from src.agent.tools.groups.retrieval.read_tool_observation import (
-            ReadToolObservationTool,
-        )
-
-        if any(tool.name == "read_tool_observation" for tool in tool_list):
-            raise ValueError(
-                "Tool observation reader name conflicts with a registered tool"
-            )
-        tool_list.append(ReadToolObservationTool())
-
     if skills_mode != "off" or explicit_runtime:
         from src.agent.skill_runtime import (
             ImportSkillTool,
