@@ -30,6 +30,7 @@ except ImportError:  # pragma: no cover - openai optional dependency
     OpenAINotFoundError = None  # type: ignore[assignment]
 from app.api.auth import get_provider_key, resolve_credentials
 from app.api.dependencies import current_user, current_user_optional
+from app.api.runs import recover_interrupted_runs, router as runs_router
 from app.api.common import get_db_ctx, make_client
 from app.api.memory_epoch import read_memory_clear_epoch
 from app.api.sse import sse_event
@@ -43,6 +44,7 @@ from app.api.chat_helpers import (
     _process_attachments, _build_chat_history, _build_system_prompt,
 )
 from app.db.models import TokenUsage
+from src.agent import run_events
 from src.agent.request_budget import AgentRequestBudgetError
 
 logger = logging.getLogger(__name__)
@@ -102,6 +104,8 @@ except ImportError as _agent_import_err:
     logger.debug("Agent path unavailable, will use fallback LLM stream: %s", _agent_import_err)
 
 router = APIRouter(prefix="/api")
+router.include_router(runs_router)
+router.on_startup.append(recover_interrupted_runs)
 
 # HITL resumes must use the same manual-memory value as the paused request,
 # even when the original payload omitted it and the saved setting changes.
@@ -1596,6 +1600,167 @@ def _optional_arg(kwargs: dict, key: str, value) -> None:
 
 
 # ═══════════════════════════════════════════
+# Recovery R1 — run lifecycle
+# ═══════════════════════════════════════════
+
+def _resolve_run_store() -> Any | None:
+    """Return the run store, or None when persistence is degraded."""
+    try:
+        return run_events.get_run_store()
+    except Exception:
+        logger.warning(
+            "Run persistence store is unavailable; continuing without recovery",
+            exc_info=True,
+        )
+        return None
+
+
+def _sanitized_run_request(payload: ChatRequest) -> dict[str, Any]:
+    """Persist only request fields needed to rebuild the HITL card."""
+    return payload.model_dump(exclude={"tool_keys", "attachments"})
+
+
+def _create_chat_run(
+    store: Any | None,
+    payload: ChatRequest,
+    model: str,
+    session_id: str,
+    principal_id: str | None,
+) -> str:
+    run_id = run_events.new_run_id()
+    if store is None:
+        return run_id
+    config = {
+        "history_mode": payload.history_mode,
+        "skills_mode": payload.skills_mode,
+        "use_agent": payload.use_agent,
+        "temperature": payload.temperature,
+        "max_tokens": payload.max_tokens,
+        "kb_ids": payload.kb_ids,
+        "top_k": payload.top_k,
+        "relevance_threshold": payload.relevance_threshold,
+        "principal_id": principal_id,
+    }
+    try:
+        store.create_run({
+            "id": run_id,
+            "session_id": session_id or "",
+            "status": run_events.RUN_STATUS_RUNNING,
+            "model": model,
+            "permission_mode": payload.permission_mode,
+            "config_json": json.dumps(config, ensure_ascii=False),
+            "thread_id": session_id or "",
+            "checkpoint_id": None,
+            "started_at": run_events.utc_now_iso(),
+            "finished_at": None,
+            "last_event_seq": 0,
+            "error_code": None,
+            "error_message": None,
+        })
+    except Exception:
+        logger.warning("Run record could not be created run=%s", run_id, exc_info=True)
+    return run_id
+
+
+def _require_resume_run(
+    store: Any | None,
+    run_id: str,
+    session_id: str,
+    decision: str,
+    call_id: str | None,
+) -> dict[str, Any]:
+    """Validate that a HITL resume targets the live paused run of this session."""
+    if store is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "success": False,
+                "error": {
+                    "code": "RUN_STORE_UNAVAILABLE",
+                    "message": "运行记录存储不可用，请稍后重试。",
+                },
+            },
+        )
+    run = store.get_run(run_id)
+    if run is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "success": False,
+                "error": {"code": "RUN_NOT_FOUND", "message": "运行记录不存在。"},
+            },
+        )
+    if run.get("session_id") != session_id:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "success": False,
+                "error": {
+                    "code": "RUN_SESSION_MISMATCH",
+                    "message": "该运行不属于当前会话，无法恢复。",
+                },
+            },
+        )
+    if run.get("status") not in run_events.ACTIVE_RUN_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "success": False,
+                "error": {
+                    "code": "RUN_NOT_AWAITING_CONFIRMATION",
+                    "message": "该运行当前不在等待确认状态。",
+                    "status": run.get("status"),
+                },
+            },
+        )
+    if decision == "allow" and not call_id:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "success": False,
+                "error": {
+                    "code": "HITL_CONFIRMATION_STALE",
+                    "message": "确认已失效，请重新发送请求。",
+                },
+            },
+        )
+    return run
+
+
+def _consume_resume_approvals(
+    store: Any, run_id: str, decision: str, call_id: str | None,
+) -> list[dict[str, Any]]:
+    """Consume the persisted pending approval once; staleness is fatal.
+
+    ``allow`` targets the submitted call; ``deny``/``stop`` apply to the whole
+    pause, so every pending row of the run is decided.
+    """
+    try:
+        consumed = store.consume_pending_approvals(
+            run_id,
+            call_id=call_id if decision == "allow" else None,
+            decision=decision,
+        )
+    except Exception:
+        logger.warning(
+            "Pending approval consumption failed run=%s", run_id, exc_info=True,
+        )
+        consumed = []
+    if not consumed:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "success": False,
+                "error": {
+                    "code": "HITL_CONFIRMATION_STALE",
+                    "message": "确认已失效或已被使用，请重新发送本轮请求。",
+                },
+            },
+        )
+    return consumed
+
+
+# ═══════════════════════════════════════════
 # POST /api/chat — SSE 流式聊天
 # ═══════════════════════════════════════════
 
@@ -1750,6 +1915,14 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
                 },
             },
         ) from exc
+
+    run_store = _resolve_run_store()
+    run_session_id = _session_memory_key(payload.session_id)
+    run_principal_id = _verified_principal_id(user)
+    run_id = _create_chat_run(
+        run_store, payload, model, run_session_id, run_principal_id,
+    )
+    run_request_snapshot = _sanitized_run_request(payload)
 
     async def event_generator():
         """SSE 流式生成器，带 CancelledError 处理 + idle timeout + finally 清理。"""
@@ -2116,13 +2289,25 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
 
         finally:
             logger.debug("SSE 流结束，资源已释放")
+    async def persisted_event_generator():
+        async for frame in run_events.stream_with_persistence(
+            event_generator(),
+            store=run_store,
+            run_id=run_id,
+            principal_id=run_principal_id,
+            session_id=run_session_id,
+            request_snapshot=run_request_snapshot,
+        ):
+            yield frame
+
     return StreamingResponse(
-        event_generator(),
+        persisted_event_generator(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
+            "X-Run-Id": run_id,
         },
     )
 
@@ -2167,6 +2352,7 @@ class ResumeRequest(BaseModel):
     payload: ChatRequest
     decision: Literal["allow", "deny", "stop"]
     call_id: StrictStr | None = Field(default=None, min_length=1, max_length=256)
+    run_id: StrictStr | None = Field(default=None, min_length=1, max_length=128)
 
 
 @router.post("/agent-sandbox/resume")
@@ -2175,6 +2361,11 @@ async def resume_agent(req: ResumeRequest, request: Request, user: dict = Depend
     if not _AGENT_PATH_AVAILABLE:
         return {"error": "Agent path unavailable"}
     session_id = _session_memory_key(req.payload.session_id)
+    run_store = _resolve_run_store()
+    if req.run_id is not None:
+        _require_resume_run(
+            run_store, req.run_id, session_id, req.decision, req.call_id,
+        )
     try:
         pinned_session_epoch, pinned_memory_epoch = _capture_request_snapshot_epochs(
             req.payload.session_id,
@@ -2386,15 +2577,42 @@ async def resume_agent(req: ResumeRequest, request: Request, user: dict = Depend
         _require_resume_snapshot_current(request_snapshot, req.payload.session_id)
         from starlette.background import BackgroundTask
 
+        if req.run_id is not None:
+            _consume_resume_approvals(
+                run_store, req.run_id, req.decision, req.call_id,
+            )
+            try:
+                run_store.update_run_status(
+                    req.run_id, run_events.RUN_STATUS_RUNNING,
+                    error_code=None, error_message=None,
+                )
+            except Exception:
+                logger.warning(
+                    "Run resume status update failed run=%s", req.run_id, exc_info=True,
+                )
+
+        resume_stream = _resume_event_generator(
+            agent, config, effective_req, call_counter, model,
+            request_snapshot.long_term_memory, request_snapshot,
+            writer_binding, writer_lease, lease_release_state,
+            authenticated_user=user,
+        )
+        if req.run_id is not None:
+            resume_stream = run_events.stream_with_persistence(
+                resume_stream,
+                store=run_store,
+                run_id=req.run_id,
+                principal_id=request_snapshot.principal_id,
+                session_id=session_id,
+                emit_started=False,
+            )
+        headers = {"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
+        if req.run_id is not None:
+            headers["X-Run-Id"] = req.run_id
         response = StreamingResponse(
-            _resume_event_generator(
-                agent, config, effective_req, call_counter, model,
-                request_snapshot.long_term_memory, request_snapshot,
-                writer_binding, writer_lease, lease_release_state,
-                authenticated_user=user,
-            ),
+            resume_stream,
             media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+            headers=headers,
             background=BackgroundTask(
                 _release_request_writer_lease,
                 writer_binding,
