@@ -859,3 +859,18 @@ Vite 的 advisory 报告 Prism chunk 621.06 kB、主 bundle 1,020.16 kB（minifi
 - E2E 骨架：`python scripts/ci/run_e2e.py`（临时 SQLite/Chroma、离线 HF）。
 - 评测门禁：`python scripts/ci/run_eval_gate.py`（离线校验 30+5 题；`--report` 检查四指标阈值）。
 - 两者归 W5；`.github/workflows/ci.yml` 的 job 接线归 W1。
+
+## Memory v2（2026-11-06）
+
+集成分支 `feat/memory-v2-integration` 的实际结果：
+
+| 阶段 | 命令 | 结果 |
+| --- | --- | --- |
+| 后端全量 | `cd backend; python -m pytest tests -q -p asyncio -p pytest_timeout` | **1749 passed / 68 skipped / 0 failed**，602.12s，exit 0 |
+| 记忆 v2 评测 | `python scripts/acceptance/memory_v2.py --skip-pytest --out <dir>` | **PASS**：22 个参考场景通过，产品适配 **8/8** 检查通过 |
+| 前端 Vitest | `cd frontend; npm run test -- --run` | **322 passed / 45 files**，exit 0 |
+| 前端 lint | `cd frontend; npm run lint` | 0 error、13 条既有 warning，exit 0 |
+| 前端 build | `cd frontend; npm run build` | `tsc -b` + Vite build 成功，exit 0 |
+| Chromium 验收 | Playwright/Chromium，临时 SQLite + 临时 `HARDWARE_AGENT_HOME` | 记忆 Hub 四区、条目创建、proposal 批准、硬件档案、工作记忆快照均通过；无 console/page error |
+
+测试环境均使用 E 盘 `TEMP/TMP`、独立 `SQLITE_DB_PATH`、`AGENT_CHECKPOINTER_TYPE=memory`；浏览器证据在 `E:\DevCaches\Temp\mem-v2-browser\evidence`。真实模型自动抽取、真实聊天回答效果、硬件/串口未在本轮验收范围内，不能由上述软件回归替代。

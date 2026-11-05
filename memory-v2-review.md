@@ -203,3 +203,28 @@
 - 新增 `memory-v2-review.md`（本报告）
 - 新增 `backend/tests/test_memory_v2_review_findings.py`（10 个复现测试，预期失败）
 - 未修改任何产品代码、既有测试、依赖或文档
+
+## 修复后状态（2026-11-06 集成）
+
+集成分支 `feat/memory-v2-integration` 已修复本轮确认的 P1–P7，并保留复现测试作为回归：
+
+- P1：自然语言/证据密钥检测扩展；`password: required` 等占位符不误报。
+- P2：working/episodic 去重加入 `scope_key`，跨会话不再合并。
+- P3：user tier 强制 `project_id=""`，去重忽略交付项目。
+- P4：legacy `longTermMemory` 导入标记移到独立 Settings 键，物理清理后不再复活。
+- P5：`scope="project"` 的路径型 `scope_key` 在 `create` 时回填 `project_id`。
+- P6：项目身份改为 git 工作树根（`git common dir` 的父目录）哈希，`git init`/remote 变化不再使旧项目记忆失联；worktree 仍共享。
+- P7：working tier 强制 session `scope_key`。
+- R1/R2/R4 接线：working 读取显式 epoch；新增 `POST /api/memory/clear`；启动时 best-effort `purge_expired`。
+- R3：本版不创建 `tier=episodic` 行；checkpoint 历史在 `memory_snapshots`，随会话删除清理。
+- R5：`tier` 与 legacy `scope` 不一致时以 `tier` 为准，避免混合行。
+
+实际回归：
+
+- `backend/tests/test_memory_v2_review_findings.py`：**10 passed**（原 10 个复现测试全部转绿）。
+- 集成后完整后端：**1749 passed / 68 skipped / 0 failed**（602.12s，exit 0）。
+- 前端：**322 passed / 45 files**，lint 0 error（13 条既有 warning），build 成功。
+- Memory v2 评测：22 个参考场景通过，产品适配 8/8 检查通过。
+- 真实 Chromium：记忆 Hub 四区、条目创建、proposal 批准、硬件档案、工作记忆快照显示通过；无 console/page error。
+
+仍未验证：真实模型自动抽取质量、真实聊天中的 `<memory>` 回答效果、真实硬件/串口；这些不因上述软件回归自动通过。
