@@ -24,6 +24,11 @@ type MockChatStoreState = {
   setSessionHighlightSourceId: (...args: unknown[]) => void;
   setSessionFileViewerSource: (...args: unknown[]) => void;
   retryPendingSave: (sessionId: string) => Promise<void>;
+  pagedHistoryBySession: Record<string, unknown>;
+  backgroundSseRequests: Map<string, { signal: AbortSignal }>;
+  streamingSessionId: string | null;
+  loadInitialMessagePage: () => Promise<void>;
+  loadOlderMessagePage: () => Promise<void>;
 };
 
 const { retryPendingSaveMock } = vi.hoisted(() => ({ retryPendingSaveMock: vi.fn() }));
@@ -49,6 +54,11 @@ vi.mock("../../stores/useChatStore", async () => {
     sessionHighlightSourceId: {},
     setSessionHighlightSourceId: vi.fn(),
     setSessionFileViewerSource: vi.fn(),
+    pagedHistoryBySession: {},
+    backgroundSseRequests: new Map(),
+    streamingSessionId: null,
+    loadInitialMessagePage: async () => {},
+    loadOlderMessagePage: async () => {},
     retryPendingSave: async (sessionId: string) => {
       retryPendingSaveMock(sessionId);
       set((state) => {

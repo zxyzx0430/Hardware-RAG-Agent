@@ -148,7 +148,9 @@ describe("SkillsManager", () => {
     expect((screen.getByRole("textbox", { name: "仓库或技能目录链接" }) as HTMLInputElement).value).toBe(url);
     expect((screen.getByRole("textbox", { name: "分支、标签或提交（可选）" }) as HTMLInputElement).value).toBe(ref);
     expect((screen.getByRole("textbox", { name: "子目录（可选）" }) as HTMLInputElement).value).toBe(path);
-    expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
+    const checkboxes = screen.getAllByRole("checkbox");
+    expect(checkboxes).toHaveLength(1);
+    expect(screen.getByText("同时创建 Claude 适配")).toBeTruthy();
     expect((screen.getByRole("button", { name: /安装选中技能/ }) as HTMLButtonElement).disabled).toBe(true);
     expect(document.body.textContent).not.toContain("404");
     expect(apiPostMock).toHaveBeenCalledTimes(1);

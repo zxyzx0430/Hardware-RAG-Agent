@@ -10,8 +10,8 @@ vi.mock("../../i18n", () => ({
 vi.mock("../../stores/useAppStore", () => {
   const state = {
     setExplorerOpen: () => {},
-    openFile: async (_path: string) => {},
-    openDiffForFile: (_path: string) => {},
+    openFile: async () => {},
+    openDiffForFile: () => {},
     lang: "zh",
   };
   return { useAppStore: <T,>(selector: (store: typeof state) => T) => selector(state) };
