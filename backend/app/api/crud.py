@@ -770,6 +770,11 @@ def _purge_session_rows(db: DBSession, session_id: str) -> None:
     db.query(SettingsModel).filter(
         SettingsModel.key.startswith(_session_prefix(session_id), autoescape=True),
     ).delete(synchronize_session=False)
+    # Working memory and its checkpoint snapshots are session-scoped. Project
+    # and user memory must survive a session deletion.
+    from app.db.memory_store import purge_session_memory
+
+    purge_session_memory(db, session_id)
 
 
 async def _purge_session_runtime(session_id: str) -> None:
@@ -1430,6 +1435,7 @@ def truncate_messages_through_v1(
 ALLOWED_SETTINGS_KEYS = {
     "activeProvider", "model", "visionModel", "imageModel",
     "temperature", "topK", "relevanceThreshold", "maxTokens", "systemPrompt", "longTermMemory",
+    "autoMemoryEnabled",
     "chatFontSize", "themeMode", "lang", "permissionMode",
 }
 
@@ -1439,6 +1445,7 @@ def get_settings(db: DBSession = Depends(get_db), user: dict = Depends(current_u
     """获取所有设置键值对。"""
     rows = db.query(SettingsModel).filter(
         SettingsModel.key != MEMORY_CLEAR_EPOCH_KEY,
+        SettingsModel.key != "memoryV2LongTermMemoryImported",
         func.substr(SettingsModel.key, 1, len(SESSION_DELETE_EPOCH_PREFIX)) != SESSION_DELETE_EPOCH_PREFIX,
         func.substr(SettingsModel.key, 1, len(CONTEXT_EVENT_PREFIX)) != CONTEXT_EVENT_PREFIX,
         func.substr(
@@ -1469,6 +1476,19 @@ def update_settings(payload: dict, db: DBSession = Depends(get_db), user: dict =
                 "Long-term memory must be a string of at most 4000 characters.",
                 status_code=422,
             )
+    if "autoMemoryEnabled" in payload:
+        raw_value = payload["autoMemoryEnabled"]
+        if isinstance(raw_value, bool):
+            normalized_auto = "true" if raw_value else "false"
+        elif isinstance(raw_value, str) and raw_value.strip().lower() in ("true", "false"):
+            normalized_auto = raw_value.strip().lower()
+        else:
+            raise _fail(
+                "INVALID_AUTO_MEMORY_SETTING",
+                "autoMemoryEnabled must be a boolean.",
+                status_code=422,
+            )
+        payload = {**payload, "autoMemoryEnabled": normalized_auto}
     for key in ("topK", "relevanceThreshold"):
         if key not in payload:
             continue

@@ -1,7 +1,9 @@
-"""Memory tools (Memory v1): search, remember, forget.
+"""Memory tools (Memory v2): search, remember, forget.
 
-These tools operate on explicit ``memory_entries`` only. They never grant
-permissions and never touch hardware profiles (which use their own store).
+Search defaults to active entries visible in this context (working → user →
+project); pending proposals are never returned. Remember writes explicit
+entries as active, supports tiers/project ids, and refuses credentials and
+hardware profiles. Forget only soft-deletes the named entry.
 """
 
 from __future__ import annotations
@@ -11,15 +13,18 @@ from typing import Any
 
 from pydantic import BaseModel, Field, PrivateAttr
 
+from app.db.memory_models import MEMORY_TIERS
 from app.db.memory_store import (
     DEFAULT_CONFIDENCE,
     MemorySecretError,
     MemoryStore,
     MemoryValidationError,
 )
+from src.agent import memory_export, memory_policy
 from src.agent.core.toolkit.tool_spec import RiskLevel, ToolSpec
 from src.agent.exceptions import ToolContext
-from src.agent.memory_context import current_project_key
+from src.agent.memory_context import collect_memory_entries, current_project_key
+from src.agent.memory_project import current_project_id
 
 logger = logging.getLogger(__name__)
 
@@ -36,10 +41,24 @@ def _scope_key_for(scope: str, explicit: str, ctx: ToolContext) -> str:
     return current_project_key()
 
 
+def _tier_project_id(tier: str, explicit: str) -> str:
+    if tier == "user":
+        return ""
+    if explicit:
+        return explicit.strip()
+    if tier in ("project", "episodic"):
+        return current_project_id()
+    return ""
+
+
 class MemorySearchArgs(BaseModel):
     query: str = Field(description="检索关键词，例如 '用户偏好的开发板' 或 '串口波特率'")
     scope: str = Field(default="", description="可选过滤：global / project / session；留空搜索全部")
     scope_key: str = Field(default="", description="可选 scope 键；留空按 session_id 或当前项目自动填充")
+    tier: str = Field(
+        default="",
+        description="可选过滤：working / project / user / episodic；留空按当前可见范围搜索",
+    )
     kind: str = Field(default="", description="可选过滤：preference / fact / constraint / decision / procedure")
     limit: int = Field(default=_DEFAULT_SEARCH_LIMIT, description="最多返回条数（默认 5）")
 
@@ -55,7 +74,7 @@ class MemorySearchTool(ToolSpec):
     name: str = "memory_search"
     description: str = (
         "搜索之前明确记住的用户偏好、事实、约束或决定。用户提到'之前'、'上次说过的偏好'、"
-        "项目约定时先调用。只返回已保存的记忆，不检索知识库或历史消息。"
+        "项目约定时先调用。只返回已保存且已生效的记忆，不检索知识库或历史消息。"
     )
     args_schema: type = MemorySearchArgs
     output_schema: type[BaseModel] | None = MemorySearchOutput
@@ -73,7 +92,11 @@ class MemorySearchTool(ToolSpec):
         store = self._store or MemoryStore()
         query = args.get("query", "")
         scope = (args.get("scope") or "").strip()
+        tier = (args.get("tier") or "").strip()
         kind = (args.get("kind") or "").strip()
+        limit = args.get("limit") or _DEFAULT_SEARCH_LIMIT
+        if tier and tier not in MEMORY_TIERS:
+            return {"output": f"记忆检索参数无效：tier={tier}", "results": [], "total": 0}
         try:
             if scope:
                 results = store.search(
@@ -84,18 +107,32 @@ class MemorySearchTool(ToolSpec):
                         if scope != "global"
                         else None
                     ),
+                    tier=tier or None,
                     kind=kind or None,
-                    limit=args.get("limit") or _DEFAULT_SEARCH_LIMIT,
+                    limit=limit,
                 )
-            else:
-                # Default visibility matches context injection: global plus the
-                # current project and session, never unrelated sessions.
-                results = store.search_visible(
-                    query,
+            elif tier:
+                results = collect_memory_entries(
+                    store=store,
+                    query=query,
                     project_key=current_project_key(),
                     session_id=ctx.session_id or None,
+                    top_k=limit,
+                    project_id=current_project_id(),
                     kind=kind or None,
-                    limit=args.get("limit") or _DEFAULT_SEARCH_LIMIT,
+                    tier=tier,
+                )
+            else:
+                # Default visibility matches context injection: working, user
+                # and the current project, never unrelated sessions/projects.
+                results = collect_memory_entries(
+                    store=store,
+                    query=query,
+                    project_key=current_project_key(),
+                    session_id=ctx.session_id or None,
+                    top_k=limit,
+                    project_id=current_project_id(),
+                    kind=kind or None,
                 )
         except MemoryValidationError as exc:
             return {"output": f"记忆检索参数无效：{exc}", "results": [], "total": 0}
@@ -104,7 +141,8 @@ class MemorySearchTool(ToolSpec):
         lines = [f"找到 {len(results)} 条相关记忆："]
         for index, entry in enumerate(results, 1):
             lines.append(
-                f"  [{index}] id={entry['id']} kind={entry['kind']} "
+                f"  [{index}] id={entry['id']} tier={entry.get('tier', '')} "
+                f"status={entry.get('status', 'active')} kind={entry['kind']} "
                 f"confidence={entry['confidence']:.2f}：{entry['content']}"
             )
         return {"output": "\n".join(lines), "results": results, "total": len(results)}
@@ -117,8 +155,14 @@ class MemoryRememberArgs(BaseModel):
         description="记忆类型：preference / fact / constraint / decision / procedure",
     )
     scope: str = Field(default="project", description="作用域：global / project / session")
+    tier: str = Field(
+        default="",
+        description="可选层级：working / project / user；留空沿用 scope 兼容行为",
+    )
     scope_key: str = Field(default="", description="可选 scope 键；留空自动使用当前会话或项目")
+    project_id: str = Field(default="", description="可选项目 id；tier=project 时留空自动使用当前项目")
     structured: dict | None = Field(default=None, description="可选结构化字段（JSON 对象）")
+    evidence: dict | None = Field(default=None, description="可选证据引用（JSON 对象）")
     confidence: float = Field(default=DEFAULT_CONFIDENCE, description="置信度 0-1")
     source: str = Field(default="agent", description="来源：agent / skill / user / import")
 
@@ -129,13 +173,13 @@ class MemoryRememberOutput(BaseModel):
 
 
 class MemoryRememberTool(ToolSpec):
-    """Persist one explicit memory entry."""
+    """Persist one explicit memory entry (active, never proposed)."""
 
     name: str = "memory_remember"
     description: str = (
         "明确记住一条对后续对话有用的信息（用户偏好、项目事实、约束、决定或流程）。"
         "仅当用户明确要求记住或确认某信息应长期保留时调用；不要每轮自动保存。"
-        "禁止保存密钥、令牌、密码等敏感信息。"
+        "禁止保存密钥、令牌、密码等敏感信息，也不要保存硬件档案。"
     )
     args_schema: type = MemoryRememberArgs
     output_schema: type[BaseModel] | None = MemoryRememberOutput
@@ -151,23 +195,70 @@ class MemoryRememberTool(ToolSpec):
 
     async def execute(self, args: dict[str, Any], ctx: ToolContext) -> dict:
         store = self._store or MemoryStore()
-        scope = (args.get("scope") or "project").strip()
+        tier = (args.get("tier") or "").strip()
+        kind = args.get("kind") or "fact"
+        structured = args.get("structured")
+        if memory_policy.is_hardware_candidate(kind, structured):
+            return {
+                "output": "拒绝保存：硬件档案请使用 hardware_profile 工具，不进入通用记忆。",
+                "saved": False,
+                "entry": None,
+            }
         try:
-            entry = store.create(
-                scope=scope,
-                scope_key=_scope_key_for(scope, args.get("scope_key", ""), ctx),
-                kind=args.get("kind") or "fact",
-                content=args.get("content", ""),
-                structured=args.get("structured"),
-                source=args.get("source") or "agent",
-                confidence=args.get("confidence", DEFAULT_CONFIDENCE),
-            )
+            if tier:
+                if tier not in MEMORY_TIERS:
+                    return {
+                        "output": f"记忆参数无效：tier={tier}",
+                        "saved": False,
+                        "entry": None,
+                    }
+                if tier == "working" and (
+                    not ctx.session_id or ctx.session_id == "default"
+                ):
+                    return {
+                        "output": "记忆参数无效：tier=working 需要当前会话。",
+                        "saved": False,
+                        "entry": None,
+                    }
+                project_id = _tier_project_id(tier, args.get("project_id", ""))
+                scope_key = ""
+                if tier == "working":
+                    scope_key = ctx.session_id
+                elif tier in ("project", "episodic"):
+                    scope_key = project_id
+                entry = store.create(
+                    tier=tier,
+                    scope_key=scope_key,
+                    project_id=project_id,
+                    kind=kind,
+                    content=args.get("content", ""),
+                    structured=structured,
+                    evidence=args.get("evidence"),
+                    source=args.get("source") or "agent",
+                    confidence=args.get("confidence", DEFAULT_CONFIDENCE),
+                )
+            else:
+                scope = (args.get("scope") or "project").strip()
+                entry = store.create(
+                    scope=scope,
+                    scope_key=_scope_key_for(scope, args.get("scope_key", ""), ctx),
+                    kind=kind,
+                    content=args.get("content", ""),
+                    structured=structured,
+                    evidence=args.get("evidence"),
+                    source=args.get("source") or "agent",
+                    confidence=args.get("confidence", DEFAULT_CONFIDENCE),
+                )
         except MemorySecretError as exc:
             return {"output": f"拒绝保存：{exc}", "saved": False, "entry": None}
         except MemoryValidationError as exc:
             return {"output": f"记忆参数无效：{exc}", "saved": False, "entry": None}
+        memory_export.export_entry(entry, store=store)
         return {
-            "output": f"已记住（id={entry['id']}，scope={entry['scope']}，kind={entry['kind']}）：{entry['content']}",
+            "output": (
+                f"已记住（id={entry['id']}，tier={entry.get('tier')}，"
+                f"kind={entry['kind']}）：{entry['content']}"
+            ),
             "saved": True,
             "entry": entry,
         }
@@ -204,7 +295,9 @@ class MemoryForgetTool(ToolSpec):
     async def execute(self, args: dict[str, Any], ctx: ToolContext) -> dict:
         store = self._store or MemoryStore()
         entry_id = args.get("id", "")
-        if store.soft_delete(entry_id):
+        entry = store.get(entry_id, include_inactive=True)
+        if entry is not None and store.soft_delete(entry_id):
+            memory_export.export_entry(entry, store=store)
             return {"output": f"已遗忘记忆 {entry_id}。", "deleted": True, "id": entry_id}
         return {
             "output": f"未找到可删除的记忆 {entry_id}（可能已删除）。",

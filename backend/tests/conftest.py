@@ -49,6 +49,12 @@ def _ensure_global_schema():
 
 
 @pytest.fixture(autouse=True)
+def _isolate_memory_home(tmp_path, monkeypatch):
+    """Keep Memory v2 Markdown mirrors out of the real user home in tests."""
+    monkeypatch.setenv("HARDWARE_AGENT_HOME", str(tmp_path / "hardware-agent-home"))
+
+
+@pytest.fixture(autouse=True)
 def _bypass_auth():
     """所有测试绕过 auth —— 测试不应依赖 keys_store.json 磁盘状态。
 

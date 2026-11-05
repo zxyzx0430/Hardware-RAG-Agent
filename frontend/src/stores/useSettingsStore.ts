@@ -38,6 +38,8 @@ interface SettingsState {
   retrievalSettingsStorageIssue: boolean;
   systemPrompt: string;
   longTermMemory: string;
+  /** Auto-extracted memory candidates stay proposed until reviewed here. */
+  autoMemoryEnabled: boolean;
   skills: Skill[];
   mcpServers: MCPServer[];
   // Web Search 工具配置（Tavily）：key + 可选自定义 baseUrl
@@ -122,6 +124,7 @@ const PERSIST_KEYS: (keyof SettingsState)[] = [
   "providers", "chatProviderId", "chatModel", "imageProviderId", "imageModel",
   "visionProviderId", "visionModel",
   "temperature", "topK", "maxTokens", "relevanceThreshold", "systemPrompt",
+  "autoMemoryEnabled",
   "skills", "chatFontSize", "themeMode", "lang",
   "embeddingDefaultModel", "embeddingDefaultBaseUrl",
   "agentChunkerDefaultModel", "agentChunkerDefaultBaseUrl",
@@ -147,6 +150,7 @@ const DEFAULTS = {
   relevanceThreshold: 0,
   systemPrompt: "",
   longTermMemory: "",
+  autoMemoryEnabled: false,
   skills: [] as Skill[],
   mcpServers: [] as MCPServer[],
   chatFontSize: 14,
@@ -692,7 +696,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       const serverMemory = typeof serverSettings.longTermMemory === "string"
         ? serverSettings.longTermMemory
         : "";
-      const updates: Partial<Pick<SettingsState, RetrievalSettingKey | "longTermMemory">> = {};
+      const updates: Partial<Pick<SettingsState, RetrievalSettingKey | "longTermMemory" | "autoMemoryEnabled">> = {};
       const statuses: Partial<SettingsState["retrievalSettingsStatus"]> = {};
       const localValuesToSync: Array<[RetrievalSettingKey, number]> = [];
       for (const key of ["topK", "relevanceThreshold"] as const) {
@@ -713,6 +717,11 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         }
       }
       if (writeVersionAtStart === longTermMemoryWriteVersion) updates.longTermMemory = serverMemory;
+      const serverAutoMemory = serverSettings.autoMemoryEnabled;
+      if (typeof serverAutoMemory === "boolean") updates.autoMemoryEnabled = serverAutoMemory;
+      else if (serverAutoMemory === "true" || serverAutoMemory === "false") {
+        updates.autoMemoryEnabled = serverAutoMemory === "true";
+      }
       set((state) => ({
         ...updates,
         retrievalSettingsStatus: { ...state.retrievalSettingsStatus, ...statuses },

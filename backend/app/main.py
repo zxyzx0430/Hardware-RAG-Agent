@@ -319,6 +319,14 @@ def create_app() -> FastAPI:
     # 初始化数据库表（CREATE TABLE IF NOT EXISTS）
     init_db()
 
+    # Best-effort Memory v2 retention sweep; never blocks startup.
+    try:
+        from app.db.memory_store import MemoryStore
+
+        MemoryStore().purge_expired()
+    except Exception as exc:
+        _LOGGER.warning("memory retention sweep on startup failed: %s", exc)
+
     try:
         from app.db.gc import log_startup_reconciliation
 

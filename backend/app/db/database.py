@@ -4588,6 +4588,11 @@ def init_db():
         from app.db.schema_w3 import apply_w3_schema
 
         apply_w3_schema(conn)
+        # Memory v2 columns/tables are not covered by create_all on existing
+        # databases, and apply_w3_schema no-ops once user_version >= 3.
+        from app.db.memory_v2_schema import apply_memory_v2_schema
+
+        apply_memory_v2_schema(conn)
         conn.commit()
 
     _ensure_message_source_generation_schema()
