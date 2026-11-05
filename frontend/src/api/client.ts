@@ -228,205 +228,375 @@ export async function apiPatch<T>(path: string, body?: unknown, timeoutMs?: numb
 }
 
 // ─── SSE Callbacks ───────────────────────────────────────────
-type SSEHandler = (event: ChatSSEEvent | BuildSSEEvent) => void;
+/** Metadata parsed from the SSE `id:` line and the event payload. */
+export interface SSEEventMeta {
+  /** Raw value of the most recent `id:` line (e.g. "r_123:7"). */
+  lastEventId?: string;
+  /** Run id parsed from the id line or the event payload. */
+  runId?: string;
+  /** Monotonic per-run sequence parsed from the id line or the event payload. */
+  seq?: number;
+}
+
+type SSEHandler = (event: ChatSSEEvent | BuildSSEEvent, meta?: SSEEventMeta) => void;
 type SSECallback = {
   onEvent: SSEHandler;
   onDone?: () => void;
   onError?: (err: Error) => void;
 };
 
+export interface SSEReconnectOptions {
+  /** Maximum reconnect attempts after an unexpected disconnect. Default 5. */
+  maxAttempts?: number;
+  /** First backoff delay in ms (doubles per attempt). Default 500. */
+  baseDelayMs?: number;
+  /** Backoff cap in ms. Default 8000. */
+  maxDelayMs?: number;
+}
+
+export interface ApiSSEOptions {
+  /** HTTP method; defaults to POST (the chat/build convention). */
+  method?: "GET" | "POST";
+  /** Resume sequence: sent as `?after=<seq>` and `Last-Event-ID` on GET. */
+  after?: number;
+  /** Explicit `Last-Event-ID` value (e.g. "r_1:7"). */
+  lastEventId?: string;
+  /** Reconnect with replay after an unexpected disconnect. */
+  reconnect?: SSEReconnectOptions;
+  /** Called once the run id is known (X-Run-Id header or run_started event). */
+  onRunId?: (runId: string) => void;
+}
+
+export interface SSEResult {
+  /** Last id the server sent, if any. */
+  lastEventId?: string;
+  runId?: string;
+  lastSeq: number;
+  done: boolean;
+}
+
+/** Parse an SSE event id of the form `<run_id>:<seq>`. */
+export function parseSseEventId(value: string | undefined | null): { runId: string; seq: number } | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  const idx = trimmed.lastIndexOf(":");
+  if (idx <= 0 || idx === trimmed.length - 1) return null;
+  const runId = trimmed.slice(0, idx);
+  const seq = Number(trimmed.slice(idx + 1));
+  if (!runId || !Number.isFinite(seq) || seq < 0) return null;
+  return { runId, seq: Math.trunc(seq) };
+}
+
+function buildSseUrl(path: string, method: "GET" | "POST", afterSeq: number): string {
+  let url = `/api/${path.replace(/^\//, "")}`;
+  if (method === "GET") {
+    url += `${url.includes("?") ? "&" : "?"}after=${afterSeq}`;
+  }
+  return url;
+}
+
+function delayAbortable(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) { resolve(); return; }
+    const finish = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, ms);
+    signal.addEventListener("abort", finish, { once: true });
+  });
+}
+
 // ─── apiSSE ──────────────────────────────────────────────────
+/**
+ * Stream SSE from the backend.
+ *
+ * Persisted events carry `id: <run_id>:<seq>`; the parsed id and sequence are
+ * exposed through `callbacks.onEvent(event, meta)` and the returned result.
+ * When `options.reconnect` is set the stream is re-established with
+ * `GET runs/{run_id}/events?after=<lastSeq>` after an unexpected disconnect,
+ * using exponential backoff (5 attempts by default).
+ */
 export async function apiSSE(
   path: string,
   body: unknown,
   callbacks: SSECallback,
-  externalController?: AbortController
-): Promise<void> {
-  // 使用外部传入的 controller（用于用户主动中止），或创建新的
-  const controller = externalController ?? new AbortController();
-  let abortedByTimeout = false;
-  let connTimer: ReturnType<typeof setTimeout> | null = null;
-  let consecutiveFailures = 0;
-  let idleTimer: ReturnType<typeof setTimeout> | null = null;
-  let resetIdleTimer: (() => void) | null = null;
+  externalController?: AbortController,
+  options: ApiSSEOptions = {}
+): Promise<SSEResult> {
+  // The external controller represents user intent (stop / navigation).
+  // Each connection gets its own controller so timeouts can retry without
+  // cancelling the whole recovery loop.
+  const userController = externalController ?? new AbortController();
+  const reconnect = options.reconnect;
+  const maxAttempts = reconnect ? Math.max(0, reconnect.maxAttempts ?? 5) : 0;
+  const baseDelayMs = reconnect?.baseDelayMs ?? 500;
+  const maxDelayMs = reconnect?.maxDelayMs ?? 8000;
+
+  let requestMethod: "GET" | "POST" = options.method ?? "POST";
+  let requestPath = path;
+  const initialIdInfo = parseSseEventId(options.lastEventId);
+  let lastEventId = options.lastEventId;
+  let runId = initialIdInfo?.runId;
+  let lastSeq = options.after ?? initialIdInfo?.seq ?? 0;
   let doneReceived = false;
+  let consecutiveFailures = 0;
+  let attempt = 0;
+  let userAborted = false;
+  let activeConnection: AbortController | null = null;
+
+  const result = (): SSEResult => ({ lastEventId, runId, lastSeq, done: doneReceived });
+
+  const onUserAbort = () => {
+    userAborted = true;
+    activeConnection?.abort();
+  };
+  if (userController.signal.aborted) {
+    getLog()("info", "sse", `SSE ${path} aborted by user`);
+    return result();
+  }
+  userController.signal.addEventListener("abort", onUserAbort);
+
   try {
-    // 连接超时 120s（RAG 首次加载 reranker/embedding 模型可能较慢），收到响应头后清除
-    connTimer = setTimeout(() => { abortedByTimeout = true; controller.abort(); }, 120_000);
+    for (;;) {
+      const connection = new AbortController();
+      activeConnection = connection;
+      const relayUserAbort = () => connection.abort();
+      userController.signal.addEventListener("abort", relayUserAbort);
 
-    const authHeaders = getAuthHeaders();
-    const res = await fetch(`/api/${path.replace(/^\//, "")}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
+      let abortedByTimeout = false;
+      let connTimer: ReturnType<typeof setTimeout> | null = null;
+      let idleTimer: ReturnType<typeof setTimeout> | null = null;
+      let failure: Error | null = null;
+      let parseFailure = false;
+      let stopReading = false;
 
-    if (!res.ok) throw new Error(`SSE ${res.status}: ${res.statusText}`);
+      try {
+        const url = buildSseUrl(requestPath, requestMethod, lastSeq);
+        const headers: Record<string, string> = { ...getAuthHeaders() };
+        if (requestMethod === "POST") {
+          headers["Content-Type"] = "application/json";
+        } else {
+          const resumeId = lastEventId ?? (runId && lastSeq > 0 ? `${runId}:${lastSeq}` : undefined);
+          if (resumeId) headers["Last-Event-ID"] = resumeId;
+        }
 
-    getLog()("info", "sse", `SSE ${path} connected`);
-    // Chat sends heartbeats every 15s, so a shorter idle limit detects a lost backend.
-    // Build and upload may be silent for longer and retain the existing limit.
-    if (connTimer) clearTimeout(connTimer);
-    idleTimer = null;
-    const IDLE_TIMEOUT = path === "chat" ? 45_000 : 30 * 60 * 1000;
-    resetIdleTimer = () => {
-      if (idleTimer) clearTimeout(idleTimer);
-      idleTimer = setTimeout(() => {
-        abortedByTimeout = true;
-        controller.abort();
-      }, IDLE_TIMEOUT);
-    };
-    resetIdleTimer();
+        // Connection timeout 120s (RAG may load reranker/embedding models).
+        connTimer = setTimeout(() => {
+          abortedByTimeout = true;
+          connection.abort();
+        }, 120_000);
 
-    const reader = res.body?.getReader();
-    if (!reader) throw new Error("No response body");
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let currentEvent = "";
-    let dataBuffer = "";
+        const res = await fetch(url, {
+          method: requestMethod,
+          headers,
+          ...(requestMethod === "POST" ? { body: JSON.stringify(body) } : {}),
+          signal: connection.signal,
+        });
+        if (!res.ok) throw new Error(`SSE ${res.status}: ${res.statusText}`);
 
-    // Read loop wrapped in try/catch to handle reader.read() exceptions explicitly
-    try {
-      while (!doneReceived) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
+        const headerRunId = res.headers?.get("X-Run-Id") ?? res.headers?.get("x-run-id");
+        if (headerRunId && !runId) {
+          runId = headerRunId;
+          options.onRunId?.(headerRunId);
+        }
+        getLog()("info", "sse", `SSE ${requestPath} connected${runId ? ` (run=${runId})` : ""}`);
+        if (connTimer) { clearTimeout(connTimer); connTimer = null; }
+
+        // Chat and run replay streams send heartbeats every 15s; build/upload
+        // may be silent for much longer.
+        const streamPath = requestPath.split("?")[0];
+        const idleTimeoutMs = streamPath === "chat" || streamPath.startsWith("runs/") ? 45_000 : 30 * 60 * 1000;
+        const resetIdleTimer = () => {
+          if (idleTimer) clearTimeout(idleTimer);
+          idleTimer = setTimeout(() => {
+            abortedByTimeout = true;
+            connection.abort();
+          }, idleTimeoutMs);
+        };
         resetIdleTimer();
-        // Normalize line endings to support CRLF / CR / LF (SSE spec allows all)
-        const normalized = buffer.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-        const lines = normalized.split("\n");
-        buffer = lines.pop() ?? "";
-        for (const line of lines) {
-          if (line.startsWith("event: ")) {
-            currentEvent = line.slice(7).trim();
-          } else if (line.startsWith("data: ")) {
-            if (dataBuffer) dataBuffer += "\n";
-            dataBuffer += line.slice(6);
-          } else if (line === "") {
-            if (dataBuffer) {
-              try {
-                const parsed = JSON.parse(dataBuffer);
-                consecutiveFailures = 0;
-                // 如果解析出的对象没有 type 字段，用 SSE event 行的值补充
-                if (!parsed.type && currentEvent) parsed.type = currentEvent;
-                const event = parsed as ChatSSEEvent | BuildSSEEvent;
 
-                getLog()("debug", "sse", `SSE ${path} event: ${event.type}`);
-                callbacks.onEvent(event);
-                // A callback can abort synchronously (for example, chat error handling).
-                // Fence the rest of this decoded chunk and do not treat it as a clean done.
-                if (controller.signal.aborted) {
-                  if (abortedByTimeout) {
-                    const errMsg = "连接超时，请检查网络或后端是否运行";
-                    getLog()("error", "sse", `SSE ${path} read error: ${errMsg}`);
-                    callbacks.onError?.(new Error(`SSE 读取异常: ${errMsg}`));
-                  } else {
-                    getLog()("info", "sse", `SSE ${path} read aborted (controller already aborted)`);
-                  }
-                  return;
-                }
-                // done 事件后立即触发 onDone 并退出循环，不依赖流关闭
-                if (event.type === "done") {
-                  getLog()("ok", "sse", `SSE ${path} completed`);
-                  doneReceived = true;
+        const reader = res.body?.getReader();
+        if (!reader) throw new Error("No response body");
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let currentEvent = "";
+        let dataBuffer = "";
+        let eventId: string | undefined;
+
+        const handlePayload = (payloadText: string, rawEvent: string, rawId: string | undefined): boolean => {
+          try {
+            const parsed = JSON.parse(payloadText) as Record<string, unknown>;
+            consecutiveFailures = 0;
+            if (!parsed.type && rawEvent) parsed.type = rawEvent;
+            const event = parsed as unknown as ChatSSEEvent | BuildSSEEvent;
+
+            const idInfo = parseSseEventId(rawId);
+            const payloadRunId = typeof parsed.run_id === "string" ? parsed.run_id : undefined;
+            const payloadSeq = typeof parsed.seq === "number" ? parsed.seq : undefined;
+            const seq = payloadSeq ?? idInfo?.seq;
+            const eventRunId = payloadRunId ?? idInfo?.runId;
+            if (eventRunId && !runId) {
+              runId = eventRunId;
+              options.onRunId?.(eventRunId);
+            }
+            if (rawId) lastEventId = rawId;
+            else if (eventRunId && seq !== undefined) lastEventId = `${eventRunId}:${seq}`;
+
+            // Replay overlap: never apply the same sequence twice.
+            if (seq !== undefined) {
+              if (seq <= lastSeq) return false;
+              lastSeq = seq;
+            }
+
+            const meta: SSEEventMeta = { lastEventId: rawId ?? lastEventId, runId: eventRunId ?? runId, seq };
+            getLog()("debug", "sse", `SSE ${requestPath} event: ${event.type}${seq !== undefined ? ` #${seq}` : ""}`);
+            if (meta.lastEventId !== undefined || meta.runId !== undefined || meta.seq !== undefined) {
+              callbacks.onEvent(event, meta);
+            } else {
+              callbacks.onEvent(event);
+            }
+
+            if (userController.signal.aborted) {
+              if (abortedByTimeout) {
+                const errMsg = "连接超时，请检查网络或后端是否运行";
+                getLog()("error", "sse", `SSE ${requestPath} read error: ${errMsg}`);
+                failure = new Error(`SSE 读取异常: ${errMsg}`);
+              } else {
+                getLog()("info", "sse", `SSE ${requestPath} read aborted (controller already aborted)`);
+              }
+              return true;
+            }
+            if (event.type === "done") {
+              getLog()("ok", "sse", `SSE ${requestPath} completed`);
+              doneReceived = true;
+              return true;
+            }
+          } catch {
+            consecutiveFailures++;
+            getLog()("warn", "sse", `SSE JSON 解析失败 (${consecutiveFailures}): ${payloadText.slice(0, 100)}`);
+            if (consecutiveFailures >= 3) {
+              failure = new Error("SSE 连续解析失败，请检查网络连接");
+              parseFailure = true;
+              return true;
+            }
+          }
+          return false;
+        };
+
+        try {
+          while (!doneReceived) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            resetIdleTimer();
+            // SSE allows CRLF / CR / LF line endings.
+            const normalized = buffer.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+            const lines = normalized.split("\n");
+            buffer = lines.pop() ?? "";
+            for (const line of lines) {
+              if (line.startsWith("event:")) {
+                currentEvent = line.slice(6).trim();
+              } else if (line.startsWith("id:")) {
+                eventId = line.slice(3).trim();
+              } else if (line.startsWith("data:")) {
+                const chunk = line.slice(5);
+                if (dataBuffer) dataBuffer += "\n";
+                dataBuffer += chunk.startsWith(" ") ? chunk.slice(1) : chunk;
+              } else if (line === "") {
+                const payloadText = dataBuffer;
+                const rawEvent = currentEvent;
+                const rawId = eventId;
+                dataBuffer = "";
+                currentEvent = "";
+                eventId = undefined;
+                if (payloadText && handlePayload(payloadText, rawEvent, rawId)) {
+                  stopReading = true;
                   break;
                 }
-              } catch {
-                consecutiveFailures++;
-                getLog()("warn", "sse", `SSE JSON 解析失败 (${consecutiveFailures}): ${dataBuffer.slice(0, 100)}`);
-                if (consecutiveFailures >= 3) {
-                  callbacks.onError?.(new Error("SSE 连续解析失败，请检查网络连接"));
-                  consecutiveFailures = 0;
-                  controller.abort();
-                  return;
-                }
               }
-              dataBuffer = "";
-              currentEvent = "";
             }
+            if (stopReading) break;
+          }
+
+          // Defensive: process a trailing event that did not end with a blank line.
+          if (!doneReceived && !stopReading && dataBuffer) {
+            const payloadText = dataBuffer;
+            const rawEvent = currentEvent;
+            const rawId = eventId;
+            dataBuffer = "";
+            currentEvent = "";
+            eventId = undefined;
+            getLog()("debug", "sse", `SSE ${requestPath} trailing event`);
+            handlePayload(payloadText, rawEvent, rawId);
+          }
+        } catch (readErr) {
+          if (userController.signal.aborted && !abortedByTimeout) {
+            getLog()("info", "sse", `SSE ${requestPath} read aborted (controller already aborted)`);
+          } else if (doneReceived) {
+            getLog()("info", "sse", `SSE ${requestPath} read error after done, ignoring`);
+          } else if (abortedByTimeout) {
+            const errMsg = "连接超时，请检查网络或后端是否运行";
+            getLog()("error", "sse", `SSE ${requestPath} read error: ${errMsg}`);
+            failure = new Error(`SSE 读取异常: ${errMsg}`);
+          } else {
+            const errMsg = readErr instanceof Error ? readErr.message : String(readErr);
+            getLog()("error", "sse", `SSE ${requestPath} read error: ${errMsg}`);
+            failure = new Error(`SSE 读取异常: ${errMsg}`);
           }
         }
-      }
-
-      // Process any trailing event that didn't end with an empty line (defensive)
-      if (!doneReceived && dataBuffer) {
-        try {
-          const parsed = JSON.parse(dataBuffer);
-          consecutiveFailures = 0;
-          if (!parsed.type && currentEvent) parsed.type = currentEvent;
-          const event = parsed as ChatSSEEvent | BuildSSEEvent;
-          getLog()("debug", "sse", `SSE ${path} trailing event: ${event.type}`);
-          callbacks.onEvent(event);
-          // Keep the defensive trailing-event path behind the same abort fence.
-          if (controller.signal.aborted) {
-            if (abortedByTimeout) {
-              const errMsg = "连接超时，请检查网络或后端是否运行";
-              getLog()("error", "sse", `SSE ${path} read error: ${errMsg}`);
-              callbacks.onError?.(new Error(`SSE 读取异常: ${errMsg}`));
-            } else {
-              getLog()("info", "sse", `SSE ${path} read aborted (controller already aborted)`);
-            }
-            return;
-          }
-          if (event.type === "done") {
-            getLog()("ok", "sse", `SSE ${path} completed (trailing)`);
-            doneReceived = true;
-          }
-        } catch {
-          consecutiveFailures++;
-          getLog()("warn", "sse", `SSE trailing JSON 解析失败 (${consecutiveFailures}): ${dataBuffer.slice(0, 100)}`);
+      } catch (err) {
+        if (userController.signal.aborted && !abortedByTimeout) {
+          getLog()("info", "sse", `SSE ${requestPath} aborted by user`);
+        } else if (doneReceived) {
+          getLog()("info", "sse", `SSE ${requestPath} error after done, ignoring`);
+        } else {
+          const errMsg = abortedByTimeout
+            ? "连接超时，请检查网络或后端是否运行"
+            : (err instanceof Error ? err.message : String(err));
+          getLog()("error", "sse", `SSE ${requestPath} failed: ${errMsg}`);
+          failure = failure ?? new Error(errMsg);
         }
-        dataBuffer = "";
-        currentEvent = "";
+      } finally {
+        if (connTimer) clearTimeout(connTimer);
+        if (idleTimer) clearTimeout(idleTimer);
+        userController.signal.removeEventListener("abort", relayUserAbort);
+        if (activeConnection === connection) activeConnection = null;
       }
-    } catch (readErr) {
-      // 如果 controller 已被中止（如 onEvent 处理 error 事件后调用了 stopStreaming），
-      // 不再触发 onError，避免重复处理
-      if (controller.signal.aborted && !abortedByTimeout) {
-        getLog()("info", "sse", `SSE ${path} read aborted (controller already aborted)`);
-        return;
-      }
-      // 已收到 done 事件后流关闭产生的异常，视为正常结束的副作用，不报错
-      if (doneReceived) {
-        getLog()("info", "sse", `SSE ${path} read error after done, ignoring`);
-        return;
-      }
-      // reader.read() threw (network error, stream aborted by server, etc.)
-      const errMsg = abortedByTimeout
-        ? "连接超时，请检查网络或后端是否运行"
-        : (readErr instanceof Error ? readErr.message : String(readErr));
-      getLog()("error", "sse", `SSE ${path} read error: ${errMsg}`);
-      callbacks.onError?.(new Error(`SSE 读取异常: ${errMsg}`));
-      return;
-    }
-    // 收到 done 事件视为正常结束触发 onDone；流关闭但未收到 done 视为中途断开
-    if (doneReceived) {
-      callbacks.onDone?.();
-    } else {
-      getLog()("warn", "sse", `SSE ${path} stream closed without done event`);
-      callbacks.onError?.(new Error("连接断开，点击重试"));
-    }
 
-  } catch (err) {
-    // 用户主动中止（切换会话/停止流式）不应触发错误回调
-    if (controller.signal.aborted && !abortedByTimeout) {
-      getLog()("info", "sse", `SSE ${path} aborted by user`);
-      return;
+      if (doneReceived) break;
+      if (userAborted || userController.signal.aborted) break;
+
+      // Unexpected disconnect: retry with replay when configured.
+      if (parseFailure || !reconnect || attempt >= maxAttempts) {
+        if (!failure) failure = new Error("连接断开，点击重试");
+        if (!parseFailure && reconnect && attempt >= maxAttempts && attempt > 0) {
+          failure = new Error(`连接断开，已重连 ${maxAttempts} 次仍未恢复: ${failure.message}`);
+        }
+        callbacks.onError?.(failure);
+        return result();
+      }
+      if (!runId) {
+        callbacks.onError?.(new Error("连接断开且无法确定运行 ID，点击重试"));
+        return result();
+      }
+
+      attempt++;
+      const delay = Math.min(baseDelayMs * 2 ** (attempt - 1), maxDelayMs);
+      getLog()("warn", "sse", `SSE ${requestPath} disconnected, reconnect ${attempt}/${maxAttempts} in ${delay}ms`);
+      await delayAbortable(delay, userController.signal);
+      if (userAborted || userController.signal.aborted) break;
+
+      requestMethod = "GET";
+      requestPath = `runs/${encodeURIComponent(runId)}/events`;
     }
-    // 已收到 done 事件后的连接关闭异常，视为正常结束的副作用，不报错
-    if (doneReceived) {
-      getLog()("info", "sse", `SSE ${path} error after done, ignoring`);
-      return;
-    }
-    // 连接超时或其他错误，触发错误回调
-    const errMsg = abortedByTimeout ? "连接超时，请检查网络或后端是否运行" : (err instanceof Error ? err.message : String(err));
-    getLog()("error", "sse", `SSE ${path} failed: ${errMsg}`);
-    callbacks.onError?.(new Error(errMsg));
   } finally {
-    if (connTimer) clearTimeout(connTimer);
-    if (typeof idleTimer !== "undefined" && idleTimer) clearTimeout(idleTimer);
+    userController.signal.removeEventListener("abort", onUserAbort);
   }
+
+  if (doneReceived) callbacks.onDone?.();
+  return result();
 }
 
 // ─── apiWS ───────────────────────────────────────────────────
