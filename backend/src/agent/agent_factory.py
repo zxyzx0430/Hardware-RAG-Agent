@@ -445,26 +445,39 @@ def _read_checkpointer_type() -> str:
 
 
 async def _build_sqlite_checkpointer() -> Any:
-    """Build an AsyncSqliteSaver for the astream path.
+    """Build and initialize an AsyncSqliteSaver for the astream path.
 
     create_agent's astream() calls aget_tuple(), which the sync SqliteSaver
     does not implement. AsyncSqliteSaver.from_conn_string is an async context
     manager; we enter it once and keep both the context manager and the saver
     alive for the process lifetime so the aiosqlite connection stays open.
-    Falls back to InMemorySaver on failure.
+
+    The saver is only usable once setup() has created its tables, and the
+    writer binding refuses an uninitialized saver, so this fails closed: a
+    sqlite checkpointer that cannot be prepared raises instead of silently
+    degrading to an in-memory one that would lose history on restart.
     """
     global _global_checkpointer_cm
     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+    cm: Any = None
+    entered = False
     try:
         _SQLITE_CHECKPOINT_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _global_checkpointer_cm = AsyncSqliteSaver.from_conn_string(str(_SQLITE_CHECKPOINT_PATH))
-        checkpointer = await _global_checkpointer_cm.__aenter__()
+        cm = AsyncSqliteSaver.from_conn_string(str(_SQLITE_CHECKPOINT_PATH))
+        _global_checkpointer_cm = cm
+        checkpointer = await cm.__aenter__()
+        entered = True
+        await checkpointer.setup()
         return checkpointer
     except Exception as exc:
-        logger.error("AsyncSqliteSaver init failed: %s — falling back to InMemorySaver", exc)
+        logger.error("AsyncSqliteSaver init failed: %s", exc)
         _global_checkpointer_cm = None
-        from langgraph.checkpoint.memory import InMemorySaver
-        return InMemorySaver()
+        if entered and cm is not None:
+            try:
+                await cm.__aexit__(type(exc), exc, exc.__traceback__)
+            except Exception:
+                logger.error("checkpointer cleanup after init failure failed", exc_info=True)
+        raise
 
 
 async def reset_thread_checkpoint(thread_id: str) -> None:
