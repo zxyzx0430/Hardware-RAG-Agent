@@ -81,13 +81,16 @@ async def _collect_events(monkeypatch, run_agent_stream, counters: dict[str, int
 
 def _assert_context_limit_terminal(events: list[dict]) -> None:
     errors = [event for event in events if event.get("type") == "error"]
-    terminals = [event for event in events if event.get("type") == "done"]
+    terminals = [
+        {key: value for key, value in event.items() if key not in ("run_id", "seq")}
+        for event in events if event.get("type") == "done"
+    ]
     assert len(errors) == 1
     assert errors[0]["code"] == "CONTEXT_LIMIT"
     assert "已停止" in errors[0]["message"]
     assert "降级" not in errors[0]["message"]
     assert terminals == [{"type": "done", "success": False, "completed": False}]
-    assert events[-1] == terminals[0]
+    assert events[-1]["type"] == "done"
 
 
 def test_pre_send_compaction_failure_stops_before_agent_stream_and_fallback(monkeypatch):
@@ -161,7 +164,9 @@ def test_pre_send_compaction_failure_stops_before_agent_stream_and_fallback(monk
 
     events = asyncio.run(_collect_events(monkeypatch, chat_routes._run_agent_stream, counters))
 
-    assert events[0]["type"] == "context_compressing"
+    types = [event["type"] for event in events]
+    assert types[0] == "run_started"
+    assert "context_compressing" in types
     _assert_context_limit_terminal(events)
     assert counters == {"agent_build": 1, "agent_stream": 0, "fallback": 0}
 

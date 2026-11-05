@@ -169,6 +169,7 @@ class AuditRecorder:
             log_tool_call(
                 **common_kwargs,
                 call_id=record.call_id,
+                run_id=getattr(record.ctx, "run_id", None),
                 success=record.envelope.success,
                 error_type=_extract_error_type(record.envelope),
             )

@@ -60,6 +60,26 @@ def _bypass_auth():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _in_memory_run_store(request):
+    """Keep legacy chat tests out of the persistent recovery tables.
+
+    Recovery acceptance tests deliberately exercise the real persistent store;
+    do not override them with the process-local fallback.
+    """
+    module_name = Path(str(request.node.fspath)).name
+    if module_name.startswith("test_recovery_"):
+        yield
+        return
+    from src.agent import run_events
+
+    run_events.set_run_store(run_events.InMemoryRunStore())
+    try:
+        yield
+    finally:
+        run_events.set_run_store(None)
+
+
 @pytest.fixture
 def context_archive_scope(tmp_path, monkeypatch):
     """Opt-in real archive capability for compaction tests, not global auth."""

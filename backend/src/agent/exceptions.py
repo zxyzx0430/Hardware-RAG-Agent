@@ -17,6 +17,7 @@ class ToolContext:
     """
     permission_mode: str = "default"
     session_id: str = "default"
+    run_id: str | None = None
     kb_coverage_counter: dict[str, int] = field(default_factory=dict)
     source_counter: int = 0
     decision_source: str = "auto_allow"

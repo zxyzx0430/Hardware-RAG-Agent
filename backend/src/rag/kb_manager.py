@@ -1382,10 +1382,13 @@ class KnowledgeBaseManager:
             if existing:
                 return existing
 
-            # Check if builtin path exists
+            # The prebuilt manual package is optional and not committed. A
+            # fresh install still needs a usable default KB, otherwise the UI's
+            # default builtin-001 makes the first upload fail. Create an empty
+            # builtin collection; users can upload manuals into it immediately.
             if not BUILTIN_KB_DIR.exists():
-                logger.info("Builtin KB path not found, skipping creation")
-                return None
+                BUILTIN_KB_DIR.mkdir(parents=True, exist_ok=True)
+                logger.info("Created empty builtin KB directory: %s", BUILTIN_KB_DIR)
 
             # Create builtin KB record
             kb = KnowledgeBase(
@@ -1394,7 +1397,12 @@ class KnowledgeBaseManager:
                 description="系统内置硬件手册知识库",
                 collection_name="hardware-docs",
                 chunk_method="hybrid",
-                embedding_model="text-embedding-3-small",
+                embedding_model=settings.embedding_model,
+                embedding_base_url=settings.embedding_base_url,
+                embedding_api_key_encrypted=(
+                    encrypt_key(settings.embedding_api_key)
+                    if settings.embedding_api_key else None
+                ),
                 enabled=True,
                 is_builtin=True,
                 builtin_path=str(BUILTIN_KB_DIR),

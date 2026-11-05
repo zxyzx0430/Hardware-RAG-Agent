@@ -82,7 +82,8 @@ async def _collect_chat(monkeypatch, fake_stream) -> list[dict]:
         chunks.append(chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk)
     body = "".join(chunks)
     return [
-        json.loads(line[6:])
+        {key: value for key, value in json.loads(line[6:]).items()
+         if key not in ("run_id", "seq")}
         for line in body.splitlines()
         if line.startswith("data: ")
     ]
@@ -115,7 +116,8 @@ async def _collect_fallback_chat(monkeypatch, fake_client) -> list[dict]:
     async for chunk in response.body_iterator:
         chunks.append(chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk)
     return [
-        json.loads(line[6:])
+        {key: value for key, value in json.loads(line[6:]).items()
+         if key not in ("run_id", "seq")}
         for line in "".join(chunks).splitlines()
         if line.startswith("data: ")
     ]

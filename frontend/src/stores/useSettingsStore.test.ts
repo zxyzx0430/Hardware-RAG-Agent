@@ -292,6 +292,7 @@ describe("provider verification outcomes", () => {
       provider: provider.id,
       api_key: "secret-provider-key",
       base_url: "https://provider.test/v1",
+      setup_code: "",
     }));
   });
 

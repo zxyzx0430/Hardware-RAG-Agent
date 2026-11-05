@@ -60,6 +60,8 @@ interface SettingsState {
   defaultContextWindow: number;
   /** Agent permission mode: bypassPermissions=default bypass, default=ask each tool, acceptEdits=auto-accept edits */
   permissionMode: "bypassPermissions" | "default" | "acceptEdits";
+  /** One-time console code required when the backend has no stored provider. */
+  setupCode: string;
 
   // 服务商管理
   addProvider: (name: string, baseUrl: string, apiKey: string) => ProviderConfig;
@@ -83,6 +85,7 @@ interface SettingsState {
   setImageModel: (providerId: string, model: string) => void;
   setVisionModel: (providerId: string, model: string) => void;
 
+  setSetupCode: (value: string) => void;
   setWebSearchKey: (k: string) => void;
   setWebSearchBaseUrl: (url: string) => void;
   toggleShowWebSearchKey: () => void;
@@ -157,6 +160,7 @@ const DEFAULTS = {
   agentChunkerDefaultApiKey: "",
   defaultContextWindow: 0,
   permissionMode: "default" as "bypassPermissions" | "default" | "acceptEdits",
+  setupCode: "",
 };
 
 function readPersistedSettings(): { value: Record<string, unknown> | null; error: boolean } {
@@ -331,6 +335,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
             try {
               const data = await apiPost<{ session_token?: string }>("auth/store-key", {
                 provider: id, api_key: provider.apiKey, base_url: provider.baseUrl,
+                setup_code: get().setupCode.trim(),
               });
               if (data?.session_token) {
                 sessionStorage.setItem("session_token", data.session_token);
@@ -346,6 +351,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
           try {
             const data = await apiPost<{ session_token?: string }>("auth/store-key", {
               provider: id, api_key: provider.apiKey, base_url: provider.baseUrl,
+              setup_code: get().setupCode.trim(),
             });
             if (data?.session_token) {
               sessionStorage.setItem("session_token", data.session_token);
@@ -363,6 +369,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
                 // 拿到 token 后再补一次 store-key 以更新元数据
                 apiPost("auth/store-key", {
                   provider: id, api_key: provider.apiKey, base_url: provider.baseUrl,
+                  setup_code: get().setupCode.trim(),
                 }).catch(() => { /* 元数据更新失败不阻塞 */ });
               }
             } catch (loginErr) {
@@ -485,6 +492,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setVisionModel: (providerId, model) => {
     set({ visionProviderId: providerId, visionModel: model });
   },
+
+  setSetupCode: (value: string) => set({ setupCode: value }),
 
   setWebSearchKey: (k) => set((s) => ({ webSearchConfig: { ...s.webSearchConfig, apiKey: k } })),
   setWebSearchBaseUrl: (url) => set((s) => ({ webSearchConfig: { ...s.webSearchConfig, baseUrl: url } })),

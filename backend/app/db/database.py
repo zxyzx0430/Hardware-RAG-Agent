@@ -4434,6 +4434,7 @@ def _ensure_legacy_message_blob_snapshot_storage_schema():
 def init_db():
     """建表（首次启动时使用，后续通过 Alembic 迁移）。"""
     import app.db.models  # noqa: ensure models are loaded
+    import app.db.recovery_models  # noqa: register recovery R1 tables
     Base.metadata.create_all(bind=engine)
     _ensure_legacy_body_chunk_storage_schema()
     _ensure_legacy_message_snapshot_schema()
@@ -4475,6 +4476,7 @@ def init_db():
         # 为 tool_audit 添加 call_id/success/error_type/trace 列（幂等）
         for col_def in (
             "call_id VARCHAR(64)",
+            "run_id VARCHAR(64)",
             "success BOOLEAN DEFAULT 1",
             "error_type VARCHAR(64)",
             "trace_id VARCHAR(64)",

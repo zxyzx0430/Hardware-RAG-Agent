@@ -49,9 +49,23 @@
 // 前置条件：补齐 useChatStore 单元测试（streaming / resume / persist 三条主路径）后再动手
 import { create } from "zustand";
 import type { Message, SourceRef, ActivityStep, Session, ContentPart, TodoItem } from "../types/session";
-import type { ChatRequest, ChatSSEEvent, Attachment, BackendMessage } from "../types/api";
+import type { ChatRequest, ChatSSEEvent, Attachment, BackendMessage, RunStatus } from "../types/api";
+import type { SSEEventMeta } from "../api/client";
 import { loadFromStorage, saveToStorage, saveSessionMessages as writeSessionMessages, loadSessionMessages, removeSessionMessages, migrateMessagesToShards } from "../utils/persistence";
 import { getSessionHistoryMode } from "../utils/rollingHistoryClient";
+import {
+  clearActiveRun,
+  fetchRunState,
+  getActiveRun,
+  isTerminalRunStatus,
+  loadRunRecords,
+  parseRunEventMeta,
+  pendingApprovalsToCalls,
+  setRunStatus,
+  startActiveRun,
+  updateRunSeq,
+  type ActiveRunRecord,
+} from "../utils/runRecovery";
 import { post, on } from "../utils/broadcast";
 import { useAppStore } from "./useAppStore";
 import { useSessionStore, CONTEXT_WINDOW_256K } from "./useSessionStore";
@@ -203,6 +217,16 @@ interface ChatState {
   /** Clear pending confirm without resuming (e.g. dialog dismissed) (v2-T4) */
   clearPendingConfirm: () => void;
 
+  // ── Recovery R1: persisted run tracking ──
+  /** Active run per session (mirror of the localStorage recovery records). */
+  activeRuns: Record<string, ActiveRunRecord>;
+  /** Runs that came back `interrupted`; offer retry/continue instead of fake success. */
+  runRecoveryNoticeBySession: Record<string, RunRecoveryNotice>;
+  /** Reattach a persisted unfinished run after refresh or session load. */
+  reattachRun: (sessionId: string) => Promise<void>;
+  /** Dismiss an interrupted-run notice without retrying. */
+  clearRunRecoveryNotice: (sessionId: string) => void;
+
   // ── 来源查看器状态（按 sessionId 隔离，防止跨会话污染）──
   /** key = sessionId, value = {messageId, sourceId} 定位来源（解决 source id 跨消息重复） */
   sessionFileViewerSource: Record<string, { messageId: string; sourceId: string } | null>;
@@ -251,6 +275,30 @@ interface PendingConfirm {
   }>;
   count: number;
 }
+
+/** Recovery R1: a run that ended without producing a complete answer. */
+interface RunRecoveryNotice {
+  runId: string;
+  status: RunStatus;
+  message: string;
+}
+
+/** Mutable terminal state shared by the live stream, replays and reattach. */
+interface ChatTerminalState {
+  outcome: "running" | "error" | "awaiting_confirmation" | "success";
+  errorMessage: string;
+  finalized: boolean;
+}
+
+interface ResumeTerminalState {
+  outcome: "running" | "error" | "awaiting_confirmation" | "success" | "stopped";
+  errorMessage?: string;
+  decision?: "allow" | "deny" | "stop";
+}
+
+// Supplementary replay streams are per session; never run two at once.
+const _runReplayInFlight = new Set<string>();
+const _runReattachInFlight = new Set<string>();
 
 export interface ChatSkillsRequest {
   mode: NonNullable<ChatRequest["skills_mode"]>;
@@ -844,6 +892,642 @@ function mapBackendMessage(m: BackendMessage): Message {
   };
 }
 
+// ─── Recovery R1: run tracking helpers ───────────────────────
+function _syncActiveRunState(record: ActiveRunRecord | null, sessionId: string): void {
+  useChatStore.setState((state) => {
+    const activeRuns = { ...state.activeRuns };
+    if (record) activeRuns[sessionId] = record;
+    else delete activeRuns[sessionId];
+    return { activeRuns };
+  });
+}
+
+function _beginActiveRun(sessionId: string, runId: string): ActiveRunRecord | null {
+  if (!sessionId || !runId) return null;
+  const existing = useChatStore.getState().activeRuns[sessionId] ?? getActiveRun(sessionId);
+  if (existing?.runId === runId) return existing;
+  const record = startActiveRun(sessionId, runId);
+  useChatStore.setState((state) => {
+    const runRecoveryNoticeBySession = { ...state.runRecoveryNoticeBySession };
+    delete runRecoveryNoticeBySession[sessionId];
+    return {
+      activeRuns: { ...state.activeRuns, [sessionId]: record },
+      runRecoveryNoticeBySession,
+    };
+  });
+  return record;
+}
+
+function _markRunStatus(sessionId: string, runId: string, status: RunStatus): void {
+  const record = setRunStatus(sessionId, runId, status);
+  if (record) _syncActiveRunState(record, sessionId);
+}
+
+function _clearRunTracking(sessionId: string): void {
+  clearActiveRun(sessionId);
+  _syncActiveRunState(null, sessionId);
+}
+
+/** Record an interrupted run once, then stop reattaching it on later loads. */
+function _markRunInterrupted(sessionId: string, runId: string | undefined, message: string): void {
+  const state = useChatStore.getState();
+  const effectiveRunId = runId
+    ?? state.activeRuns[sessionId]?.runId
+    ?? getActiveRun(sessionId)?.runId
+    ?? "";
+  if (effectiveRunId) setRunStatus(sessionId, effectiveRunId, "interrupted");
+  clearActiveRun(sessionId);
+  useChatStore.setState((s) => {
+    const activeRuns = { ...s.activeRuns };
+    delete activeRuns[sessionId];
+    return {
+      activeRuns,
+      runRecoveryNoticeBySession: {
+        ...s.runRecoveryNoticeBySession,
+        [sessionId]: { runId: effectiveRunId, status: "interrupted", message },
+      },
+    };
+  });
+}
+
+/**
+ * Apply run sequence semantics: drop duplicates, reject stale runs, and ask
+ * for a replay when a gap is observed. Returns true when the event should be
+ * applied to the session state.
+ */
+function _trackChatRunEvent(
+  sessionId: string,
+  event: ChatSSEEvent,
+  meta: SSEEventMeta | undefined,
+  onGap: (runId: string, afterSeq: number) => void,
+): boolean {
+  const info = parseRunEventMeta(event, meta);
+  if (event.type === "run_started" && info.runId) {
+    _beginActiveRun(sessionId, info.runId);
+  }
+  if (info.seq === undefined) return true;
+
+  const tracked = useChatStore.getState().activeRuns[sessionId] ?? getActiveRun(sessionId);
+  const runId = info.runId ?? tracked?.runId;
+  if (!runId) return true;
+  // An older stream finishing late must not mutate the current run.
+  if (tracked && tracked.runId !== runId) return false;
+
+  const lastSeq = tracked?.lastEventSeq ?? 0;
+  if (info.seq <= lastSeq) return false;
+  if (info.seq > lastSeq + 1) {
+    onGap(runId, lastSeq);
+    return false; // the replay stream redelivers this sequence in order
+  }
+  const updated = updateRunSeq(sessionId, runId, info.seq);
+  if (updated) _syncActiveRunState(updated, sessionId);
+  return true;
+}
+
+/**
+ * Apply one chat SSE event to the session that owns the run.
+ * Shared by the initial POST stream, gap replays and refresh reattachment.
+ */
+function _applyChatEvent(event: ChatSSEEvent, requestSessionId: string, terminal: ChatTerminalState): void {
+  if (event.type === "error") {
+    terminal.outcome = "error";
+    const errPayload = event as { type: "error"; code?: string; message: string; detail?: string };
+    const code = errPayload.code ?? "UNKNOWN";
+    // MODEL_NOT_FOUND: backend reports the requested model is unavailable.
+    // INTERRUPTED: the process restarted while the run was still going.
+    const friendlyMessage = code === "INTERRUPTED"
+      ? (errPayload.message || "运行已中断（后端重启或连接中断），可重试或继续")
+      : code === "MODEL_NOT_FOUND" && !errPayload.message
+        ? "模型不存在，请在设置中检查模型名"
+        : (errPayload.message ?? "未知错误");
+    terminal.errorMessage = friendlyMessage;
+    getLog()("error", "chat", `SSE 错误: ${friendlyMessage}`);
+    useChatStore.setState({
+      streamingError: {
+        code,
+        message: friendlyMessage,
+        detail: errPayload.detail ?? "",
+      },
+    });
+    if (code === "INTERRUPTED") {
+      _markRunInterrupted(requestSessionId, event.run_id, friendlyMessage);
+    }
+    useChatStore.getState().stopStreaming(friendlyMessage);
+    return;
+  }
+  if (event.type === "run_started") return;
+  if (event.type === "tool_confirm_required" && terminal.outcome !== "error") {
+    terminal.outcome = "awaiting_confirmation";
+  }
+  const sse = event;
+  // ★ 始终写入发起请求时的会话，而非当前活跃会话
+  useChatStore.setState((s) => {
+    const sid = requestSessionId;
+    const isActive = s.activeSessionId === sid;
+    const sessionMsgs = s.sessionMessages[sid] ?? [];
+    const currentMsgs = isActive ? s.messages : sessionMsgs;
+
+    switch (sse.type) {
+      case "thinking": {
+        const thinkContent = sse.content ?? "";
+        const thinkSource = sse.source;
+        getLog()("debug", "chat", `[thinking] source=${thinkSource} content="${thinkContent.slice(0, 30)}"`);
+
+        // 构建 step
+        const steps = [...(isActive ? s.streamingSteps : (currentMsgs[currentMsgs.length - 1]?.activity?.steps || []))];
+        const lastStep = steps[steps.length - 1];
+
+        // 占位 thinking 卡片（发送消息时预置）应被首个真实 thinking 事件替换，避免双卡。
+        if (lastStep && lastStep.type === "thinking" && lastStep.content === "模型正在思考...") {
+          steps[steps.length - 1] = { ...lastStep, content: thinkContent, source: thinkSource };
+        } else if (thinkSource === "reasoning") {
+          if (lastStep && lastStep.type === "thinking" && lastStep.source === "llm") {
+            steps[steps.length - 1] = { ...lastStep, content: thinkContent, source: "reasoning" };
+          } else if (lastStep && lastStep.type === "thinking" && lastStep.source === "reasoning") {
+            steps[steps.length - 1] = { ...lastStep, content: (lastStep.content || "") + thinkContent };
+          } else {
+            // Source switched: close previous thinking step before creating a new one
+            if (lastStep && lastStep.type === "thinking") {
+              steps[steps.length - 1] = { ...lastStep, status: "done" };
+            }
+            steps.push({ type: "thinking", id: `h-${Date.now()}`, content: thinkContent, source: "reasoning" });
+          }
+        } else if (lastStep && lastStep.type === "thinking" && lastStep.source === thinkSource) {
+          steps[steps.length - 1] = { ...lastStep, content: (lastStep.content || "") + thinkContent };
+        } else {
+          // Source switched: close previous thinking step before creating a new one
+          if (lastStep && lastStep.type === "thinking") {
+            steps[steps.length - 1] = { ...lastStep, status: "done" };
+          }
+          steps.push({ type: "thinking", id: `h-${Date.now()}`, content: thinkContent, source: thinkSource });
+        }
+
+        if (isActive) {
+          return { streamingSteps: steps };
+        } else {
+          // 后台：直接更新 sessionMessages 中的 assistant 消息的 activity
+          const msgs = [...currentMsgs];
+          const last = msgs[msgs.length - 1];
+          if (last?.role === "assistant") {
+            msgs[msgs.length - 1] = { ...last, activity: { durationMs: 0, steps, status: "running" } };
+          }
+          const newSM = { ...s.sessionMessages, [sid]: msgs };
+          saveSessionMessages(sid, msgs);
+          return { sessionMessages: newSM };
+        }
+      }
+
+      case "text": {
+        const chunk = sse.content ?? "";
+        const msgs = [...currentMsgs];
+        const last = msgs[msgs.length - 1];
+        if (last?.role === "assistant") {
+          let newContent: string | ContentPart[];
+          let newStreamingContent: string;
+
+          if (typeof last.content === "string") {
+            // Original string path: keep streamingContent in sync with message content.
+            const prevContent = isActive ? s.streamingContent : last.content;
+            const breakPrefix = _needsParagraphBreak.get(sid) && prevContent && !prevContent.endsWith("\n") ? "\n\n" : "";
+            _needsParagraphBreak.set(sid, false);
+            newStreamingContent = prevContent + breakPrefix + chunk;
+            newContent = newStreamingContent;
+          } else {
+            // ContentPart[] path (e.g. after image_generation appends an ImagePart):
+            // append text chunks to the last TextPart so the image is preserved.
+            const parts: ContentPart[] = [...last.content];
+            const lastTextIdx = parts.map((p) => p.type).lastIndexOf("text");
+            const breakPrefix = _needsParagraphBreak.get(sid) ? "\n\n" : "";
+            _needsParagraphBreak.set(sid, false);
+            if (lastTextIdx >= 0) {
+              const lastText = parts[lastTextIdx] as Extract<ContentPart, { type: "text" }>;
+              const prefix = lastText.text && !lastText.text.endsWith("\n") ? breakPrefix : "";
+              parts[lastTextIdx] = { ...lastText, text: lastText.text + prefix + chunk };
+            } else {
+              parts.push({ type: "text", text: breakPrefix + chunk });
+            }
+            newContent = parts;
+            newStreamingContent = parts
+              .filter((p): p is Extract<ContentPart, { type: "text" }> => p.type === "text")
+              .map((p) => p.text)
+              .join("\n\n");
+          }
+
+          // Close any open reasoning/llm thinking step when answer text begins.
+          // Without this, the thinking card stays expanded while text streams below it.
+          let updatedSteps = s.streamingSteps;
+          if (isActive) {
+            const steps = [...s.streamingSteps];
+            const lastStep = steps[steps.length - 1];
+            if (lastStep && lastStep.type === "thinking" && lastStep.status !== "done") {
+              steps[steps.length - 1] = { ...lastStep, status: "done" };
+              updatedSteps = steps;
+            }
+            msgs[msgs.length - 1] = { ...last, content: newContent };
+          } else if (last.activity?.steps?.length) {
+            const steps = [...last.activity.steps];
+            const lastStep = steps[steps.length - 1];
+            if (lastStep && lastStep.type === "thinking" && lastStep.status !== "done") {
+              steps[steps.length - 1] = { ...lastStep, status: "done" };
+            }
+            msgs[msgs.length - 1] = { ...last, content: newContent, activity: { ...last.activity, steps } };
+          } else {
+            msgs[msgs.length - 1] = { ...last, content: newContent };
+          }
+
+          const newSM = { ...s.sessionMessages, [sid]: msgs };
+          // NOTE: saveSessionMessages is intentionally NOT called here.
+          // The store subscribe (line ~927) handles persistence via 500ms debounce
+          // during streaming. Calling it per-token caused main-thread blocking.
+          if (isActive) {
+            return { streamingContent: newStreamingContent, messages: msgs, sessionMessages: newSM, streamingSteps: updatedSteps, isCompressing: false };
+          } else {
+            return { sessionMessages: newSM, isCompressing: false };
+          }
+        }
+        return { isCompressing: false };
+      }
+
+      case "context_compressing": {
+        // Context being compressed — show status banner; cleared on next text/done.
+        return {
+          isCompressing: true,
+          compressingMessage: sse.message || "正在压缩上下文...",
+        };
+      }
+
+      case "heartbeat": {
+        // Backend keepalive: no UI state change.
+        return {};
+      }
+
+      case "tool_call": {
+        // T6 协作点：通知工作台 bridge 新 call_id（重置 override）
+        console.info('[ChatStore] tool_call tool=%s call_id=%s', sse.tool, sse.call_id);
+        if (sse.call_id) {
+          _lastToolCallId.set(sid, sse.call_id);
+        }
+        handleToolCallEvent(sse);
+        // Agent decided to call a tool; create a pending step.
+        // Close out the previous rag thinking step (same as the tool case).
+        const stepsBeforeTool = [...(isActive ? s.streamingSteps : (currentMsgs[currentMsgs.length - 1]?.activity?.steps || []))];
+        const lastBeforeTool = stepsBeforeTool[stepsBeforeTool.length - 1];
+        if (lastBeforeTool && lastBeforeTool.type === "thinking" && lastBeforeTool.source === "rag" && lastBeforeTool.status !== "done") {
+          stepsBeforeTool[stepsBeforeTool.length - 1] = { ...lastBeforeTool, content: "检索完成", status: "done" };
+        }
+
+        const newStep: ActivityStep = {
+          type: "tool",
+          id: sse.call_id || `t-${Date.now()}`,
+          name: sse.tool,
+          args: typeof sse.args === "string" ? sse.args : JSON.stringify(sse.args ?? {}),
+          status: "pending",
+          call_id: sse.call_id,
+          risk_level: sse.risk_level,
+          decision_source: sse.decision_source,
+          startTime: Date.now(),
+        };
+
+        if (isActive) {
+          return { streamingSteps: [...stepsBeforeTool, newStep] };
+        } else {
+          const msgs = [...currentMsgs];
+          const last = msgs[msgs.length - 1];
+          if (last?.role === "assistant") {
+            const existingSteps = last.activity?.steps || [];
+            const stepsToUpdate = [...existingSteps];
+            const lastExisting = stepsToUpdate[stepsToUpdate.length - 1];
+            if (lastExisting && lastExisting.type === "thinking" && lastExisting.source === "rag" && lastExisting.status !== "done") {
+              stepsToUpdate[stepsToUpdate.length - 1] = { ...lastExisting, content: "检索完成", status: "done" };
+            }
+            msgs[msgs.length - 1] = { ...last, activity: { durationMs: 0, steps: [...stepsToUpdate, newStep], status: "running" } };
+          }
+          const newSM = { ...s.sessionMessages, [sid]: msgs };
+          saveSessionMessages(sid, msgs);
+          return { sessionMessages: newSM };
+        }
+      }
+
+      case "tool_result": {
+        // T6 协作点：在工作台 bridge 路由 render_data（在 resultText 压平之前）
+        console.info('[ChatStore] tool_result call_id=%s duration=%sms', sse.call_id, sse.duration);
+        handleToolResultEvent(sse);
+        // Tool execution finished; update the matching step by call_id.
+        const resultText = _flattenToolResult(sse.result);
+        const newStatus: ActivityStep["status"] = sse.success === false ? "error" : "done";
+        // image_generation: extract image_base64/image_url and append as ImagePart
+        const imagePart = sse.tool === "image_generation" ? _extractImagePart(sse.result) : null;
+        // File-editing tools: extract file_path for "查看 diff" button
+        const filePath = _extractFilePath(sse.tool, sse.result);
+
+        if (isActive) {
+          const steps = s.streamingSteps.map((step) =>
+            step.call_id === sse.call_id
+              ? { ...step, status: newStatus, result: resultText, duration: sse.duration, file_path: filePath ?? step.file_path }
+              : step
+          );
+          _needsParagraphBreak.set(sid, true);
+          if (imagePart) {
+            const msgs = [...currentMsgs];
+            const last = msgs[msgs.length - 1];
+            if (last?.role === "assistant") {
+              const newContent = _appendImageToContent(last.content, imagePart);
+              msgs[msgs.length - 1] = { ...last, content: newContent };
+              return {
+                streamingSteps: steps,
+                messages: msgs,
+                sessionMessages: { ...s.sessionMessages, [sid]: msgs },
+              };
+            }
+          }
+          return { streamingSteps: steps };
+        } else {
+          const msgs = [...currentMsgs];
+          const last = msgs[msgs.length - 1];
+          if (last?.role === "assistant" && last.activity) {
+            const steps = last.activity.steps.map((step) =>
+              step.call_id === sse.call_id
+                ? { ...step, status: newStatus, result: resultText, duration: sse.duration, file_path: filePath ?? step.file_path }
+                : step
+            );
+            msgs[msgs.length - 1] = { ...last, activity: { ...last.activity, steps } };
+          }
+          if (imagePart && last?.role === "assistant") {
+            msgs[msgs.length - 1] = {
+              ...msgs[msgs.length - 1],
+              content: _appendImageToContent(msgs[msgs.length - 1].content, imagePart),
+            };
+          }
+          const newSM = { ...s.sessionMessages, [sid]: msgs };
+          saveSessionMessages(sid, msgs);
+          _needsParagraphBreak.set(sid, true);
+          return { sessionMessages: newSM };
+        }
+      }
+
+      case "source": {
+        const newSource: SourceRef = {
+          id: sse.id ?? `src-${Date.now()}`,
+          title: sse.title ?? "未知来源",
+          doc: sse.doc ?? "",
+          page: sse.page ?? 0,
+          chunk_index: sse.chunk_index,
+          page_start: sse.page_start,
+          page_end: sse.page_end,
+          section_title: sse.section_title,
+          source_url: sse.source_url,
+          category: sse.category,
+          chunk_method: sse.chunk_method,
+          score: sse.score ?? 0,
+          score_percentage: sse.score_percentage,
+          relevance_level: sse.relevance_level,
+          citation: sse.citation,
+          excerpt: sse.excerpt ?? "",
+          kb_id: sse.kb_id,
+          kb_name: sse.kb_name,
+          small_chunk_id: sse.small_chunk_id,
+          big_chunk_id: sse.big_chunk_id,
+          small_chunk_text: sse.small_chunk_text,
+          messageId: currentMsgs[currentMsgs.length - 1]?.id,
+        };
+        const msgs = [...currentMsgs];
+        const last = msgs[msgs.length - 1];
+        if (last?.role === "assistant") {
+          const srcs = [...(last.sources || []), newSource];
+          msgs[msgs.length - 1] = { ...last, sources: srcs };
+        }
+        const newSM = { ...s.sessionMessages, [sid]: msgs };
+        saveSessionMessages(sid, msgs);
+        if (isActive) {
+          return { streamingSources: [...s.streamingSources, newSource], sources: [...s.streamingSources, newSource], messages: msgs, sessionMessages: newSM };
+        } else {
+          return { sessionMessages: newSM };
+        }
+      }
+
+      case "todo_update": {
+        const todos = (Array.isArray(sse.todos) ? (sse.todos as TodoItem[]) : []).map((t, idx) => ({
+          ...t,
+          id: t.id || `todo-${idx}`,
+        }));
+        const msgs = [...currentMsgs];
+        const last = msgs[msgs.length - 1];
+        if (last?.role === "assistant") {
+          msgs[msgs.length - 1] = { ...last, todos };
+        }
+        const newSM = { ...s.sessionMessages, [sid]: msgs };
+        saveSessionMessages(sid, msgs);
+        if (isActive) {
+          return { streamingTodos: todos, messages: msgs, sessionMessages: newSM };
+        }
+        return { sessionMessages: newSM };
+      }
+
+      case "done": {
+        if (terminal.outcome !== "error") {
+          if (sse.success === false) {
+            terminal.outcome = "error";
+          } else if (sse.awaiting_confirmation || sse.completed === false) {
+            terminal.outcome = "awaiting_confirmation";
+          } else {
+            terminal.outcome = "success";
+          }
+          if (terminal.outcome === "error") {
+            terminal.errorMessage = "回答未能完成";
+          }
+        }
+        if (!("usage" in sse)) return { isCompressing: false };
+        const usage = sse.usage;
+        if (usage) {
+          getLog()("ok", "chat", `Token usage: prompt=${usage.prompt_tokens} completion=${usage.completion_tokens} total=${usage.total_tokens}`);
+          return { _pendingUsage: { promptTokens: usage.prompt_tokens || 0, completionTokens: usage.completion_tokens || 0, totalTokens: usage.total_tokens || 0 }, isCompressing: false };
+        }
+        return { isCompressing: false };
+      }
+
+      case "compile_log": {
+        // T6 协作点：Agent build/flash 工具的实时编译日志 → FlashPane
+        handleCompileLogEvent(_lastToolCallId.get(sid) ?? "", sse.line);
+        return {};
+      }
+
+      case "progress": {
+        // T6 协作点：Agent build/flash 工具的实时进度 → FlashPane
+        handleProgressEvent(_lastToolCallId.get(sid) ?? "", sse.percent ?? 0, sse.message);
+        return {};
+      }
+
+      case "tool_confirm_required": {
+        // v2-T4: Agent paused for HITL — show ConfirmDialog
+        return {
+          pendingConfirm: {
+            calls: (sse.calls ?? []) as PendingConfirm["calls"],
+            count: sse.count ?? (sse.calls?.length ?? 0),
+          },
+        };
+      }
+
+      default:
+        return {};
+    }
+  });
+}
+
+/** Finalize a chat stream on its terminal `done` event. */
+function _finalizeChatStream(sessionId: string, terminal: ChatTerminalState, startTime: number): void {
+  if (terminal.finalized) return;
+  terminal.finalized = true;
+
+  if (terminal.outcome === "error") {
+    if (!useChatStore.getState().streamingError) {
+      useChatStore.setState({
+        streamingError: {
+          code: "INTERNAL_ERROR",
+          message: terminal.errorMessage,
+          detail: "",
+        },
+      });
+    }
+    const state = useChatStore.getState();
+    if (state.isStreaming || state.streamingSessionId || state.currentSseRequest) {
+      state.stopStreaming(terminal.errorMessage);
+    }
+    _clearRunTracking(sessionId);
+    return;
+  }
+
+  const awaitingConfirmation = terminal.outcome === "awaiting_confirmation";
+  const durationMs = Date.now() - startTime;
+  const usage = useChatStore.getState()._pendingUsage;
+  const finalMsgId = useChatStore.getState().messages[useChatStore.getState().messages.length - 1]?.id ?? '';
+  console.info('[ChatStore] stream_done session=%s msg_id=%s', sessionId, finalMsgId);
+  if (awaitingConfirmation) {
+    getLog()("info", "chat", "Agent 等待工具操作确认");
+  } else {
+    getLog()("ok", "chat", `回答完成 (${(durationMs / 1000).toFixed(1)}s)${usage ? ` tokens=${usage.totalTokens}` : ''}`);
+  }
+
+  useChatStore.setState((s) => {
+    const sid = sessionId;
+    const isActive = s.activeSessionId === sid;
+    const sessionMsgs = s.sessionMessages[sid] ?? [];
+    const currentMsgs = isActive ? s.messages : sessionMsgs;
+    // SubTask 8.5: 清理 backgroundSseRequests 对应条目（无论活跃或后台）
+    let newBg = s.backgroundSseRequests;
+    if (s.backgroundSseRequests.has(sid)) {
+      newBg = new Map(s.backgroundSseRequests);
+      newBg.delete(sid);
+    }
+
+    // 活跃会话：用 streamingSteps 构建 activity
+    // 非活跃会话：从 sessionMessages 中的已有 activity 补充 durationMs 和 usage
+    const finalMessages = currentMsgs.map((m, i) => {
+      if (i !== currentMsgs.length - 1 || m.role !== "assistant") return m;
+      // FIX-1.1: 兜底重合并 — 若 content 为空但 streamingContent 非空，用 streamingContent 填充
+      // （仅活跃会话有效，s.streamingContent 属于当前活跃会话）
+      let content = m.content;
+      if (!_hasContent(content) && isActive && s.streamingContent) {
+        content = s.streamingContent;
+      }
+      // FIX-3.1: 修复 pending steps 耗时无限累计（活跃用 streamingSteps，后台用 m.activity.steps）
+      const baseActivity = isActive && s.streamingSteps.length > 0
+        ? {
+            durationMs,
+            steps: awaitingConfirmation ? s.streamingSteps : _finalizePendingSteps(s.streamingSteps),
+            status: awaitingConfirmation ? "running" as const : "done" as const,
+          }
+        : (!isActive && m.activity
+            ? {
+                ...m.activity,
+                durationMs,
+                steps: awaitingConfirmation ? (m.activity.steps || []) : _finalizePendingSteps(m.activity.steps || []),
+                status: awaitingConfirmation ? "running" as const : "done" as const,
+              }
+            : null);
+      return {
+        ...m,
+        ...(content !== m.content ? { content } : {}),
+        ...(baseActivity ? { activity: baseActivity } : {}),
+        ...(s.streamingTodos.length > 0 ? { todos: s.streamingTodos } : {}),
+        ...(s._pendingUsage ? { usage: s._pendingUsage } : {}),
+      };
+    });
+    const updatedSM = { ...s.sessionMessages, [sid]: finalMessages };
+    saveSessionMessages(sid, finalMessages);
+
+    // 只有当前活跃会话是请求会话时，才修改 isStreaming/currentSseRequest
+    if (isActive) {
+      return {
+        isStreaming: false,
+        streamingSessionId: null,
+        streamingStartTime: null,
+        currentSseRequest: null,
+        backgroundSseRequests: newBg,
+        _pendingUsage: null,
+        isCompressing: false,
+        // Reset streaming buffers so the next send starts clean
+        streamingSteps: [],
+        streamingContent: "",
+        streamingSources: [],
+        streamingTodos: [],
+        sessionMessages: updatedSM,
+        messages: finalMessages,
+      };
+    } else {
+      // 后台会话完成：只更新 sessionMessages
+      // SubTask 8.5: 仍需清理 backgroundSseRequests 对应条目
+      // FIX-6.1: 若完成的就是当前记录的流式会话（streamingSessionId === sid），
+      // 即便不是活跃会话也应清空 isStreaming/streamingSessionId/currentSseRequest，
+      // 否则发送按钮会卡在 isStreaming=true 状态（用户切走后又切回的场景）
+      const shouldClearStreaming = s.streamingSessionId === sid;
+      return {
+        sessionMessages: updatedSM,
+        backgroundSseRequests: newBg,
+        ...(shouldClearStreaming ? {
+          isStreaming: false,
+          streamingSessionId: null,
+          streamingStartTime: null,
+          currentSseRequest: null,
+          streamingContent: "",
+          streamingSteps: [],
+          streamingSources: [],
+          streamingTodos: [],
+          _pendingUsage: null,
+        } : {}),
+      };
+    }
+  });
+
+  // Recovery: a paused run stays resumable; any other terminal outcome is done.
+  const record = useChatStore.getState().activeRuns[sessionId] ?? getActiveRun(sessionId);
+  if (record) {
+    if (awaitingConfirmation) _markRunStatus(sessionId, record.runId, "awaiting_confirmation");
+    else _clearRunTracking(sessionId);
+  }
+
+  // 会话元数据仅在 persistLastTurn 确认 CRUD 写入成功后更新。
+  void useChatStore.getState().persistLastTurn(sessionId).then((saved) => {
+    // 多 tab 同步：通知其他 tab 此会话消息已变化
+    if (saved) post('messages_changed', sessionId);
+  });
+}
+
+/** Surface a stream failure without discarding the run record (it may still be running). */
+function _failChatStream(sessionId: string, terminal: ChatTerminalState, err: Error): void {
+  terminal.outcome = "error";
+  terminal.errorMessage = err.message;
+  console.warn('[ChatStore] stream_error session=%s error=%s', sessionId, err.message);
+  getLog()("error", "chat", `SSE 连接错误: ${err.message}`);
+  // SubTask 8.5: 清理 backgroundSseRequests 对应条目（后台流错误也要清理）
+  useChatStore.setState((s) => {
+    if (!s.backgroundSseRequests.has(sessionId)) return {};
+    const newBg = new Map(s.backgroundSseRequests);
+    newBg.delete(sessionId);
+    return { backgroundSseRequests: newBg };
+  });
+  useChatStore.getState().stopStreaming(err.message);
+}
+
 
 export const useChatStore = create<ChatState>((set, get) => {
   type InitialComposerSnapshot = {
@@ -1267,6 +1951,175 @@ export const useChatStore = create<ChatState>((set, get) => {
     void get().persistLastTurn(sid).then((saved) => {
       if (saved) post("messages_changed", sid);
     });
+
+    // Recovery: a paused run stays resumable; terminal outcomes release the run.
+    const record = get().activeRuns[sid] ?? getActiveRun(sid);
+    if (record) {
+      if (outcome === "awaiting_confirmation") _markRunStatus(sid, record.runId, "awaiting_confirmation");
+      else _clearRunTracking(sid);
+    }
+  }
+
+  /** Update the terminal state of a resume stream from one SSE event. */
+  function _updateResumeTerminal(evt: ChatSSEEvent, terminal: ResumeTerminalState): void {
+    if (evt.type === "error") {
+      terminal.outcome = "error";
+      terminal.errorMessage = evt.message;
+    } else if (evt.type === "tool_confirm_required") {
+      if (terminal.outcome !== "error") terminal.outcome = "awaiting_confirmation";
+    } else if (evt.type === "done" && terminal.outcome !== "error") {
+      if (
+        terminal.decision === "stop" && evt.success === false &&
+        (evt as typeof evt & { reason?: string }).reason === "user stopped"
+      ) {
+        terminal.outcome = "stopped";
+      } else if (evt.success === false && !evt.awaiting_confirmation) {
+        terminal.outcome = "error";
+        terminal.errorMessage = "Agent 恢复未能完成";
+      } else if (evt.awaiting_confirmation || evt.completed === false) {
+        terminal.outcome = "awaiting_confirmation";
+      } else if (terminal.outcome !== "awaiting_confirmation") {
+        terminal.outcome = "success";
+      }
+    }
+  }
+
+  /**
+   * Fetch missed events with `GET runs/{id}/events?after=<seq>`.
+   * Used for detected gaps in a live stream and for reattaching after refresh.
+   */
+  function _replayRunEvents(
+    sid: string,
+    runId: string,
+    afterSeq: number,
+    mode: "chat" | "resume",
+    resumeContext?: { terminal: ResumeTerminalState; steps: ActivityStep[] },
+  ): void {
+    if (!sid || !runId || _runReplayInFlight.has(sid)) return;
+    _runReplayInFlight.add(sid);
+    const controller = new AbortController();
+    const terminal: ChatTerminalState = { outcome: "running", errorMessage: "回答未能完成", finalized: false };
+    const onGap = (rid: string, after: number) => {
+      _replayRunEvents(sid, rid, after, mode, resumeContext);
+    };
+
+    void apiSSE(`runs/${encodeURIComponent(runId)}/events`, undefined, {
+      onEvent: (event, meta) => {
+        const evt = event as ChatSSEEvent;
+        if (!_trackChatRunEvent(sid, evt, meta, onGap)) return;
+        if (mode === "resume" && resumeContext) {
+          _updateResumeTerminal(evt, resumeContext.terminal);
+          _handleResumeEvent(evt, sid, resumeContext.steps);
+        } else {
+          _applyChatEvent(evt, sid, terminal);
+        }
+      },
+      onDone: () => {
+        if (mode === "resume" && resumeContext) {
+          const outcome = resumeContext.terminal.outcome === "running"
+            ? "success"
+            : resumeContext.terminal.outcome;
+          _finalizeResume(sid, resumeContext.steps, outcome, resumeContext.terminal.errorMessage);
+        } else {
+          _finalizeChatStream(sid, terminal, Date.now());
+        }
+      },
+      onError: (err) => {
+        getLog()("warn", "chat", `运行事件补放失败: ${runId} - ${err.message}`);
+      },
+    }, controller, { method: "GET", after: afterSeq, reconnect: { maxAttempts: 3 } })
+      .finally(() => { _runReplayInFlight.delete(sid); });
+  }
+
+  /** Reattach to a persisted unfinished run after refresh or session load. */
+  async function _reattachRun(sessionId: string): Promise<void> {
+    if (!sessionId) return;
+    const record = get().activeRuns[sessionId] ?? getActiveRun(sessionId);
+    if (!record?.runId) return;
+    if (_runReattachInFlight.has(sessionId)) return;
+    const liveState = get();
+    if (liveState.isStreaming && liveState.streamingSessionId === sessionId) return;
+    if (liveState.backgroundSseRequests.has(sessionId)) return;
+
+    _runReattachInFlight.add(sessionId);
+    try {
+      getLog()("info", "chat", `尝试恢复未完成运行: session=${sessionId} run=${record.runId} after=${record.lastEventSeq}`);
+      const runState = await fetchRunState(record.runId);
+      const status = runState?.status ?? record.status;
+
+      if (isTerminalRunStatus(status)) {
+        // The run finished while this page was away; the fetched messages are
+        // authoritative and there is nothing left to stream.
+        _clearRunTracking(sessionId);
+        return;
+      }
+
+      if (status === "awaiting_confirmation") {
+        // Rebuild the HITL card from persisted approvals; never invent one.
+        const calls = pendingApprovalsToCalls(runState?.pending_approvals);
+        if (calls.length > 0) {
+          set({ pendingConfirm: { calls, count: calls.length } });
+        }
+        _markRunStatus(sessionId, record.runId, "awaiting_confirmation");
+        if (!get().streamingSessionId) set({ streamingSessionId: sessionId });
+        return;
+      }
+
+      const msgs = get().sessionMessages[sessionId]
+        ?? (get().activeSessionId === sessionId ? get().messages : []);
+      const lastAssistant = [...msgs].reverse().find((message) => message.role === "assistant");
+      const restoredContent = lastAssistant
+        ? typeof lastAssistant.content === "string"
+          ? lastAssistant.content
+          : lastAssistant.content
+              .filter((part): part is Extract<ContentPart, { type: "text" }> => part.type === "text")
+              .map((part) => part.text)
+              .join("\n\n")
+        : "";
+
+      const controller = new AbortController();
+      set((s) => {
+        const isActive = s.activeSessionId === sessionId;
+        if (!isActive) {
+          const backgroundSseRequests = new Map(s.backgroundSseRequests);
+          backgroundSseRequests.set(sessionId, controller);
+          return { backgroundSseRequests };
+        }
+        return {
+          isStreaming: true,
+          streamingSessionId: sessionId,
+          streamingStartTime: Date.now(),
+          streamingContent: restoredContent,
+          streamingSteps: lastAssistant?.activity?.steps ?? [],
+          streamingSources: lastAssistant?.sources ?? [],
+          streamingTodos: lastAssistant?.todos ?? [],
+          currentSseRequest: controller,
+          isCompressing: false,
+        };
+      });
+
+      const terminal: ChatTerminalState = { outcome: "running", errorMessage: "回答未能完成", finalized: false };
+      void apiSSE(`runs/${encodeURIComponent(record.runId)}/events`, undefined, {
+        onEvent: (event, meta) => {
+          const evt = event as ChatSSEEvent;
+          if (!_trackChatRunEvent(sessionId, evt, meta, (runId, after) => {
+            _replayRunEvents(sessionId, runId, after, "chat");
+          })) return;
+          if (evt.type === "tool_confirm_required") {
+            _markRunStatus(sessionId, record.runId, "awaiting_confirmation");
+          }
+          _applyChatEvent(evt, sessionId, terminal);
+        },
+        onDone: () => _finalizeChatStream(sessionId, terminal, Date.now()),
+        onError: (err) => _failChatStream(sessionId, terminal, err),
+      }, controller, {
+        method: "GET",
+        after: record.lastEventSeq,
+        reconnect: { maxAttempts: 5 },
+      });
+    } finally {
+      _runReattachInFlight.delete(sessionId);
+    }
   }
 
   return {
@@ -1314,6 +2167,9 @@ export const useChatStore = create<ChatState>((set, get) => {
   pendingConfirm: null,
   pendingSaveBySession: _loadPendingSaveStatuses(),
   _lastAgentPayload: null,
+  // Recovery R1: persisted unfinished runs + interrupted notices.
+  activeRuns: loadRunRecords(),
+  runRecoveryNoticeBySession: {},
   // 草稿按 sessionId 隔离，仅存内存（spec 决策 4：刷新后丢失可接受）
   drafts: {},
   // 输入框附件按 sessionId 隔离，仅存内存（避免切换会话时附件串号）
@@ -1408,13 +2264,17 @@ export const useChatStore = create<ChatState>((set, get) => {
 
   resumeAgent: (decision) => {
     const payload = get()._lastAgentPayload;
+    const sid = get().streamingSessionId || get().activeSessionId;
+    const runRecord = get().activeRuns[sid] ?? getActiveRun(sid);
+    const runId = runRecord?.runId;
     const callId = get().pendingConfirm?.calls[0]?.call_id;
-    if (!payload) {
-      getLog()("warn", "chat", "resumeAgent: no cached payload, ignoring");
+    // After a refresh the raw request body is gone; the persisted run and its
+    // pending approval are enough for the backend to resume safely.
+    if (!payload && !(runId && callId)) {
+      getLog()("warn", "chat", "resumeAgent: no cached payload or persisted approval, ignoring");
       useToastStore.getState().showWarning("没有可继续的 Agent 会话");
       return;
     }
-    const sid = get().streamingSessionId || get().activeSessionId;
     set({
       pendingConfirm: null,
       streamingError: null,
@@ -1429,12 +2289,19 @@ export const useChatStore = create<ChatState>((set, get) => {
     });
     const controller = new AbortController();
     const resumeSteps: ActivityStep[] = [];
-    let resumeOutcome: "running" | "error" | "awaiting_confirmation" | "success" | "stopped" = "running";
-    let resumeErrorMessage: string | undefined;
+    const resumeTerminal: ResumeTerminalState = { outcome: "running", decision };
     set({ currentSseRequest: controller });
-    apiSSE("agent-sandbox/resume", { payload, decision, ...(callId ? { call_id: callId } : {}) }, {
-      onEvent: (event) => {
+    apiSSE("agent-sandbox/resume", {
+      ...(payload ? { payload } : {}),
+      decision,
+      ...(callId ? { call_id: callId } : {}),
+      ...(runId ? { run_id: runId } : {}),
+    }, {
+      onEvent: (event, meta) => {
         const evt = event as ChatSSEEvent;
+        if (!_trackChatRunEvent(sid, evt, meta, (trackedRunId, after) => {
+          _replayRunEvents(sid, trackedRunId, after, "resume", { terminal: resumeTerminal, steps: resumeSteps });
+        })) return;
         if (
           evt.type === "text"
           || evt.type === "thinking"
@@ -1447,44 +2314,37 @@ export const useChatStore = create<ChatState>((set, get) => {
           // reconciles it by the same stable ID instead of accepting stale data.
           _markResumeAssistantPending(sid);
         }
-        if (evt.type === "error") {
-          resumeOutcome = "error";
-          resumeErrorMessage = evt.message;
-        } else if (evt.type === "tool_confirm_required") {
-          if (resumeOutcome !== "error") resumeOutcome = "awaiting_confirmation";
-        } else if (evt.type === "done" && resumeOutcome !== "error") {
-          if (
-            decision === "stop" && evt.success === false &&
-            (evt as typeof evt & { reason?: string }).reason === "user stopped"
-          ) {
-            resumeOutcome = "stopped";
-          } else if (evt.success === false && !evt.awaiting_confirmation) {
-            resumeOutcome = "error";
-            resumeErrorMessage = "Agent 恢复未能完成";
-          } else if (evt.awaiting_confirmation || evt.completed === false) {
-            resumeOutcome = "awaiting_confirmation";
-          } else if (resumeOutcome !== "awaiting_confirmation") {
-            resumeOutcome = "success";
-          }
-        }
+        _updateResumeTerminal(evt, resumeTerminal);
         _handleResumeEvent(evt, sid, resumeSteps);
       },
       onDone: () => _finalizeResume(
         sid,
         resumeSteps,
-        resumeOutcome === "running" ? "success" : resumeOutcome,
-        resumeErrorMessage,
+        resumeTerminal.outcome === "running" ? "success" : resumeTerminal.outcome,
+        resumeTerminal.errorMessage,
       ),
       onError: (err) => {
-        resumeOutcome = "error";
-        resumeErrorMessage = err.message;
+        resumeTerminal.outcome = "error";
+        resumeTerminal.errorMessage = err.message;
         getLog()("error", "chat", `Agent 恢复流错误: ${err.message}`);
         _finalizeResume(sid, resumeSteps, "error", err.message);
       },
-    }, controller);
+    }, controller, {
+      reconnect: { maxAttempts: 5 },
+      onRunId: (id) => _beginActiveRun(sid, id),
+    });
   },
 
   clearPendingConfirm: () => set({ pendingConfirm: null }),
+
+  reattachRun: (sessionId) => _reattachRun(sessionId),
+
+  clearRunRecoveryNotice: (sessionId) => set((s) => {
+    if (!s.runRecoveryNoticeBySession[sessionId]) return {};
+    const runRecoveryNoticeBySession = { ...s.runRecoveryNoticeBySession };
+    delete runRecoveryNoticeBySession[sessionId];
+    return { runRecoveryNoticeBySession };
+  }),
 
   setMessages: (messages) => {
     const trimmed = trimMessages(messages);
@@ -1736,6 +2596,8 @@ export const useChatStore = create<ChatState>((set, get) => {
         }));
         saveSessionMessages(sessionId, msgs);
       }
+      // Recovery R1: after a refresh, reattach to a run that was still active.
+      void get().reattachRun(sessionId);
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       if (errMsg.includes("401")) {
@@ -2231,8 +3093,9 @@ export const useChatStore = create<ChatState>((set, get) => {
     const requestSessionId = activeSessionId;
     // v2-T4: cache payload for the resume API (HITL confirm flow)
     set({ _lastAgentPayload: requestBody });
-    let terminalOutcome: "running" | "error" | "awaiting_confirmation" | "success" = "running";
-    let terminalErrorMessage = "回答未能完成";
+    // A new send supersedes any leftover recovery record for this session.
+    _clearRunTracking(requestSessionId);
+    const terminal: ChatTerminalState = { outcome: "running", errorMessage: "回答未能完成", finalized: false };
 
     const controller = new AbortController();
     if (get().activeSessionId === requestSessionId) {
@@ -2246,523 +3109,23 @@ export const useChatStore = create<ChatState>((set, get) => {
     }
 
     apiSSE("chat", requestBody, {
-      onEvent: (event) => {
-        if (event.type === "error") {
-          terminalOutcome = "error";
-          const errPayload = event as { type: "error"; code?: string; message: string; detail?: string };
-          const code = errPayload.code ?? "UNKNOWN";
-          getLog()("error", "chat", `SSE 错误: ${errPayload.message}`);
-          // MODEL_NOT_FOUND: backend reports the requested model is unavailable.
-          // Provide a friendly fallback message when backend omits one.
-          const friendlyMessage = code === "MODEL_NOT_FOUND" && !errPayload.message
-            ? "模型不存在，请在设置中检查模型名"
-            : (errPayload.message ?? "未知错误");
-          terminalErrorMessage = friendlyMessage;
-          set({
-            streamingError: {
-              code,
-              message: friendlyMessage,
-              detail: errPayload.detail ?? "",
-            },
-          });
-          get().stopStreaming(friendlyMessage);
-          return;
+      onEvent: (event, meta) => {
+        const evt = event as ChatSSEEvent;
+        if (!_trackChatRunEvent(requestSessionId, evt, meta, (runId, after) => {
+          _replayRunEvents(requestSessionId, runId, after, "chat");
+        })) return;
+        if (evt.type === "tool_confirm_required") {
+          const record = get().activeRuns[requestSessionId] ?? getActiveRun(requestSessionId);
+          if (record) _markRunStatus(requestSessionId, record.runId, "awaiting_confirmation");
         }
-        if (event.type === "tool_confirm_required" && terminalOutcome !== "error") {
-          terminalOutcome = "awaiting_confirmation";
-        }
-        const sse = event as ChatSSEEvent;
-        // ★ 始终写入发起请求时的会话，而非当前活跃会话
-        set((s) => {
-          const sid = requestSessionId;
-          const isActive = s.activeSessionId === sid;
-          const sessionMsgs = s.sessionMessages[sid] ?? [];
-          const currentMsgs = isActive ? s.messages : sessionMsgs;
-
-          switch (sse.type) {
-            case "thinking": {
-              const thinkContent = sse.content ?? "";
-              const thinkSource = sse.source;
-              getLog()("debug", "chat", `[thinking] source=${thinkSource} content="${thinkContent.slice(0, 30)}"`);
-
-              // 构建 step
-              const steps = [...(isActive ? s.streamingSteps : (currentMsgs[currentMsgs.length - 1]?.activity?.steps || []))];
-              const lastStep = steps[steps.length - 1];
-
-              // 占位 thinking 卡片（发送消息时预置）应被首个真实 thinking 事件替换，避免双卡。
-              if (lastStep && lastStep.type === "thinking" && lastStep.content === "模型正在思考...") {
-                steps[steps.length - 1] = { ...lastStep, content: thinkContent, source: thinkSource };
-              } else if (thinkSource === "reasoning") {
-                if (lastStep && lastStep.type === "thinking" && lastStep.source === "llm") {
-                  steps[steps.length - 1] = { ...lastStep, content: thinkContent, source: "reasoning" };
-                } else if (lastStep && lastStep.type === "thinking" && lastStep.source === "reasoning") {
-                  steps[steps.length - 1] = { ...lastStep, content: (lastStep.content || "") + thinkContent };
-                } else {
-                  // Source switched: close previous thinking step before creating a new one
-                  if (lastStep && lastStep.type === "thinking") {
-                    steps[steps.length - 1] = { ...lastStep, status: "done" };
-                  }
-                  steps.push({ type: "thinking", id: `h-${Date.now()}`, content: thinkContent, source: "reasoning" });
-                }
-              } else if (lastStep && lastStep.type === "thinking" && lastStep.source === thinkSource) {
-                steps[steps.length - 1] = { ...lastStep, content: (lastStep.content || "") + thinkContent };
-              } else {
-                // Source switched: close previous thinking step before creating a new one
-                if (lastStep && lastStep.type === "thinking") {
-                  steps[steps.length - 1] = { ...lastStep, status: "done" };
-                }
-                steps.push({ type: "thinking", id: `h-${Date.now()}`, content: thinkContent, source: thinkSource });
-              }
-
-              if (isActive) {
-                return { streamingSteps: steps };
-              } else {
-                // 后台：直接更新 sessionMessages 中的 assistant 消息的 activity
-                const msgs = [...currentMsgs];
-                const last = msgs[msgs.length - 1];
-                if (last?.role === "assistant") {
-                  msgs[msgs.length - 1] = { ...last, activity: { durationMs: 0, steps, status: "running" } };
-                }
-                const newSM = { ...s.sessionMessages, [sid]: msgs };
-                saveSessionMessages(sid, msgs);
-                return { sessionMessages: newSM };
-              }
-            }
-
-            case "text": {
-              const chunk = sse.content ?? "";
-              const msgs = [...currentMsgs];
-              const last = msgs[msgs.length - 1];
-              if (last?.role === "assistant") {
-                let newContent: string | ContentPart[];
-                let newStreamingContent: string;
-
-                if (typeof last.content === "string") {
-                  // Original string path: keep streamingContent in sync with message content.
-                  const prevContent = isActive ? s.streamingContent : last.content;
-                  const breakPrefix = _needsParagraphBreak.get(sid) && prevContent && !prevContent.endsWith("\n") ? "\n\n" : "";
-                  _needsParagraphBreak.set(sid, false);
-                  newStreamingContent = prevContent + breakPrefix + chunk;
-                  newContent = newStreamingContent;
-                } else {
-                  // ContentPart[] path (e.g. after image_generation appends an ImagePart):
-                  // append text chunks to the last TextPart so the image is preserved.
-                  const parts: ContentPart[] = [...last.content];
-                  const lastTextIdx = parts.map((p) => p.type).lastIndexOf("text");
-                  const breakPrefix = _needsParagraphBreak.get(sid) ? "\n\n" : "";
-                  _needsParagraphBreak.set(sid, false);
-                  if (lastTextIdx >= 0) {
-                    const lastText = parts[lastTextIdx] as Extract<ContentPart, { type: "text" }>;
-                    const prefix = lastText.text && !lastText.text.endsWith("\n") ? breakPrefix : "";
-                    parts[lastTextIdx] = { ...lastText, text: lastText.text + prefix + chunk };
-                  } else {
-                    parts.push({ type: "text", text: breakPrefix + chunk });
-                  }
-                  newContent = parts;
-                  newStreamingContent = parts
-                    .filter((p): p is Extract<ContentPart, { type: "text" }> => p.type === "text")
-                    .map((p) => p.text)
-                    .join("\n\n");
-                }
-
-                // Close any open reasoning/llm thinking step when answer text begins.
-                // Without this, the thinking card stays expanded while text streams below it.
-                let updatedSteps = s.streamingSteps;
-                if (isActive) {
-                  const steps = [...s.streamingSteps];
-                  const lastStep = steps[steps.length - 1];
-                  if (lastStep && lastStep.type === "thinking" && lastStep.status !== "done") {
-                    steps[steps.length - 1] = { ...lastStep, status: "done" };
-                    updatedSteps = steps;
-                  }
-                  msgs[msgs.length - 1] = { ...last, content: newContent };
-                } else if (last.activity?.steps?.length) {
-                  const steps = [...last.activity.steps];
-                  const lastStep = steps[steps.length - 1];
-                  if (lastStep && lastStep.type === "thinking" && lastStep.status !== "done") {
-                    steps[steps.length - 1] = { ...lastStep, status: "done" };
-                  }
-                  msgs[msgs.length - 1] = { ...last, content: newContent, activity: { ...last.activity, steps } };
-                } else {
-                  msgs[msgs.length - 1] = { ...last, content: newContent };
-                }
-
-                const newSM = { ...s.sessionMessages, [sid]: msgs };
-                // NOTE: saveSessionMessages is intentionally NOT called here.
-                // The store subscribe (line ~927) handles persistence via 500ms debounce
-                // during streaming. Calling it per-token caused main-thread blocking.
-                if (isActive) {
-                  return { streamingContent: newStreamingContent, messages: msgs, sessionMessages: newSM, streamingSteps: updatedSteps, isCompressing: false };
-                } else {
-                  return { sessionMessages: newSM, isCompressing: false };
-                }
-              }
-              return { isCompressing: false };
-            }
-
-            case "context_compressing": {
-              // Context being compressed — show status banner; cleared on next text/done.
-              return {
-                isCompressing: true,
-                compressingMessage: sse.message || "正在压缩上下文...",
-              };
-            }
-
-            case "heartbeat": {
-              // Backend keepalive: no UI state change.
-              return {};
-            }
-
-            case "tool_call": {
-              // T6 协作点：通知工作台 bridge 新 call_id（重置 override）
-              console.info('[ChatStore] tool_call tool=%s call_id=%s', sse.tool, sse.call_id);
-              if (sse.call_id) {
-                _lastToolCallId.set(sid, sse.call_id);
-              }
-              handleToolCallEvent(sse);
-              // Agent decided to call a tool; create a pending step.
-              // Close out the previous rag thinking step (same as the tool case).
-              const stepsBeforeTool = [...(isActive ? s.streamingSteps : (currentMsgs[currentMsgs.length - 1]?.activity?.steps || []))];
-              const lastBeforeTool = stepsBeforeTool[stepsBeforeTool.length - 1];
-              if (lastBeforeTool && lastBeforeTool.type === "thinking" && lastBeforeTool.source === "rag" && lastBeforeTool.status !== "done") {
-                stepsBeforeTool[stepsBeforeTool.length - 1] = { ...lastBeforeTool, content: "检索完成", status: "done" };
-              }
-
-              const newStep: ActivityStep = {
-                type: "tool",
-                id: sse.call_id || `t-${Date.now()}`,
-                name: sse.tool,
-                args: typeof sse.args === "string" ? sse.args : JSON.stringify(sse.args ?? {}),
-                status: "pending",
-                call_id: sse.call_id,
-                risk_level: sse.risk_level,
-                decision_source: sse.decision_source,
-                startTime: Date.now(),
-              };
-
-              if (isActive) {
-                return { streamingSteps: [...stepsBeforeTool, newStep] };
-              } else {
-                const msgs = [...currentMsgs];
-                const last = msgs[msgs.length - 1];
-                if (last?.role === "assistant") {
-                  const existingSteps = last.activity?.steps || [];
-                  const stepsToUpdate = [...existingSteps];
-                  const lastExisting = stepsToUpdate[stepsToUpdate.length - 1];
-                  if (lastExisting && lastExisting.type === "thinking" && lastExisting.source === "rag" && lastExisting.status !== "done") {
-                    stepsToUpdate[stepsToUpdate.length - 1] = { ...lastExisting, content: "检索完成", status: "done" };
-                  }
-                  msgs[msgs.length - 1] = { ...last, activity: { durationMs: 0, steps: [...stepsToUpdate, newStep], status: "running" } };
-                }
-                const newSM = { ...s.sessionMessages, [sid]: msgs };
-                saveSessionMessages(sid, msgs);
-                return { sessionMessages: newSM };
-              }
-            }
-
-            case "tool_result": {
-              // T6 协作点：在工作台 bridge 路由 render_data（在 resultText 压平之前）
-              console.info('[ChatStore] tool_result call_id=%s duration=%sms', sse.call_id, sse.duration);
-              handleToolResultEvent(sse);
-              // Tool execution finished; update the matching step by call_id.
-              const resultText = _flattenToolResult(sse.result);
-              const newStatus: ActivityStep["status"] = sse.success === false ? "error" : "done";
-              // image_generation: extract image_base64/image_url and append as ImagePart
-              const imagePart = sse.tool === "image_generation" ? _extractImagePart(sse.result) : null;
-              // File-editing tools: extract file_path for "查看 diff" button
-              const filePath = _extractFilePath(sse.tool, sse.result);
-
-              if (isActive) {
-                const steps = s.streamingSteps.map((step) =>
-                  step.call_id === sse.call_id
-                    ? { ...step, status: newStatus, result: resultText, duration: sse.duration, file_path: filePath ?? step.file_path }
-                    : step
-                );
-                _needsParagraphBreak.set(sid, true);
-                if (imagePart) {
-                  const msgs = [...currentMsgs];
-                  const last = msgs[msgs.length - 1];
-                  if (last?.role === "assistant") {
-                    const newContent = _appendImageToContent(last.content, imagePart);
-                    msgs[msgs.length - 1] = { ...last, content: newContent };
-                    return {
-                      streamingSteps: steps,
-                      messages: msgs,
-                      sessionMessages: { ...s.sessionMessages, [sid]: msgs },
-                    };
-                  }
-                }
-                return { streamingSteps: steps };
-              } else {
-                const msgs = [...currentMsgs];
-                const last = msgs[msgs.length - 1];
-                if (last?.role === "assistant" && last.activity) {
-                  const steps = last.activity.steps.map((step) =>
-                    step.call_id === sse.call_id
-                      ? { ...step, status: newStatus, result: resultText, duration: sse.duration, file_path: filePath ?? step.file_path }
-                      : step
-                  );
-                  msgs[msgs.length - 1] = { ...last, activity: { ...last.activity, steps } };
-                }
-                if (imagePart && last?.role === "assistant") {
-                  msgs[msgs.length - 1] = {
-                    ...msgs[msgs.length - 1],
-                    content: _appendImageToContent(msgs[msgs.length - 1].content, imagePart),
-                  };
-                }
-                const newSM = { ...s.sessionMessages, [sid]: msgs };
-                saveSessionMessages(sid, msgs);
-                _needsParagraphBreak.set(sid, true);
-                return { sessionMessages: newSM };
-              }
-            }
-
-            case "source": {
-              const newSource: SourceRef = {
-                id: sse.id ?? `src-${Date.now()}`,
-                title: sse.title ?? "未知来源",
-                doc: sse.doc ?? "",
-                page: sse.page ?? 0,
-                chunk_index: sse.chunk_index,
-                page_start: sse.page_start,
-                page_end: sse.page_end,
-                section_title: sse.section_title,
-                source_url: sse.source_url,
-                category: sse.category,
-                chunk_method: sse.chunk_method,
-                score: sse.score ?? 0,
-                score_percentage: sse.score_percentage,
-                relevance_level: sse.relevance_level,
-                citation: sse.citation,
-                excerpt: sse.excerpt ?? "",
-                kb_id: sse.kb_id,
-                kb_name: sse.kb_name,
-                small_chunk_id: sse.small_chunk_id,
-                big_chunk_id: sse.big_chunk_id,
-                small_chunk_text: sse.small_chunk_text,
-                messageId: currentMsgs[currentMsgs.length - 1]?.id,
-              };
-              const msgs = [...currentMsgs];
-              const last = msgs[msgs.length - 1];
-              if (last?.role === "assistant") {
-                const srcs = [...(last.sources || []), newSource];
-                msgs[msgs.length - 1] = { ...last, sources: srcs };
-              }
-              const newSM = { ...s.sessionMessages, [sid]: msgs };
-              saveSessionMessages(sid, msgs);
-              if (isActive) {
-                return { streamingSources: [...s.streamingSources, newSource], sources: [...s.streamingSources, newSource], messages: msgs, sessionMessages: newSM };
-              } else {
-                return { sessionMessages: newSM };
-              }
-            }
-
-            case "todo_update": {
-              const todos = (Array.isArray(sse.todos) ? (sse.todos as TodoItem[]) : []).map((t, idx) => ({
-                ...t,
-                id: t.id || `todo-${idx}`,
-              }));
-              const msgs = [...currentMsgs];
-              const last = msgs[msgs.length - 1];
-              if (last?.role === "assistant") {
-                msgs[msgs.length - 1] = { ...last, todos };
-              }
-              const newSM = { ...s.sessionMessages, [sid]: msgs };
-              saveSessionMessages(sid, msgs);
-              if (isActive) {
-                return { streamingTodos: todos, messages: msgs, sessionMessages: newSM };
-              }
-              return { sessionMessages: newSM };
-            }
-
-            case "done": {
-              if (terminalOutcome !== "error") {
-                if (sse.success === false) {
-                  terminalOutcome = "error";
-                } else if (sse.awaiting_confirmation || sse.completed === false) {
-                  terminalOutcome = "awaiting_confirmation";
-                } else {
-                  terminalOutcome = "success";
-                }
-                if (terminalOutcome === "error") {
-                  terminalErrorMessage = "回答未能完成";
-                }
-              }
-              if (!("usage" in sse)) return { isCompressing: false };
-              const usage = sse.usage;
-              if (usage) {
-                getLog()("ok", "chat", `Token usage: prompt=${usage.prompt_tokens} completion=${usage.completion_tokens} total=${usage.total_tokens}`);
-                return { _pendingUsage: { promptTokens: usage.prompt_tokens || 0, completionTokens: usage.completion_tokens || 0, totalTokens: usage.total_tokens || 0 }, isCompressing: false };
-              }
-              return { isCompressing: false };
-            }
-
-            case "compile_log": {
-              // T6 协作点：Agent build/flash 工具的实时编译日志 → FlashPane
-              handleCompileLogEvent(_lastToolCallId.get(sid) ?? "", sse.line);
-              return {};
-            }
-
-            case "progress": {
-              // T6 协作点：Agent build/flash 工具的实时进度 → FlashPane
-              handleProgressEvent(_lastToolCallId.get(sid) ?? "", sse.percent ?? 0, sse.message);
-              return {};
-            }
-
-            case "tool_confirm_required": {
-              // v2-T4: Agent paused for HITL — show ConfirmDialog
-              return {
-                pendingConfirm: {
-                  calls: (sse.calls ?? []) as PendingConfirm["calls"],
-                  count: sse.count ?? (sse.calls?.length ?? 0),
-                },
-              };
-            }
-
-            default:
-              return {};
-          }
-        });
+        _applyChatEvent(evt, requestSessionId, terminal);
       },
-      onDone: () => {
-        if (terminalOutcome === "error") {
-          if (!get().streamingError) {
-            set({
-              streamingError: {
-                code: "INTERNAL_ERROR",
-                message: terminalErrorMessage,
-                detail: "",
-              },
-            });
-          }
-          if (get().isStreaming || get().streamingSessionId || get().currentSseRequest) {
-            get().stopStreaming(terminalErrorMessage);
-          }
-          return;
-        }
-
-        const awaitingConfirmation = terminalOutcome === "awaiting_confirmation";
-        const durationMs = Date.now() - startTime;
-        const usage = get()._pendingUsage;
-        const finalMsgId = get().messages[get().messages.length - 1]?.id ?? '';
-        console.info('[ChatStore] stream_done session=%s msg_id=%s', requestSessionId, finalMsgId);
-        if (awaitingConfirmation) {
-          getLog()("info", "chat", "Agent 等待工具操作确认");
-        } else {
-          getLog()("ok", "chat", `回答完成 (${(durationMs / 1000).toFixed(1)}s)${usage ? ` tokens=${usage.totalTokens}` : ''}`);
-        }
-
-        set((s) => {
-          const sid = requestSessionId;
-          const isActive = s.activeSessionId === sid;
-          const sessionMsgs = s.sessionMessages[sid] ?? [];
-          const currentMsgs = isActive ? s.messages : sessionMsgs;
-          // SubTask 8.5: 清理 backgroundSseRequests 对应条目（无论活跃或后台）
-          let newBg = s.backgroundSseRequests;
-          if (s.backgroundSseRequests.has(sid)) {
-            newBg = new Map(s.backgroundSseRequests);
-            newBg.delete(sid);
-          }
-
-          // 活跃会话：用 streamingSteps 构建 activity
-          // 非活跃会话：从 sessionMessages 中的已有 activity 补充 durationMs 和 usage
-          const finalMessages = currentMsgs.map((m, i) => {
-            if (i !== currentMsgs.length - 1 || m.role !== "assistant") return m;
-            // FIX-1.1: 兜底重合并 — 若 content 为空但 streamingContent 非空，用 streamingContent 填充
-            // （仅活跃会话有效，s.streamingContent 属于当前活跃会话）
-            let content = m.content;
-            if (!_hasContent(content) && isActive && s.streamingContent) {
-              content = s.streamingContent;
-            }
-            // FIX-3.1: 修复 pending steps 耗时无限累计（活跃用 streamingSteps，后台用 m.activity.steps）
-            const baseActivity = isActive && s.streamingSteps.length > 0
-              ? {
-                  durationMs,
-                  steps: awaitingConfirmation ? s.streamingSteps : _finalizePendingSteps(s.streamingSteps),
-                  status: awaitingConfirmation ? "running" as const : "done" as const,
-                }
-              : (!isActive && m.activity
-                  ? {
-                      ...m.activity,
-                      durationMs,
-                      steps: awaitingConfirmation ? (m.activity.steps || []) : _finalizePendingSteps(m.activity.steps || []),
-                      status: awaitingConfirmation ? "running" as const : "done" as const,
-                    }
-                  : null);
-            return {
-              ...m,
-              ...(content !== m.content ? { content } : {}),
-              ...(baseActivity ? { activity: baseActivity } : {}),
-              ...(s.streamingTodos.length > 0 ? { todos: s.streamingTodos } : {}),
-              ...(s._pendingUsage ? { usage: s._pendingUsage } : {}),
-            };
-          });
-          const updatedSM = { ...s.sessionMessages, [sid]: finalMessages };
-          saveSessionMessages(sid, finalMessages);
-
-          // 只有当前活跃会话是请求会话时，才修改 isStreaming/currentSseRequest
-          if (isActive) {
-            return {
-              isStreaming: false,
-              streamingSessionId: null,
-              streamingStartTime: null,
-              currentSseRequest: null,
-              backgroundSseRequests: newBg,
-              _pendingUsage: null,
-              isCompressing: false,
-              // Reset streaming buffers so the next send starts clean
-              streamingSteps: [],
-              streamingContent: "",
-              streamingSources: [],
-      streamingTodos: [],
-              sessionMessages: updatedSM,
-              messages: finalMessages,
-            };
-          } else {
-            // 后台会话完成：只更新 sessionMessages
-            // SubTask 8.5: 仍需清理 backgroundSseRequests 对应条目
-            // FIX-6.1: 若完成的就是当前记录的流式会话（streamingSessionId === sid），
-            // 即便不是活跃会话也应清空 isStreaming/streamingSessionId/currentSseRequest，
-            // 否则发送按钮会卡在 isStreaming=true 状态（用户切走后又切回的场景）
-            const shouldClearStreaming = s.streamingSessionId === sid;
-            return {
-              sessionMessages: updatedSM,
-              backgroundSseRequests: newBg,
-              ...(shouldClearStreaming ? {
-                isStreaming: false,
-                streamingSessionId: null,
-                streamingStartTime: null,
-                currentSseRequest: null,
-                streamingContent: "",
-                streamingSteps: [],
-                streamingSources: [],
-                streamingTodos: [],
-                _pendingUsage: null,
-              } : {}),
-            };
-          }
-        });
-        // 会话元数据仅在 persistLastTurn 确认 CRUD 写入成功后更新。
-        void get().persistLastTurn(requestSessionId).then((saved) => {
-          // 多 tab 同步：通知其他 tab 此会话消息已变化
-          if (saved) post('messages_changed', requestSessionId);
-        });
-      },
-      onError: (err) => {
-        terminalOutcome = "error";
-        terminalErrorMessage = err.message;
-        console.warn('[ChatStore] stream_error session=%s error=%s', requestSessionId, err.message);
-        getLog()("error", "chat", `SSE 连接错误: ${err.message}`);
-        // SubTask 8.5: 清理 backgroundSseRequests 对应条目（后台流错误也要清理）
-        set((s) => {
-          if (!s.backgroundSseRequests.has(requestSessionId)) return {};
-          const newBg = new Map(s.backgroundSseRequests);
-          newBg.delete(requestSessionId);
-          return { backgroundSseRequests: newBg };
-        });
-        get().stopStreaming(err.message);
-      },
-    }, controller);
+      onDone: () => _finalizeChatStream(requestSessionId, terminal, startTime),
+      onError: (err) => _failChatStream(requestSessionId, terminal, err),
+    }, controller, {
+      reconnect: { maxAttempts: 5 },
+      onRunId: (runId) => _beginActiveRun(requestSessionId, runId),
+    });
     } catch (err) {
       // 同步异常（如构建请求体失败）也要让用户看到 ErrorBlock，不能只 console.warn
       const errMsg = err instanceof Error ? err.message : String(err);
@@ -2850,6 +3213,12 @@ export const useChatStore = create<ChatState>((set, get) => {
         currentSseRequest: null,
       };
     });
+
+    // A user-initiated stop abandons the run locally: do not reattach it on
+    // refresh. Error stops keep the record because the run may still be alive.
+    if (!errorMessage && sidToPersist) {
+      _clearRunTracking(sidToPersist);
+    }
 
     // 流式停止（用户主动或错误）：将最后一轮 user+assistant 消息持久化到后端
     if (sidToPersist) {

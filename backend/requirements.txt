@@ -55,3 +55,4 @@ prometheus_client==0.21.1
 # 文件资源管理器实时监听（CAB 第四栏）
 watchdog==6.0.0
 # OCR 依赖见 requirements-ocr.txt（可选，不默认安装）
+psutil==7.2.2
