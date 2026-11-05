@@ -12,13 +12,14 @@ import { LongTermMemoryEditor } from "./LongTermMemoryEditor";
 import { SkillsManager } from "./SkillsManager";
 import { TokenUsagePanel } from "./TokenUsagePanel";
 import { AuditLogPanel } from "./AuditLogPanel";
+import { MemoryHubPanel } from "../memory/MemoryHubPanel";
 import { EmptyState } from "../shared/EmptyState";
 
 function isApiKeyMissing(providers: { apiKey?: string }[]): boolean {
   return !providers.some((p) => p.apiKey?.trim());
 }
 
-const TAB_IDS = ["api", "rag", "memory", "appearance", "usage", "logs", "audit", "mcp", "tools", "skills", "about"] as const;
+const TAB_IDS = ["api", "rag", "memory", "memory-hub", "appearance", "usage", "logs", "audit", "mcp", "tools", "skills", "about"] as const;
 
 const TOOL_ENTRIES = [
   { id: 'web_search', label: 'Web Search', icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg> },
@@ -231,7 +232,7 @@ export function SettingsPage() {
             <div className="settings-tabs" style={{ marginTop: 20 }}>
               {TAB_IDS.map((id) => {
                 const tabLabelMap: Record<string, string> = {
-                  api: t('apiConfig'), rag: t('ragParams'), memory: t('memory'),
+                  api: t('apiConfig'), rag: t('ragParams'), memory: t('memory'), 'memory-hub': t('memoryHub'),
                   appearance: t('appearance'), usage: t('usage'), logs: t('logs'),
                   audit: '工具审计', mcp: t('mcpService'), tools: t('tools'), skills: t('skills'), about: t('about'),
                 };
@@ -704,6 +705,8 @@ export function SettingsPage() {
                 />
               </div>
             )}
+
+            {tab === 'memory-hub' && <MemoryHubPanel />}
 
             {tab === 'appearance' && (
               <div className="settings-section">
