@@ -201,7 +201,7 @@ async def collect(stream):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["default", "bypassPermissions"])
 @pytest.mark.parametrize("first_decision", ["deny", "stop"])
-async def test_real_stdio_agent_batch_asks_separately_and_denied_tool_is_not_called(monkeypatch, mode, first_decision):
+async def test_real_stdio_agent_batch_asks_separately_and_denied_tool_is_not_called(monkeypatch, mode, first_decision, writer_bound_saver):
     from app.api import chat_routes
     from app.api.dependencies import current_user
     from src.agent import agent_factory, hitl_handler
@@ -211,7 +211,11 @@ async def test_real_stdio_agent_batch_asks_separately_and_denied_tool_is_not_cal
     manager.register_config("fixture", {"id": "fixture", "command": sys.executable, "args": [str(Path(__file__).parent / "fixtures/mcp_stdio_server.py")]})
     assert await manager.start("fixture")
     monkeypatch.setattr(manager_module, "get_mcp_manager", lambda: manager)
-    monkeypatch.setattr(agent_factory, "_global_checkpointer", InMemorySaver())
+    monkeypatch.setattr(agent_factory, "_global_checkpointer", writer_bound_saver)
+    monkeypatch.setattr(agent_factory, "_global_checkpointer_cm", None)
+    monkeypatch.setattr(agent_factory, "_writer_lifecycle_saver", None)
+    monkeypatch.setattr(agent_factory, "_writer_lifecycle_registry", None)
+    monkeypatch.setattr(agent_factory, "_factory_graph_savers", {})
     monkeypatch.setattr(agent_factory, "_assemble_all_tools", lambda _payload: [])
     monkeypatch.setattr(sse_helpers, "_load_session_context_window", lambda _sid: 128000)
     monkeypatch.setattr(ToolRouter, "get_default", classmethod(lambda _cls: ToolRouter(Audit())))

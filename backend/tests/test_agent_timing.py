@@ -9,6 +9,7 @@ import pytest
 from langchain_core.messages import AIMessage, AIMessageChunk
 
 from src.agent import hitl_handler, sse_adapter
+from tests.stream_writer_lease_support import authenticated_test_stream
 
 
 def _event_payloads(events: list[str]) -> list[dict]:
@@ -31,7 +32,7 @@ def _timing_records(caplog) -> list[dict]:
 
 
 class _ModelOutputAgent:
-    async def astream(self, _events, *, config, stream_mode):
+    async def astream(self, _events, *, config, stream_mode, **_kwargs):
         assert stream_mode == ["messages", "updates"]
         callbacks = config.get("callbacks", [])
         handlers = callbacks if isinstance(callbacks, (list, tuple)) else callbacks.handlers
@@ -47,7 +48,7 @@ class _ModelOutputAgent:
 
 
 class _FailingAgent:
-    async def astream(self, _events, *, config, stream_mode):
+    async def astream(self, _events, *, config, stream_mode, **_kwargs):
         if False:
             yield None
         callbacks = config.get("callbacks", [])
@@ -75,19 +76,20 @@ async def test_agent_stream_logs_model_timing_without_payload_or_sse_changes(
         lambda *_args: {"step_index": 0, "text_buffer": "", "pending_tool_calls": set()},
     )
     monkeypatch.setattr(hitl_handler, "handle_auto_resume", _no_resume)
-    agent = _ModelOutputAgent()
-    config = {"configurable": {"thread_id": "private-session-marker"}}
-
-    with caplog.at_level(logging.INFO, logger="src.agent.telemetry"):
-        events = [
-            event async for event in sse_adapter.stream_agent_to_sse(
-                agent,
-                {"messages": []},
-                config,
-                Counter(),
-                model="test-model",
-            )
-        ]
+    stream_double = _ModelOutputAgent()
+    with authenticated_test_stream(
+        monkeypatch, stream_double, business_session_id="private-session-marker",
+    ) as (agent, config, _queue_id):
+        with caplog.at_level(logging.INFO, logger="src.agent.telemetry"):
+            events = [
+                event async for event in sse_adapter.stream_agent_to_sse(
+                    agent,
+                    {"messages": []},
+                    config,
+                    Counter(),
+                    model="test-model",
+                )
+            ]
 
     records = _timing_records(caplog)
     by_event = {record["event"]: record for record in records}
@@ -113,12 +115,16 @@ async def test_agent_stream_records_safe_error_and_closes_model_call(monkeypatch
     )
     monkeypatch.setattr(hitl_handler, "handle_auto_resume", _no_resume)
 
-    with caplog.at_level(logging.INFO, logger="src.agent.telemetry"):
-        with pytest.raises(RuntimeError, match="PRIVATE_ERROR_MARKER"):
-            async for _ in sse_adapter.stream_agent_to_sse(
-                _FailingAgent(), {"messages": []}, {}, Counter(), model="test-model",
-            ):
-                pass
+    stream_double = _FailingAgent()
+    with authenticated_test_stream(
+        monkeypatch, stream_double, business_session_id="timing-error-test",
+    ) as (agent, config, _queue_id):
+        with caplog.at_level(logging.INFO, logger="src.agent.telemetry"):
+            with pytest.raises(RuntimeError, match="PRIVATE_ERROR_MARKER"):
+                async for _ in sse_adapter.stream_agent_to_sse(
+                    agent, {"messages": []}, config, Counter(), model="test-model",
+                ):
+                    pass
 
     by_event = {record["event"]: record for record in _timing_records(caplog)}
     assert by_event["model_call_end"]["status"] == "error"

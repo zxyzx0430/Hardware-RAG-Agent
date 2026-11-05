@@ -19,6 +19,8 @@ from src.agent.exceptions import AgentTimeoutError, ContextLimitError
 from src.agent.prompts import MAX_TOKEN_RATIO, TOOL_CALL_TIMEOUT_S
 from src.llm.client import LLMClient
 from src.llm.model_registry import (
+    DEFAULT_CONTEXT_WINDOW,
+    DEFAULT_MAX_TOKENS,
     get_registered_context_window,
     get_registered_max_tokens,
 )
@@ -45,6 +47,7 @@ class ContextBudget:
     framing_tokens: int
     prompt_window: int
     token_limit: int
+    budget_source: str = "registered"
 
 
 def resolve_context_budget(
@@ -52,39 +55,60 @@ def resolve_context_budget(
     context_window_override: int | None = None,
     requested_max_tokens: int | None = None,
 ) -> ContextBudget:
-    """Resolve a strict Agent budget; unknown model/output limits fail closed.
+    """Resolve an Agent budget without silently trusting an unknown model.
 
-    ``prompt_window`` is the effective window after output and framing reserves,
-    before the single ``MAX_TOKEN_RATIO`` headroom factor. ``token_limit`` is
-    the shared pre-send/runtime/compaction threshold derived from that window.
+    Registered models use their real window. An explicit positive session
+    override may tighten it. An unknown model is still usable: a positive
+    override is honored up to the hard cap; without one, a conservative 32K
+    window and 4K output reserve are used. Invalid overrides and impossible
+    output/window combinations still fail closed.
     """
-    model_window = get_registered_context_window(model)
-    if model_window is None:
+    registered = get_registered_context_window(model)
+    override_valid = (
+        type(context_window_override) is int and context_window_override > 0
+    )
+    if context_window_override is not None and not override_valid:
+        # A supplied but invalid session/request override must not silently fall
+        # back to a larger default.
         raise ContextLimitError(cumulative=0, limit=0)
 
-    if context_window_override is None:
-        effective_window = min(model_window, AGENT_CONTEXT_WINDOW_CAP)
-    elif type(context_window_override) is int and context_window_override > 0:
-        effective_window = min(
-            model_window,
-            context_window_override,
-            AGENT_CONTEXT_WINDOW_CAP,
-        )
+    if registered is not None:
+        model_window = registered
+        budget_source = "registered"
+        if override_valid:
+            effective_window = min(
+                registered, context_window_override, AGENT_CONTEXT_WINDOW_CAP,
+            )
+            budget_source = "explicit_override"
+        else:
+            effective_window = min(registered, AGENT_CONTEXT_WINDOW_CAP)
+    elif override_valid:
+        model_window = context_window_override
+        effective_window = min(context_window_override, AGENT_CONTEXT_WINDOW_CAP)
+        budget_source = "explicit_override"
     else:
-        # A supplied but invalid session/request override must not silently fall
-        # back to a larger model default.
-        raise ContextLimitError(cumulative=0, limit=0)
+        model_window = DEFAULT_CONTEXT_WINDOW
+        effective_window = min(DEFAULT_CONTEXT_WINDOW, AGENT_CONTEXT_WINDOW_CAP)
+        budget_source = "conservative_default"
 
     if requested_max_tokens is None:
         output_tokens = get_registered_max_tokens(model)
+        if output_tokens is None and registered is None:
+            output_tokens = DEFAULT_MAX_TOKENS
     elif type(requested_max_tokens) is int and requested_max_tokens > 0:
         output_tokens = requested_max_tokens
+        if registered is None:
+            output_tokens = min(output_tokens, DEFAULT_MAX_TOKENS)
     else:
         output_tokens = None
     if output_tokens is None:
         raise ContextLimitError(cumulative=0, limit=0)
+    # A usable prompt window must survive even when the session window is tiny.
+    output_tokens = min(output_tokens, max(1, effective_window // 4))
 
-    framing_tokens = AGENT_PROTOCOL_FRAMING_TOKEN_RESERVE
+    framing_tokens = min(
+        AGENT_PROTOCOL_FRAMING_TOKEN_RESERVE, max(1, effective_window // 8),
+    )
     prompt_window = effective_window - output_tokens - framing_tokens
     if prompt_window <= 0:
         raise ContextLimitError(cumulative=1, limit=0)
@@ -92,6 +116,12 @@ def resolve_context_budget(
     token_limit = int(prompt_window * MAX_TOKEN_RATIO)
     if token_limit <= 0:
         raise ContextLimitError(cumulative=1, limit=0)
+    logger.info(
+        "context_budget model=%s source=%s model_window=%s effective_window=%s "
+        "output_tokens=%s token_limit=%s",
+        model, budget_source, model_window, effective_window, output_tokens,
+        token_limit,
+    )
     return ContextBudget(
         model_window=model_window,
         effective_window=effective_window,
@@ -99,7 +129,28 @@ def resolve_context_budget(
         framing_tokens=framing_tokens,
         prompt_window=prompt_window,
         token_limit=token_limit,
+        budget_source=budget_source,
     )
+
+
+def compute_token_limit(
+    model: str | None,
+    context_window_override: int | None = None,
+    *,
+    output_reserve: int = 0,
+    overhead_bytes: int = 0,
+) -> int:
+    """Compatibility wrapper around the shared ContextBudget resolver.
+
+    ``overhead_bytes`` is retained for existing callers; the shared resolver
+    reserves protocol framing tokens instead of estimating arbitrary wire bytes.
+    """
+    budget = resolve_context_budget(
+        model,
+        context_window_override,
+        requested_max_tokens=output_reserve or None,
+    )
+    return budget.token_limit
 
 
 def reset_token_counter(initial_tokens: int = 0) -> None:

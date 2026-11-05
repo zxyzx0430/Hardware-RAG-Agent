@@ -32,12 +32,27 @@ def read_session_delete_epoch(session_id: str | None) -> str | None:
     try:
         with get_db_ctx() as db:
             row = db.query(Settings).filter(Settings.key == _session_epoch_key(session_id)).first()
-            value = row.value if row is not None else ""
-        if value == "" or (isinstance(value, str) and re.fullmatch(r"[0-9a-f]{32}", value)):
+            if row is None:
+                return ""
+            value = row.value
+        if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{32}", value):
             return value
     except Exception:
         logger.warning("session deletion generation is unavailable")
     return None
+
+
+def is_session_tombstoned(session_id: str | None) -> bool:
+    """True only when the persisted tombstone proves the session was deleted."""
+    try:
+        with get_db_ctx() as db:
+            from app.db.models import SessionTombstone
+
+            return db.query(SessionTombstone.session_id).filter(
+                SessionTombstone.session_id == session_id,
+            ).first() is not None
+    except Exception:
+        return True
 
 
 def stage_session_delete_epoch(db, session_id: str, now) -> str:

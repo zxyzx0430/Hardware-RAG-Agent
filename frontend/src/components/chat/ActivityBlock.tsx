@@ -3,6 +3,7 @@ import type { ActivityBlock as ActivityBlockData, ActivityStep } from "../../typ
 import { useI18n } from "../../i18n";
 import { formatDuration } from "../../utils/format";
 import { useAppStore } from "../../stores/useAppStore";
+import { isSkillToolName, isValidSkillId, isValidSkillResourcePath, type SkillToolName } from "../../utils/skillTrace";
 
 const ACTIVITY_TIMER_INTERVAL_MS = 100;
 const TOOLSTEP_TIMER_INTERVAL_MS = 100;
@@ -66,7 +67,9 @@ const ActivityBlock = memo(function ActivityBlock({ activity, msgId, startTime }
               }
               return (
                 <div className="activity-chain-node" key={stepKey}>
-                  <ToolStep step={step} running={isRunning} activityDone={activityDone} />
+                  {isSkillToolName(step.name)
+                    ? <SkillTraceStep step={step} toolName={step.name} running={isRunning} />
+                    : <ToolStep step={step} running={isRunning} activityDone={activityDone} />}
                   {!isLast ? <div className="activity-chain-line" /> : null}
                 </div>
               );
@@ -103,6 +106,137 @@ const ThinkingStep = memo(function ThinkingStep({ step }: { step: ActivityStep }
       {open ? (
         <div className="thinking-body">
           <p>{step.content}</p>
+        </div>
+      ) : null}
+    </div>
+  );
+});
+
+type SkillTraceDisplay = {
+  skillId: string;
+  stage: "instructions" | "resource";
+  contentHash?: string;
+  path?: string;
+  success?: boolean;
+};
+
+type SkillTraceStatus = "success" | "failed" | "running" | "interrupted" | "unknown";
+
+const SKILL_CONTENT_HASH_PATTERN = /^[0-9a-f]{64}$/;
+const INTERRUPTED_SKILL_STATUSES = new Set(["cancel", "cancelled", "canceled", "interrupted", "stopped", "aborted"]);
+
+function getSkillTraceDisplay(step: ActivityStep, toolName: SkillToolName): SkillTraceDisplay | null {
+  const value: unknown = step.skill_trace;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+
+  const trace = value as Record<string, unknown>;
+  if (
+    !Object.prototype.hasOwnProperty.call(trace, "skill_id")
+    || !Object.prototype.hasOwnProperty.call(trace, "stage")
+  ) return null;
+  const expectedStage = toolName === "load_skill" ? "instructions" : "resource";
+  if (!isValidSkillId(trace.skill_id) || trace.stage !== expectedStage) return null;
+
+  const hasPath = Object.prototype.hasOwnProperty.call(trace, "path");
+  let path: string | undefined;
+  if (toolName === "read_skill_resource") {
+    if (!hasPath || !isValidSkillResourcePath(trace.path)) return null;
+    path = trace.path;
+  } else if (hasPath) {
+    return null;
+  }
+
+  const hasContentHash = Object.prototype.hasOwnProperty.call(trace, "content_hash");
+  if (hasContentHash && (typeof trace.content_hash !== "string" || !SKILL_CONTENT_HASH_PATTERN.test(trace.content_hash))) {
+    return null;
+  }
+  const hasSuccess = Object.prototype.hasOwnProperty.call(trace, "success");
+  if (hasSuccess && typeof trace.success !== "boolean") return null;
+  if (trace.error !== undefined && trace.error !== null) return null;
+
+  return {
+    skillId: trace.skill_id,
+    stage: expectedStage,
+    ...(hasContentHash ? { contentHash: trace.content_hash as string } : {}),
+    ...(path !== undefined ? { path } : {}),
+    ...(hasSuccess ? { success: trace.success as boolean } : {}),
+  };
+}
+
+function getSkillTraceStatus(step: ActivityStep, running: boolean, trace: SkillTraceDisplay | null): SkillTraceStatus {
+  const status = step.status || (running ? "running" : undefined);
+  if (status === "pending" || status === "running") return "running";
+  if (status && INTERRUPTED_SKILL_STATUSES.has(status)) return "interrupted";
+  if (status === "error" && (!trace || trace.success === false)) return "failed";
+  if (status === "done" && trace?.success === true && trace.contentHash) return "success";
+  return "unknown";
+}
+
+function getSkillTraceStatusLabel(status: SkillTraceStatus): string {
+  switch (status) {
+    case "success": return "成功";
+    case "failed": return "失败";
+    case "running": return "进行中";
+    case "interrupted": return "已中断";
+    case "unknown": return "无法验证";
+  }
+}
+
+const SkillTraceStep = memo(function SkillTraceStep({ step, toolName, running }: {
+  step: ActivityStep;
+  toolName: SkillToolName;
+  running: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const trace = getSkillTraceDisplay(step, toolName);
+  const status = getSkillTraceStatus(step, running, trace);
+  const statusLabel = getSkillTraceStatusLabel(status);
+  const toolLabel = toolName === "load_skill" ? "加载技能" : "读取技能资源";
+
+  return (
+    <div className={`tool-row${status === "running" ? " running" : status === "failed" ? " error" : ""}`}>
+      <button
+        type="button"
+        className="tool-header"
+        aria-label={`${toolLabel}，${statusLabel}`}
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <span className="tool-icon" aria-hidden="true"><ToolIcon name={toolName} /></span>
+        <span className="tool-name">{toolLabel}</span>
+        <span className="tool-duration">{statusLabel}</span>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="step-chevron" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+      </button>
+      {open ? (
+        <div className="tool-body">
+          {trace ? (
+            <>
+              <div className="tool-body-section">
+                <span className="tool-body-label">技能 ID</span>
+                <pre className="tool-body-code">{trace.skillId}</pre>
+              </div>
+              <div className="tool-body-section">
+                <span className="tool-body-label">阶段</span>
+                <pre className="tool-body-code">{trace.stage}</pre>
+              </div>
+              {trace.contentHash ? (
+                <div className="tool-body-section">
+                  <span className="tool-body-label">SHA-256</span>
+                  <pre className="tool-body-code">{trace.contentHash}</pre>
+                </div>
+              ) : null}
+              {trace.path ? (
+                <div className="tool-body-section">
+                  <span className="tool-body-label">资源路径</span>
+                  <pre className="tool-body-code">{trace.path}</pre>
+                </div>
+              ) : null}
+            </>
+          ) : (
+            <div className="tool-body-section">
+              <span className="tool-body-code">没有可验证的技能轨迹信息。</span>
+            </div>
+          )}
         </div>
       ) : null}
     </div>

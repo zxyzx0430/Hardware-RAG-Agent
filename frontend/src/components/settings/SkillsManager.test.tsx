@@ -128,6 +128,33 @@ describe("SkillsManager", () => {
     });
   });
 
+  it("explains an empty GitHub preview, keeps the source, and leaves import disabled", async () => {
+    const url = "https://github.com/example/skills";
+    const ref = "a".repeat(40);
+    const path = "skills/__codex_uat_missing_20261006__";
+    const source = { owner: "example", repo: "skills", commit_sha: ref, path };
+    apiGetMock.mockResolvedValueOnce({ skills: [] });
+    apiPostMock.mockResolvedValueOnce({ source, candidates: [] });
+    render(<SkillsManager lang="zh" />);
+
+    fireEvent.click(screen.getByRole("button", { name: "从 GitHub 导入" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "仓库或技能目录链接" }), { target: { value: url } });
+    fireEvent.change(screen.getByRole("textbox", { name: "分支、标签或提交（可选）" }), { target: { value: ref } });
+    fireEvent.change(screen.getByRole("textbox", { name: "子目录（可选）" }), { target: { value: path } });
+    fireEvent.click(screen.getByRole("button", { name: "预览候选技能" }));
+
+    const emptyMessage = "未找到可导入技能，请检查链接和子目录是否包含 SKILL.md";
+    await screen.findByText(emptyMessage);
+    expect((screen.getByRole("textbox", { name: "仓库或技能目录链接" }) as HTMLInputElement).value).toBe(url);
+    expect((screen.getByRole("textbox", { name: "分支、标签或提交（可选）" }) as HTMLInputElement).value).toBe(ref);
+    expect((screen.getByRole("textbox", { name: "子目录（可选）" }) as HTMLInputElement).value).toBe(path);
+    expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
+    expect((screen.getByRole("button", { name: /安装选中技能/ }) as HTMLButtonElement).disabled).toBe(true);
+    expect(document.body.textContent).not.toContain("404");
+    expect(apiPostMock).toHaveBeenCalledTimes(1);
+    expect(apiPostMock).toHaveBeenCalledWith("skills/github/preview", { url, ref, path }, 70_000);
+  });
+
   it("shows the skill content and compatibility notes before enabling it", async () => {
     const skill = {
       id: "review",

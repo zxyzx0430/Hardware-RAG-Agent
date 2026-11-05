@@ -13,7 +13,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, unquote, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from src.skills.errors import GitHubImportError, SkillError, SkillValidationError
+from src.skills.errors import GitHubImportError, SkillConflictError, SkillError, SkillValidationError
 from src.skills.format import (
     LEGACY_FILENAME,
     MAX_SKILL_MARKDOWN_BYTES,
@@ -212,12 +212,20 @@ class GitHubSkillImporter:
         source: Mapping[str, Any],
         paths: Sequence[str],
         *,
+        operation_id: str | None = None,
+        enable: bool = False,
         claude_adapter: bool = False,
     ) -> list[dict[str, Any]]:
-        if not isinstance(claude_adapter, bool):
-            raise SkillValidationError("claude_adapter must be a boolean", code="SKILL_ADAPTER_INVALID")
         if not isinstance(source, Mapping):
             raise SkillValidationError("source must be an object", code="GITHUB_SOURCE_INVALID")
+        if not isinstance(enable, bool):
+            raise SkillValidationError("enable must be a boolean", code="GITHUB_SOURCE_INVALID")
+        if not isinstance(claude_adapter, bool):
+            raise SkillValidationError("claude_adapter must be a boolean", code="SKILL_ADAPTER_INVALID")
+        if operation_id is not None and not re.fullmatch(r"[0-9a-f]{64}", operation_id):
+            raise SkillValidationError("Install operation ID is invalid", code="SKILL_PACKAGE_INVALID")
+        if enable and operation_id is None:
+            raise SkillValidationError("Enable-on-install requires a host operation ID", code="SKILL_PACKAGE_INVALID")
         owner = source.get("owner", "")
         repo = source.get("repo", "")
         commit_sha = source.get("commit_sha", "")
@@ -237,9 +245,24 @@ class GitHubSkillImporter:
         selected_paths = [normalize_relative_path(item, allow_root=True) for item in paths]
         if len(set(selected_paths)) != len(selected_paths):
             raise SkillValidationError("Duplicate skill directories were selected", code="GITHUB_PATHS_DUPLICATE")
+        if operation_id is not None and len(selected_paths) != 1:
+            raise SkillValidationError("A chat install operation must select exactly one skill", code="GITHUB_TOO_MANY_SKILLS")
         for selected in selected_paths:
             if base_path and selected != base_path and not selected.startswith(base_path + "/"):
                 raise SkillValidationError("Selected skill is outside the previewed directory", code="GITHUB_PATH_OUTSIDE_PREVIEW")
+
+        if operation_id is not None:
+            existing = self.repository.find_import_by_operation_id(operation_id)
+            if existing is not None:
+                installed_source = existing.get("source")
+                if not isinstance(installed_source, dict) or (
+                    str(installed_source.get("owner", "")).casefold() != owner.casefold()
+                    or str(installed_source.get("repo", "")).casefold() != repo.casefold()
+                    or str(installed_source.get("commit_sha", "")).casefold() != commit_sha.casefold()
+                    or installed_source.get("path") != selected_paths[0]
+                ):
+                    raise SkillConflictError("This operation ID is already bound to a different pinned skill.")
+                return [existing]
 
         deadline = self._clock() + TOTAL_TIMEOUT_SECONDS
         resolved_sha, tree_doc = self._commit_tree(owner, repo, commit_sha, deadline=deadline)
@@ -311,17 +334,18 @@ class GitHubSkillImporter:
                 nonce = uuid.uuid4().hex
                 install_nonces.append(nonce)
                 installed.append({"id": skill_id, "_install_nonce": nonce})
-                imported = self.repository.install_package(
-                    files,
-                    package_source,
-                    _install_nonce=nonce,
-                    claude_adapter=claude_adapter,
-                )
+                install_options: dict[str, Any] = {
+                    "_install_nonce": nonce,
+                    "claude_adapter": claude_adapter,
+                }
+                if operation_id is not None:
+                    install_options.update({"_operation_id": operation_id, "_enabled": enable})
+                imported = self.repository.install_package(files, package_source, **install_options)
                 installed[-1] = imported
         except Exception:
             # The repository publishes each package atomically. If a later
-            # package fails, remove only this request's unchanged, still-owned
-            # imports. A same-commit reimport must not be mistaken for ours.
+            # package fails, remove only this request's unchanged, disabled
+            # packages. A same-commit reimport must not be mistaken for ours.
             for skill, nonce in reversed(list(zip(installed, install_nonces))):
                 self.repository.remove_import_if_unchanged(
                     skill["id"],

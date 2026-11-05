@@ -160,20 +160,32 @@ async def create_hardware_agent_from_config(config: AgentConfig) -> Any:
             from langchain.agents import create_agent
             from src.agent.exceptions import ToolContext
             checkpointer = await _get_checkpointer()
+            system_prompt = append_skills_context(
+                append_long_term_memory(build_system_prompt(), config.long_term_memory),
+                config.skills_mode,
+                catalog=config.skills_catalog,
+                manual_skills=config.skills_context,
+            )
             agent = create_agent(
                 model=llm,
                 tools=config.tools,
-                system_prompt=append_skills_context(
-                    append_long_term_memory(build_system_prompt(), config.long_term_memory),
-                    config.skills_mode,
-                    catalog=config.skills_catalog,
-                    manual_skills=config.skills_context,
-                ),
+                system_prompt=system_prompt,
                 middleware=(_TOKEN_MIDDLEWARE,),
                 context_schema=ToolContext,
                 checkpointer=checkpointer,
                 interrupt_before=interrupt_before,
             )
+            try:
+                from src.agent.skill_proof import (
+                    record_factory_system_prompt_after_create_agent_from_context,
+                )
+
+                record_factory_system_prompt_after_create_agent_from_context(
+                    system_prompt
+                )
+            except Exception:
+                # Prompt proof is observational and cannot change construction.
+                pass
         except ImportError as exc:
             logger.error("langchain.agents import failed: %s", exc)
             raise
@@ -192,6 +204,15 @@ async def create_hardware_agent_from_config(config: AgentConfig) -> Any:
             instance_id_attached = True
         except Exception:
             instance_id_attached = False
+        try:
+            from src.agent.compact.checkpoint_publish import _mint_initial_publication
+
+            if not _mint_initial_publication(agent, create_agent, _TOKEN_MIDDLEWARE):
+                logger.debug("Private initial publication unavailable for this graph shape")
+        except Exception:
+            # Provenance is optional and host-only; never change the tools,
+            # prompts, permissions or ordinary graph execution on mint failure.
+            logger.debug("Private initial publication provenance unavailable")
         logger.info(
             "hardware_agent_created model=%s hitl=%s recursion_limit=%s",
             config.model, config.enable_hitl, MAX_RECURSION,
@@ -253,6 +274,9 @@ _global_checkpointer: Any = None
 # context-manager object alive for the process lifetime so the aiosqlite connection
 # is not torn down after the first __aenter__ call.
 _global_checkpointer_cm: Any = None
+# Cooperative initialization only, not a graph writer fence or a deployment
+# assumption. Existing shared savers are never initialized/repaired here.
+_checkpointer_creation_lock = asyncio.Lock()
 
 # The async initializer lock is process-wide and independent of an asyncio
 # event loop. Contending loops yield while another caller initializes the
@@ -445,38 +469,81 @@ def _read_checkpointer_type() -> str:
 
 
 async def _build_sqlite_checkpointer() -> Any:
-    """Build and initialize an AsyncSqliteSaver for the astream path.
+    """Publish one ready saver/CM pair, or fail loudly.
 
-    create_agent's astream() calls aget_tuple(), which the sync SqliteSaver
-    does not implement. AsyncSqliteSaver.from_conn_string is an async context
-    manager; we enter it once and keep both the context manager and the saver
-    alive for the process lifetime so the aiosqlite connection stays open.
-
-    The saver is only usable once setup() has created its tables, and the
-    writer binding refuses an uninitialized saver, so this fails closed: a
-    sqlite checkpointer that cannot be prepared raises instead of silently
-    degrading to an in-memory one that would lose history on restart.
+    ``from_conn_string`` only yields the saver; ``setup()`` must finish before
+    any writer binding uses it.  Only the exact native newly-created,
+    unpublished CM can be set up/closed, and it is published only after setup
+    succeeds.  Cancellation joins owned setup/teardown before releasing the
+    creation lock; a previously shared saver (even unready) is returned
+    unchanged.  A sqlite setup failure never degrades to InMemorySaver.
     """
-    global _global_checkpointer_cm
+    global _global_checkpointer, _global_checkpointer_cm
     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-    cm: Any = None
+    from src.agent.compact.checkpoint_publish import _join_initial_task
+
+    async with _checkpointer_creation_lock:
+        if _global_checkpointer is not None:
+            return _global_checkpointer
+        cm = None
+        task = None
+        try:
+            _SQLITE_CHECKPOINT_PATH.parent.mkdir(parents=True, exist_ok=True)
+            cm = AsyncSqliteSaver.from_conn_string(str(_SQLITE_CHECKPOINT_PATH))
+            task = asyncio.create_task(_initialize_owned_sqlite(cm))
+            checkpointer = await _join_initial_task(task)
+            # No await between publication of the ready saver and its owner CM.
+            _global_checkpointer, _global_checkpointer_cm = checkpointer, cm
+            logger.info("checkpointer=AsyncSqliteSaver path=%s", _SQLITE_CHECKPOINT_PATH)
+            return checkpointer
+        except asyncio.CancelledError:
+            # A joined initializer may have succeeded after parent cancellation.
+            # Its still-unpublished native CM is ours, never the shared pair.
+            if task is not None and task.done() and not task.cancelled() and task.exception() is None:
+                await _close_owned_sqlite(cm)
+            raise
+        except Exception as exc:
+            # A configured sqlite saver must fail loudly rather than run with
+            # an in-memory fallback that silently loses history on restart.
+            logger.error("AsyncSqliteSaver init failed: %s", exc)
+            raise
+
+
+async def _close_owned_sqlite(cm) -> None:
+    """Join teardown of a proven factory-owned, unpublished native CM only."""
+    from src.agent.compact.checkpoint_publish import _join_initial_task
+
+    await _join_initial_task(asyncio.create_task(cm.__aexit__(None, None, None)))
+
+
+async def _initialize_owned_sqlite(cm) -> Any:
+    """Finish setup before exposing the exact native generator's new connection."""
+    from contextlib import _AsyncGeneratorContextManager
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+    generator = AsyncSqliteSaver.from_conn_string.__func__.__wrapped__
+    if (type(cm) is not _AsyncGeneratorContextManager or cm.func is not generator
+            or cm.args != (AsyncSqliteSaver, str(_SQLITE_CHECKPOINT_PATH)) or cm.kwds
+            or cm.gen.ag_code is not generator.__code__):
+        raise RuntimeError("Cannot prove fresh native SQLite ownership")
     entered = False
     try:
-        _SQLITE_CHECKPOINT_PATH.parent.mkdir(parents=True, exist_ok=True)
-        cm = AsyncSqliteSaver.from_conn_string(str(_SQLITE_CHECKPOINT_PATH))
-        _global_checkpointer_cm = cm
         checkpointer = await cm.__aenter__()
         entered = True
+        frame = cm.gen.ag_frame
+        if (type(checkpointer) is not AsyncSqliteSaver or frame is None
+                or frame.f_locals.get("conn") is not checkpointer.conn
+                or checkpointer.is_setup is not False or checkpointer.conn.in_transaction):
+            raise RuntimeError("Unsupported new SQLite connection")
+        # Only this private new native connection is eligible. Never call setup
+        # on the cache value or on a saver supplied by another graph/caller.
         await checkpointer.setup()
+        if checkpointer.is_setup is not True or checkpointer.conn.in_transaction:
+            raise RuntimeError("SQLite initialization did not finish")
         return checkpointer
-    except Exception as exc:
-        logger.error("AsyncSqliteSaver init failed: %s", exc)
-        _global_checkpointer_cm = None
-        if entered and cm is not None:
-            try:
-                await cm.__aexit__(type(exc), exc, exc.__traceback__)
-            except Exception:
-                logger.error("checkpointer cleanup after init failure failed", exc_info=True)
+    except BaseException:
+        if entered:
+            await _close_owned_sqlite(cm)
         raise
 
 
@@ -1026,6 +1093,49 @@ def _build_llm(
 # Tool list assembly (per-request)
 # ═══════════════════════════════════════════
 
+class _BuiltRequestToolMap(dict[str, BaseTool]):
+    """Complete request tool lookup plus the extension specs to reuse on resume."""
+
+    def __init__(
+        self,
+        tools: list[BaseTool],
+        injected_tools: tuple[BaseTool, ...],
+    ) -> None:
+        super().__init__((tool.name, tool) for tool in tools)
+        self.injected_tools = injected_tools
+
+
+def _preconfigured_request_tools(ctx: ToolContext) -> tuple[BaseTool, ...]:
+    """Read and validate request-local tools supplied before this build."""
+    request_tools = ctx.request_tools
+    if isinstance(request_tools, _BuiltRequestToolMap):
+        candidates = tuple(
+            (tool.name, tool) for tool in request_tools.injected_tools
+        )
+    elif isinstance(request_tools, dict):
+        candidates = tuple(request_tools.items())
+    else:
+        raise ValueError("Invalid request tool snapshot")
+
+    from src.agent.core.toolkit.tool_spec import ToolSpec
+
+    tools: list[BaseTool] = []
+    seen_names: set[str] = set()
+    for name, tool in candidates:
+        if (
+            not isinstance(name, str)
+            or not name
+            or not isinstance(tool, ToolSpec)
+            or tool.name != name
+            or tool.mcp_info is not None
+            or tool.name in seen_names
+        ):
+            raise ValueError("Invalid request tool snapshot")
+        seen_names.add(tool.name)
+        tools.append(tool)
+    return tuple(tools)
+
+
 def build_tool_specs(
     payload: Any,
     *,
@@ -1051,6 +1161,7 @@ def build_tool_specs(
     """
     ensure_default_tools_registered()
     skills_mode = getattr(payload, "skills_mode", "off") or "off"
+    explicit_runtime = skills_runtime is not None
     if skills_runtime is None and tool_context is not None:
         skills_runtime = getattr(tool_context, "skills_runtime", None)
     if skills_mode == "off":
@@ -1064,6 +1175,7 @@ def build_tool_specs(
     ctx = tool_context or _build_tool_ctx(payload, skills_runtime)
     ctx.skills_mode = skills_mode
     ctx.skills_runtime = skills_runtime
+    request_tools = _preconfigured_request_tools(ctx)
     tool_list = _assemble_all_tools(payload)
     existing_names = {tool.name for tool in tool_list}
     if any(tool.name in existing_names or tool.mcp_info is None for tool in mcp_tools):
@@ -1080,30 +1192,54 @@ def build_tool_specs(
             )
         tool_list.append(ReadToolObservationTool())
 
-    from src.agent.skill_runtime import (
-        ImportSkillTool,
-        LoadSkillTool,
-        PreviewSkillImportTool,
-        ReadSkillResourceTool,
-    )
-    skill_tools = [
-        LoadSkillTool(skills_runtime),
-        ReadSkillResourceTool(skills_runtime),
-        PreviewSkillImportTool(skills_runtime, skill_importer),
-        ImportSkillTool(skills_runtime, skill_importer),
-    ]
-    existing_names = {tool.name for tool in tool_list}
-    if any(tool.name in existing_names for tool in skill_tools):
-        raise ValueError("Skills tool name conflicts with a registered tool")
-    tool_list.extend(skill_tools)
-    tool_list = _filter_disabled_tools(tool_list)
-    if skills_mode != "off":
+    if skills_mode != "off" or explicit_runtime:
+        from src.agent.skill_runtime import (
+            ImportSkillTool,
+            LoadSkillTool,
+            PreviewSkillImportTool,
+            ReadSkillResourceTool,
+        )
+        skill_tools = [
+            LoadSkillTool(skills_runtime),
+            ReadSkillResourceTool(skills_runtime),
+            PreviewSkillImportTool(skills_runtime, skill_importer),
+            ImportSkillTool(skills_runtime, skill_importer),
+        ]
+        existing_names = {tool.name for tool in tool_list}
+        if any(tool.name in existing_names for tool in skill_tools):
+            raise ValueError("Skills tool name conflicts with a registered tool")
+        tool_list.extend(skill_tools)
+        tool_list = _filter_disabled_tools(tool_list)
         required_skill_tools = {"load_skill", "read_skill_resource"}
         missing_skill_tools = required_skill_tools - {tool.name for tool in tool_list}
         if missing_skill_tools:
             raise ValueError("Required Skills tools are disabled")
+    if request_tools:
+        existing_names = {tool.name for tool in tool_list}
+        if any(tool.name in existing_names for tool in request_tools):
+            raise ValueError("request tool name conflict")
+        tool_list.extend(_filter_disabled_tools(list(request_tools)))
+    # Recoverable tool observations are request/session scoped opaque refs and
+    # are useful outside Skills mode too. The tool itself revalidates the owner,
+    # session, request and deletion epoch; registration does not grant content.
+    seen_tool_names: set[str] = set()
+    duplicate_tool_names: set[str] = set()
+    for tool in tool_list:
+        if tool.name in seen_tool_names:
+            duplicate_tool_names.add(tool.name)
+        else:
+            seen_tool_names.add(tool.name)
+    if duplicate_tool_names:
+        duplicate_names = ", ".join(sorted(duplicate_tool_names))
+        raise ValueError(
+            f"Duplicate tool names in final request tool list: {duplicate_names}"
+        )
     ctx.skills_allowed_tools = frozenset(tool.name for tool in tool_list)
-    ctx.request_tools = {tool.name: tool for tool in tool_list}
+    request_tool_ids = {id(tool) for tool in request_tools}
+    included_request_tools = tuple(
+        tool for tool in tool_list if id(tool) in request_tool_ids
+    )
+    ctx.request_tools = _BuiltRequestToolMap(tool_list, included_request_tools)
     _inject_ctx(tool_list, ctx)
     logger.info(
         "build_tool_specs done count=%s names=%s",
@@ -1163,7 +1299,7 @@ def _assemble_all_tools(payload: Any) -> list[BaseTool]:
 
 
 def _build_tool_groups(payload: Any = None) -> dict[str, list[BaseTool]]:
-    """Instantiate all 26 tools grouped by their subdirectory.
+    """Instantiate all 27 tools grouped by their subdirectory.
 
     Returns a dict mapping group name → list of BaseTool. Tools that need
     per-request credentials (Tavily / vision / image) read them from payload.
@@ -1174,6 +1310,15 @@ def _build_tool_groups(payload: Any = None) -> dict[str, list[BaseTool]]:
     from src.agent.tools.groups.retrieval import (
         ImageGenerationTool, ListKbDocsTool, SearchDocsTool, SearchHistoryTool,
         ViewImageTool, VisionAnalysisTool, WebFetchTool, WebSearchTool,
+    )
+    from src.agent.tools.groups.retrieval.read_context_event import ReadContextEventTool
+    from src.agent.tools.groups.retrieval.read_tool_event import ReadToolEventTool
+    from src.agent.tools.groups.retrieval.read_tool_observation import ReadToolObservationTool
+    from src.agent.tools.groups.retrieval.read_rolling_history import (
+        ReadRollingHistoryTool,
+    )
+    from src.agent.tools.groups.retrieval.read_owner_rolling_history import (
+        ReadOwnerRollingHistoryTool,
     )
     from src.agent.tools.groups.hardware import AuditPinsTool, WiringTool
     from src.agent.tools.groups.workbench import get_workbench_tools
@@ -1191,6 +1336,11 @@ def _build_tool_groups(payload: Any = None) -> dict[str, list[BaseTool]]:
         _TOOL_GROUP_RETRIEVAL: [
             SearchDocsTool(top_k=top_k, kb_ids=kb_ids, threshold=threshold),
             ListKbDocsTool(kb_ids=kb_ids),
+            ReadContextEventTool(),
+            ReadToolEventTool(),
+            ReadToolObservationTool(),
+            ReadRollingHistoryTool(),
+            ReadOwnerRollingHistoryTool(),
             WebSearchTool(tavily_api_key=tavily_key, tavily_base_url=tavily_base_url),
             WebFetchTool(),
             SearchHistoryTool(),
@@ -1207,7 +1357,7 @@ def _build_tool_groups(payload: Any = None) -> dict[str, list[BaseTool]]:
 
 
 def list_tool_metadata() -> list[dict]:
-    """Return metadata for all 26 Agent tools (name/description/group/enabled).
+    """Return metadata for all 27 Agent tools (name/description/group/enabled).
 
     Used by GET /api/tools. `enabled` is read from data/tool_config.json
     (absent file → all enabled). Disabled tools are still listed (with
@@ -1443,12 +1593,28 @@ def _model_supports_tools(model: str) -> bool:
 # Stream config (see spec §2.1, §8.2)
 # ═══════════════════════════════════════════
 
-def build_agent_config(session_id: str) -> dict:
+def build_agent_config(session_id: str, *, request_id: str | None = None) -> dict:
     """Build the config dict passed to agent.astream().
 
     - recursion_limit: 20-iteration hard cap (see prompts.MAX_RECURSION).
-    - configurable.thread_id: per-session memory key (MemorySaver checkpointing).
+    - configurable.thread_id: legacy per-session key or optional request graph key.
+    - request_id: optional host-minted ID for an isolated graph thread; it does
+      not grant authentication or permission.
     """
+    if request_id is not None:
+        from src.agent.request_context import (
+            REQUEST_GRAPH_BINDING_KEY,
+            new_request_graph_binding,
+        )
+
+        binding = new_request_graph_binding(session_id, request_id)
+        return {
+            "recursion_limit": MAX_RECURSION,
+            "configurable": {
+                "thread_id": binding.graph_thread_id,
+                REQUEST_GRAPH_BINDING_KEY: binding.as_config_value(),
+            },
+        }
     return {
         "recursion_limit": MAX_RECURSION,
         "configurable": {"thread_id": session_id or "default"},

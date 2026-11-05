@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import AsyncMock
 import pytest
 from contextlib import contextmanager
 from types import SimpleNamespace
@@ -11,6 +12,40 @@ from starlette.requests import Request
 
 from app.api import chat_helpers
 from app.api.chat_routes import ChatRequest
+
+
+@pytest.fixture(autouse=True)
+def _isolated_memory_epoch_database(monkeypatch):
+    """Keep real deletion-epoch reads isolated, including synthetic Agent tests."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+    from app.api import common
+    from app.db.database import Base
+
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr(common, "SessionLocal", sessionmaker(bind=engine))
+    yield
+    engine.dispose()
+
+
+class _FakeWriterBinding:
+    """Minimal host binding for synthetic agents outside the factory."""
+
+    def __init__(self):
+        self.scope = SimpleNamespace(owner_key="synthetic-thread")
+        self.registry = SimpleNamespace(
+            assert_scope=lambda *_a, **_k: None,
+            acquire=lambda _scope: object(),
+            release=lambda *_a, **_k: None,
+            quarantine=lambda *_a, **_k: None,
+        )
+
+    def current_scope(self):
+        return self.scope
 
 
 def _messages() -> list[dict[str, str]]:
@@ -187,7 +222,7 @@ async def test_chat_route_uses_one_resolved_memory_on_each_model_path(
     monkeypatch.setattr(chat_routes, "_AGENT_PATH_AVAILABLE", use_agent)
     monkeypatch.setattr(chat_routes, "_should_use_agent", lambda *_args: use_agent)
 
-    async def fake_agent_stream(_payload, _creds, long_term_memory=None, request_snapshot=None):
+    async def fake_agent_stream(_payload, _creds, long_term_memory=None, request_snapshot=None, **_kwargs):
         observed["agent_memory"] = long_term_memory
         yield sse_event("text", {"content": "reply"})
 
@@ -227,7 +262,7 @@ async def test_hitl_resume_reuses_the_memory_snapshot_from_the_paused_request(
 
     monkeypatch.setattr(agent_factory, "reset_thread_checkpoint", fake_reset_thread_checkpoint)
 
-    async def fake_build_agent(_payload, _creds, long_term_memory=None, request_snapshot=None):
+    async def fake_build_agent(_payload, _creds, long_term_memory=None, request_snapshot=None, **_kwargs):
         agent_memories.append(long_term_memory)
         agent_configs.append((
             _payload.permission_mode, _payload.kb_ids,
@@ -236,7 +271,20 @@ async def test_hitl_resume_reuses_the_memory_snapshot_from_the_paused_request(
         return object()
 
     monkeypatch.setattr(chat_routes, "_build_agent_for_payload", fake_build_agent)
-    monkeypatch.setattr(chat_routes, "_session_context_window", lambda _session_id: None)
+    monkeypatch.setattr(chat_routes, "_session_context_window", lambda _session_id, _model=None: None)
+    monkeypatch.setattr(
+        chat_routes, "_build_request_writer_binding",
+        lambda *_a, **_k: _FakeWriterBinding(),
+    )
+    monkeypatch.setattr(
+        chat_routes, "_acquire_request_writer_lease", lambda _binding: object(),
+    )
+
+    async def no_writer_reset(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(agent_factory, "reset_thread_checkpoint_for_writer", no_writer_reset)
+    monkeypatch.setattr(hitl_handler, "_detect_tools_interrupt", AsyncMock(return_value=[]))
 
     async def fake_agent_stream(*_args, **_kwargs):
         yield sse_event("tool_confirm_required", {"calls": [], "count": 0})
@@ -262,7 +310,7 @@ async def test_hitl_resume_reuses_the_memory_snapshot_from_the_paused_request(
         lambda _payload: pytest.fail("resume must not reload changed saved memory"),
     )
     monkeypatch.setattr(chat_routes, "_resolve_creds", lambda *_args: creds)
-    monkeypatch.setattr(chat_routes, "build_agent_config", lambda _session_id: {})
+    monkeypatch.setattr(chat_routes, "build_agent_config", lambda _session_id, **_kwargs: {})
 
     async def fake_resume_agent_after_user(*_args):
         yield sse_event("done", {"success": True})
@@ -299,17 +347,30 @@ async def test_interleaved_agent_sessions_keep_distinct_memory_snapshots(
 ) -> None:
     from app.api import chat_routes
     from app.api.sse import sse_event
-    from src.agent import agent_factory
+    from src.agent import agent_factory, hitl_handler
 
     async def fake_reset_thread_checkpoint(_session_id):
         return None
 
-    async def fake_build_agent(_payload, _creds, long_term_memory=None, request_snapshot=None):
+    async def fake_build_agent(_payload, _creds, long_term_memory=None, request_snapshot=None, **_kwargs):
         return object()
 
     monkeypatch.setattr(agent_factory, "reset_thread_checkpoint", fake_reset_thread_checkpoint)
     monkeypatch.setattr(chat_routes, "_build_agent_for_payload", fake_build_agent)
-    monkeypatch.setattr(chat_routes, "_session_context_window", lambda _session_id: None)
+    monkeypatch.setattr(chat_routes, "_session_context_window", lambda _session_id, _model=None: None)
+    monkeypatch.setattr(
+        chat_routes, "_build_request_writer_binding",
+        lambda *_a, **_k: _FakeWriterBinding(),
+    )
+    monkeypatch.setattr(
+        chat_routes, "_acquire_request_writer_lease", lambda _binding: object(),
+    )
+
+    async def no_writer_reset(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(agent_factory, "reset_thread_checkpoint_for_writer", no_writer_reset)
+    monkeypatch.setattr(hitl_handler, "_detect_tools_interrupt", AsyncMock(return_value=[]))
 
     async def fake_agent_stream(_agent, _input, config, *_args, **_kwargs):
         await asyncio.sleep(0)

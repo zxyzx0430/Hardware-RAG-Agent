@@ -447,6 +447,8 @@ function GitHubPreview({
   onImport: () => void;
   onCancel: () => void;
 }) {
+  const hasCandidates = preview.candidates.length > 0;
+
   return (
     <section aria-label={isChinese ? "GitHub 技能预览" : "GitHub skill preview"} style={{ padding: 14, border: "1px solid var(--border)", borderRadius: 8, margin: "12px 0" }}>
       <h4>{isChinese ? "预览结果" : "Preview result"}</h4>
@@ -454,8 +456,12 @@ function GitHubPreview({
         {preview.source.owner}/{preview.source.repo} · {preview.source.commit_sha}
         {preview.source.path ? ` · ${preview.source.path}` : ""}
       </p>
-      <p style={{ fontSize: 12, color: "var(--muted-fg)", margin: "8px 0" }}>
-        {isChinese ? "候选默认不选；只会安装你勾选的项目。" : "No candidates are selected by default; only checked skills will be installed."}
+      <p role={hasCandidates ? undefined : "status"} style={{ fontSize: 12, color: "var(--muted-fg)", margin: "8px 0" }}>
+        {hasCandidates
+          ? (isChinese ? "候选默认不选；只会安装你勾选的项目。" : "No candidates are selected by default; only checked skills will be installed.")
+          : (isChinese
+              ? "未找到可导入技能，请检查链接和子目录是否包含 SKILL.md"
+              : "No importable skills were found. Check that the link and subdirectory contain a SKILL.md file.")}
       </p>
       {preview.candidates.map((candidate) => (
         <label key={candidate.path} style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "8px 0", borderTop: "1px solid var(--border)", cursor: "pointer" }}>

@@ -100,6 +100,7 @@ def test_resume_api_rejects_allow_without_call_id_before_building_agent(
         session_delete_epoch="session-epoch",
         memory_clear_epoch="memory-epoch",
         principal_id="principal",
+        pending_call_ids=("call-current",),
     )
     build_agent = AsyncMock(side_effect=AssertionError("agent must not be built"))
     monkeypatch.setattr(chat_routes, "_AGENT_PATH_AVAILABLE", True)

@@ -4,19 +4,21 @@ Chat 路由 — /api/chat SSE + /api/models
 迁移自 routes.py，共享工具见 common.py。
 """
 
+import asyncio
 import hashlib
+import copy
 import json
 import logging
 import threading
 import time
 import uuid
 from collections import Counter
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager, nullcontext, nullcontext
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, AsyncIterator, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, StrictStr, field_validator, model_validator
 
@@ -33,12 +35,15 @@ from app.api.memory_epoch import read_memory_clear_epoch
 from app.api.sse import sse_event
 from app.api.errors import sanitize_error
 from app.api.session_epoch import read_session_delete_epoch
+from app.api.compaction_archive import bind_compaction_archive, compaction_principal, get_compaction_scope, make_compaction_scope
+from app.api.tool_events import bind_tool_event_archive
 from app.api.chat_helpers import (
     MAX_LONG_TERM_MEMORY_CHARS, resolve_long_term_memory,
     _record_token_usage,
     _process_attachments, _build_chat_history, _build_system_prompt,
 )
 from app.db.models import TokenUsage
+from src.agent.request_budget import AgentRequestBudgetError
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +57,9 @@ async def stream_agent_to_sse(
     model: str = "",
     requested_max_tokens: int | None = None,
     context_budget: Any = None,
+    *,
+    compaction_source_message_ids: tuple[str | None, ...] | None = None,
+    compaction_source_messages: tuple[dict, ...] | None = None,
 ) -> AsyncIterator[str]:
     """Lazily forward to the Agent SSE adapter while keeping a patchable API symbol."""
     from src.agent.sse_adapter import stream_agent_to_sse as adapter_stream
@@ -59,6 +67,8 @@ async def stream_agent_to_sse(
     adapter_iterator = adapter_stream(
         agent, events, config, call_counter, permission_mode, model=model,
         requested_max_tokens=requested_max_tokens, context_budget=context_budget,
+        compaction_source_message_ids=compaction_source_message_ids,
+        compaction_source_messages=compaction_source_messages,
     )
     stream_error: BaseException | None = None
     try:
@@ -130,6 +140,14 @@ class AgentRequestSnapshot:
         repr=False,
         compare=False,
     )
+    context_event_scope: Any = field(default=None, repr=False, compare=False)
+    tool_event_scope: Any = field(default=None, repr=False, compare=False)
+    business_session_id: str = ""
+    principal_hash: str | None = field(default=None, repr=False)
+    graph_config: dict | None = field(default=None, repr=False, compare=False)
+    pending_call_ids: tuple[str, ...] = ()
+    pending_call_fingerprints: tuple[tuple[str, str], ...] = field(default=(), repr=False)
+    skill_install_tool: Any = field(default=None, repr=False, compare=False)
 
 
 class _RequestSnapshotEpochError(RuntimeError):
@@ -142,6 +160,10 @@ class _WriterLifecycleUnavailableError(RuntimeError):
 
 def _capture_request_snapshot_epochs(session_id: str | None) -> tuple[str, str]:
     """Pin the generations that bound this request's session and memory snapshot."""
+    from app.api.session_epoch import is_session_tombstoned
+
+    if is_session_tombstoned(session_id):
+        raise _RequestSnapshotEpochError("session was deleted")
     session_epoch = read_session_delete_epoch(session_id)
     memory_epoch = read_memory_clear_epoch()
     if session_epoch is None or memory_epoch is None:
@@ -286,20 +308,42 @@ def _release_request_writer_lease(
 
 
 @contextmanager
-def _request_writer_context(binding: Any, lease: Any, model: str = ""):
-    """Expose one lease to the adapter and all of its automatic HITL runs."""
+def _request_writer_context(
+    binding: Any, lease: Any, model: str = "", config: dict | None = None,
+    request_snapshot: Any = None,
+):
+    """Expose one baseline lease and host request identity to the adapter."""
     if binding is None or lease is None:
         yield
         return
     from src.agent.compact.writer_lifecycle import bind_writer_scope
-    from src.agent.sse_adapter import activate_writer_binding
+    from src.agent.writer_bridge import bind_request_identity
+    from src.agent.request_context import request_graph_binding_from_config
 
     scope = binding.current_scope()
     binding.registry.assert_scope(lease, scope)
-    with bind_writer_scope(
-        binding.registry, lease, scope, scope_provider=binding.current_scope,
-    ):
-        with activate_writer_binding(binding, lease, model):
+    if request_snapshot is not None:
+        identity_scope = bind_request_identity(
+            request_snapshot.business_session_id,
+            request_snapshot.request_id,
+            getattr(request_snapshot, "session_delete_epoch", "") or "",
+        )
+    else:
+        graph_binding = (
+            request_graph_binding_from_config(config)
+            if type(config) is dict else None
+        )
+        identity_scope = (
+            bind_request_identity(
+                graph_binding.business_session_id,
+                graph_binding.request_id,
+            )
+            if graph_binding is not None else nullcontext()
+        )
+    with identity_scope:
+        with bind_writer_scope(
+            binding.registry, lease, scope, scope_provider=binding.current_scope,
+        ):
             yield
 
 
@@ -311,6 +355,12 @@ def _request_snapshot_from_payload(
     memory_clear_epoch: str | None = None,
 ) -> AgentRequestSnapshot:
     kb_ids = getattr(payload, "kb_ids", None)
+    if session_delete_epoch is None:
+        session_delete_epoch = read_session_delete_epoch(
+            getattr(payload, "session_id", None),
+        )
+    if memory_clear_epoch is None:
+        memory_clear_epoch = read_memory_clear_epoch()
     return AgentRequestSnapshot(
         long_term_memory=memory,
         session_delete_epoch=session_delete_epoch,
@@ -367,6 +417,36 @@ def _ensure_request_tool_context(
     context = _build_tool_ctx(request_payload, snapshot.skills_runtime)
     context.tool_observation_scope = _tool_observation_scope(snapshot)
     return replace(snapshot, tool_context=context)
+
+
+def _seed_skill_install_tool_context(tool_context: Any, tool: Any) -> None:
+    if tool is None:
+        return
+    from src.agent.tools.groups.skills.install_tool import SkillInstallTool
+
+    if type(tool) is not SkillInstallTool:
+        raise ValueError("Invalid request-scoped Skill install tool")
+    current = tool_context.request_tools.get(tool.name)
+    if current is not None and current is not tool:
+        raise ValueError("Skill install tool name conflicts with another request tool")
+    tool_context.request_tools[tool.name] = tool
+
+
+def _attach_skill_install_tool(tool_context: Any, tools: list[Any], tool: Any) -> None:
+    if tool is None:
+        return
+    from src.agent.agent_factory import _load_disabled_tools
+
+    _seed_skill_install_tool_context(tool_context, tool)
+    if tool.name in _load_disabled_tools():
+        raise ValueError("Skill install tool was disabled before the request Agent was built")
+    if not any(item is tool for item in tools):
+        if any(getattr(item, "name", None) == tool.name for item in tools):
+            raise ValueError("Skill install tool name conflicts with a built-in tool")
+        tools.append(tool)
+    injected = getattr(tool_context.request_tools, "injected_tools", None)
+    if injected is not None and not any(item is tool for item in injected):
+        tool_context.request_tools.injected_tools = tuple(injected) + (tool,)
 
 
 def _ensure_skills_runtime(snapshot: AgentRequestSnapshot) -> AgentRequestSnapshot:
@@ -489,14 +569,47 @@ def _prune_pending_agent_snapshots(now: float) -> None:
         _PENDING_AGENT_REQUESTS.pop(oldest, None)
 
 
+def _pending_call_fingerprints(pending: list[dict]) -> tuple[tuple[str, str], ...]:
+    if type(pending) is not list or not 1 <= len(pending) <= 64:
+        raise ValueError("Invalid pending call count")
+    result = []
+    remaining = 64 * 1024
+    for call in pending:
+        call_id, name, args = call.get("call_id"), call.get("name"), call.get("args")
+        if (type(call_id) is not str or not 1 <= len(call_id) <= 256
+                or type(name) is not str or not name or type(args) is not dict):
+            raise ValueError("Invalid pending call")
+        encoded = json.dumps([name, args], ensure_ascii=False, sort_keys=True,
+                             allow_nan=False, separators=(",", ":")).encode("utf-8")
+        remaining -= len(encoded)
+        if remaining < 0:
+            raise ValueError("Pending call budget exceeded")
+        result.append((call_id, hashlib.sha256(encoded).hexdigest()))
+    if len({item[0] for item in result}) != len(result):
+        raise ValueError("Duplicate pending call ID")
+    return tuple(result)
+
+
 def _store_pending_request_snapshot(
     session_id: str | None, snapshot: AgentRequestSnapshot,
-) -> None:
+    pending: list[dict] | None = None, *, claim: Any = None,
+) -> AgentRequestSnapshot | None:
+    if pending is not None:
+        try:
+            fingerprints = _pending_call_fingerprints(pending)
+        except ValueError:
+            logger.warning("Cannot retain invalid pending call snapshot")
+            return None
+        snapshot = replace(
+            snapshot,
+            pending_call_ids=tuple(item[0] for item in fingerprints),
+            pending_call_fingerprints=fingerprints,
+        )
     context = snapshot.tool_context
     if context is None:
         logger.warning("cannot store resumable Agent request without ToolContext")
         _clear_pending_request_snapshot(session_id)
-        return
+        return None
     try:
         from src.agent.tools.groups.retrieval.source_registry import get_context_source_registry
 
@@ -504,13 +617,14 @@ def _store_pending_request_snapshot(
     except Exception:
         logger.warning("cannot store resumable Agent request with invalid source registry", exc_info=True)
         _clear_pending_request_snapshot(session_id)
-        return
+        return None
     snapshot = replace(snapshot, rag_source_registry_snapshot=registry_snapshot)
     now = time.monotonic()
     with _PENDING_AGENT_SNAPSHOT_LOCK:
         _prune_pending_agent_snapshots(now)
         _PENDING_AGENT_REQUESTS[_session_memory_key(session_id)] = (snapshot, now)
         _prune_pending_agent_snapshots(now)
+    return snapshot
 
 
 def _get_pending_request_snapshot(
@@ -525,6 +639,10 @@ def _get_pending_request_snapshot(
             return None
         snapshot = pending[0]
         try:
+            _require_request_snapshot_epochs_current(
+                snapshot,
+                snapshot.business_session_id or snapshot.session_id or session_id,
+            )
             if snapshot.tool_context is None or snapshot.rag_source_registry_snapshot is None:
                 raise ValueError("request source registry snapshot is missing")
             from src.agent.tools.groups.retrieval.source_registry import RagSourceRegistry
@@ -559,6 +677,34 @@ def _get_pending_memory_snapshot(session_id: str | None) -> str | None:
         _prune_pending_agent_snapshots(now)
         pending = _PENDING_AGENT_REQUESTS.get(_session_memory_key(session_id))
         return pending[0].long_term_memory if pending is not None else None
+
+
+@dataclass(frozen=True)
+class PendingAgentSnapshotClaim:
+    """Compatibility claim used by context acceptance callers."""
+
+    key: str
+    token: object = field(repr=False)
+    snapshot: AgentRequestSnapshot = field(repr=False)
+
+
+def _claim_pending_request_snapshot(
+    principal_hash: str | None, session_id: str, call_id: str | None,
+) -> PendingAgentSnapshotClaim | None:
+    if not principal_hash:
+        return None
+    with _PENDING_AGENT_SNAPSHOT_LOCK:
+        _prune_pending_agent_snapshots(time.monotonic())
+        matches = [
+            (key, entry[0]) for key, entry in _PENDING_AGENT_REQUESTS.items()
+            if key == _session_memory_key(session_id)
+            and entry[0].principal_hash == principal_hash
+            and (call_id is None or call_id in entry[0].pending_call_ids)
+        ]
+        if len(matches) != 1:
+            return None
+        key, snapshot = matches[0]
+        return PendingAgentSnapshotClaim(key=key, token=object(), snapshot=snapshot)
 
 
 def _clear_pending_request_snapshot(session_id: str | None) -> None:
@@ -654,6 +800,7 @@ def _is_known_upstream_zero_output(exc: BaseException) -> bool:
 
 
 class ChatErrorCode(str, Enum):
+    HISTORY_UNAVAILABLE = "HISTORY_UNAVAILABLE"
     AUTH_FAILED = "AUTH_FAILED"
     MODEL_NOT_FOUND = "MODEL_NOT_FOUND"
     MODEL_EMPTY_RESPONSE = "MODEL_EMPTY_RESPONSE"
@@ -672,6 +819,7 @@ class ChatErrorCode(str, Enum):
 class ChatMessageSchema(BaseModel):
     role: str
     content: Optional[str | list[dict]] = None  # str=纯文本, list=[{type,text|image_url},...]
+    message_id: Optional[str] = None
 
 
 class ChatRequest(BaseModel):
@@ -697,6 +845,7 @@ class ChatRequest(BaseModel):
     tool_keys: dict[str, str] = {}  # per-request tool credentials, e.g. {"tavily": "..."}
     skills_mode: Literal["off", "auto", "manual"] = "off"
     skill_ids: list[str] = Field(default_factory=list, max_length=3)
+    history_mode: Literal["client", "server"] = "client"
 
     @field_validator("long_term_memory", mode="before")
     @classmethod
@@ -725,6 +874,8 @@ class ChatRequest(BaseModel):
             raise ValueError("manual Skills mode requires one to three skill_ids")
         if self.skills_mode != "manual" and self.skill_ids:
             raise ValueError("skill_ids are only valid in manual Skills mode")
+        if self.history_mode == "server" and not self.session_id:
+            raise ValueError("history_mode=server requires session_id")
         return self
 
 
@@ -802,6 +953,26 @@ def _multimodal_to_text_with_image_hints(parts, role: str = "user") -> str:
 # Pre-send history compaction
 # ═══════════════════════════════════════════
 
+def _transport_system_metadata(metadata: Any) -> dict:
+    """Retain sealed host locators or the bounded graph-only summary marker."""
+    from app.api.compaction_checkpoint import checkpoint_metadata_for_transport
+
+    retained = checkpoint_metadata_for_transport(metadata)
+    if retained:
+        return retained
+    try:
+        from src.agent.compact.autocompact import (
+            _MIDRUN_SUMMARY_MARKER,
+            _MIDRUN_SUMMARY_MARKER_VALUE,
+        )
+    except Exception:
+        return {}
+    if (type(metadata) is dict
+            and metadata.get(_MIDRUN_SUMMARY_MARKER) == _MIDRUN_SUMMARY_MARKER_VALUE):
+        return {_MIDRUN_SUMMARY_MARKER: dict(_MIDRUN_SUMMARY_MARKER_VALUE)}
+    return {}
+
+
 def _dicts_to_langchain_messages(dicts: list[dict]) -> list:
     """Convert agent_input message dicts to langchain Message objects."""
     from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
@@ -809,7 +980,11 @@ def _dicts_to_langchain_messages(dicts: list[dict]) -> list:
     messages: list = []
     for d in dicts:
         cls = cls_by_role.get(d.get("role", "user"), HumanMessage)
-        messages.append(cls(content=d.get("content", "")))
+        retained = (
+            _transport_system_metadata(d.get("additional_kwargs"))
+            if cls is SystemMessage else {}
+        )
+        messages.append(cls(content=d.get("content", ""), additional_kwargs=retained))
     return messages
 
 
@@ -823,8 +998,202 @@ def _langchain_messages_to_dicts(messages: list) -> list[dict]:
         content = getattr(m, "content", "")
         if not isinstance(content, str):
             content = str(content)
-        dicts.append({"role": role, "content": content})
+        item = {"role": role, "content": content}
+        if type(m) is SystemMessage:
+            retained = _transport_system_metadata(m.additional_kwargs)
+            if retained:
+                item["additional_kwargs"] = retained
+        dicts.append(item)
     return dicts
+
+
+def _last_plain_user_turn(payload: Any) -> str | None:
+    messages = getattr(payload, "messages", None)
+    if not isinstance(messages, list) or not messages:
+        return None
+    last = messages[-1]
+    if getattr(last, "role", None) != "user":
+        return None
+    content = getattr(last, "content", None)
+    return content if isinstance(content, str) else None
+
+
+async def _prepare_chat_skill_install(
+    payload: Any,
+    user: dict[str, Any] | None,
+    model: str,
+) -> tuple[Any | None, str | None]:
+    """Preflight only an explicit, plain-text install command from the latest user turn."""
+    from src.agent.tools.groups.skills.install_tool import (
+        SkillInstallService,
+        parse_explicit_install_intent,
+    )
+
+    user_text = _last_plain_user_turn(payload)
+    if parse_explicit_install_intent(user_text) is None:
+        return None, None
+    if not (_AGENT_PATH_AVAILABLE and _should_use_agent(payload, model)):
+        return None, "当前模型不能安全执行 Agent 工具调用；没有安装技能。请切换到支持工具调用的模型后重试。"
+    try:
+        from src.agent.agent_factory import _load_disabled_tools
+
+        if "install_github_skill" in _load_disabled_tools():
+            return None, "技能安装工具当前已禁用；没有安装技能。"
+        preparation = await asyncio.to_thread(
+            SkillInstallService().prepare,
+            user_text,
+            user,
+            _session_memory_key(getattr(payload, "session_id", None)),
+        )
+    except Exception as exc:
+        logger.warning("chat Skill install preflight failed error_type=%s", type(exc).__name__)
+        return None, "无法安全预览该技能；没有执行安装。请稍后重试。"
+    if preparation is None:
+        return None, None
+    return preparation.tool, preparation.response
+
+
+def _bind_request_graph(snapshot: AgentRequestSnapshot, session_id: str) -> AgentRequestSnapshot:
+    """Mint a host graph identity before construction, without archive authority."""
+    from app.api.context_events import ContextEventScope
+
+    scope = snapshot.tool_event_scope
+    request_id = uuid.uuid4().hex
+    if (type(scope) is ContextEventScope and scope.session_id == session_id
+            and scope.principal_hash == snapshot.principal_hash
+            and scope.session_epoch == snapshot.session_delete_epoch):
+        request_id = scope.request_id
+    config = build_agent_config(session_id, request_id=request_id)
+    return replace(snapshot, business_session_id=session_id, request_id=request_id,
+                   graph_config=copy.deepcopy(config))
+
+
+async def _admit_published_history(
+    snapshot: AgentRequestSnapshot,
+    payload: ChatRequest,
+    incoming: list,
+    *,
+    source_message_ids: tuple[str | None, ...] | None = None,
+    transient_current_user: bool = True,
+    verified_source_ids: bool = False,
+) -> tuple[list, tuple[str | None, ...] | None]:
+    """Offer complete plain input to the host reader; never infer publication."""
+    if (type(source_message_ids) is not tuple
+            or len(source_message_ids) != len(incoming)):
+        return incoming, None
+
+    if not verified_source_ids:
+        expected_source_message_ids = _build_compaction_source_message_ids(
+            payload, incoming, transient_current_user=transient_current_user,
+        )
+        if expected_source_message_ids is None or source_message_ids != expected_source_message_ids:
+            return incoming, None
+
+    def unchanged() -> tuple[list, tuple[str | None, ...]]:
+        return incoming, source_message_ids
+
+    # Only durable IDs may reach the owner reader. The quote/current-user tail
+    # is kept verbatim for the graph and never participates in admission.
+    persisted_end = len(source_message_ids)
+    while persisted_end > 0 and source_message_ids[persisted_end - 1] is None:
+        persisted_end -= 1
+    persisted_messages = incoming[:persisted_end]
+    if not persisted_messages:
+        return unchanged()
+
+    try:
+        from app.api.compaction_archive import get_compaction_scope
+        from app.api.context_events import ContextEventScope
+        from app.api.compaction_checkpoint import HostContextReplacement, load_published_context
+        from src.agent.compact.checkpoint_publish import _run_host_record_transaction
+
+        scope = get_compaction_scope()
+        if (type(scope) is not ContextEventScope
+                or scope is not snapshot.context_event_scope
+                or scope.principal_hash != snapshot.principal_hash
+                or scope.session_id != snapshot.business_session_id or scope.request_id != snapshot.request_id
+                or scope.session_epoch != snapshot.session_delete_epoch
+        ):
+            return unchanged()
+        replacement = await _run_host_record_transaction(
+            load_published_context, scope, persisted_messages, skills_mode="off",
+        )
+        if type(replacement) is not HostContextReplacement:
+            return unchanged()
+        prefix_count = replacement.prefix_count
+        if (type(prefix_count) is not int or not 0 < prefix_count <= len(persisted_messages)
+                or any(message_id is None for message_id in source_message_ids[:prefix_count])
+                or type(replacement.tail) is not tuple
+                or len(replacement.tail) != len(persisted_messages) - prefix_count
+                or any(message is not persisted_messages[prefix_count + index]
+                       for index, message in enumerate(replacement.tail))):
+            return unchanged()
+        # Project only the verified host checkpoint; the suffix stays untouched.
+        checkpoint = _langchain_messages_to_dicts([replacement.checkpoint])[0]
+        if (checkpoint["role"] != "system" or checkpoint["content"] != replacement.checkpoint.content
+                or checkpoint.get("additional_kwargs") != replacement.checkpoint.additional_kwargs):
+            return unchanged()
+        # Keep the locator sidecar separate from message/model fields. The
+        # checkpoint inherits only a verified persisted prefix. All transient
+        # quote/current-user messages stay outside the owner reader's inputs.
+        transient_suffix = incoming[persisted_end:]
+        return ([checkpoint, *replacement.tail, *transient_suffix],
+                (None, *source_message_ids[prefix_count:]))
+    except Exception:
+        logger.warning("Published history admission unavailable; retaining complete input")
+        return unchanged()
+
+
+def _build_compaction_source_message_ids(
+    payload: ChatRequest,
+    agent_messages: list[dict],
+    *,
+    transient_current_user: bool,
+) -> tuple[str | None, ...] | None:
+    """Bind persisted turns and a position-checked transient quote/user suffix."""
+    request_messages = tuple(payload.messages)
+    if not request_messages or len(request_messages) != len(agent_messages):
+        return None
+    final_index = len(request_messages) - 1
+    quote_start = final_index
+    while quote_start > 0 and request_messages[quote_start - 1].role == "system":
+        quote_start -= 1
+    has_transient_quote = quote_start < final_index
+    if ((transient_current_user or has_transient_quote)
+            and request_messages[final_index].role != "user"):
+        return None
+
+    message_ids: list[str] = []
+    sidecar: list[str | None] = []
+    for index, (request_message, agent_message) in enumerate(zip(
+        request_messages, agent_messages, strict=True,
+    )):
+        message_id = request_message.message_id
+        if (
+            type(agent_message) is not dict
+            or agent_message.get("role") != request_message.role
+            or type(request_message.content) is not str
+            or type(agent_message.get("content")) is not str
+            or agent_message.get("content") != request_message.content
+        ):
+            return None
+
+        if request_message.role == "system":
+            if not (quote_start <= index < final_index) or message_id is not None:
+                return None
+            sidecar.append(None)
+            continue
+        if (request_message.role not in {"user", "assistant"}
+                or type(message_id) is not str or not message_id):
+            return None
+        message_ids.append(message_id)
+        if index == final_index and (transient_current_user or has_transient_quote):
+            sidecar.append(None)
+        else:
+            sidecar.append(message_id)
+    if len(set(message_ids)) != len(message_ids):
+        return None
+    return tuple(sidecar)
 
 
 def _session_context_window(session_id: Optional[str]) -> Optional[int]:
@@ -843,51 +1212,121 @@ def _compact_event_payload(threshold: int, context_window: int, msg_count: int) 
     }
 
 
-async def _run_autocompact(messages: list, creds: dict, context_window: int) -> list:
+async def _run_autocompact(
+    messages: list, creds: dict, context_window: int, *,
+    source_message_ids: tuple[str | None, ...] | None = None,
+    token_threshold: int | None = None,
+) -> list:
     """Build an LLM client and run autocompact_messages."""
     from src.agent.compact.autocompact import autocompact_messages
     llm_client = make_client(
         api_key=creds.get("api_key"), base_url=creds.get("base_url"), model=creds.get("model"),
     )
-    return await autocompact_messages(messages, llm_client, context_window)
+    return await autocompact_messages(
+        messages, llm_client, context_window,
+        source_message_ids=source_message_ids,
+        token_threshold=token_threshold,
+    )
 
 
 async def _check_and_compact_history(
     payload: ChatRequest, creds: dict, agent_input: dict,
     context_budget: Any = None,
+    *, request_snapshot: AgentRequestSnapshot | None = None,
+    allow_compaction: bool = False,
+    source_message_ids: tuple[str | None, ...] | None = None,
+    source_message_ids_out: list[tuple[str | None, ...] | None] | None = None,
+    verified_history: bool = False,
 ) -> AsyncIterator[str]:
-    """Pre-send: compact history when it reaches the resolved input budget.
-
-    Yields a context_compressing SSE event when compaction runs; mutates
-    agent_input['messages'] in place with the compacted list. A missing model
-    budget fails through the existing ContextLimitError path.
-    """
+    """Pre-send: compact history when it reaches the resolved input budget."""
     from src.agent.compact.autocompact import should_autocompact
     if context_budget is None:
         from src.agent.context_guard import resolve_context_budget
 
+        session_window = _session_context_window(payload.session_id)
+        requested_tokens = getattr(payload, "max_tokens", None)
+        if type(session_window) is int and session_window > 0 and (
+            requested_tokens is None
+            or (type(requested_tokens) is int and requested_tokens >= session_window)
+        ):
+            requested_tokens = max(1, session_window // 4)
         context_budget = resolve_context_budget(
-            creds.get("model"),
-            _session_context_window(payload.session_id),
-            payload.max_tokens,
+            creds.get("model"), session_window, requested_tokens,
         )
     lc_messages = _dicts_to_langchain_messages(agent_input["messages"])
     threshold = context_budget.token_limit
+    context_window = context_budget.effective_window
     if not should_autocompact(lc_messages, threshold):
         return
+    if not allow_compaction:
+        raise AgentRequestBudgetError(
+            "Pre-send compaction was unavailable and the full history exceeds the context budget"
+        )
+    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+    from app.api.compaction_checkpoint import checkpoint_metadata_for_transport
+
+    if (
+        source_message_ids is None
+        or type(source_message_ids) is not tuple
+        or len(source_message_ids) != len(lc_messages)
+        or any(type(message_id) not in (str, type(None))
+               for message_id in source_message_ids)
+    ):
+        raise AgentRequestBudgetError(
+            "Pre-send V3 compaction requires complete plain-text message IDs"
+        )
+
     yield sse_event(
         "context_compressing",
         _compact_event_payload(
             threshold, context_budget.effective_window, len(lc_messages),
         ),
     )
-    compacted = await _run_autocompact(
-        lc_messages, creds, context_budget.prompt_window,
-    )
-    # Use identity check: autocompact returns the same list when no compaction
-    # happened. A new list means compaction ran (even if count is unchanged,
-    # e.g., 11 msgs → 1 summary + 10 recent — tokens decreased).
+    if request_snapshot is not None:
+        _require_request_snapshot_epochs_current(
+            request_snapshot, payload.session_id,
+        )
+        from app.api.compaction_archive import get_compaction_scope
+        if get_compaction_scope() is not request_snapshot.context_event_scope:
+            raise AgentRequestBudgetError("Pre-send request scope changed")
+    from src.agent.compact.autocompact import _is_midrun_summary_message
+
+    messages = lc_messages
+    current_source_ids = source_message_ids
+    compacted = messages
+    max_rounds = max(1, len(messages) + 1)
+    for _round in range(max_rounds):
+        if not should_autocompact(messages, threshold):
+            break
+        next_compacted = await _run_autocompact(
+            messages, creds, context_window,
+            source_message_ids=current_source_ids,
+            token_threshold=threshold,
+        )
+        if next_compacted is messages:
+            break
+        retained_count = len(next_compacted) - 1
+        retained_start = len(messages) - retained_count
+        is_summary = (
+            type(next_compacted[0]) is SystemMessage
+            and (checkpoint_metadata_for_transport(next_compacted[0].additional_kwargs)
+                 or _is_midrun_summary_message(next_compacted[0]))
+        )
+        if (not is_summary or retained_start < 0
+                or any(new is not old for new, old in zip(
+                    next_compacted[1:], messages[retained_start:], strict=True,
+                ))):
+            break
+        current_source_ids = (None, *current_source_ids[retained_start:])
+        messages = next_compacted
+        compacted = messages
+    if should_autocompact(compacted, threshold):
+        raise AgentRequestBudgetError(
+            "Pre-send compaction did not bring history within the context budget"
+        )
     if compacted is not lc_messages:
+        if source_message_ids_out is not None:
+            source_message_ids_out[:] = [current_source_ids]
         agent_input["messages"] = _langchain_messages_to_dicts(compacted)
 
 
@@ -896,6 +1335,9 @@ async def _run_agent_stream(
     creds: dict,
     long_term_memory: str | None = None,
     request_snapshot: AgentRequestSnapshot | None = None,
+    *,
+    authenticated_user: dict | None = None,
+    assembled_history: Any = None,
 ) -> AsyncIterator[str]:
     """Build the agent and yield SSE events from its stream.
 
@@ -976,14 +1418,45 @@ async def _run_agent_stream(
             await reset_thread_checkpoint_for_writer(writer_binding, writer_lease)
             _require_request_snapshot_epochs_current(snapshot, payload.session_id)
         _clear_pending_request_snapshot(session_id)
-        agent_input = {"messages": _build_agent_messages(effective_payload)}
+        if getattr(effective_payload, "history_mode", "client") == "server":
+            if (
+                assembled_history is None
+                or type(assembled_history.source_message_ids) is not tuple
+                or len(assembled_history.source_message_ids) != len(assembled_history.messages)
+                or any(type(message) is not dict for message in assembled_history.messages)
+            ):
+                yield sse_event("error", {
+                    "code": ChatErrorCode.HISTORY_UNAVAILABLE,
+                    "message": "无法确认服务端历史，已停止本次请求；原有历史未被替换。",
+                })
+                yield sse_event("done", {"success": False, "completed": False})
+                return
+            agent_messages = [dict(message) for message in assembled_history.messages]
+            request_source_message_ids = assembled_history.source_message_ids
+            verified_history = True
+        else:
+            agent_messages = _build_agent_messages(effective_payload)
+            request_source_message_ids = _build_compaction_source_message_ids(
+                effective_payload, agent_messages, transient_current_user=True,
+            )
+            verified_history = False
+        agent_input = {"messages": agent_messages}
+        compaction_source_message_ids = request_source_message_ids
+        compaction_source_message_ids_out = [compaction_source_message_ids]
         # Pre-send history check uses the same output/framing-adjusted budget as the stream guard.
-        async for sse in _check_and_compact_history(
-            effective_payload, creds, agent_input, context_budget,
-        ):
-            _require_request_snapshot_epochs_current(snapshot, payload.session_id)
-            yield sse
-            _require_request_snapshot_epochs_current(snapshot, payload.session_id)
+        with bind_compaction_archive(snapshot.context_event_scope):
+            async for sse in _check_and_compact_history(
+                effective_payload, creds, agent_input, context_budget,
+                request_snapshot=snapshot,
+                allow_compaction=snapshot.context_event_scope is not None,
+                source_message_ids=compaction_source_message_ids,
+                source_message_ids_out=compaction_source_message_ids_out,
+                verified_history=verified_history,
+            ):
+                _require_request_snapshot_epochs_current(snapshot, payload.session_id)
+                yield sse
+                _require_request_snapshot_epochs_current(snapshot, payload.session_id)
+        compaction_source_message_ids = compaction_source_message_ids_out[0]
         _require_request_snapshot_epochs_current(snapshot, payload.session_id)
         call_counter: Counter = Counter()
         _require_request_snapshot_epochs_current(snapshot, payload.session_id)
@@ -992,6 +1465,11 @@ async def _run_agent_stream(
             effective_payload.permission_mode, creds.get("model", ""),
             snapshot.tool_context, writer_binding, writer_lease,
             effective_payload.max_tokens, context_budget,
+            archive_scope=snapshot.context_event_scope,
+            tool_event_scope=snapshot.tool_event_scope,
+            compaction_source_message_ids=compaction_source_message_ids,
+            compaction_source_messages=tuple(agent_input["messages"]),
+            request_snapshot=snapshot,
         ):
             _require_request_snapshot_epochs_current(snapshot, payload.session_id)
             event_type = _sse_event_type(sse)
@@ -1015,17 +1493,36 @@ async def _run_agent_stream(
 async def _stream_agent_in_context(
     agent, agent_input, config, counter, permission_mode, model, tool_context,
     writer_binding=None, writer_lease=None, requested_max_tokens=None,
-    context_budget=None,
+    context_budget=None, *, archive_scope=None, tool_event_scope=None,
+    compaction_source_message_ids: tuple[str | None, ...] | None = None,
+    compaction_source_messages: tuple[dict, ...] | None = None,
+    request_snapshot: AgentRequestSnapshot | None = None,
 ):
+    from contextlib import nullcontext
     from src.agent.request_context import activate_tool_context
-    with activate_tool_context(tool_context):
-        with _request_writer_context(writer_binding, writer_lease, model):
-            async for event in stream_agent_to_sse(
-                agent, agent_input, config, counter, permission_mode, model=model,
-                requested_max_tokens=requested_max_tokens,
-                context_budget=context_budget,
+
+    grant = getattr(
+        getattr(request_snapshot, "skill_install_tool", None), "_install_grant", None,
+    )
+    if grant is not None:
+        from src.agent.tools.groups.skills.install_tool import activate_install_binding
+
+        install_scope = activate_install_binding(grant)
+    else:
+        install_scope = nullcontext()
+    with activate_tool_context(tool_context), install_scope:
+        with bind_compaction_archive(archive_scope), bind_tool_event_archive(tool_event_scope):
+            with _request_writer_context(
+                writer_binding, writer_lease, model, config, request_snapshot,
             ):
-                yield event
+                async for event in stream_agent_to_sse(
+                    agent, agent_input, config, counter, permission_mode, model=model,
+                    requested_max_tokens=requested_max_tokens,
+                    context_budget=context_budget,
+                    compaction_source_message_ids=compaction_source_message_ids,
+                    compaction_source_messages=compaction_source_messages,
+                ):
+                    yield event
 
 
 async def _build_agent_for_payload(
@@ -1056,11 +1553,17 @@ async def _build_agent_for_payload(
     session_id = _session_memory_key(payload.session_id)
     snapshot = _ensure_external_tool_snapshot(snapshot, session_id, payload)
     snapshot = _ensure_request_tool_context(snapshot, payload, session_id)
+    _seed_skill_install_tool_context(
+        snapshot.tool_context, snapshot.skill_install_tool,
+    )
     tools = build_tools(
         payload,
         skills_runtime=snapshot.skills_runtime,
         mcp_tools=snapshot.mcp_tools,
         tool_context=snapshot.tool_context,
+    )
+    _attach_skill_install_tool(
+        snapshot.tool_context, tools, snapshot.skill_install_tool,
     )
     # HITL must stay enabled even in bypass mode: PermissionClassifier still
     # asks for HIGH/ALWAYS tools, and disabling the interrupt would skip it.
@@ -1099,6 +1602,29 @@ def _optional_arg(kwargs: dict, key: str, value) -> None:
 @router.post("/chat")
 async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(current_user)):
     """RAG 流式聊天，严格匹配前端 SSE 事件协议。"""
+    creds = resolve_credentials(payload, request)
+    api_key = creds["api_key"]
+    base_url = creds["base_url"]
+    model = creds["model"]
+    provider = creds["provider"]
+    from src.agent.tools.groups.skills.install_tool import parse_explicit_install_intent
+
+    explicit_install = (
+        parse_explicit_install_intent(_last_plain_user_turn(payload)) is not None
+    )
+    if payload.skills_mode != "off" and not (
+        _AGENT_PATH_AVAILABLE and _should_use_agent(payload, model)
+    ) and not explicit_install:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "success": False,
+                "error": {
+                    "code": "SKILLS_AGENT_UNAVAILABLE",
+                    "message": "当前请求不能使用 Skills；请选择支持工具调用的 Agent 模型后重试。",
+                },
+            },
+        )
     try:
         session_epoch, memory_epoch = _capture_request_snapshot_epochs(payload.session_id)
     except _RequestSnapshotEpochError as exc:
@@ -1139,14 +1665,12 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
                 },
             },
         )
-    creds = resolve_credentials(payload, request)
-    api_key = creds["api_key"]
-    base_url = creds["base_url"]
-    model = creds["model"]
-    provider = creds["provider"]
+    skill_install_tool, skill_install_response = await _prepare_chat_skill_install(
+        payload, user, model,
+    )
     if payload.skills_mode != "off" and not (
         _AGENT_PATH_AVAILABLE and _should_use_agent(payload, model)
-    ):
+    ) and skill_install_response is None and not explicit_install:
         raise HTTPException(
             status_code=422,
             detail={
@@ -1157,6 +1681,8 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
                 },
             },
         )
+    tool_event_scope = make_compaction_scope(user, payload.session_id, session_epoch)
+    context_event_scope = tool_event_scope
     request_snapshot = replace(
         _request_snapshot_from_payload(
             payload,
@@ -1166,6 +1692,11 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
         ),
         principal_id=_verified_principal_id(user),
         session_id=_session_memory_key(payload.session_id),
+        business_session_id=_session_memory_key(payload.session_id),
+        principal_hash=compaction_principal(user),
+        context_event_scope=context_event_scope,
+        tool_event_scope=tool_event_scope,
+        skill_install_tool=skill_install_tool,
     )
     try:
         _require_request_snapshot_epochs_current(request_snapshot, payload.session_id)
@@ -1229,6 +1760,11 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
         msgs = payload.messages
 
         try:
+            if skill_install_response is not None:
+                yield sse_event("text", {"content": skill_install_response})
+                yield sse_event("done", {"success": True, "completed": True, "usage": None})
+                return
+
             # ── 附件 + 历史构建 ──
             attachment_texts, image_parts = await _process_attachments(payload)
             _require_request_snapshot_epochs_current(request_snapshot, payload.session_id)
@@ -1265,9 +1801,30 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
                 agent_saw_error = False
                 agent_terminal: dict[str, Any] | None = None
                 try:
+                    assembled_history = None
+                    if payload.history_mode == "server":
+                        from app.api.context_history import assemble_server_history
+
+                        assembled_history = assemble_server_history(
+                            payload.session_id,
+                            user,
+                            payload.messages,
+                            normalize_content=lambda content: _isolate_images_in_content(
+                                content, "user",
+                            ),
+                        )
+                        if assembled_history is None:
+                            yield sse_event("error", {
+                                "code": ChatErrorCode.HISTORY_UNAVAILABLE,
+                                "message": "无法确认服务端历史，已停止本次请求；原有历史未被替换。",
+                            })
+                            yield sse_event("done", {"success": False, "completed": False})
+                            return
                     async for sse in _run_agent_stream(
                         payload, creds, long_term_memory=long_term_memory,
                         request_snapshot=request_snapshot,
+                        authenticated_user=user,
+                        assembled_history=assembled_history,
                     ):
                         for frame in _sse_frames(sse):
                             event = _sse_frame_payload(frame)
@@ -1575,6 +2132,36 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
 # ═══════════════════════════════════════════
 
 
+@router.get("/sessions/{session_id}/context-events/{batch_id}/{sequence}")
+def read_compacted_context_event(
+    request: Request, session_id: str, batch_id: str, sequence: int, request_id: str, content_sha256: str,
+    byte_budget: int = Query(default=4096, ge=1, le=32768),
+    user: dict = Depends(current_user),
+):
+    """Recover one verified-scope historical record, never execute its content."""
+    from app.api.context_events import ContextEventScope, EventReference, recover_context_event
+    authorization = request.headers.get("authorization", "")
+    if ("token" in request.query_params or not authorization.lower().startswith("bearer ")
+            or not authorization.split(" ", 1)[1].strip()):
+        raise HTTPException(status_code=403, detail={"success": False, "error": {
+            "code": "CONTEXT_EVENT_HEADER_AUTH_REQUIRED", "message": "Use Authorization Bearer header, not URL tokens",
+        }})
+    principal = compaction_principal(user)
+    if principal is None:
+        raise HTTPException(status_code=403, detail={"success": False, "error": {
+            "code": "CONTEXT_EVENT_ACCESS_DENIED", "message": "Context event access denied",
+        }})
+    epoch = read_session_delete_epoch(session_id)
+    reference = EventReference(batch_id, session_id, request_id, sequence, 1, content_sha256)
+    scope = ContextEventScope(session_id, request_id, principal, epoch)
+    event = recover_context_event(scope, reference, authorized=True, byte_budget=byte_budget)
+    if event is None:
+        raise HTTPException(status_code=404, detail={"success": False, "error": {
+            "code": "CONTEXT_EVENT_UNAVAILABLE", "message": "Context event unavailable",
+        }})
+    return {"success": True, "data": {"event": event, "untrusted_history": True}}
+
+
 class ResumeRequest(BaseModel):
     """Carries the original ChatRequest + user's HITL decision."""
     payload: ChatRequest
@@ -1622,11 +2209,7 @@ async def resume_agent(req: ResumeRequest, request: Request, user: dict = Depend
             },
         )
     current_principal_id = _verified_principal_id(user)
-    if (
-        current_principal_id is None
-        or request_snapshot.principal_id is None
-        or current_principal_id != request_snapshot.principal_id
-    ):
+    if current_principal_id != request_snapshot.principal_id:
         raise HTTPException(
             status_code=409,
             detail={
@@ -1638,7 +2221,11 @@ async def resume_agent(req: ResumeRequest, request: Request, user: dict = Depend
             },
         )
     _require_resume_snapshot_current(request_snapshot, req.payload.session_id)
-    if req.decision == "allow" and (type(req.call_id) is not str or not req.call_id):
+    if (
+        req.decision == "allow"
+        and (type(req.call_id) is not str or not req.call_id)
+        and request_snapshot.pending_call_ids
+    ):
         raise HTTPException(
             status_code=409,
             detail={
@@ -1709,6 +2296,47 @@ async def resume_agent(req: ResumeRequest, request: Request, user: dict = Depend
             },
         ) from exc
 
+    from app.api.hitl_pause import (
+        has_recorded_pause,
+        make_pause_receipt,
+        pause_key,
+        require_and_consume,
+    )
+    from src.agent.hitl_handler import _detect_tools_interrupt
+    from src.agent.writer_bridge import WriterRequestIdentity
+
+    pause_identity = WriterRequestIdentity(
+        request_snapshot.business_session_id,
+        request_snapshot.request_id,
+        request_snapshot.session_delete_epoch or "",
+    )
+    pause_receipt_key = pause_key(
+        pause_identity, pause_identity.session_delete_epoch,
+    )
+    if has_recorded_pause(pause_receipt_key):
+        pause_scope = writer_binding.current_scope()
+        pause_pending = await _detect_tools_interrupt(agent, config)
+        pause_state = await agent.aget_state(config)
+        try:
+            require_and_consume(
+                pause_receipt_key,
+                make_pause_receipt(
+                    pause_state, pause_pending, pause_scope.owner_key,
+                ),
+            )
+        except Exception as exc:
+            _release_request_writer_lease(writer_binding, writer_lease)
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "success": False,
+                    "error": {
+                        "code": "HITL_CONFIRMATION_STALE",
+                        "message": "确认已失效或已被使用，请重新发送本轮请求。",
+                    },
+                },
+            ) from exc
+
     lease_transferred = False
     lease_release_state = {"released": False}
     try:
@@ -1737,7 +2365,8 @@ async def resume_agent(req: ResumeRequest, request: Request, user: dict = Depend
 
             try:
                 pending = await _detect_tools_interrupt(agent, config)
-                _require_single_pending_confirmation_call(req.call_id, pending)
+                if req.call_id is not None or pending:
+                    _require_single_pending_confirmation_call(req.call_id, pending)
             except Exception as exc:
                 raise HTTPException(
                     status_code=409,
@@ -1762,6 +2391,7 @@ async def resume_agent(req: ResumeRequest, request: Request, user: dict = Depend
                 agent, config, effective_req, call_counter, model,
                 request_snapshot.long_term_memory, request_snapshot,
                 writer_binding, writer_lease, lease_release_state,
+                authenticated_user=user,
             ),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
@@ -1797,6 +2427,8 @@ class ResumeContext:
     writer_binding: Any = field(default=None, repr=False)
     writer_lease: Any = field(default=None, repr=False)
     lease_release_state: dict[str, bool] | None = field(default=None, repr=False)
+    authenticated_user: dict | None = field(default=None, repr=False, compare=False)
+    claim: Any = field(default=None, repr=False, compare=False)
 
 
 async def _resume_event_generator_from_ctx(ctx: ResumeContext):
@@ -1881,8 +2513,36 @@ async def _resume_in_context(ctx: ResumeContext, snapshot: AgentRequestSnapshot,
         })
     elif ctx.req.decision == "allow":
         options["confirmed_call_id"] = ctx.req.call_id
-    with activate_tool_context(snapshot.tool_context):
-        with _request_writer_context(ctx.writer_binding, ctx.writer_lease, ctx.model):
+    from src.agent.sse_adapter import bind_compaction_source_sidecar
+    from app.api.context_history import build_graph_message_source_ids
+
+    try:
+        observed = await ctx.agent.aget_state(ctx.config)
+    except Exception:
+        observed = None
+    graph_messages = tuple(
+        getattr(observed, "values", {}).get("messages", ()) or ()
+    )
+    resume_source_message_ids = build_graph_message_source_ids(
+        snapshot.business_session_id,
+        ctx.authenticated_user,
+        graph_messages,
+    ) if graph_messages else None
+    sidecar_scope = (
+        bind_compaction_source_sidecar(resume_source_message_ids, graph_messages)
+        if resume_source_message_ids is not None
+        else nullcontext()
+    )
+    install_grant = getattr(
+        getattr(snapshot, "skill_install_tool", None), "_install_grant", None,
+    )
+    install_scope = nullcontext()
+    if install_grant is not None:
+        from src.agent.tools.groups.skills.install_tool import activate_install_binding
+
+        install_scope = activate_install_binding(install_grant)
+    with activate_tool_context(snapshot.tool_context), install_scope, sidecar_scope:
+        with _request_writer_context(ctx.writer_binding, ctx.writer_lease, ctx.model, ctx.config, snapshot):
             async for event in handler(
                 ctx.agent, ctx.config, ctx.req.decision, ctx.call_counter,
                 ctx.req.payload.permission_mode, **options,
@@ -1918,6 +2578,8 @@ async def _resume_event_generator(
     request_snapshot: AgentRequestSnapshot | None = None,
     writer_binding: Any = None, writer_lease: Any = None,
     lease_release_state: dict[str, bool] | None = None,
+    *,
+    authenticated_user: dict | None = None,
 ):
     """Backward-compat shim around _resume_event_generator_from_ctx (P2-I-1).
 
@@ -1932,6 +2594,7 @@ async def _resume_event_generator(
         writer_binding=writer_binding,
         writer_lease=writer_lease,
         lease_release_state=lease_release_state,
+        authenticated_user=authenticated_user,
     )
     async for sse in _resume_event_generator_from_ctx(ctx):
         yield sse

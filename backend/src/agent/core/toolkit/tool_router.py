@@ -158,13 +158,39 @@ class ToolRouter:
             return _with_observation_status(
                 _not_found_envelope(tool_name, call_id, start_ms)
             )
+        state = _DispatchState(call_id, spec, args, ctx, start_ms)
+        if tool_name == "install_github_skill":
+            # Only the request-local install tool with its exact one-shot host
+            # grant may write Skills; direct/global dispatch cannot satisfy this.
+            from src.agent.tools.groups.skills.install_tool import SkillInstallTool
+
+            request_tool = ctx.request_tools.get(tool_name)
+            if (
+                type(spec) is not SkillInstallTool
+                or tool_spec is not spec
+                or request_tool is not spec
+                or not spec.authorize_dispatch(ctx, args)
+            ):
+                envelope = _error_envelope(
+                    state,
+                    "PERMISSION_DENIED",
+                    "This Skill installation is not bound to an active, unconsumed chat authorization.",
+                    "请从原聊天请求重新发起技能安装；当前调用没有修改任何技能文件。",
+                )
+                self.audit_recorder.record(
+                    AuditRecord(
+                        call_id, spec, {}, envelope, "deny",
+                        "skill_install_grant_required", ctx,
+                    )
+                )
+                return _with_observation_status(envelope)
+            decision, decision_source = "allow", "explicit_chat_skill_install"
         if not _skills_mode_allows(spec, ctx):
             envelope = _skills_read_only_envelope(spec, call_id, start_ms)
             self.audit_recorder.record(
                 AuditRecord(call_id, spec, args, envelope, "deny", "kb_scope_mismatch", ctx)
             )
             return _with_observation_status(envelope)
-        state = _DispatchState(call_id, spec, args, ctx, start_ms)
         external = spec.mcp_info is not None
         authorization = ctx.mcp_authorization
         audit_args = {"mcp_arguments": "omitted"} if external else args

@@ -48,6 +48,14 @@ export function ChatArea() {
   const messages = useChatStore((s) => s.messages);
   const isStreaming = useChatStore((s) => s.isStreaming);
   const isLoadingMessages = useChatStore((s) => s.isLoadingMessages);
+  const pagedHistoryStatus = useChatStore((s) => s.pagedHistoryBySession[s.activeSessionId]);
+  const isActiveSessionStreaming = useChatStore((s) => {
+    const backgroundRequest = s.backgroundSseRequests.get(s.activeSessionId);
+    return (s.isStreaming && s.streamingSessionId === s.activeSessionId)
+      || (backgroundRequest !== undefined && !backgroundRequest.signal.aborted);
+  });
+  const loadInitialMessagePage = useChatStore((s) => s.loadInitialMessagePage);
+  const loadOlderMessagePage = useChatStore((s) => s.loadOlderMessagePage);
   const pendingSaveStatus = useChatStore((s) => s.pendingSaveBySession[s.activeSessionId]);
   const retryPendingSave = useChatStore((s) => s.retryPendingSave);
   const streamingContent = useChatStore((s) => s.streamingContent);
@@ -333,6 +341,62 @@ export function ChatArea() {
     return '';
   }, [messages]);
 
+  const requestHistoryPage = () => {
+    const state = useChatStore.getState();
+    const sessionId = state.activeSessionId;
+    const status = state.pagedHistoryBySession[sessionId];
+    const backgroundRequest = state.backgroundSseRequests.get(sessionId);
+    const sessionIsStreaming = (state.isStreaming && state.streamingSessionId === sessionId)
+      || (backgroundRequest !== undefined && !backgroundRequest.signal.aborted);
+    if (!sessionId || state.isLoadingMessages || sessionIsStreaming || status?.loading) return;
+
+    if ((status?.pagesLoaded ?? 0) === 0) {
+      void loadInitialMessagePage(sessionId);
+    } else {
+      void loadOlderMessagePage(sessionId);
+    }
+  };
+
+  const historyPagination = (
+    <div
+      className="chat-history-pagination"
+      style={{ padding: "8px 12px", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, flexWrap: "wrap" }}
+    >
+      {pagedHistoryStatus?.loading ? (
+        <span role="status" aria-live="polite">
+          {pagedHistoryStatus.pagesLoaded > 0 ? "正在加载更早的消息…" : "正在读取历史分页…"}
+        </span>
+      ) : pagedHistoryStatus?.error ? (
+        <div role="alert" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <span>{pagedHistoryStatus.error}</span>
+          <button type="button" onClick={requestHistoryPage} disabled={isLoadingMessages || isActiveSessionStreaming}>
+            重试加载历史
+          </button>
+        </div>
+      ) : pagedHistoryStatus?.hasMore === false ? (
+        <span role="status" aria-live="polite">没有更多历史消息。</span>
+      ) : (
+        <>
+          <button
+            type="button"
+            onClick={requestHistoryPage}
+            disabled={isLoadingMessages || isActiveSessionStreaming}
+          >
+            {(pagedHistoryStatus?.pagesLoaded ?? 0) > 0 ? "加载更早的消息" : "加载历史分页"}
+          </button>
+          {(pagedHistoryStatus?.pagesLoaded ?? 0) === 0 && (
+            <span>历史按页读取；读取最新一页后，可逐页加载更早消息。</span>
+          )}
+          {isLoadingMessages && <span role="status" aria-live="polite">会话正在恢复，稍后可加载分页历史。</span>}
+          {isActiveSessionStreaming && <span role="status" aria-live="polite">回复生成中，完成后可加载分页历史。</span>}
+        </>
+      )}
+      {pagedHistoryStatus?.persistenceError && (
+        <span role="alert">分页消息已显示，但本地缓存保存失败：{pagedHistoryStatus.persistenceError}</span>
+      )}
+    </div>
+  );
+
   // 防御性处理：流式进行中但 messages 为空时（状态同步异常），显示流式占位
   if (!messages.length) {
     // 加载中（fetchMessages 期间无本地缓存）：显示骨架屏，而非 EmptyState
@@ -346,6 +410,7 @@ export function ChatArea() {
     if (isStreaming && streamingSteps.length > 0) {
       return (
         <div className="chat-scroll" id="chatScroll" ref={scrollRef} onScroll={handleScroll} style={{ fontSize: chatFontSize }}>
+          {historyPagination}
           <div className="msg-row" id="msg-streaming-placeholder">
             <div className="msg-avatar bot"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6v6H9z"/></svg></div>
             <div className="msg-body">
@@ -356,8 +421,16 @@ export function ChatArea() {
         </div>
       );
     }
+    if (pagedHistoryStatus?.loading && pagedHistoryStatus.pagesLoaded === 0) {
+      return (
+        <div className="chat-scroll" id="chatScroll" ref={scrollRef} onScroll={handleScroll} style={{ fontSize: chatFontSize }}>
+          <LoadingState />
+        </div>
+      );
+    }
     return (
       <div className="chat-scroll" id="chatScroll" ref={scrollRef} onScroll={handleScroll} style={{ fontSize: chatFontSize }}>
+        {historyPagination}
         <EmptyState />
       </div>
     );
@@ -370,6 +443,7 @@ export function ChatArea() {
 
   return (
     <div className="chat-scroll" id="chatScroll" ref={scrollRef} onScroll={handleScroll} style={{ fontSize: chatFontSize }}>
+      {historyPagination}
       {/* 分支路径 */}
       {currentSession?.branchFromSessionId && (
         <div style={{ padding: "4px 12px", fontSize: 11, color: "var(--muted-fg)", background: "var(--hover-bg)", display: "flex", alignItems: "center", gap: 4 }}>

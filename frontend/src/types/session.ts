@@ -75,6 +75,17 @@ export interface ActivityBlock {
   status?: "running" | "done" | "error";
 }
 
+export type SkillTraceStage = "instructions" | "resource";
+
+/** Safe Skill provenance only; this metadata never grants tool permissions. */
+export interface SkillTrace {
+  skill_id: string;
+  stage: SkillTraceStage;
+  content_hash?: string;
+  path?: string;
+  success?: boolean;
+}
+
 export interface ActivityStep {
   type: "thinking" | "tool";
   id: string;
@@ -99,6 +110,8 @@ export interface ActivityStep {
   startTime?: number;
   /** File path for file-editing tools (write_file/edit_file/multi_edit/apply_patch) — enables "查看 diff" button */
   file_path?: string;
+  /** Safe, body-free provenance for the two read-only Skill tools. */
+  skill_trace?: SkillTrace;
 }
 
 export interface SourceRef {

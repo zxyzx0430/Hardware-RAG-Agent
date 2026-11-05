@@ -10,6 +10,7 @@ from src.agent import sse_adapter
 from src.agent.exceptions import AgentStreamIdleTimeoutError
 from src.agent.prompts import build_system_prompt
 from src.agent.streaming_event_bus import get_queue
+from tests.stream_writer_lease_support import authenticated_test_stream
 
 
 class _SilentAgent:
@@ -43,102 +44,111 @@ async def test_model_silence_times_out_and_removes_registered_queue(monkeypatch)
     monkeypatch.setattr(sse_adapter, "AGENT_HEARTBEAT_INTERVAL", 0.004)
     monkeypatch.setattr(sse_adapter, "AGENT_STREAM_IDLE_TIMEOUT_S", 0.025)
     monkeypatch.setattr(sse_adapter, "init_stream_state", lambda *_args: {})
-    agent = _SilentAgent()
-    config = {"configurable": {"thread_id": "idle-timeout-test"}}
+    stream_double = _SilentAgent()
+    with authenticated_test_stream(
+        monkeypatch, stream_double, business_session_id="idle-timeout-test",
+    ) as (agent, config, queue_id):
+        with pytest.raises(AgentStreamIdleTimeoutError):
+            async for _ in sse_adapter.stream_agent_to_sse(
+                agent, {}, config, Counter(), model="test-model",
+            ):
+                pass
 
-    with pytest.raises(AgentStreamIdleTimeoutError):
-        async for _ in sse_adapter.stream_agent_to_sse(
-            agent, {}, config, Counter(), model="test-model",
-        ):
-            pass
-
-    assert agent.closed.is_set()
-    assert get_queue("idle-timeout-test") is None
+        assert stream_double.closed.is_set()
+        assert get_queue(queue_id) is None
 
 
 @pytest.mark.asyncio
 async def test_cancelling_stream_awaits_agent_producer_and_unregisters_queue(monkeypatch):
     monkeypatch.setattr(sse_adapter, "AGENT_HEARTBEAT_INTERVAL", 0.004)
     monkeypatch.setattr(sse_adapter, "init_stream_state", lambda *_args: {})
-    agent = _SilentAgent()
-    config = {"configurable": {"thread_id": "cancel-stream-test"}}
-    stream = sse_adapter.stream_agent_to_sse(agent, {}, config, Counter(), model="test-model")
+    stream_double = _SilentAgent()
+    with authenticated_test_stream(
+        monkeypatch, stream_double, business_session_id="cancel-stream-test",
+    ) as (agent, config, queue_id):
+        stream = sse_adapter.stream_agent_to_sse(agent, {}, config, Counter(), model="test-model")
 
-    first = await asyncio.wait_for(stream.__anext__(), timeout=0.2)
-    assert '"type": "heartbeat"' in first
-    assert get_queue("cancel-stream-test") is not None
+        first = await asyncio.wait_for(stream.__anext__(), timeout=0.2)
+        assert '"type": "heartbeat"' in first
+        assert get_queue(queue_id) is not None
 
-    await stream.aclose()
+        await stream.aclose()
 
-    assert agent.closed.is_set()
-    assert get_queue("cancel-stream-test") is None
+        assert stream_double.closed.is_set()
+        assert get_queue(queue_id) is None
 
 
 @pytest.mark.asyncio
 async def test_real_tool_progress_resets_idle_deadline_but_heartbeats_do_not(monkeypatch):
     monkeypatch.setattr(sse_adapter, "AGENT_HEARTBEAT_INTERVAL", 0.01)
     monkeypatch.setattr(sse_adapter, "AGENT_STREAM_IDLE_TIMEOUT_S", 0.12)
-    agent = _SilentAgent()
+    stream_double = _SilentAgent()
     queue = asyncio.Queue()
+    with authenticated_test_stream(
+        monkeypatch, stream_double, business_session_id="tool-progress-test",
+    ) as (agent, config, _queue_id):
+        async def produce_progress():
+            for index in range(6):
+                await asyncio.sleep(0.035)
+                await queue.put({"type": "progress", "percent": index * 20, "message": "working"})
+            stream_double.release.set()
 
-    async def produce_progress():
-        for index in range(6):
-            await asyncio.sleep(0.035)
-            await queue.put({"type": "progress", "percent": index * 20, "message": "working"})
-        agent.release.set()
-
-    producer = asyncio.create_task(produce_progress())
-    sse_events = [
-        sse async for sse in sse_adapter._iter_agent_sse(
-            agent, {}, {}, Counter(), {}, {"tool_event_queue": queue},
-        )
-    ]
-    await producer
+        producer = asyncio.create_task(produce_progress())
+        sse_events = [
+            sse async for sse in sse_adapter._iter_agent_sse(
+                agent, {}, config, Counter(), {}, {"tool_event_queue": queue},
+            )
+        ]
+        await producer
 
     assert len([event for event in sse_events if '"type": "progress"' in event]) == 6
-    assert agent.closed.is_set()
+    assert stream_double.closed.is_set()
 
 
 @pytest.mark.asyncio
 async def test_continuous_empty_agent_ticks_do_not_extend_idle_deadline(monkeypatch):
     monkeypatch.setattr(sse_adapter, "AGENT_HEARTBEAT_INTERVAL", 0.004)
     monkeypatch.setattr(sse_adapter, "AGENT_STREAM_IDLE_TIMEOUT_S", 0.025)
-    agent = _EmptyTickAgent()
+    stream_double = _EmptyTickAgent()
+    with authenticated_test_stream(
+        monkeypatch, stream_double, business_session_id="empty-ticks-test",
+    ) as (agent, config, _queue_id):
+        async def consume():
+            return [
+                event async for event in sse_adapter._iter_agent_sse(
+                    agent, {}, config, Counter(), {}, {"tool_event_queue": None},
+                )
+            ]
 
-    async def consume():
-        return [
-            event async for event in sse_adapter._iter_agent_sse(
-                agent, {}, {}, Counter(), {}, {"tool_event_queue": None},
-            )
-        ]
+        with pytest.raises(AgentStreamIdleTimeoutError):
+            await asyncio.wait_for(consume(), timeout=0.15)
 
-    with pytest.raises(AgentStreamIdleTimeoutError):
-        await asyncio.wait_for(consume(), timeout=0.15)
-
-    assert agent.closed.is_set()
+    assert stream_double.closed.is_set()
 
 
 @pytest.mark.asyncio
 async def test_active_tool_uses_existing_tool_timeout_not_model_idle_deadline(monkeypatch):
     monkeypatch.setattr(sse_adapter, "AGENT_HEARTBEAT_INTERVAL", 0.004)
     monkeypatch.setattr(sse_adapter, "AGENT_STREAM_IDLE_TIMEOUT_S", 0.015)
-    agent = _SilentAgent()
+    stream_double = _SilentAgent()
+    with authenticated_test_stream(
+        monkeypatch, stream_double, business_session_id="active-tool-test",
+    ) as (agent, config, _queue_id):
+        async def release_after_model_idle_deadline():
+            await asyncio.sleep(0.04)
+            stream_double.release.set()
 
-    async def release_after_model_idle_deadline():
-        await asyncio.sleep(0.04)
-        agent.release.set()
-
-    release_task = asyncio.create_task(release_after_model_idle_deadline())
-    call_start_time = {"running-tool": time.time()}
-    events = [
-        event async for event in sse_adapter._iter_agent_sse(
-            agent, {}, {}, Counter(), call_start_time, {"tool_event_queue": None},
-        )
-    ]
-    await release_task
+        release_task = asyncio.create_task(release_after_model_idle_deadline())
+        call_start_time = {"running-tool": time.time()}
+        events = [
+            event async for event in sse_adapter._iter_agent_sse(
+                agent, {}, config, Counter(), call_start_time, {"tool_event_queue": None},
+            )
+        ]
+        await release_task
 
     assert events == []
-    assert agent.closed.is_set()
+    assert stream_double.closed.is_set()
 
 
 def test_system_prompt_sets_general_answer_completeness_and_permission_boundaries():

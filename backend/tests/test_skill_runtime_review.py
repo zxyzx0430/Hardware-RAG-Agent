@@ -5,7 +5,13 @@ import pytest
 
 from src.agent.skill_runtime import build_skills_runtime, LoadSkillTool, ReadSkillResourceTool
 from src.agent.exceptions import ToolContext
-from src.skills.errors import SkillUnavailableError, SkillValidationError, SkillVersionChangedError
+from src.skills.errors import (
+    SkillNotFoundError,
+    SkillResourceError,
+    SkillUnavailableError,
+    SkillValidationError,
+    SkillVersionChangedError,
+)
 from src.skills.repository import SkillRepository
 
 
@@ -24,6 +30,17 @@ def repository(tmp_path):
     (package / "references").mkdir()
     (package / "references" / "note.md").write_text("Synthetic note", encoding="utf-8")
     return SkillRepository(root)
+
+
+def _assert_owned_by_pytest_tmp(tmp_path, path):
+    temp_root = tmp_path.resolve(strict=True)
+    resolved = path.resolve(strict=True)
+    assert resolved != temp_root
+    try:
+        resolved.relative_to(temp_root)
+    except ValueError:
+        pytest.fail(f"Refusing to access a path outside pytest's temporary root: {resolved}")
+    return resolved
 
 
 def test_auto_catalog_is_metadata_only(repository):
@@ -71,6 +88,119 @@ def test_disabled_changed_and_unknown_packages_are_not_read(repository):
     (repository.root / "synthetic-safe" / "references" / "note.md").write_text("Changed note", encoding="utf-8")
     with pytest.raises(SkillVersionChangedError):
         runtime.read_resource("synthetic-safe", "references/note.md")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "change,expected_error",
+    [
+        pytest.param("package", SkillNotFoundError, id="package-removed"),
+        pytest.param("description", SkillUnavailableError, id="description-removed"),
+        pytest.param("instruction_file", SkillNotFoundError, id="instruction-file-removed"),
+        pytest.param("resource", SkillVersionChangedError, id="allowed-resource-removed"),
+    ],
+)
+async def test_request_snapshot_fails_closed_when_skill_content_is_removed(
+    repository, tmp_path, change, expected_error,
+):
+    runtime = build_skills_runtime("manual", ["synthetic-safe"], repository=repository)
+    package = _assert_owned_by_pytest_tmp(
+        tmp_path, repository.root / "synthetic-safe",
+    )
+
+    if change == "package":
+        repository.delete_skill("synthetic-safe")
+    elif change == "description":
+        manifest = _assert_owned_by_pytest_tmp(tmp_path, package / "SKILL.md")
+        contents = manifest.read_text(encoding="utf-8")
+        description = "description: Synthetic instructions\n"
+        assert contents.count(description) == 1
+        manifest.write_text(contents.replace(description, "", 1), encoding="utf-8")
+    elif change == "instruction_file":
+        instruction = _assert_owned_by_pytest_tmp(tmp_path, package / "SKILL.md")
+        resource = _assert_owned_by_pytest_tmp(
+            tmp_path, package / "references" / "note.md",
+        )
+        assert package.is_dir()
+        assert resource.is_file()
+        names_before = {entry.name for entry in package.iterdir()}
+        assert "SKILL.md" in names_before
+        assert "skill.md" not in names_before
+        instruction.unlink()
+        assert package.is_dir()
+        assert resource.is_file()
+        names_after = {entry.name for entry in package.iterdir()}
+        assert "SKILL.md" not in names_after
+        assert "skill.md" not in names_after
+    else:
+        resource = _assert_owned_by_pytest_tmp(
+            tmp_path, package / "references" / "note.md",
+        )
+        resource.unlink()
+
+    load_tool = LoadSkillTool(runtime)
+    resource_tool = ReadSkillResourceTool(runtime)
+    for tool, args in (
+        (load_tool, {"skill_id": "synthetic-safe"}),
+        (resource_tool, {"skill_id": "synthetic-safe", "path": "references/note.md"}),
+    ):
+        with pytest.raises(expected_error) as error:
+            await tool.execute(args, ToolContext())
+        assert "Never execute scripts" not in str(error.value)
+        assert "Synthetic note" not in str(error.value)
+
+    assert runtime.consumed_bytes == 0
+    assert runtime.evidence() == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "path_kind,expected_code",
+    [
+        pytest.param("parent", "SKILL_PATH_INVALID", id="parent-traversal"),
+        pytest.param("nested", "SKILL_PATH_INVALID", id="allowed-subtree-traversal"),
+        pytest.param("rooted", "SKILL_PATH_INVALID", id="rooted-absolute-path"),
+        pytest.param("drive", "SKILL_PATH_INVALID", id="drive-path"),
+        pytest.param("backslash", "SKILL_PATH_INVALID", id="backslash-traversal"),
+        pytest.param("encoded", "SKILL_RESOURCE_NOT_FOUND", id="encoded-traversal"),
+    ],
+)
+async def test_resource_tool_never_returns_external_marker_for_escape_paths(
+    repository, tmp_path, path_kind, expected_code,
+):
+    marker = tmp_path / f"{tmp_path.name}-outside-marker.txt"
+    marker_content = f"EXTERNAL_MARKER_{tmp_path.name}"
+    marker.write_text(marker_content, encoding="utf-8")
+    marker = _assert_owned_by_pytest_tmp(tmp_path, marker)
+    runtime = build_skills_runtime("manual", ["synthetic-safe"], repository=repository)
+    resource_tool = ReadSkillResourceTool(runtime)
+
+    if ":" in marker.anchor:
+        tail = str(marker).split(":", 1)[1]
+        rooted_path = tail
+        drive_path = str(marker)
+    else:
+        rooted_path = str(marker)
+        drive_path = f"C:{marker.as_posix()}"
+    attack_paths = {
+        "parent": f"../../{marker.name}",
+        "nested": f"references/../../../{marker.name}",
+        "rooted": rooted_path,
+        "drive": drive_path,
+        "backslash": f"references\\..\\..\\..\\{marker.name}",
+        "encoded": f"references/%2e%2e/%2e%2e/%2e%2e/{marker.name}",
+    }
+
+    with pytest.raises(SkillResourceError) as error:
+        await resource_tool.execute(
+            {"skill_id": "synthetic-safe", "path": attack_paths[path_kind]},
+            ToolContext(),
+        )
+
+    assert error.value.code == expected_code
+    assert marker_content not in str(error.value)
+    assert runtime.consumed_bytes == 0
+    assert runtime.evidence() == ()
 
 
 def test_budget_failure_does_not_return_truncated_content(repository):

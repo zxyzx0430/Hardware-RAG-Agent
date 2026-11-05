@@ -417,6 +417,8 @@
 | `agreed` | `PUT` | `/api/sessions/{id}` | 更新会话 | CRUD | JSON |
 | `agreed` | `DELETE` | `/api/sessions/{id}` | 删除会话 | CRUD | JSON |
 | `implemented` | `POST` | `/api/sessions/{id}/messages` | 添加或按 ID 更新消息 | CRUD | JSON |
+| `implemented` | `POST` | `/api/sessions/{id}/messages/append-v1` | 按稳定消息 ID 原子追加单条消息 | `apiPost('sessions/{id}/messages/append-v1', ...)` | JSON |
+| `implemented` | `GET` | `/api/sessions/{id}/history-mode` | 查询历史存储模式；空 owner 会话可幂等初始化 V2 root/pointer | `apiGet('sessions/{id}/history-mode')` | JSON |
 | `agreed` | `GET` | `/api/sessions/{id}/messages` | 列出消息 | CRUD | JSON |
 | `agreed` | `DELETE` | `/api/sessions/{id}/messages?keep_count=N` | 截断会话消息（保留前 N 条） | `apiDelete('sessions/{id}/messages?keep_count=N')` | JSON |
 | `agreed` | `GET` | `/api/settings` | 获取设置 | CRUD | JSON |
@@ -469,7 +471,7 @@
 ```json
 {
   "messages": [
-    { "role": "user", "content": "ESP32 I2C NACK 怎么排查？" }
+    { "role": "user", "content": "ESP32 I2C NACK 怎么排查？", "message_id": "msg-uuid" }
   ],
   "top_k": 5,
   "relevance_threshold": 0.5,
@@ -480,10 +482,17 @@
   "long_term_memory": "",
   "model": "gpt-4o",
   "use_agent": true,
+  "history_mode": "server",
   "permission_mode": "default",
   "tool_keys": { "tavily": "tvly-xxx", "tavily_base_url": "https://api.tavily.com" }
 }
 ```
+
+- `messages[]` 可选字段：`message_id` 是客户端提供的稳定消息 ID，缺省以兼容旧客户端。它只是定位提示，不授予访问或写入权限；来源绑定由服务端在当前 owner/session/request scope 下，通过 V3 owner reader 校验已持久化消息、source map、locator、快照和 generation fence。ID 作为独立 sidecar 与 `_build_agent_messages` 生成的 role/content 顺序逐项对应；它不进入 LangChain 消息字段、Agent/model prompt 或 SSE。当前请求最后一条 user 消息尚未写入 owner 历史，因此该槽位用 `null` 标记，且必须留在未归档的 recent 后缀；它不会参与 owner reader 绑定或 compaction archive。已发布 checkpoint 替换历史前缀时，checkpoint sidecar 为 `null`，经过对象身份核验的原尾消息继续携带原 ID，最后一条 user 仍为 `null`。唯一允许的 system 消息是紧邻当前 user 之前、无 ID 的纯文本引用；引用与当前 user 作为连续的 `null` transient 后缀留在 recent，不传给 owner reader 或 compaction archive。旧客户端缺少历史消息 ID，非尾部或带 ID 的 system 消息、tool/非纯文本消息、role/content/order 不匹配或历史 ID 洞、缺失或冲突的 owner/source 映射、current user 或 transient 后缀未留在 recent、head/fence 变化，仍使 V3 压缩 fail closed；原历史保持不变，不回退到不带来源绑定的旧自动压缩。若完整历史仍超出上下文预算，按现有路由预算错误返回。
+
+- `history_mode`（可选，默认 `"client"`）：
+  - `"client"`：保持上述由请求体提供完整历史的旧契约。
+  - `"server"`：要求同时提供 `session_id`，且会话必须是当前认证 principal 的 owner-bound 会话。服务端按 owner/session 从持久化 Message 历史读取全部已保存 user/assistant 轮次，`messages` 只用于当前 user 轮和紧邻的 quote system 消息。客户端多发的旧历史不会进入模型上下文，也不能注入伪造的 assistant 历史。该模式使长对话的请求体不随历史增长，压缩、分页和刷新恢复以服务端历史与已发布 checkpoint 为准。会话不是 owner-bound、owner/incarnation/删除 epoch 无法确认、当前轮已存在 assistant 回答或内容冲突时，服务端保留原历史并返回 `HISTORY_UNAVAILABLE` 失败终态，不静默降级为只回答当前问题。
 
 - SSE 事件类型：
 
@@ -526,7 +535,7 @@
   - `webfetch` 失败沿用工具失败封套：HTTP 错误、被拒绝的重定向、连接异常和空正文返回 `success=false`、`data=null`、`error.error_type=EXEC_ERROR`；超时为 `TIMEOUT`。错误信息不含原始 URL、用户凭据或查询串。重定向不自动跟随；成功载荷仍为 `url/content/prompt/truncated`，不把普通工具数据中的 `error` 字段一律解释成失败。
   - WebFetch 请求期间的 HTTPX URL 日志另做请求范围脱敏，保留状态诊断；不改变上述载荷或授权语义，也不承诺所有工具、依赖或调用参数审计均已脱敏。
   - `tool_confirm_required` 触发时前端弹出 `ConfirmDialog`，用户决策后调 `POST /api/agent-sandbox/resume` 恢复；`risk_level` 枚举 `low` / `medium` / `high`。
-  - `error` 的 `code` 枚举新增：`RECURSION_LIMIT`（Agent 轮次上限）、`CONTEXT_LIMIT`（累积 token 超限）、`AGENT_TIMEOUT`（执行超时）、`AGENT_FALLBACK`（Agent 失败降级）、`AGENT_ERROR`（Agent 运行异常）。
+  - `error` 的 `code` 枚举新增：`RECURSION_LIMIT`（Agent 轮次上限）、`CONTEXT_LIMIT`（累积 token 超限）、`HISTORY_UNAVAILABLE`（`history_mode=server` 时无法确认 owner-bound 服务端历史）、`AGENT_TIMEOUT`（执行超时）、`AGENT_FALLBACK`（Agent 失败降级）、`AGENT_ERROR`（Agent 运行异常）。
   - `done` 的 `usage` 可选，包含本次请求的 token 统计：`prompt_tokens`、`completion_tokens`、`total_tokens`。
   - `/api/chat` 终态区分传输结束与回答完成：正常回答为 `success=true, completed=true`；等待人工确认为 `success=true, completed=false, awaiting_confirmation=true`；失败为 `success=false, completed=false`。旧记录和普通 resume 成功 fallback 可能没有新字段，但显式 `completed=false` 不能解释为完整回答。人工确认等待必须保留待确认调用与请求快照，不计为成功 RAG 样本。
   - 模型流正常结束却只有推理或空白正文时，以及精确已知的上游零输出报文，使用 `MODEL_EMPTY_RESPONSE`，不是网络超时。Agent 连续 300 秒没有可见正文/推理或有效工具/状态进展时使用 `TIMEOUT`；自身心跳和空 chunk 不刷新进展计时，活动工具仍受原工具超时限制。通用异常仍可为 `INTERNAL_ERROR`。保留已输出正文，不自动重放整次 Agent 或已执行工具。
@@ -1336,6 +1345,64 @@
   "created_at": "2026-06-19T12:00:05"
 }
 ```
+
+### 5.16.1 `POST /api/sessions/{session_id}/messages/append-v1`
+
+- 状态：`implemented`
+- 用途：按客户端提供的稳定消息 ID 追加一条用户或 assistant 消息，并在同一 owner 写事务中保存 Message 与对应 rolling-history 正文和索引。此接口每次只处理一条消息。
+- 请求体：
+
+```json
+{
+  "id": "m1a2b3c4",
+  "expected_incarnation_id": "0123456789abcdef0123456789abcdef",
+  "role": "user",
+  "content": "I2C NACK 怎么排查？",
+  "sources": [],
+  "tool_calls": [],
+  "activity": null
+}
+```
+
+- 必填字段：`id`、`expected_incarnation_id`、`role`、`content`。`id` 必须匹配 `[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}`；`expected_incarnation_id` 必须是当前会话的活动 incarnation。
+- 可选字段：`sources`、`tool_calls`（数组）和 `activity`（对象或 `null`）。`role` 仅接受 `user` / `assistant`。
+- 容量：`content` 最多 1,048,576 UTF-8 字节；超过上限或不是有效 UTF-8 时返回 HTTP 422（`INVALID_REQUEST`），正文不会截断。metadata 最多 16,384 UTF-8 字节，按 canonical JSON 编码后计算，编码规则为键排序、紧凑分隔符、`ensure_ascii=false`、`allow_nan=false`。计算投影包含由 `role` 映射得到的 `event_type`（`user_text` / `assistant_text`）、规范化后的 `attachments`、`created_at` 和去掉 `content` 的 `message_event`；本接口当前不接收附件，故 `attachments` 为空数组。完整 `content` 仍参与正文存储、来源摘要和幂等校验。
+- 幂等与冲突：首次写入返回 `status: "saved"`；同一 ID、内容完全相同且已有已验证 rolling locator 的重试返回 `status: "already_saved"`，不重复写消息或增加消息修订号。相同 ID 的内容冲突、跨会话 ID 冲突、缺少已验证 locator 的既有消息，或 rolling 历史尚未迁移到可追加状态时均 fail-closed；消息/历史冲突返回 HTTP 409（`MESSAGE_CONFLICT` 或 `MESSAGE_ID_IN_USE`）。对受 owner 绑定但当前用户无权访问的其他会话，返回 HTTP 403（`FORBIDDEN`）。过期 incarnation 返回 HTTP 409（`SESSION_INCARNATION_CONFLICT`）。
+- 原子性与边界：单条 Message、会话计数/修订号更新及其 rolling-history 正文、locator、revision/head 写入使用同一 owner WRITE 事务；任何失败都会回滚该次事务。普通 `POST /api/sessions/{session_id}/messages` 是不同的旧 CRUD 端点，不属于本节的原子写入。append-v1 不代表既有消息的全量历史迁移，也不保证 user 与 assistant 两条消息组成的 turn pair 原子提交。
+- 成功响应：标准 `{ "success": true, "data": ... }` 封套中的 `data` 包含 `id`、`status`（`saved` / `already_saved`）、当前 `message_revision` 和 ISO 8601 `created_at`。
+
+```json
+{
+  "success": true,
+  "data": {
+    "id": "m1a2b3c4",
+    "status": "saved",
+    "message_revision": 1,
+    "created_at": "2026-06-19T12:00:05"
+  }
+}
+```
+
+### 5.16.2 `GET /api/sessions/{session_id}/history-mode`
+
+- 状态：`implemented`
+- 用途：在聊天发送前确定当前会话应使用 owner-bound rolling-history V2 追加路径，还是兼容的 legacy Message CRUD 路径。
+- owner-bound 会话先验证当前 principal、session incarnation 和删除 epoch，再通过公开 owner-bound rolling-history API 读取 active pointer。已确认 active 的 pointer 会复用；pointer 为 unset 且 `Message` 表为空时，后端以绑定该 owner 生命周期的稳定幂等身份创建空 V2 root，通过 expected-unset pointer 与 root bound head CAS 创建 active pointer，并独立读取确认后才返回 `owner_v1`。同一请求重试会复用该 root；损坏、冲突或无法确认的状态返回 HTTP 409（`MESSAGE_CONFLICT`），不会降级到 legacy。
+- `mode: "legacy"` 除未绑定 owner 的旧共享会话外，也表示已鉴权 owner-bound 的历史会话仍有 `Message` 行但尚无 V2 active pointer。此时不创建空 root 覆盖旧历史；前端继续使用兼容 Message 接口，后端对已绑定会话执行 owner gate。已绑定 owner 的 legacy 历史额外返回 `server_history: true`：`POST /api/chat` 可使用 `history_mode: "server"` 由服务端读取完整持久历史并做有界图内压缩，保存仍走 legacy Message 接口；未绑定 owner 的 legacy 响应不带该字段，继续使用客户端历史与旧条数限制。该模式保留旧消息的读取和保存，但不等于已完成 V2 历史迁移。
+- owner-bound 空会话的成功形状：
+
+```json
+{
+  "success": true,
+  "data": {
+    "session_id": "session-123",
+    "mode": "owner_v1",
+    "incarnation_id": "0123456789abcdef0123456789abcdef"
+  }
+}
+```
+
+- legacy 成功形状保持 `{ "session_id": "session-123", "mode": "legacy" }`；owner-bound legacy 历史额外带 `"server_history": true`。未绑定会话仍使用无该字段的形状。legacy Message 的读取、添加/更新和截断路由对 owner-bound 会话继续验证当前 owner。
 
 ### 5.17 `GET /api/sessions/{session_id}/messages`
 
@@ -2426,6 +2493,11 @@
 
 | 日期 | 变更内容 | 变更人 |
 | --- | --- | --- |
+| 2026-11-04 | §5.1 新增 `history_mode: "client" \| "server"`：server 模式由服务端按 owner/session 读取完整持久历史，请求体只提供当前 user 轮与 quote system 消息；新增 `HISTORY_UNAVAILABLE` 失败终态，长对话不再受客户端消息条数上限约束；§5.16.2 owner-bound legacy 历史返回 `server_history: true`，可走 server 历史 + 图内压缩、保存仍走 legacy Message 接口。定向隔离测试见 [testing.md](testing.md)；完整后端套件仍包含候选存量失败，不能据此宣称全量发布门禁通过 | 00 主控与集成 |
+| 2026-10-31 | §5.1 `/api/chat` 可选 `message_id` 作为独立、按序 sidecar 接入 V3 owner source-binding compaction；最后一条尚未持久化的 user 槽位为 `null` 并留在 recent 后缀，旧客户端及 owner/source 不匹配场景 fail closed，ID 不进入 Agent/model/SSE，禁止回退到无绑定压缩 | 02 聊天与会话 |
+| 2026-10-31 | §4 登记 `POST /api/sessions/{session_id}/messages/append-v1`；新增 §5.16.1，说明稳定 ID 幂等、UTF-8 正文/metadata 容量、同 owner 事务及 fail-closed 迁移边界；保留普通 `/messages` POST 的旧端点语义 | 02 聊天与会话 |
+| 2026-10-31 | 新增 §5.16.2，说明 history-mode 对空 owner 会话执行 owner-scoped V2 root/pointer bootstrap；有 legacy Message 的 owner 会话维持 owner-gated legacy 保存且暂不支持 V2 compaction，状态不确定时 fail closed | 02 聊天与会话 |
+
 | 2026-10-24 | §5.37 同步原生 Skills 当前接口与选定自动化结果；明确非全后端/全项目验收及真实环境、第三方 Agent 未验证边界 | 00 主控 |
 | 2026-10-22 | 按真人要求分派实施：无完整恢复来源时保留全tool output；Agent来源限indexed且无error，检索期间签名变更拒旧结果，管理状态列表不变；全部未测试 | 00 主控协调，01/工具worker实施 |
 | 2026-10-22 | 候选可选tool metadata locator及LOW read_tool_event，宿主范围/删除/chain/hash/预算读取且无授权重放；KB上传有界读与配置校验前移防无效请求触发旧清理；全部未测试 | 00 主控 |

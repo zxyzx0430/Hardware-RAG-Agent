@@ -159,10 +159,25 @@ def init_stream_state(
     context_budget: ContextBudget | None = None,
 ) -> dict:
     """Build the per-request state dict shared by all SSE handlers."""
-    session_id = config.get("configurable", {}).get("thread_id", "?")
+    from src.agent.request_context import business_session_id_from_config
+
+    session_id = business_session_id_from_config(config) or config.get(
+        "configurable", {},
+    ).get("thread_id", "?")
     session_window = None
     if context_budget is None:
         session_window = _load_session_context_window(session_id)
+        config_window = config.get("configurable", {}).get("context_window")
+        if type(config_window) is int and config_window > 0:
+            session_window = (
+                config_window if session_window is None
+                else min(session_window, config_window)
+            )
+        if requested_max_tokens is None and type(session_window) is int and session_window > 0:
+            from src.llm.model_registry import get_registered_max_tokens
+
+            declared = get_registered_max_tokens(model) or 4096
+            requested_max_tokens = min(declared, max(1, session_window // 4))
         context_budget = resolve_context_budget(
             model, session_window, requested_max_tokens,
         )
@@ -183,10 +198,16 @@ def _load_session_context_window(session_id: str) -> int | None:
     """Read context_window from the session row, if the column exists."""
     if not session_id or session_id == "?":
         return None
+    from sqlalchemy.exc import SQLAlchemyError
     from app.db.database import SessionLocal
     from app.db.models import Session as SessionModel
-    with SessionLocal() as db:
-        row = db.query(SessionModel).filter(SessionModel.id == session_id).first()
+    try:
+        with SessionLocal() as db:
+            row = db.query(SessionModel).filter(SessionModel.id == session_id).first()
+    except SQLAlchemyError:
+        # A missing/unmigrated session table only means the window is unknown;
+        # the budget falls back to its conservative default.
+        return None
     return getattr(row, "context_window", None) if row else None
 
 
@@ -348,3 +369,49 @@ def _maybe_emit_todo_update(events: list[str], envelope: dict) -> None:
         todos = data.get("todos")
         if isinstance(todos, list):
             events.append(sse_event("todo_update", {"todos": todos}))
+
+
+def _valid_skill_trace_id(value: Any) -> bool:
+    """Check trace IDs with the same package ID rule used by SkillRepository."""
+    if not isinstance(value, str) or not 1 <= len(value) <= 128:
+        return False
+    from src.skills.errors import SkillValidationError
+    from src.skills.repository import SkillRepository
+
+    try:
+        SkillRepository._validate_id(value)
+    except SkillValidationError:
+        return False
+    return True
+
+
+def _valid_skill_trace_path(value: Any) -> str | None:
+    """Allow only normalized, supported relative Skill resources."""
+    if not isinstance(value, str) or not 1 <= len(value) <= 1024:
+        return None
+    from src.skills.errors import SkillValidationError
+    from src.skills.format import normalize_relative_path
+    from src.skills.repository import SkillRepository
+
+    try:
+        normalized = normalize_relative_path(value)
+    except SkillValidationError:
+        return None
+    if normalized != value or not SkillRepository._is_supported_resource(normalized):
+        return None
+    return normalized
+
+
+def project_skill_tool_args_for_sse(tool_name: str, args: Any) -> Any:
+    """Project exact Skill tool arguments to their safe client-visible form."""
+    if tool_name not in _SKILL_BODY_TOOL_NAMES:
+        return args
+    if not isinstance(args, dict) or not _valid_skill_trace_id(args.get("skill_id")):
+        return {}
+    safe_args = {"skill_id": args["skill_id"]}
+    if tool_name == "read_skill_resource":
+        path = _valid_skill_trace_path(args.get("path"))
+        if path is None:
+            return {}
+        safe_args["path"] = path
+    return safe_args

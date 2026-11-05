@@ -15,6 +15,8 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "deepseek-v4": 256000,
     "deepseek-v4-flash": 256000,
     "deepseek-chat": 65536,
+    "deepseek-reasoner": 65536,
+    "deepseek-r1": 65536,
     # Qwen
     "qwen3-235b": 256000,
     "qwen-plus": 131072,
@@ -25,7 +27,7 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     # Others / fallback
 }
 
-DEFAULT_CONTEXT_WINDOW = 128000
+DEFAULT_CONTEXT_WINDOW = 32768
 
 
 def get_context_window(model: str | None) -> int:
@@ -59,6 +61,8 @@ MODEL_MAX_TOKENS: dict[str, int] = {
     "deepseek-v4": 8192,
     "deepseek-v4-flash": 8192,
     "deepseek-chat": 8192,
+    "deepseek-reasoner": 8192,
+    "deepseek-r1": 8192,
     # Qwen
     "qwen3-235b": 8192,
     "qwen-plus": 8192,
@@ -98,6 +102,8 @@ MODEL_TYPES: dict[str, str] = {
     "deepseek-v4": "chat",
     "deepseek-v4-flash": "chat",
     "deepseek-chat": "chat",
+    "deepseek-reasoner": "chat",
+    "deepseek-r1": "chat",
     "qwen3-235b": "chat",
     "qwen-plus": "chat",
     "qwen-max": "chat",

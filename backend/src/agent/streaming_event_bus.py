@@ -12,26 +12,87 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
+from threading import RLock
+from typing import Any, Iterator
 
 logger = logging.getLogger(__name__)
 
-_queues: dict[str, asyncio.Queue] = {}
+@dataclass(frozen=True)
+class _QueueRegistration:
+    queue: asyncio.Queue
+    business_session_id: str | None
 
 
-def register_queue(session_id: str, queue: asyncio.Queue) -> None:
-    """Register an asyncio.Queue for the given session_id."""
-    _queues[session_id] = queue
+@dataclass(frozen=True)
+class _RequestEventChannel:
+    channel_id: str
+    business_session_id: str
+    queue: asyncio.Queue
+
+
+_queues: dict[str, list[_QueueRegistration]] = {}
+_queue_lock = RLock()
+_ACTIVE_REQUEST_EVENT_CHANNEL: ContextVar[_RequestEventChannel | None] = ContextVar(
+    "active_request_event_channel", default=None,
+)
+
+
+@contextmanager
+def bind_event_channel(config: Any, queue: asyncio.Queue) -> Iterator[None]:
+    """Pin producers to the exact owned queue, never a replacement stream."""
+    from src.agent.request_context import request_graph_binding_from_config
+
+    binding = request_graph_binding_from_config(config)
+    channel = None
+    if binding is not None:
+        with _queue_lock:
+            if not any(
+                item.queue is queue and item.business_session_id == binding.business_session_id
+                for item in _queues.get(binding.graph_thread_id, ())
+            ):
+                raise ValueError("Request event queue is not registered")
+        channel = _RequestEventChannel(binding.graph_thread_id, binding.business_session_id, queue)
+    token = _ACTIVE_REQUEST_EVENT_CHANNEL.set(channel)
+    try:
+        yield
+    finally:
+        _ACTIVE_REQUEST_EVENT_CHANNEL.reset(token)
+
+
+def register_queue(
+    session_id: str, queue: asyncio.Queue, *, business_session_id: str | None = None,
+) -> None:
+    """Register a legacy queue or one owned request stream, without takeover."""
+    with _queue_lock:
+        entries = _queues.setdefault(session_id, [])
+        if any(item.business_session_id != business_session_id for item in entries):
+            raise ValueError("Streaming channel business binding changed")
+        if not any(item.queue is queue for item in entries):
+            entries.append(_QueueRegistration(queue, business_session_id))
 
 
 def get_queue(session_id: str) -> asyncio.Queue | None:
     """Return the registered queue for session_id, or None if absent."""
-    return _queues.get(session_id)
+    with _queue_lock:
+        entries = _queues.get(session_id, ())
+        return entries[-1].queue if entries else None
 
 
-def unregister_queue(session_id: str) -> None:
-    """Remove the queue for session_id (idempotent)."""
-    _queues.pop(session_id, None)
+def unregister_queue(session_id: str, queue: asyncio.Queue | None = None) -> None:
+    """Remove only the owned queue; legacy calls cannot clear request queues."""
+    with _queue_lock:
+        entries = _queues.get(session_id, ())
+        remaining = [
+            item for item in entries
+            if (item.queue is not queue if queue is not None else item.business_session_id is not None)
+        ]
+        if remaining:
+            _queues[session_id] = remaining
+        else:
+            _queues.pop(session_id, None)
 
 
 def emit_tool_event(session_id: str, event: dict[str, Any]) -> None:
@@ -41,13 +102,26 @@ def emit_tool_event(session_id: str, event: dict[str, Any]) -> None:
     Drops the event silently when no queue is registered (e.g. standalone
     /api/tool calls or HITL resume paths that have not set up streaming).
     """
-    queue = _queues.get(session_id)
-    if queue is None:
-        return
-    try:
-        queue.put_nowait(event)
-    except asyncio.QueueFull:
-        logger.warning("streaming event queue full session_id=%s", session_id)
+    channel = _ACTIVE_REQUEST_EVENT_CHANNEL.get()
+    with _queue_lock:
+        if channel is not None:
+            if session_id != channel.business_session_id:
+                return
+            entries = _queues.get(channel.channel_id, ())
+            queue = next((item.queue for item in entries if item.queue is channel.queue
+                          and item.business_session_id == session_id), None)
+        else:
+            # Missing task context must not leak into any active request queue.
+            if any(item.business_session_id == session_id for entries in _queues.values() for item in entries):
+                return
+            entries = _queues.get(session_id, ())
+            queue = entries[-1].queue if entries and entries[-1].business_session_id is None else None
+        if queue is None:
+            return
+        try:
+            queue.put_nowait(event)
+        except asyncio.QueueFull:
+            logger.warning("streaming event queue full session_id=%s", session_id)
 
 
 def emit_build_log_via_stream_writer(writer: Any, event: dict[str, Any]) -> None:

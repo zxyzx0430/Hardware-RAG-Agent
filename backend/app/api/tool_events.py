@@ -8,6 +8,9 @@ ToolNode result batch exists.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
+
 import hashlib
 import json
 import logging
@@ -16,6 +19,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Sequence
 
+from app.api.context_events import ContextEventScope
 from app.api.tool_observations import (
     MAX_TOOL_OBSERVATION_BYTES,
     ToolObservationScope,
@@ -25,6 +29,25 @@ from app.api.tool_observations import (
 
 
 logger = logging.getLogger(__name__)
+_TOOL_EVENT_SCOPE: ContextVar[ContextEventScope | None] = ContextVar(
+    "tool_event_archive", default=None,
+)
+
+
+@contextmanager
+def bind_tool_event_archive(scope: ContextEventScope | None):
+    """Bind verified host scope separately from permission to archive text."""
+    token = _TOOL_EVENT_SCOPE.set(scope if type(scope) is ContextEventScope else None)
+    try:
+        yield
+    finally:
+        _TOOL_EVENT_SCOPE.reset(token)
+
+
+def get_tool_event_scope() -> ContextEventScope | None:
+    scope = _TOOL_EVENT_SCOPE.get()
+    return scope if type(scope) is ContextEventScope else None
+
 
 _ARCHIVE_TOOL_NAME = "tool_message_batch_v3"
 _ENVELOPE_SCHEMA = 3

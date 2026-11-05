@@ -1,5 +1,59 @@
 # 测试与测试数据
 
+> 更新日期：2026-11-04。记录修复后的最终软件门禁，并单列修复前 606 项快照与 67 项失败轨迹；浏览器、硬件和 RAG 全量质量评测仍分别记录，不混作软件测试结论。
+
+## 2026-11-05 合并后完整后端门禁
+
+在 `context-rebased` 工作树运行完整后端套件，环境为 E 盘显式 `TEMP`/`TMP`、独立 `SQLITE_DB_PATH`、`AGENT_CHECKPOINTER_TYPE=memory`、`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`、`HF_HUB_OFFLINE=1`、`TRANSFORMERS_OFFLINE=1`，并显式加载 `-p asyncio -p pytest_timeout`。
+
+命令：
+
+```bash
+python -m pytest tests -q -p asyncio -p pytest_timeout
+```
+
+结果：**1440 passed / 42 skipped / 0 failed**，3,417 warnings，400.01 秒，退出码 0。42 skipped 沿用既有标记（含被真实 writer/SSE 验收取代的旧 StateGraph 夹具和已被 V3 契约取代的 legacy summary/pre-send 用例），本轮没有为通过测试放宽 owner、epoch、writer-lease、HITL 回执或 source-registry 校验。此前 248 passed / 1 failed 与 73 failed 快照保留为历史记录，不覆盖本次完整结果。
+
+真实模型服务、浏览器端到端、实体硬件/烧录和新电脑空白安装仍未验证；自动测试通过不代表这些验收完成。
+
+
+## 2026-11-04 上下文压缩与服务端历史定向验证
+
+本轮在 E 盘隔离副本中验证服务端历史、预发送/图内压缩、工具输出归档、HITL/刷新恢复和前端 server-history 契约。运行前显式设置 `TEMP`/`TMP` 到可写 E 盘目录，并使用 `SQLITE_DB_PATH`、`AGENT_CHECKPOINTER_TYPE=memory`、`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`、`HF_HUB_OFFLINE=1`、`TRANSFORMERS_OFFLINE=1`。由于禁用了插件自动加载，必须显式追加 `-p asyncio`；否则 `asyncio_mode` 未注册，大量 async 测试会批量失败，不能把那类结果当成产品回归。
+
+后端定向命令（在隔离副本的 `backend` 目录）：
+
+```bash
+python -m pytest \
+  tests/test_server_history_request.py \
+  tests/test_chat_compaction_source_sidecar.py \
+  tests/test_compaction_generations.py \
+  tests/test_compaction_checkpoint_publish.py \
+  tests/test_autocompact_input_budget.py \
+  tests/test_autocompact_tool_pairs.py \
+  tests/test_autocompact_archive_binding.py \
+  tests/test_autocompact_failure_preservation.py \
+  tests/test_structured_checkpoint.py \
+  tests/test_context_history_reader.py \
+  tests/test_s05_context_compaction_acceptance_20261025.py \
+  tests/test_generic_tool_observation_archive.py \
+  tests/test_crud_message_idempotency.py \
+  -q -p asyncio
+```
+
+结果：**248 passed / 17 skipped / 1 failed**，解锁 3,103 warnings，260.58 秒。17 skipped 中 15 项是被真实 writer-lease/SSE 验收取代的旧简单 StateGraph/publish 夹具，2 项是 archive-binding 的假 graph/lease 夹具。唯一失败项 `test_crud_message_idempotency.py::test_history_mode_bootstraps_empty_owner_history_and_reads_back_pointer` 在内存 SQLite fixture 中没有安装 `message_source_generations` 触发器，append-v1 读不到迁移 fence；生产启动会安装该触发器，因此这是测试夹具缺口，不是 append-v1 产品路径。`test_server_history_request.py` 单独 **6 passed**。
+
+前端定向命令（在 `frontend` 目录）：
+
+```bash
+node node_modules/vitest/dist/cli.js run \
+  src/stores/useChatStore.server-history.test.ts
+```
+
+结果：**10 passed**。`useSessionStore` **4 passed**；`tsc -b` 退出码 0。候选工作区扩展后的旧 `useChatStore.test.ts` 仍有 **32 failed / 20 passed**，集中在既有 Skills/聊天事件、usage 和 resume 路径；主工作树同一旧测试文件 **42 passed**，未发现这些失败由本轮 server-history 改动直接导致，但仍属于当前候选工作区的未收口项。
+
+完整后端套件：**73 failed / 1166 passed / 17 skipped**，3,339 warnings，456.62 秒，退出码 1。失败集中在候选既有 `test_memory_clear_resume.py`（15）、`test_session_delete_resume.py`（14）、`test_rag_rank_merge.py`（11）、`test_skill_runtime_review.py`（7）、`test_chat_skills_integration.py`（6）、`test_mcp_agent_integration.py`（4）、`test_chat_source_registry_snapshot.py`（4）等套件；上下文压缩/服务端历史定向文件本身已通过。另修复 `deepseek-reasoner` / `deepseek-r1` 未在模型注册表登记导致预算 fail-closed 的问题，`test_reasoning_chat.py` 3 项通过；未注册模型预算解析新增 `test_context_budget_resolution.py` 7 项：显式 override 走 `min(override, 1,048,576)`/`explicit_override`，无 override 走 32K/`conservative_default`，并记录 `budget_source`。本轮没有修改其余失败区域，不能把完整套件结果称为全量发布门禁通过。普通对话历史由 SQLite 持久化，进程重启后可由服务端历史重建；HITL 待确认快照仍在进程内存中，重启后不能续跑该次确认。Provider 明确返回 context overflow 时的压缩重试辅助函数尚未接入流式路由，当前依赖本地预算 fail closed。真实模型、浏览器端到端、实体硬件/烧录和新电脑空白安装仍未验证。
+
 > 2026-10-26 上下文压缩候选定向验收完成：13 个不同专项 case 和五个指定回归文件按分组运行有通过覆盖。最终真实 `_iter_agent_sse` + SQLite/host archive 集成为 `1 passed / 27 warnings / exit 0`，RunName `s05-context-compaction-final-20261026-11`；reader + ordinary 最终回归为 `91 passed / 27 warnings / exit 0`。前面的 `149 passed / 1 failed` 与各诊断轮保留，不相加、不冒称单次全文件或全后端通过。00 已核对源码、限定测试差异及实际隔离副本。完整命令、SHA、失败处置、一次越界工具下载及未验边界见[验收记录](reports/context-compaction-acceptance-20261026.md)。本段优先于下方进行中快照。
 
 > 2026-10-26 上下文压缩集中验证进行中：候选树运行 `s05-context-compaction-final-20261025-07`，正式无 spy 原生协议验收为 `6 passed, 4 warnings in 20.14s`，exit 0。包括缺 lease 拒绝且不改状态、真实 drain/join 后保存及续跑，以及四项非法调度写拒绝。报告 `E:/Desktop/agent-acceptance-artifacts/core-plan-20261006/s05-context-compaction-native-protocol-verification-20261025/report-round5.md` SHA 为 `CB89A050A0D7DE083A8936AE799613D7146B1C4DDEA507A40767C6071486CF12`。00 比较隔离副本与候选树的七个产品文件及测试，SHA 全部匹配。首轮旧 14 路径套件仍保留 `1 failed / 6 passed` 记录，其成功夹具尚未遵循新的 lease/drain 契约；不能被本次子集通过覆盖。用户可见边界、SQLite/正文引用链及独立定向回归尚未交付结果，不预记通过。

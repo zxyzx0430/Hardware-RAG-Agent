@@ -15,7 +15,7 @@ MEMORY_CLEAR_EPOCH_KEY = "_longTermMemoryClearEpoch"
 
 
 def read_memory_clear_epoch() -> str | None:
-    """Return the opaque epoch, empty for legacy state, or None if unavailable."""
+    """Missing legacy marker is valid; unreadable or corrupt state is not."""
     try:
         with get_db_ctx() as db:
             row = db.query(Settings).filter(Settings.key == MEMORY_CLEAR_EPOCH_KEY).first()
@@ -28,7 +28,7 @@ def read_memory_clear_epoch() -> str | None:
 
 
 def stage_memory_clear_epoch(db, now) -> None:
-    """Stage invalidation with the memory clear; the caller owns the transaction."""
+    """Stage marker atomically with the caller's clear; never commit here."""
     value = uuid.uuid4().hex
     statement = insert(Settings).values(key=MEMORY_CLEAR_EPOCH_KEY, value=value, updated_at=now)
     db.execute(statement.on_conflict_do_update(

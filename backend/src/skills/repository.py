@@ -48,6 +48,7 @@ MAX_PACKAGE_FILE_BYTES = 2 * 1024 * 1024
 MAX_SELECTED_SKILLS = 3
 MAX_AUTO_CATALOG_SKILLS = 100
 IMPORT_METADATA_FILENAME = ".skill-import.json"
+_OPERATION_ID_RE = re.compile(r"^[0-9a-f]{64}$")
 ENABLED_FILENAME = ".enabled"
 _LEGACY_SKILL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 _HOST_FILES = {IMPORT_METADATA_FILENAME.casefold(), ENABLED_FILENAME.casefold()}
@@ -816,9 +817,18 @@ class SkillRepository:
         source: Mapping[str, str],
         *,
         _install_nonce: str | None = None,
+        _operation_id: str | None = None,
+        _enabled: bool = True,
         claude_adapter: bool = False,
     ) -> dict[str, Any]:
         """Install validated package bytes and keep host state outside the package."""
+        if type(_enabled) is not bool:
+            raise SkillValidationError("Install enabled state must be a boolean", code="SKILL_PACKAGE_INVALID")
+        if _operation_id is not None and (
+            type(_operation_id) is not str
+            or re.fullmatch(r"[0-9a-f]{64}", _operation_id, re.ASCII) is None
+        ):
+            raise SkillValidationError("Install operation ID is invalid", code="SKILL_PACKAGE_INVALID")
         if not isinstance(claude_adapter, bool):
             raise SkillValidationError("claude_adapter must be a boolean", code="SKILL_ADAPTER_INVALID")
         if not files:
@@ -876,6 +886,11 @@ class SkillRepository:
             compatibility = parsed.compatibility_status
         if compatibility == "review_required":
             raise SkillValidationError("Skill package cannot be imported until its format is corrected", code="SKILL_REVIEW_REQUIRED")
+        if _operation_id is not None and _enabled and compatibility != "supported":
+            raise SkillValidationError(
+                "Enable-on-install requires a fully supported Skill package",
+                code="SKILL_REVIEW_REQUIRED",
+            )
 
         cleaned_source = {
             "provider": "github",
@@ -889,6 +904,8 @@ class SkillRepository:
         if not re.fullmatch(r"[0-9a-f]{32}", install_nonce):
             raise SkillValidationError("Install transaction nonce is invalid", code="SKILL_PACKAGE_INVALID")
         cleaned_source["_install_nonce"] = install_nonce
+        if _operation_id is not None:
+            cleaned_source["_operation_id"] = _operation_id
         if not re.fullmatch(r"[0-9a-fA-F]{40}", cleaned_source["commit_sha"]):
             raise SkillValidationError("Source commit_sha must be a full 40-character SHA", code="GITHUB_COMMIT_INVALID")
 
@@ -967,7 +984,7 @@ class SkillRepository:
                 self._management_state(
                     destination,
                     update={
-                        "enabled": True,
+                        "enabled": _enabled,
                         "source": cleaned_source,
                         "_install_nonce": install_nonce,
                         "_managed_nonce": install_nonce,
@@ -1101,6 +1118,36 @@ class SkillRepository:
             "compatibility_status", "issues", "content_hash", "source", "locally_modified",
         )}
 
+    def find_import_by_operation_id(self, operation_id: str) -> dict[str, Any] | None:
+        """Return the unique installed package for an internal chat operation ID."""
+        if not isinstance(operation_id, str) or not _OPERATION_ID_RE.fullmatch(operation_id):
+            raise SkillValidationError("Install operation ID is invalid", code="SKILL_PACKAGE_INVALID")
+        if not self.root.exists():
+            return None
+        matches: list[str] = []
+        with _LOCK:
+            self._assert_root_safe()
+            for child in sorted(self.root.iterdir(), key=lambda item: item.name.casefold()):
+                if self._is_link_or_reparse(child) or not child.is_dir():
+                    continue
+                try:
+                    self._validate_id(child.name)
+                    directory = self._skill_directory(child.name, must_exist=True)
+                    metadata = self._management_state(directory)
+                except (OSError, ValueError, SkillValidationError, json.JSONDecodeError):
+                    continue
+                source = metadata.get("source") if isinstance(metadata, dict) else None
+                if isinstance(source, dict) and source.get("_operation_id") == operation_id:
+                    matches.append(child.name)
+            if len(matches) > 1:
+                raise SkillConflictError("An install operation ID appears in multiple package records.")
+            if not matches:
+                return None
+            try:
+                return self.get_skill(matches[0])
+            except (SkillNotFoundError, SkillValidationError) as exc:
+                raise SkillConflictError("The previous install record is no longer valid.") from exc
+
     def _invalid_skill_info(self, skill_id: str, error: SkillValidationError) -> dict[str, Any]:
         return {
             "id": skill_id,
@@ -1226,7 +1273,7 @@ class SkillRepository:
                     return None
                 if not isinstance(value, dict) or value.get("provider") != "github":
                     raise ValueError("invalid managed source metadata")
-                return {key: item for key, item in value.items() if key != "_install_nonce"}
+                return {key: item for key, item in value.items() if not key.startswith("_")}
             path = self._actual_named_child(directory, IMPORT_METADATA_FILENAME)
             if path is None:
                 return None
@@ -1235,7 +1282,7 @@ class SkillRepository:
             value = json.loads(raw.decode("utf-8"))
             if not isinstance(value, dict) or value.get("provider") != "github":
                 raise ValueError("invalid source metadata")
-            return {key: item for key, item in value.items() if key != "_install_nonce"}
+            return {key: item for key, item in value.items() if not key.startswith("_")}
         except Exception:
             issues.append({"code": "SKILL_SOURCE_METADATA_INVALID", "severity": "error", "message": "Imported source metadata is unreadable."})
             return None

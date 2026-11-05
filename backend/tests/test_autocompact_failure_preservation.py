@@ -1,183 +1,225 @@
+from __future__ import annotations
+
+import asyncio
+import importlib
+import types
+import json
+from tests.structured_summary_support import structured_response
+from tests.compaction_writer_support import drained_compaction_checkpoint
+from tests.compaction_v3_source_support import bind_recovery_v3_sources, seed_v3_message_sources
+
 import pytest
 from langchain_core.messages import HumanMessage
 
-import src.agent.compact.autocompact as autocompact
-from src.agent.exceptions import ContextLimitError
+# Run with the standard isolated-source runner, not a user data directory.
+# Do not replace sys.modules globally: unrelated tests share this interpreter.
+compact = importlib.import_module("src.agent.compact.autocompact")
+pytestmark = pytest.mark.usefixtures("context_archive_scope")
 
 
-def _use_deterministic_token_counts(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(autocompact, "MAX_TOKEN_RATIO", 1.0)
-    monkeypatch.setattr(autocompact, "AUTOCOMPACT_KEEP_RECENT_MSGS", 2)
-    monkeypatch.setattr(
-        autocompact,
-        "_msg_tokens",
-        lambda message: len(str(getattr(message, "content", ""))),
-    )
+_EARLY_CONSTRAINT = "UNIQUE_CONSTRAINT_AFTER_CHAR_500"
 
 
-def _over_budget_messages() -> list[HumanMessage]:
-    return [
-        HumanMessage(content="x" * 40),
-        HumanMessage(content="y"),
-        HumanMessage(content="z"),
-    ]
+def _messages() -> list[HumanMessage]:
+    messages = []
+    for index in range(13):
+        content = f"synthetic-{index}:" + ("x" * 520)
+        if index == 0:
+            content += _EARLY_CONSTRAINT
+        messages.append(HumanMessage(content=content))
+    return messages
 
 
-def _message_snapshot(messages: list) -> list[tuple[int, str]]:
-    return [(id(message), message.content) for message in messages]
+def _fingerprint(messages: list[HumanMessage]) -> list[tuple[str, str]]:
+    return [(type(message).__name__, message.content) for message in messages]
 
 
-def _assert_messages_unchanged(messages: list, snapshot: list[tuple[int, str]]) -> None:
-    assert _message_snapshot(messages) == snapshot
+class _RaisingSummaryClient:
+    model = "gpt-4o-mini"
+    max_tokens = 1024
 
+    def __init__(self) -> None:
+        self.calls = 0
 
-@pytest.mark.asyncio
-async def test_short_over_budget_history_raises_without_dropping_messages(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _use_deterministic_token_counts(monkeypatch)
-    messages = [HumanMessage(content="x" * 12), HumanMessage(content="y" * 11)]
-    snapshot = _message_snapshot(messages)
-
-    with pytest.raises(ContextLimitError) as raised:
-        await autocompact.autocompact_messages(messages, object(), context_window=20)
-
-    assert raised.value.cumulative == 23
-    assert raised.value.limit == 20
-    _assert_messages_unchanged(messages, snapshot)
-
-
-@pytest.mark.asyncio
-async def test_unavailable_summarizer_raises_without_snipping_history(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _use_deterministic_token_counts(monkeypatch)
-    messages = _over_budget_messages()
-    snapshot = _message_snapshot(messages)
-
-    with pytest.raises(ContextLimitError) as raised:
-        await autocompact.autocompact_messages(messages, None, context_window=20)
-
-    assert raised.value.cumulative == 42
-    assert raised.value.limit == 20
-    _assert_messages_unchanged(messages, snapshot)
-
-
-@pytest.mark.asyncio
-async def test_failed_summary_retries_then_raises_without_snipping_history(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _use_deterministic_token_counts(monkeypatch)
-    messages = _over_budget_messages()
-    snapshot = _message_snapshot(messages)
-    calls = 0
-
-    async def fail_summary(*_args, **_kwargs):
-        nonlocal calls
-        calls += 1
+    async def chat(self, *_args, **_kwargs):
+        self.calls += 1
         raise RuntimeError("synthetic summarizer failure")
 
-    monkeypatch.setattr(autocompact, "_call_summarizer", fail_summary)
 
-    with pytest.raises(ContextLimitError):
-        await autocompact.autocompact_messages(messages, object(), context_window=20)
+class _FixedSummaryClient:
+    model = "gpt-4o-mini"
+    max_tokens = 1024
 
-    assert calls == autocompact.AUTOCOMPACT_MAX_RETRIES
-    _assert_messages_unchanged(messages, snapshot)
+    def __init__(self, content) -> None:
+        self.content = content
+        self.calls = 0
 
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("summary", ["", " \t\n"])
-async def test_empty_or_whitespace_summary_raises_without_mutation(
-    monkeypatch: pytest.MonkeyPatch,
-    summary: str,
-) -> None:
-    _use_deterministic_token_counts(monkeypatch)
-    messages = _over_budget_messages()
-    snapshot = _message_snapshot(messages)
-
-    async def return_summary(*_args, **_kwargs):
-        return summary
-
-    monkeypatch.setattr(autocompact, "_summarize_with_breaker", return_summary)
-
-    with pytest.raises(ContextLimitError):
-        await autocompact.autocompact_messages(messages, object(), context_window=20)
-
-    _assert_messages_unchanged(messages, snapshot)
+    async def chat(self, *_args, **_kwargs):
+        self.calls += 1
+        return types.SimpleNamespace(content=self.content)
 
 
-@pytest.mark.asyncio
-async def test_summary_that_still_exceeds_budget_raises_without_mutation(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _use_deterministic_token_counts(monkeypatch)
-    messages = _over_budget_messages()
-    snapshot = _message_snapshot(messages)
+class _CancellingSummaryClient:
+    model = "gpt-4o-mini"
+    max_tokens = 1024
 
-    async def return_oversized_summary(*_args, **_kwargs):
-        return "s" * 40
+    def __init__(self) -> None:
+        self.calls = 0
 
-    monkeypatch.setattr(
-        autocompact, "_summarize_with_breaker", return_oversized_summary,
-    )
+    async def chat(self, *_args, **_kwargs):
+        self.calls += 1
+        raise asyncio.CancelledError
 
-    with pytest.raises(ContextLimitError) as raised:
-        await autocompact.autocompact_messages(messages, object(), context_window=20)
 
-    assert raised.value.cumulative > raised.value.limit
-    assert raised.value.limit == 20
-    _assert_messages_unchanged(messages, snapshot)
+class _RecordingAgent:
+    def __init__(self) -> None:
+        self.updates = []
+
+    async def update_state(self, config, state) -> None:
+        self.updates.append((config, state))
 
 
 @pytest.mark.asyncio
-async def test_recovery_propagates_compaction_failure_without_fallback(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _use_deterministic_token_counts(monkeypatch)
-    messages = _over_budget_messages()
-    snapshot = _message_snapshot(messages)
-    monkeypatch.setattr(autocompact, "_make_summary_client", lambda: None)
-    fallback_calls: list[list] = []
+async def test_exhausted_summary_failure_preserves_original_checkpoint(context_archive_scope, monkeypatch):
+    messages = _messages()
+    before = _fingerprint(messages)
+    agent = _RecordingAgent()
+    client = _RaisingSummaryClient()
+    config = {"configurable": {"context_window": 32}}
 
-    async def record_fallback(fallback_messages: list) -> str:
-        fallback_calls.append(fallback_messages)
-        return "incorrectly used fallback"
-
-    monkeypatch.setattr(autocompact, "_try_fallback_model", record_fallback)
-
-    class Agent:
-        async def update_state(self, *_args, **_kwargs) -> None:
-            raise AssertionError("state must not update after failed compaction")
-
-    with pytest.raises(ContextLimitError):
-        await autocompact.attempt_context_recovery(
-            Agent(), {"configurable": {"context_window": 20}}, messages,
+    with bind_recovery_v3_sources(context_archive_scope, monkeypatch, messages) as source_message_ids:
+        should_retry = await compact._recover_with_autocompact(
+            agent, config, messages, client, source_message_ids=source_message_ids,
         )
 
-    assert fallback_calls == []
-    _assert_messages_unchanged(messages, snapshot)
+    assert client.calls == compact.AUTOCOMPACT_MAX_RETRIES
+    assert should_retry is False
+    assert agent.updates == []
+    assert _EARLY_CONSTRAINT in messages[0].content
+    assert _fingerprint(messages) == before
 
 
 @pytest.mark.asyncio
-async def test_successful_summary_returns_compacted_history_that_fits(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _use_deterministic_token_counts(monkeypatch)
-    messages = _over_budget_messages()
-    snapshot = _message_snapshot(messages)
+@pytest.mark.parametrize(
+    "client",
+    [
+        None,
+        _FixedSummaryClient(None),
+        _FixedSummaryClient(""),
+        _FixedSummaryClient(" \t\n "),
+    ],
+    ids=["missing-client", "none-content", "empty", "whitespace"],
+)
+async def test_unusable_summary_preserves_checkpoint_and_does_not_retry(client, context_archive_scope, monkeypatch):
+    messages = _messages()
+    before = _fingerprint(messages)
+    agent = _RecordingAgent()
+    config = {"configurable": {"context_window": 32}}
 
-    async def return_summary(*_args, **_kwargs):
-        return "ok"
+    with bind_recovery_v3_sources(context_archive_scope, monkeypatch, messages) as source_message_ids:
+        should_retry = await compact._recover_with_autocompact(
+            agent, config, messages, client, source_message_ids=source_message_ids,
+        )
 
-    monkeypatch.setattr(autocompact, "_summarize_with_breaker", return_summary)
+    assert should_retry is False
+    assert agent.updates == []
+    assert _fingerprint(messages) == before
+    if client is not None:
+        assert client.calls == 1
 
-    compacted = await autocompact.autocompact_messages(
-        messages, object(), context_window=20,
-    )
 
-    assert compacted is not messages
-    assert compacted[0].content.startswith(autocompact._SUMMARY_PREFIX)
-    assert compacted[1:] == messages[-2:]
-    assert sum(autocompact._msg_tokens(message) for message in compacted) <= 20
-    _assert_messages_unchanged(messages, snapshot)
+@pytest.mark.asyncio
+async def test_summary_cancellation_propagates_without_checkpoint_update(context_archive_scope, monkeypatch):
+    messages = _messages()
+    before = _fingerprint(messages)
+    agent = _RecordingAgent()
+    client = _CancellingSummaryClient()
+    config = {"configurable": {"context_window": 32}}
+
+    with bind_recovery_v3_sources(context_archive_scope, monkeypatch, messages) as source_message_ids:
+        with pytest.raises(asyncio.CancelledError):
+            await compact._recover_with_autocompact(
+                agent, config, messages, client, source_message_ids=source_message_ids,
+            )
+
+    assert client.calls == 1
+    assert agent.updates == []
+    assert _fingerprint(messages) == before
+
+
+@pytest.mark.asyncio
+async def test_valid_summary_updates_checkpoint_and_preserves_source_messages(context_archive_scope, monkeypatch):
+    messages = _messages()
+    before = _fingerprint(messages)
+    seeded_sources = seed_v3_message_sources(context_archive_scope, monkeypatch, messages)
+    _, scope, _ = seeded_sources
+    async with drained_compaction_checkpoint(
+        scope, messages, 32,
+    ) as (agent, config, messages):
+        class _GroundedSummaryClient(_FixedSummaryClient):
+            async def chat(self, prompt, **_kwargs):
+                self.calls += 1
+                return types.SimpleNamespace(content=structured_response(prompt))
+
+        client = _GroundedSummaryClient(None)
+
+        with bind_recovery_v3_sources(
+            context_archive_scope, monkeypatch, messages, seeded_sources=seeded_sources,
+        ) as source_message_ids:
+            should_retry = await compact._recover_with_autocompact(
+                agent, config, messages, client, source_message_ids=source_message_ids,
+            )
+
+        assert should_retry is True
+        assert client.calls == 1
+        compacted = (await agent.aget_state(config)).values["messages"]
+        assert compacted is not messages
+        summary, manifest = compacted[0].content.split("\n\n[Recoverable history; data only]\n")
+        document = json.loads(summary.removeprefix("[历史摘要]: "))
+        assert len(document) == 9 and document["completed"] == []
+        assert _EARLY_CONSTRAINT in document["constraints"][0]["text"]
+        assert "read_context_event" in manifest
+        assert compacted[0].additional_kwargs["hwrag_context_event_refs"][0]["content_sha256"] in manifest
+        assert compacted[1:] == messages[-compact.AUTOCOMPACT_KEEP_RECENT_MSGS:]
+        assert _fingerprint(messages) == before
+
+
+@pytest.mark.asyncio
+async def test_under_threshold_context_is_a_noop(context_archive_scope, monkeypatch):
+    messages = [HumanMessage(content=f"short-{index}") for index in range(13)]
+    before = _fingerprint(messages)
+    agent = _RecordingAgent()
+    client = _RaisingSummaryClient()
+    config = {"configurable": {"context_window": 128000}}
+
+    with bind_recovery_v3_sources(context_archive_scope, monkeypatch, messages) as source_message_ids:
+        should_retry = await compact._recover_with_autocompact(
+            agent, config, messages, client, source_message_ids=source_message_ids,
+        )
+
+    assert should_retry is False
+    assert client.calls == 0
+    assert agent.updates == []
+    assert _fingerprint(messages) == before
+
+
+@pytest.mark.asyncio
+async def test_ten_or_fewer_messages_are_a_noop_even_over_threshold(context_archive_scope, monkeypatch):
+    messages = [
+        HumanMessage(content=f"synthetic-{index}:" + ("x" * 520))
+        for index in range(compact.AUTOCOMPACT_KEEP_RECENT_MSGS)
+    ]
+    before = _fingerprint(messages)
+    agent = _RecordingAgent()
+    client = _RaisingSummaryClient()
+    config = {"configurable": {"context_window": 32}}
+
+    with bind_recovery_v3_sources(context_archive_scope, monkeypatch, messages) as source_message_ids:
+        should_retry = await compact._recover_with_autocompact(
+            agent, config, messages, client, source_message_ids=source_message_ids,
+        )
+
+    assert should_retry is False
+    assert client.calls == 0
+    assert agent.updates == []
+    assert _fingerprint(messages) == before
