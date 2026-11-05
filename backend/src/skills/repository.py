@@ -817,9 +817,18 @@ class SkillRepository:
         source: Mapping[str, str],
         *,
         _install_nonce: str | None = None,
+        _operation_id: str | None = None,
+        _enabled: bool = False,
         claude_adapter: bool = False,
     ) -> dict[str, Any]:
         """Install validated package bytes and keep host state outside the package."""
+        if type(_enabled) is not bool:
+            raise SkillValidationError("Install enabled state must be a boolean", code="SKILL_PACKAGE_INVALID")
+        if _operation_id is not None and (
+            type(_operation_id) is not str
+            or re.fullmatch(r"[0-9a-f]{64}", _operation_id, re.ASCII) is None
+        ):
+            raise SkillValidationError("Install operation ID is invalid", code="SKILL_PACKAGE_INVALID")
         if not isinstance(claude_adapter, bool):
             raise SkillValidationError("claude_adapter must be a boolean", code="SKILL_ADAPTER_INVALID")
         if not files:
@@ -890,6 +899,8 @@ class SkillRepository:
         if not re.fullmatch(r"[0-9a-f]{32}", install_nonce):
             raise SkillValidationError("Install transaction nonce is invalid", code="SKILL_PACKAGE_INVALID")
         cleaned_source["_install_nonce"] = install_nonce
+        if _operation_id is not None:
+            cleaned_source["_operation_id"] = _operation_id
         if not re.fullmatch(r"[0-9a-fA-F]{40}", cleaned_source["commit_sha"]):
             raise SkillValidationError("Source commit_sha must be a full 40-character SHA", code="GITHUB_COMMIT_INVALID")
 
@@ -968,7 +979,7 @@ class SkillRepository:
                 self._management_state(
                     destination,
                     update={
-                        "enabled": True,
+                        "enabled": _enabled,
                         "source": cleaned_source,
                         "_install_nonce": install_nonce,
                         "_managed_nonce": install_nonce,
