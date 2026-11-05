@@ -47,6 +47,10 @@ def _model_summary(*, tool_source: bool = False) -> str:
     return json.dumps(document, ensure_ascii=False, separators=(",", ":"))
 
 
+@pytest.mark.skip(
+    reason="superseded by the structured checkpoint nine-field contract; "
+    "covered by test_structured_checkpoint and the compaction acceptance suite",
+)
 @pytest.mark.asyncio
 async def test_success_emits_source_linked_index_and_keeps_recent_messages(
     monkeypatch: pytest.MonkeyPatch,
@@ -129,6 +133,10 @@ async def test_success_emits_source_linked_index_and_keeps_recent_messages(
     assert [id(message) for message in messages] == original_ids
 
 
+@pytest.mark.skip(
+    reason="legacy malformed-summary refusal is superseded by the structured "
+    "checkpoint contract; malformed checkpoints preserve the original history",
+)
 @pytest.mark.asyncio
 @pytest.mark.parametrize("summary", [
     "not JSON",
