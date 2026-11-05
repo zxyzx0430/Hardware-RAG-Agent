@@ -15,6 +15,15 @@ import time
 import uuid
 from pathlib import Path
 
+# Native BLAS/OpenMP runtimes are loaded by torch/sentence-transformers. On
+# Windows + Python 3.13, allowing duplicate OpenMP runtimes or a large thread
+# pool can abort the whole process (0xC0000005) during model warmup. Keep the
+# native runtime single-threaded and permissive before any ML import.
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
 # 确保 src 可导入（与 backend/main.py 同理）
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
 if str(_BACKEND_DIR) not in sys.path:

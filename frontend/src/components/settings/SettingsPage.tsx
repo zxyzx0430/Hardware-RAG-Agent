@@ -37,6 +37,7 @@ export function SettingsPage() {
     addProvider, removeProvider, updateProvider, verifyProvider, fetchProviderModels,
     setChatModel, setImageModel, setVisionModel,
     updateSetting, saveLongTermMemory, toggleSkill,
+    setupCode, setSetupCode,
     setWebSearchKey, setWebSearchBaseUrl, toggleShowWebSearchKey,
     setImageGenerationKey, setImageGenerationBaseUrl, setImageGenerationModel, toggleShowImageGenerationKey,
     fetchTools,
@@ -317,6 +318,19 @@ export function SettingsPage() {
                     >
                       {t('add')}
                     </button>
+                  </div>
+                  <div className="field-label">{lang === 'zh' ? '首次配置确认码（仅首次）' : 'First-run setup code (first time only)'}</div>
+                  <input
+                    className="form-input"
+                    value={setupCode ?? ''}
+                    onChange={(e) => setSetupCode?.(e.target.value)}
+                    placeholder={lang === 'zh' ? '后端控制台打印的一次性确认码' : 'One-time code printed by the backend console'}
+                    style={{ marginBottom: 4 }}
+                  />
+                  <div style={{ fontSize: 11, color: 'var(--muted-fg)', marginBottom: 8 }}>
+                    {lang === 'zh'
+                      ? '首次启动后端时打印，也保存在 backend/data/.setup_code；已配置过服务商后不需要填写。'
+                      : 'Printed when the backend first starts (also in backend/data/.setup_code); not needed after a provider is stored.'}
                   </div>
                   {savedField === 'newProvider' && <span className="saved-feedback">{savedLabel}</span>}
                 </div>

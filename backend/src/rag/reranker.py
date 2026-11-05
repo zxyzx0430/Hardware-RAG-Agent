@@ -53,7 +53,29 @@ def get_reranker():
         if _RERANKER is not None:
             return _RERANKER if _RERANKER is not False else None
         try:
+            import psutil
+            available_mb = int(psutil.virtual_memory().available / (1024 * 1024))
+        except Exception:
+            available_mb = None
+        required_mb = int(settings.reranker_min_available_mb)
+        if available_mb is not None and available_mb < required_mb:
+            logger.warning(
+                "[Reranker] Skipping load: only %d MB available, need >= %d MB; "
+                "retrieval will use RRF fallback",
+                available_mb, required_mb,
+            )
+            _RERANKER = False
+            return None
+        try:
             from sentence_transformers import CrossEncoder
+            import torch
+            try:
+                torch.set_num_threads(1)
+                torch.set_num_interop_threads(1)
+            except (RuntimeError, ValueError):
+                # Interop threads can only be set before parallel work starts;
+                # a late call is harmless if another module already initialized.
+                pass
             logger.info(f"[Reranker] Loading {_RERANKER_MODEL} (base model, fast load)...")
             model = CrossEncoder(_RERANKER_MODEL, max_length=512)
             _RERANKER = model

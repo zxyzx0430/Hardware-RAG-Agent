@@ -88,6 +88,10 @@ class Settings(BaseSettings):
     reranker_min_score: float = Field(default=-2.0, alias="RERANKER_MIN_SCORE")
     reranker_min_keep: int = Field(default=2, alias="RERANKER_MIN_KEEP")
     reranker_retry_interval_sec: int = Field(default=300, alias="RERANKER_RETRY_INTERVAL_SEC")
+    # Loading the cross-encoder on a nearly-full Windows host can terminate the
+    # process with a native access violation. Skip the optional model below this
+    # free-memory floor and let retrieval use RRF ordering.
+    reranker_min_available_mb: int = Field(default=2048, alias="RERANKER_MIN_AVAILABLE_MB")
 
     # 附件文本截断上限（字符数）
     max_attachment_chars: int = Field(default=8000, alias="MAX_ATTACHMENT_CHARS")
