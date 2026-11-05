@@ -34,7 +34,12 @@ const ActivityBlock = memo(function ActivityBlock({ activity, msgId, startTime }
     return () => clearInterval(timer);
   }, [isRunning, startTime]);
 
-  const displayDuration = isRunning ? elapsed : (activity.durationMs || 0);
+  const stepDurationMs = activity.steps.reduce(
+    (total, step) => total + (step.duration || 0),
+    0,
+  );
+  const measuredDuration = activity.durationMs || stepDurationMs;
+  const displayDuration = isRunning ? elapsed : measuredDuration;
 
   return (
     <div className={`activity-block${isRunning ? ' running' : ''}`} id={`act-${msgId}`}>
@@ -46,7 +51,7 @@ const ActivityBlock = memo(function ActivityBlock({ activity, msgId, startTime }
         </span>
         <span className="activity-header-duration">
           {isRunning ? <span className="activity-spinner" /> : null}
-          {isRunning ? '' : t('doneIn') + ' '}{formatDuration(displayDuration)}
+          {isRunning ? '' : (measuredDuration > 0 ? t('doneIn') + ' ' : '')}{measuredDuration > 0 ? formatDuration(displayDuration) : '—'}
         </span>
       </button>
       {!collapsed ? (

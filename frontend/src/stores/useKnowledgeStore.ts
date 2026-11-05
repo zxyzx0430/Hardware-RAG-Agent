@@ -424,6 +424,11 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
           }
           // 已完成或出错：停止轮询
           if (item.status === "indexed" || item.status === "error") {
+            // Only a successful index changes aggregate counts; an error must
+            // stop polling without an extra collection refresh.
+            if (item.status === "indexed") {
+              await get().fetchCollections();
+            }
             if (progressKey) get().removeUploadProgress(progressKey);
             pollingDocIds.delete(docId);
             pollTimers.delete(timerId);

@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 
 from src.agent.core.toolkit.tool_spec import RiskLevel, ToolSpec
 from src.agent.exceptions import ToolContext
-from src.agent.path_guard import validate_path
+from src.agent.path_guard import resolve_agent_path, validate_path
 from src.agent.tools.groups.file_ops._git_snapshot import git_snapshot_context
 
 
@@ -60,8 +60,11 @@ class ApplyPatchTool(ToolSpec):
         ok, reason = validate_path(path, is_write=True)
         if not ok:
             return _fail(path, f"Error: {reason}")
+        resolved = resolve_agent_path(path)
+        if not resolved:
+            return _fail(path, "Error: path could not be resolved")
         patch = args.get("patch", "")
-        return await _do_apply(path, patch)
+        return await _do_apply(resolved, patch)
 
 
 async def _do_apply(path: str, patch: str) -> dict:

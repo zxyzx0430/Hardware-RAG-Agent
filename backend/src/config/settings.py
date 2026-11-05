@@ -57,12 +57,19 @@ class Settings(BaseSettings):
     # 这些属于后续周次要用到的默认路径。
     # 现在先收口到配置层，后面扩展时不需要到处找字符串。
     chroma_persist_dir: str = Field(
-        default=str(ROOT_DIR / "data" / "chroma"), alias="CHROMA_PERSIST_DIR"
+        default=str(ROOT_DIR / "data" / "chroma_db"), alias="CHROMA_PERSIST_DIR"
     )
 
     # ── SQLite ──
     sqlite_db_path: str = Field(
-        default=str(ROOT_DIR / "data" / "chat_history.db"), alias="SQLITE_DB_PATH"
+        default=str(ROOT_DIR / "data" / "hardware_rag.db"), alias="SQLITE_DB_PATH"
+    )
+
+    # LangGraph checkpoint DB. Kept separate from the main chat DB so the
+    # checkpointer can be backed up/reset independently.
+    agent_checkpoint_path: str = Field(
+        default=str(ROOT_DIR / "data" / "agent_checkpoints.sqlite"),
+        alias="AGENT_CHECKPOINT_PATH",
     )
 
     # Embedding
@@ -133,6 +140,10 @@ class Settings(BaseSettings):
         sqlite = Path(self.sqlite_db_path)
         if not sqlite.is_absolute():
             self.sqlite_db_path = str(ROOT_DIR / sqlite)
+
+        checkpoint = Path(self.agent_checkpoint_path)
+        if not checkpoint.is_absolute():
+            self.agent_checkpoint_path = str(ROOT_DIR / checkpoint)
 
     def reload(self) -> "Settings":
         """

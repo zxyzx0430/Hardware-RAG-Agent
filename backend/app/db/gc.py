@@ -17,11 +17,13 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from src.config.settings import settings
+
 logger = logging.getLogger(__name__)
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
-DEFAULT_MAIN_DB = Path(os.getenv("SQLITE_DB_PATH") or BACKEND_DIR / "data" / "hardware_rag.db")
-DEFAULT_CHECKPOINT_DB = BACKEND_DIR / "data" / "agent_checkpoints.sqlite"
+DEFAULT_MAIN_DB = Path(settings.sqlite_db_path)
+DEFAULT_CHECKPOINT_DB = Path(settings.agent_checkpoint_path)
 DEFAULT_GRACE_HOURS = 24
 SAMPLE_LIMIT = 20
 _OBS_META_PREFIX = "_toolObservation:v1:meta:"

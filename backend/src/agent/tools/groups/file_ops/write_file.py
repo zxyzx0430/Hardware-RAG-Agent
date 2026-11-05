@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 
 from src.agent.core.toolkit.tool_spec import RiskLevel, ToolSpec
 from src.agent.exceptions import ToolContext
-from src.agent.path_guard import validate_path
+from src.agent.path_guard import resolve_agent_path, validate_path
 from src.agent.tools.groups.file_ops._git_snapshot import git_snapshot_context
 
 
@@ -63,7 +63,10 @@ class WriteFileTool(ToolSpec):
         ok, reason = validate_path(path, is_write=True)
         if not ok:
             return {"output": f"Error: denied path: {reason}", "path": path, "success": False}
-        return await _do_write(path, content)
+        resolved = resolve_agent_path(path)
+        if not resolved:
+            return {"output": "Error: path could not be resolved", "path": path, "success": False}
+        return await _do_write(resolved, content)
 
 
 async def _do_write(path: str, content: str) -> dict:

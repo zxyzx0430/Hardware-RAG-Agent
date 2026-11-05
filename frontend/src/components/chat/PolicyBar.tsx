@@ -13,9 +13,9 @@ interface ModeOption {
 }
 
 const MODE_OPTIONS: ModeOption[] = [
-  { value: "bypassPermissions", label: "全部放行", title: "所有工具调用直接执行，不询问（风险最高，仅信任场景用）", variant: "danger" },
-  { value: "default", label: "每次询问", title: "每次工具调用都弹窗确认（最安全）", variant: "warn" },
-  { value: "acceptEdits", label: "自动放行低风险", title: "LOW 风险自动放行，MEDIUM/HIGH 仍弹窗确认（推荐）", variant: "safe" },
+  { value: "bypassPermissions", label: "放宽", title: "低/中风险直接执行；高风险仍需确认（仅信任场景用）", variant: "danger" },
+  { value: "default", label: "按风险询问", title: "LOW 风险自动放行，MEDIUM/HIGH 弹窗确认", variant: "warn" },
+  { value: "acceptEdits", label: "自动放行低/中", title: "LOW/MEDIUM 自动放行，HIGH 仍弹窗确认（推荐）", variant: "safe" },
 ];
 
 function PolicyButton({ option, active, onClick }: {

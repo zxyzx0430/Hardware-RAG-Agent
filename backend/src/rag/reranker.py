@@ -22,6 +22,9 @@ logger = logging.getLogger(__name__)
 
 # Use HF mirror for faster downloads in China (set before importing transformers)
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+# A broken mirror must not hold a request thread forever. This is a download
+# timeout only; the model load itself runs in the background warmup thread.
+os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "30")
 
 # Model name / thresholds are configurable via settings (env vars).
 _RERANKER_MODEL = settings.reranker_model
@@ -30,35 +33,41 @@ _RERANKER: Optional[object] = None  # lazy singleton; None=not loaded, False=una
 # 在 _RETRY_INTERVAL_S 内跳过 reranker，过后自动重试。间隔从 settings 读取。
 _failed_at: float | None = None
 _RETRY_INTERVAL_S: float = float(settings.reranker_retry_interval_sec)
-# P1: 多线程并行搜索时保护单例加载 + predict 失败标记
-_RERANKER_LOCK = threading.Lock()
+# Loading is serialized separately from prediction. Requests must never wait
+# for a cold model load: they fall back to RRF while the warmup thread works.
+_LOAD_LOCK = threading.Lock()
+_PREDICT_LOCK = threading.Lock()
 
 
 def get_reranker():
-    """Lazy-load cross-encoder model (singleton).
+    """Load the cross-encoder model (singleton).
 
-    Returns:
-        CrossEncoder instance if available, None if load failed.
-        Once marked unavailable (False), subsequent calls return None without retry.
+    This is intentionally a blocking function for the background warmup thread
+    only. Request handlers must use :func:`rerank`, which never waits for a
+    cold load and falls back to the fused RRF order.
     """
     global _RERANKER
     if _RERANKER is not None:
         return _RERANKER if _RERANKER is not False else None
-    try:
-        from sentence_transformers import CrossEncoder
-        logger.info(f"[Reranker] Loading {_RERANKER_MODEL} (base model, fast load)...")
-        _RERANKER = CrossEncoder(_RERANKER_MODEL, max_length=512)
-        logger.info("[Reranker] Loaded base model (FP32, ~280MB)")
+    with _LOAD_LOCK:
+        if _RERANKER is not None:
+            return _RERANKER if _RERANKER is not False else None
         try:
-            n_params = sum(p.numel() for p in _RERANKER.model.parameters())
-            logger.info(f"[Reranker] Loaded OK, params={n_params / 1e6:.1f}M")
-        except Exception:
-            logger.info("[Reranker] Loaded OK")
-        return _RERANKER
-    except Exception as e:
-        logger.error(f"[Reranker] Base model load failed: {e}")
-        _RERANKER = False  # mark as unavailable (don't retry on every search)
-        return None
+            from sentence_transformers import CrossEncoder
+            logger.info(f"[Reranker] Loading {_RERANKER_MODEL} (base model, fast load)...")
+            model = CrossEncoder(_RERANKER_MODEL, max_length=512)
+            _RERANKER = model
+            logger.info("[Reranker] Loaded base model (FP32, ~280MB)")
+            try:
+                n_params = sum(p.numel() for p in model.model.parameters())
+                logger.info(f"[Reranker] Loaded OK, params={n_params / 1e6:.1f}M")
+            except Exception:
+                logger.info("[Reranker] Loaded OK")
+            return model
+        except Exception as e:
+            logger.error(f"[Reranker] Base model load failed: {e}")
+            _RERANKER = False  # mark as unavailable (don't retry on every search)
+            return None
 
 
 def _is_reranker_in_cooldown() -> bool:
@@ -101,20 +110,20 @@ def rerank(query: str, chunks: list[str], top_k: int = 0) -> list[tuple[int, flo
     global _failed_at
     if _is_reranker_in_cooldown():
         return [(i, 0.0) for i in range(len(chunks))]
-    with _RERANKER_LOCK:
-        if _is_reranker_in_cooldown():
-            return [(i, 0.0) for i in range(len(chunks))]
-        model = get_reranker()
-        if not model:
-            return [(i, 0.0) for i in range(len(chunks))]
-        try:
+    # Never call get_reranker() here: a cold load may be downloading hundreds
+    # of MB. The warmup thread owns loading; requests fall back to RRF.
+    model = _RERANKER
+    if model is None or model is False:
+        return [(i, 0.0) for i in range(len(chunks))]
+    try:
+        with _PREDICT_LOCK:
             pairs = [(query, c) for c in chunks]
             raw_scores = model.predict(pairs)
-            _failed_at = None  # success — clear cooldown
-            return _ranked_scores(raw_scores, top_k)
-        except Exception as e:
-            logger.warning(
-                f"[Reranker] predict failed, backing off {_RETRY_INTERVAL_S}s: {e}"
-            )
-            _failed_at = time.time()
-            return [(i, 0.0) for i in range(len(chunks))]
+        _failed_at = None  # success — clear cooldown
+        return _ranked_scores(raw_scores, top_k)
+    except Exception as e:
+        logger.warning(
+            f"[Reranker] predict failed, backing off {_RETRY_INTERVAL_S}s: {e}"
+        )
+        _failed_at = time.time()
+        return [(i, 0.0) for i in range(len(chunks))]

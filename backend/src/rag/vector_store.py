@@ -154,7 +154,7 @@ class HardwareVectorStore:
         ef_search: int = 200,
     ):
         self.collection_name = collection_name
-        self.persist_dir = persist_dir or CHROMA_DIR
+        self.persist_dir = persist_dir or Path(settings.chroma_persist_dir)
         self.persist_dir.mkdir(parents=True, exist_ok=True)
         self.embedding_model = embedding_model
         self._embedding_api_key = embedding_api_key
@@ -280,7 +280,7 @@ class HardwareVectorStore:
                 return None
             peek = underlying.peek(limit=1)
             embeddings = peek.get("embeddings") if peek else None
-            if embeddings and len(embeddings) > 0:
+            if embeddings is not None and len(embeddings) > 0:
                 return len(embeddings[0])
         except Exception as e:
             logger.warning(f"[VectorStore] Failed to cache collection dimension: {e}")

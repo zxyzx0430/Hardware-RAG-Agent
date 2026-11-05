@@ -15,11 +15,13 @@ from typing import Optional
 import logging
 import httpx
 
+from src.config.settings import settings
+
 # ─── 默认数据目录 ───
 DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
 PDF_DIR = DATA_DIR / "pdfs"
 MARKDOWN_DIR = DATA_DIR / "markdown"
-CHROMA_DIR = DATA_DIR / "chroma"
+CHROMA_DIR = Path(settings.chroma_persist_dir)
 
 
 @dataclass

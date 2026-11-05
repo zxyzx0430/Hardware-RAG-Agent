@@ -21,11 +21,24 @@ _LOGGER = logging.getLogger(__name__)
 _BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
 _DB_DIR = _BACKEND_DIR / "data"
 
+# The lightweight config loader must run before the environment is read here:
+# pydantic Settings reads .env, but this module only uses os.getenv for the
+# default engine. Without this, .env's SQLITE_DB_PATH is silently ignored.
+from app.config import load_environment  # noqa: E402
+
+load_environment()
+
 # Only the default location needs the directory created here. A caller that
 # points SQLITE_DB_PATH at a temp directory owns that directory's lifecycle, so
 # tests never write into the user's backend/data.
 _DB_PATH_ENV = os.getenv("SQLITE_DB_PATH")
-DB_PATH = _DB_PATH_ENV or str(_DB_DIR / "hardware_rag.db")
+if _DB_PATH_ENV:
+    _db_path = Path(_DB_PATH_ENV)
+    if not _db_path.is_absolute():
+        _db_path = _BACKEND_DIR / _db_path
+    DB_PATH = str(_db_path)
+else:
+    DB_PATH = str(_DB_DIR / "hardware_rag.db")
 if not _DB_PATH_ENV:
     _DB_DIR.mkdir(parents=True, exist_ok=True)
 DATABASE_URL = f"sqlite:///{DB_PATH}"

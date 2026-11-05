@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 
 from src.agent.core.toolkit.tool_spec import RiskLevel, ToolSpec
 from src.agent.exceptions import ToolContext
-from src.agent.path_guard import validate_path
+from src.agent.path_guard import resolve_agent_path, validate_path
 from src.agent.tools.groups.file_ops._git_snapshot import git_snapshot_context
 
 
@@ -69,7 +69,10 @@ class EditFileTool(ToolSpec):
         ok, reason = validate_path(path, is_write=True)
         if not ok:
             return {"output": f"Error: denied path: {reason}", "path": path, "success": False}
-        return await _do_edit(path, old_string, new_string, replace_all)
+        resolved = resolve_agent_path(path)
+        if not resolved:
+            return {"output": "Error: path could not be resolved", "path": path, "success": False}
+        return await _do_edit(resolved, old_string, new_string, replace_all)
 
 
 async def _do_edit(path: str, old_string: str, new_string: str, replace_all: bool) -> dict:

@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 
 from src.agent.core.toolkit.tool_spec import RiskLevel, ToolSpec
 from src.agent.exceptions import ToolContext
-from src.agent.path_guard import validate_path
+from src.agent.path_guard import resolve_agent_path, validate_path
 from src.agent.tools.groups.file_ops._git_snapshot import git_snapshot_context
 
 
@@ -61,8 +61,11 @@ class MultiEditTool(ToolSpec):
         ok, reason = validate_path(path, is_write=True)
         if not ok:
             return _fail(path, f"Error: {reason}")
+        resolved = resolve_agent_path(path)
+        if not resolved:
+            return _fail(path, "Error: path could not be resolved")
         edits = args.get("edits", [])
-        return await _do_multi_edit(path, edits)
+        return await _do_multi_edit(resolved, edits)
 
 
 async def _do_multi_edit(path: str, edits: list[Any]) -> dict:

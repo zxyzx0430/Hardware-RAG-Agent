@@ -104,5 +104,5 @@ class TestSettings:
         for key in ["CHROMA_PERSIST_DIR", "CHROMA_MODE", "CHROMA_HOST", "CHROMA_PORT"]:
             monkeypatch.delenv(key, raising=False)
         s = Settings(_env_file=None)
-        expected = str(ROOT_DIR / "data" / "chroma")
+        expected = str(ROOT_DIR / "data" / "chroma_db")
         assert s.chroma_persist_dir == expected

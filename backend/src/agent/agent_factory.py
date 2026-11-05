@@ -35,6 +35,7 @@ from src.agent.prompts import (
     build_system_prompt,
 )
 from src.llm.client import LLMClient
+from src.config.settings import settings
 from src.agent.telemetry import (
     AGENT_INSTANCE_ID_ATTR,
     emit_agent_timing,
@@ -295,9 +296,7 @@ _factory_graph_savers: dict[int, tuple[Any, Any]] = {}
 _agent_writer_binding_token = object()
 
 # Path to the SQLite checkpoint database (SqliteSaver mode).
-_SQLITE_CHECKPOINT_PATH = (
-    Path(__file__).resolve().parent.parent.parent / "data" / "agent_checkpoints.sqlite"
-)
+_SQLITE_CHECKPOINT_PATH = Path(settings.agent_checkpoint_path)
 
 
 async def _get_checkpointer() -> Any:

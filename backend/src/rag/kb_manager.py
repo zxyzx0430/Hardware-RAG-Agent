@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 _BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
 _DATA_DIR = _BACKEND_DIR / "data"
 BUILTIN_KB_DIR = _DATA_DIR / "builtin_kb"
-USER_CHROMA_DIR = _DATA_DIR / "chroma_db"
+USER_CHROMA_DIR = Path(settings.chroma_persist_dir)
 BM25_DIR = _DATA_DIR / "bm25"
 
 BUILTIN_KB_ID = "builtin-001"
@@ -78,6 +78,9 @@ _SEARCHABLE_DOCUMENT_SCOPE: ContextVar[tuple[str, frozenset[str]] | None] = Cont
 _RETRIEVER_SEARCH_SIGNATURE: ContextVar[tuple | None] = ContextVar(
     "retriever_search_signature", default=None,
 )
+# A loaded CPU cross-encoder may take tens of seconds on a large candidate set.
+# Bound it so a slow prediction cannot wedge the SSE request or health check.
+_RERANKER_TIMEOUT_S: float = 20.0
 
 
 def validate_small_chunk_size(size: int) -> bool:
@@ -1331,7 +1334,10 @@ class KnowledgeBaseManager:
                 from src.rag.reranker import rerank as rerank_chunks
                 t0 = time.perf_counter()
                 chunk_texts = [r.content for r in all_results]
-                reranked = rerank_chunks(query, chunk_texts)
+                reranked = await asyncio.wait_for(
+                    asyncio.to_thread(rerank_chunks, query, chunk_texts),
+                    timeout=_RERANKER_TIMEOUT_S,
+                )
                 logger.info("search_stage stage=batch_reranker elapsed_ms=%d chunk_count=%d",
                             int((time.perf_counter() - t0) * 1000), len(all_results))
                 if reranked and any(s != 0.0 for _, s in reranked):  # skip if fallback (all 0 scores)
@@ -1341,6 +1347,11 @@ class KnowledgeBaseManager:
                     if len(kept) < _RERANKER_MIN_KEEP:
                         kept = reranked[:_RERANKER_MIN_KEEP]
                     all_results = _apply_reranker_score(all_results, kept)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[Reranker] batch rerank exceeded %.1fs, keeping RRF order",
+                    _RERANKER_TIMEOUT_S,
+                )
             except Exception as e:
                 logger.warning(f"[Reranker] batch rerank failed, keeping RRF order: {e}")
 

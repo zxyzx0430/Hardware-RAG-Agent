@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 
 from src.agent.core.toolkit.tool_spec import RiskLevel, ToolSpec
 from src.agent.exceptions import ToolContext
-from src.agent.path_guard import validate_path, is_path_allowed_for_tree
+from src.agent.path_guard import resolve_agent_path, validate_path, is_path_allowed_for_tree
 
 # ═══════════════════════════════════════════
 # Named constants
@@ -28,6 +28,10 @@ from src.agent.path_guard import validate_path, is_path_allowed_for_tree
 _DEFAULT_SEARCH_ROOT: str = "."
 _DEFAULT_MAX_RESULTS: int = 100
 _TRUNCATED_SUFFIX: str = "... (truncated)"
+_IGNORED_DIRS: frozenset[str] = frozenset({
+    "__pycache__", ".git", "node_modules", ".venv", "venv",
+    ".idea", ".vscode", ".claude", "dist", "build",
+})
 
 
 # ═══════════════════════════════════════════
@@ -64,7 +68,9 @@ class GlobTool(ToolSpec):
 
     async def execute(self, args: dict[str, Any], ctx: ToolContext) -> dict:
         """Glob file paths under root dir."""
-        path = args.get("path", _DEFAULT_SEARCH_ROOT)
+        path = resolve_agent_path(args.get("path", _DEFAULT_SEARCH_ROOT))
+        if not path:
+            return _error("path could not be resolved")
         err = _check_path(path)
         if err:
             return err
@@ -88,10 +94,20 @@ def _glob_sync(root: str, pattern: str, max_results: int) -> tuple[list[dict], b
         return [], False
     raw = list(root_path.glob(pattern))
     files = [p for p in raw if not _is_dir(p)]
+    files = [p for p in files if not _is_ignored(p, root_path)]
     files = [p for p in files if _has_mtime(p)]
     files = [p for p in files if is_path_allowed_for_tree(str(p))]
     files.sort(key=_get_mtime, reverse=True)
     return _truncate_matches(files, max_results)
+
+
+def _is_ignored(path: Path, root: Path) -> bool:
+    """True when any relative component is a dependency/VCS directory."""
+    try:
+        parts = path.relative_to(root).parts
+    except ValueError:
+        parts = path.parts
+    return any(part in _IGNORED_DIRS for part in parts)
 
 
 def _truncate_matches(files: list[Path], max_results: int) -> tuple[list[dict], bool]:

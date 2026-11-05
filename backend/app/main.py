@@ -229,11 +229,16 @@ def _warmup_rag_models_background() -> None:
         import time
         t0 = time.perf_counter()
 
-        # B: Reranker 预加载
+        # B: Reranker 预加载。失败时保持 RRF 回退，不伪装成已加载。
         try:
             from src.rag.reranker import get_reranker
-            get_reranker()
-            _LOGGER.info("[Warmup] Reranker loaded (%.1fs)", time.perf_counter() - t0)
+            reranker = get_reranker()
+            if reranker is None:
+                _LOGGER.warning(
+                    "[Warmup] Reranker unavailable; retrieval will use RRF fallback"
+                )
+            else:
+                _LOGGER.info("[Warmup] Reranker loaded (%.1fs)", time.perf_counter() - t0)
         except Exception as e:
             _LOGGER.warning("[Warmup] Reranker preload failed (non-fatal): %s", e)
 

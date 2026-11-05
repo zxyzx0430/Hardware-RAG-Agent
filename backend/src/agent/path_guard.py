@@ -84,6 +84,22 @@ TRAVERSAL_SEQ: str = ".."
 # Public API
 # ═══════════════════════════════════════════
 
+def resolve_agent_path(path: str) -> str:
+    """Resolve an Agent path, treating relative paths as project-root relative.
+
+    The backend process may run from ``backend/`` (the usual dev entry point),
+    but Agent file tools advertise and should use the project root. Resolving
+    here keeps read/write/search tools consistent instead of silently using
+    the server's current working directory.
+    """
+    if not path:
+        return ""
+    candidate = Path(path).expanduser()
+    if not candidate.is_absolute():
+        candidate = PROJECT_ROOT / candidate
+    return resolve_guard_path(str(candidate))
+
+
 def validate_path(path: str, is_write: bool) -> tuple[bool, str]:
     """Validate a path for Agent tool access. Returns (ok, reason).
 
@@ -95,7 +111,7 @@ def validate_path(path: str, is_write: bool) -> tuple[bool, str]:
         return False, "path is empty"
     if _has_traversal_component(path):
         return False, "path traversal (..) is not allowed"
-    real = resolve_guard_path(path)
+    real = resolve_agent_path(path)
     if not real:
         return False, "path could not be resolved"
     return _check_access(real)

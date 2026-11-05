@@ -462,9 +462,9 @@ const zh: Record<string, string> = {
   inputPlaceholderHardware: '向硬件文档提问…　Shift+Enter 换行',
   templateBtn: '模板',
   attachBtn: '附件',
-  permissionBypass: '全部放行',
-  permissionAsk: '每次询问',
-  permissionAuto: '自动放行低风险',
+  permissionBypass: '放宽',
+  permissionAsk: '按风险询问',
+  permissionAuto: '自动放行低/中',
 
   // Top bar - additional
   sourceCount: '来源',

@@ -462,9 +462,9 @@ const en: Record<string, string> = {
   inputPlaceholderHardware: 'Ask hardware docs… Shift+Enter for new line',
   templateBtn: 'Template',
   attachBtn: 'Attachment',
-  permissionBypass: 'Bypass All',
-  permissionAsk: 'Ask Every Time',
-  permissionAuto: 'Auto-Accept Low Risk',
+  permissionBypass: 'Relaxed',
+  permissionAsk: 'Ask by Risk',
+  permissionAuto: 'Auto Low/Med',
 
   // Top bar - additional
   sourceCount: 'Sources',

@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 
 from src.agent.core.toolkit.tool_spec import RiskLevel, ToolSpec
 from src.agent.exceptions import ToolContext
-from src.agent.path_guard import validate_path
+from src.agent.path_guard import resolve_agent_path, validate_path
 
 # ═══════════════════════════════════════════
 # Named constants
@@ -73,7 +73,10 @@ class ReadFileTool(ToolSpec):
         ok, reason = validate_path(path, is_write=False)
         if not ok:
             return {"output": f"Error: denied path: {reason}", "path": path, "offset": offset, "limit": limit}
-        return await _do_read(path, offset, limit)
+        resolved = resolve_agent_path(path)
+        if not resolved:
+            return {"output": "Error: path could not be resolved", "path": path, "offset": offset, "limit": limit}
+        return await _do_read(resolved, offset, limit)
 
 
 async def _do_read(path: str, offset: int, limit: int) -> dict:

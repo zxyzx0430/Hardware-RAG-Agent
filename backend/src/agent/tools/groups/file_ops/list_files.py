@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 
 from src.agent.core.toolkit.tool_spec import RiskLevel, ToolSpec
 from src.agent.exceptions import ToolContext
-from src.agent.path_guard import validate_path, is_path_allowed_for_tree
+from src.agent.path_guard import resolve_agent_path, validate_path, is_path_allowed_for_tree
 
 # ═══════════════════════════════════════════
 # Named constants
@@ -77,7 +77,9 @@ class ListFilesTool(ToolSpec):
 
     async def execute(self, args: dict[str, Any], ctx: ToolContext) -> dict:
         """List files under root as a tree."""
-        path = args.get("path", _DEFAULT_SEARCH_ROOT)
+        path = resolve_agent_path(args.get("path", _DEFAULT_SEARCH_ROOT))
+        if not path:
+            return _error("path could not be resolved")
         err = _check_path(path)
         if err:
             return err
