@@ -1,23 +1,51 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createMemory, deleteMemory, listMemory, updateMemory } from "../../api/memory";
 import { useI18n } from "../../i18n";
-import { MEMORY_KINDS, MEMORY_SCOPES } from "../../types/memory";
-import type { MemoryEntry, MemoryKind, MemoryScope } from "../../types/memory";
+import { MEMORY_CREATE_TIERS, MEMORY_KINDS, MEMORY_SCOPES, MEMORY_STATUSES, MEMORY_TIERS } from "../../types/memory";
+import type {
+  MemoryCreateInput,
+  MemoryCreateTier,
+  MemoryEntry,
+  MemoryKind,
+  MemoryScope,
+  MemoryStatus,
+  MemoryTier,
+} from "../../types/memory";
 import { EmptyState } from "../shared/EmptyState";
+import { entryStatus, entryTier, formatEvidence, statusLabelKey, tierLabelKey } from "./memoryFormat";
 
 const DEFAULT_CONFIDENCE = "0.7";
 
 interface MemoryDraft {
-  scope: MemoryScope;
+  tier: MemoryCreateTier;
   scopeKey: string;
+  projectId: string;
   kind: MemoryKind;
   content: string;
   confidence: string;
   expiresAt: string;
 }
 
-function defaultDraft(): MemoryDraft {
-  return { scope: "project", scopeKey: "", kind: "fact", content: "", confidence: DEFAULT_CONFIDENCE, expiresAt: "" };
+function scopeForTier(tier: MemoryCreateTier): MemoryScope {
+  if (tier === "working") return "session";
+  if (tier === "user") return "global";
+  return "project";
+}
+
+function toCreateTier(tier: MemoryTier): MemoryCreateTier {
+  return tier === "working" || tier === "user" ? tier : "project";
+}
+
+function defaultDraft(projectId = ""): MemoryDraft {
+  return {
+    tier: "project",
+    scopeKey: "",
+    projectId,
+    kind: "fact",
+    content: "",
+    confidence: DEFAULT_CONFIDENCE,
+    expiresAt: "",
+  };
 }
 
 function errorMessage(err: unknown): string {
@@ -66,33 +94,51 @@ function MemoryDraftFields({ draft, onChange, scopeEditable, idPrefix, t }: Memo
     <>
       {scopeEditable && (
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 10 }}>
-          <div style={{ flex: "1 1 160px" }}>
-            <label htmlFor={`${idPrefix}-scope`} className="field-label">{t("memoryScope")}</label>
+          <div style={{ flex: "1 1 140px" }}>
+            <label htmlFor={`${idPrefix}-tier`} className="field-label">{t("memoryTier")}</label>
             <select
-              id={`${idPrefix}-scope`}
+              id={`${idPrefix}-tier`}
               className="form-select"
-              value={draft.scope}
-              onChange={(e) => onChange({ scope: e.target.value as MemoryScope })}
+              value={draft.tier}
+              onChange={(e) => onChange({ tier: e.target.value as MemoryCreateTier })}
             >
-              {MEMORY_SCOPES.map((scope) => (
-                <option key={scope} value={scope}>{t(scopeLabelKey(scope))}</option>
+              {MEMORY_CREATE_TIERS.map((tier) => (
+                <option key={tier} value={tier}>{t(tierLabelKey(tier))}</option>
               ))}
             </select>
           </div>
-          <div style={{ flex: "2 1 240px" }}>
+          <div style={{ flex: "2 1 200px" }}>
             <label htmlFor={`${idPrefix}-scope-key`} className="field-label">
-              {t("memoryScopeKey")}{draft.scope === "global" ? ` (${t("memoryOptional")})` : ""}
+              {t("memoryScopeKey")}{draft.tier === "user" ? ` (${t("memoryOptional")})` : ""}
             </label>
             <input
               id={`${idPrefix}-scope-key`}
               className="form-input"
               value={draft.scopeKey}
-              disabled={draft.scope === "global"}
-              placeholder={draft.scope === "session" ? t("memorySessionKeyPlaceholder") : t("memoryProjectKeyPlaceholder")}
+              disabled={draft.tier === "user"}
+              placeholder={
+                draft.tier === "working"
+                  ? t("memorySessionKeyPlaceholder")
+                  : draft.tier === "project"
+                    ? t("memoryProjectKeyPlaceholder")
+                    : ""
+              }
               onChange={(e) => onChange({ scopeKey: e.target.value })}
             />
           </div>
-          <div style={{ flex: "1 1 160px" }}>
+          <div style={{ flex: "1 1 180px" }}>
+            <label htmlFor={`${idPrefix}-project-id`} className="field-label">
+              {t("memoryProjectId")} ({t("memoryOptional")})
+            </label>
+            <input
+              id={`${idPrefix}-project-id`}
+              className="form-input"
+              value={draft.projectId}
+              placeholder={t("memoryProjectIdPlaceholder")}
+              onChange={(e) => onChange({ projectId: e.target.value })}
+            />
+          </div>
+          <div style={{ flex: "1 1 140px" }}>
             <label htmlFor={`${idPrefix}-kind`} className="field-label">{t("memoryKind")}</label>
             <select
               id={`${idPrefix}-kind`}
@@ -144,7 +190,12 @@ function MemoryDraftFields({ draft, onChange, scopeEditable, idPrefix, t }: Memo
   );
 }
 
-export function MemoryPanel() {
+interface MemoryPanelProps {
+  /** Project id seeded from the hub's project context; users can override it. */
+  projectId?: string;
+}
+
+export function MemoryPanel({ projectId = "" }: MemoryPanelProps) {
   const { t, lang } = useI18n();
   const [entries, setEntries] = useState<MemoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -152,9 +203,13 @@ export function MemoryPanel() {
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [scopeFilter, setScopeFilter] = useState<MemoryScope | "">("");
+  const [tierFilter, setTierFilter] = useState<MemoryTier | "">("");
+  const [statusFilter, setStatusFilter] = useState<MemoryStatus | "">("active");
   const [kindFilter, setKindFilter] = useState<MemoryKind | "">("");
+  const [projectInput, setProjectInput] = useState(projectId);
+  const [debouncedProject, setDebouncedProject] = useState(projectId.trim());
   const [showCreate, setShowCreate] = useState(false);
-  const [draft, setDraft] = useState<MemoryDraft>(defaultDraft);
+  const [draft, setDraft] = useState<MemoryDraft>(() => defaultDraft());
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<MemoryDraft | null>(null);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
@@ -164,9 +219,21 @@ export function MemoryPanel() {
   const requestRef = useRef(0);
 
   useEffect(() => {
+    setProjectInput(projectId);
+    setDebouncedProject(projectId.trim());
+  }, [projectId]);
+
+  useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedSearch(search.trim()), 300);
     return () => window.clearTimeout(timer);
   }, [search]);
+
+  useEffect(() => {
+    const target = projectInput.trim();
+    if (target === debouncedProject) return;
+    const timer = window.setTimeout(() => setDebouncedProject(target), 300);
+    return () => window.clearTimeout(timer);
+  }, [projectInput, debouncedProject]);
 
   const load = useCallback(async () => {
     const requestId = ++requestRef.current;
@@ -175,6 +242,9 @@ export function MemoryPanel() {
     try {
       const items = await listMemory({
         scope: scopeFilter,
+        tier: tierFilter,
+        status: statusFilter,
+        project_id: debouncedProject,
         kind: kindFilter,
         q: debouncedSearch,
         limit: 200,
@@ -185,7 +255,7 @@ export function MemoryPanel() {
     } finally {
       if (requestId === requestRef.current) setLoading(false);
     }
-  }, [scopeFilter, kindFilter, debouncedSearch]);
+  }, [scopeFilter, tierFilter, statusFilter, debouncedProject, kindFilter, debouncedSearch]);
 
   useEffect(() => {
     void load();
@@ -197,7 +267,12 @@ export function MemoryPanel() {
       setFormError(t("memoryContentRequired"));
       return;
     }
-    if (draft.scope !== "global" && !draft.scopeKey.trim()) {
+    const tier = draft.tier;
+    const projectIdValue = draft.projectId.trim();
+    const scopeKey = tier === "user"
+      ? ""
+      : draft.scopeKey.trim() || (tier === "project" ? projectIdValue : "");
+    if (tier !== "user" && !scopeKey) {
       setFormError(t("memoryScopeKeyRequired"));
       return;
     }
@@ -206,20 +281,24 @@ export function MemoryPanel() {
       setFormError(t("memoryConfidenceInvalid"));
       return;
     }
+    const payload: MemoryCreateInput = {
+      scope: scopeForTier(tier),
+      scope_key: scopeKey,
+      kind: draft.kind,
+      content,
+      source: "user",
+      confidence,
+      expires_at: fromLocalInput(draft.expiresAt),
+    };
+    // Project is the legacy default; only send tier when it changes the mapping.
+    if (tier !== "project") payload.tier = tier;
+    if (tier !== "user" && projectIdValue) payload.project_id = projectIdValue;
     setBusy(true);
     setFormError(null);
     try {
-      const created = await createMemory({
-        scope: draft.scope,
-        scope_key: draft.scope === "global" ? "" : draft.scopeKey.trim(),
-        kind: draft.kind,
-        content,
-        source: "user",
-        confidence,
-        expires_at: fromLocalInput(draft.expiresAt),
-      });
+      const created = await createMemory(payload);
       setEntries((prev) => [created, ...prev]);
-      setDraft(defaultDraft());
+      setDraft(defaultDraft(debouncedProject));
       setShowCreate(false);
       setNotice(t("memoryCreated"));
     } catch (err) {
@@ -233,8 +312,9 @@ export function MemoryPanel() {
     setEditingId(entry.id);
     setShowCreate(false);
     setEditDraft({
-      scope: entry.scope,
+      tier: toCreateTier(entryTier(entry)),
       scopeKey: entry.scope_key,
+      projectId: entry.project_id ?? "",
       kind: entry.kind,
       content: entry.content,
       confidence: String(entry.confidence),
@@ -321,6 +401,37 @@ export function MemoryPanel() {
         <select
           className="form-select"
           style={{ flex: "0 0 auto" }}
+          aria-label={t("memoryTierFilter")}
+          value={tierFilter}
+          onChange={(e) => setTierFilter(e.target.value as MemoryTier | "")}
+        >
+          <option value="">{t("memoryAllTiers")}</option>
+          {MEMORY_TIERS.map((tier) => (
+            <option key={tier} value={tier}>{t(tierLabelKey(tier))}</option>
+          ))}
+        </select>
+        <select
+          className="form-select"
+          style={{ flex: "0 0 auto" }}
+          aria-label={t("memoryStatusFilter")}
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value as MemoryStatus | "")}
+        >
+          {MEMORY_STATUSES.map((status) => (
+            <option key={status} value={status}>{t(statusLabelKey(status))}</option>
+          ))}
+        </select>
+        <input
+          className="form-input"
+          style={{ flex: "1 1 160px" }}
+          aria-label={t("memoryProjectFilter")}
+          placeholder={t("memoryProjectIdPlaceholder")}
+          value={projectInput}
+          onChange={(e) => setProjectInput(e.target.value)}
+        />
+        <select
+          className="form-select"
+          style={{ flex: "0 0 auto" }}
           aria-label={t("memoryKindFilter")}
           value={kindFilter}
           onChange={(e) => setKindFilter(e.target.value as MemoryKind | "")}
@@ -334,7 +445,9 @@ export function MemoryPanel() {
           type="button"
           className="settings-btn primary"
           onClick={() => {
-            setShowCreate((v) => !v);
+            const nextOpen = !showCreate;
+            setShowCreate(nextOpen);
+            setDraft(defaultDraft(debouncedProject));
             setEditingId(null);
             setEditDraft(null);
             setFormError(null);
@@ -360,7 +473,7 @@ export function MemoryPanel() {
             <button type="button" className="verify-btn primary" disabled={busy} onClick={() => void handleCreate()}>
               {busy ? t("memorySaving") : t("memorySaveNew")}
             </button>
-            <button type="button" className="verify-btn" disabled={busy} onClick={() => { setShowCreate(false); setDraft(defaultDraft()); setFormError(null); }}>
+            <button type="button" className="verify-btn" disabled={busy} onClick={() => { setShowCreate(false); setDraft(defaultDraft(debouncedProject)); setFormError(null); }}>
               {t("cancel")}
             </button>
           </div>
@@ -398,6 +511,12 @@ export function MemoryPanel() {
           <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
             <span className="memory-badge" style={{ fontSize: 11, padding: "1px 7px", borderRadius: 10, border: "1px solid var(--border)", color: "var(--muted-fg)" }}>
               {t(scopeLabelKey(entry.scope))}
+            </span>
+            <span className="memory-badge" style={{ fontSize: 11, padding: "1px 7px", borderRadius: 10, border: "1px solid var(--border)", color: "var(--muted-fg)" }}>
+              {t(tierLabelKey(entryTier(entry)))}
+            </span>
+            <span className="memory-badge" style={{ fontSize: 11, padding: "1px 7px", borderRadius: 10, border: "1px solid var(--border)", color: "var(--muted-fg)" }}>
+              {t(statusLabelKey(entryStatus(entry)))}
             </span>
             <span className="memory-badge" style={{ fontSize: 11, padding: "1px 7px", borderRadius: 10, border: "1px solid var(--border)", color: "var(--muted-fg)" }}>
               {t(kindLabelKey(entry.kind))}
@@ -454,6 +573,10 @@ export function MemoryPanel() {
               <p style={{ fontSize: 13, margin: "8px 0", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{entry.content}</p>
               <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 11, color: "var(--muted-fg)" }}>
                 {entry.scope_key && <span>{t("memoryScopeKey")}: {entry.scope_key}</span>}
+                {entry.project_id && <span>{t("memoryProjectId")}: {entry.project_id}</span>}
+                {formatEvidence(entry.evidence) && (
+                  <span>{t("memoryEvidence")}: {formatEvidence(entry.evidence)}</span>
+                )}
                 <span>{t("memoryExpires")}: {entry.expires_at ? formatDate(entry.expires_at, lang) : t("memoryNeverExpires")}</span>
                 <span>{t("memoryUpdatedAt")}: {formatDate(entry.updated_at, lang)}</span>
               </div>
