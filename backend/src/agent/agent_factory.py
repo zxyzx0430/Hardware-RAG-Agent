@@ -100,6 +100,8 @@ class AgentConfig:
     skills_catalog: list[dict] = field(default_factory=list)
     skills_context: list[dict] = field(default_factory=list)
     context_window_override: int | None = None
+    user_query: str = ""
+    session_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,12 +163,34 @@ async def create_hardware_agent_from_config(config: AgentConfig) -> Any:
             from langchain.agents import create_agent
             from src.agent.exceptions import ToolContext
             checkpointer = await _get_checkpointer()
-            system_prompt = append_skills_context(
-                append_long_term_memory(build_system_prompt(), config.long_term_memory),
+            memory_block = ""
+            try:
+                from src.agent.memory_context import build_memory_context
+                memory_block = build_memory_context(
+                    query=config.user_query,
+                    session_id=config.session_id or None,
+                )
+            except Exception:
+                logger.warning("memory context build failed", exc_info=True)
+            hardware_hint = ""
+            if config.skills_mode != "off" and config.user_query:
+                try:
+                    from src.agent.hardware_mention import build_hardware_mention_hint
+                    hardware_hint = build_hardware_mention_hint(config.user_query)
+                except Exception:
+                    logger.warning("hardware mention hint failed", exc_info=True)
+            prompt = append_long_term_memory(build_system_prompt(), config.long_term_memory)
+            if memory_block:
+                prompt = f"{prompt}\n\n{memory_block}"
+            prompt = append_skills_context(
+                prompt,
                 config.skills_mode,
                 catalog=config.skills_catalog,
                 manual_skills=config.skills_context,
             )
+            if hardware_hint:
+                prompt = f"{prompt}\n\n## Hardware profile hint\n{hardware_hint}"
+            system_prompt = prompt
             agent = create_agent(
                 model=llm,
                 tools=config.tools,
@@ -248,6 +272,8 @@ async def create_hardware_agent(
     skills_catalog: list[dict] | None = None,
     skills_context: list[dict] | None = None,
     context_window_override: int | None = None,
+    user_query: str = "",
+    session_id: str = "",
 ) -> Any:
     """Backward-compat shim around create_hardware_agent_from_config (P2-I-1).
 
@@ -264,6 +290,8 @@ async def create_hardware_agent(
         skills_catalog=skills_catalog or [],
         skills_context=skills_context or [],
         context_window_override=context_window_override,
+        user_query=user_query,
+        session_id=session_id,
     )
     return await create_hardware_agent_from_config(config)
 
@@ -1308,6 +1336,12 @@ def _build_tool_groups(payload: Any = None) -> dict[str, list[BaseTool]]:
     from src.agent.tools.groups.retrieval.read_owner_rolling_history import (
         ReadOwnerRollingHistoryTool,
     )
+    from src.agent.tools.groups.memory import (
+        MemoryForgetTool,
+        MemoryRememberTool,
+        MemorySearchTool,
+    )
+    from src.agent.tools.groups.hardware_profile import HardwareProfileTool
     from src.agent.tools.groups.hardware import AuditPinsTool, WiringTool
     from src.agent.tools.groups.workbench import get_workbench_tools
     from src.agent.tools.groups.code import BuildTool, FlashTool
@@ -1329,6 +1363,9 @@ def _build_tool_groups(payload: Any = None) -> dict[str, list[BaseTool]]:
             ReadToolObservationTool(),
             ReadRollingHistoryTool(),
             ReadOwnerRollingHistoryTool(),
+            MemorySearchTool(),
+            MemoryRememberTool(),
+            MemoryForgetTool(),
             WebSearchTool(tavily_api_key=tavily_key, tavily_base_url=tavily_base_url),
             WebFetchTool(),
             SearchHistoryTool(),
@@ -1336,7 +1373,7 @@ def _build_tool_groups(payload: Any = None) -> dict[str, list[BaseTool]]:
             ViewImageTool(vision_model=vision_model, base_url=vision_base_url, api_key=vision_api_key),
             ImageGenerationTool(image_model=image_model, base_url=image_base_url, api_key=image_api_key),
         ],
-        _TOOL_GROUP_HARDWARE: [AuditPinsTool(), WiringTool()],
+        _TOOL_GROUP_HARDWARE: [AuditPinsTool(), WiringTool(), HardwareProfileTool()],
         _TOOL_GROUP_WORKBENCH: list(get_workbench_tools()),
         _TOOL_GROUP_CODE: [BuildTool(), FlashTool()],
         _TOOL_GROUP_FILE_OPS: _build_local_file_ops_tools(),

@@ -574,6 +574,20 @@ class HardwareProfileStore:
                         pairs.append((profile_id, alias.strip()))
             return pairs
 
+    def list_all(self, limit: int = DEFAULT_SEARCH_LIMIT) -> list[HardwareProfileRecord]:
+        """Return profiles newest-first for the management panel."""
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_SEARCH_LIMIT:
+            raise HardwareProfileValidationError(
+                f"limit must be an integer between 1 and {MAX_SEARCH_LIMIT}"
+            )
+        with self._session() as session:
+            rows = session.execute(
+                select(HardwareProfile)
+                .order_by(HardwareProfile.updated_at.desc(), HardwareProfile.name.asc())
+                .limit(limit)
+            ).scalars().all()
+            return [_record(row) for row in rows]
+
 
 def _search_score(row: HardwareProfile, query: str) -> int:
     needle = query.casefold()

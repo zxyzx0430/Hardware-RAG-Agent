@@ -4435,6 +4435,8 @@ def init_db():
     """建表（首次启动时使用，后续通过 Alembic 迁移）。"""
     import app.db.models  # noqa: ensure models are loaded
     import app.db.recovery_models  # noqa: register recovery R1 tables
+    import app.db.memory_models  # noqa: register Memory v1 table
+    import app.db.hardware_profile_models  # noqa: register hardware profile table
     Base.metadata.create_all(bind=engine)
     _ensure_legacy_body_chunk_storage_schema()
     _ensure_legacy_message_snapshot_schema()

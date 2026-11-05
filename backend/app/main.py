@@ -36,6 +36,8 @@ from fastapi.responses import JSONResponse
 
 # v1: routes.py 保留不动，新代码走拆分路由
 from app.api.chat_routes import router as chat_router
+from app.api.memory_routes import router as memory_router
+from app.api.hardware_profile_routes import router as hardware_profile_router
 from app.api.kb_routes import router as kb_router
 from app.api.hardware_routes import router as hardware_router
 from app.api.build_routes import router as build_router
@@ -371,6 +373,8 @@ def create_app() -> FastAPI:
         )
 
     app.include_router(chat_router)
+    app.include_router(memory_router)
+    app.include_router(hardware_profile_router)
     app.include_router(kb_router)
     app.include_router(hardware_router)
     app.include_router(build_router)
