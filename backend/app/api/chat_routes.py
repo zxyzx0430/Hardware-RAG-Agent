@@ -1730,10 +1730,16 @@ def _require_resume_run(
 def _consume_resume_approvals(
     store: Any, run_id: str, decision: str, call_id: str | None,
 ) -> list[dict[str, Any]]:
-    """Consume the persisted pending approval once; staleness is fatal."""
+    """Consume the persisted pending approval once; staleness is fatal.
+
+    ``allow`` targets the submitted call; ``deny``/``stop`` apply to the whole
+    pause, so every pending row of the run is decided.
+    """
     try:
         consumed = store.consume_pending_approvals(
-            run_id, call_id=call_id, decision=decision,
+            run_id,
+            call_id=call_id if decision == "allow" else None,
+            decision=decision,
         )
     except Exception:
         logger.warning(

@@ -553,6 +553,46 @@ def test_pending_approval_is_consumed_once(isolated_run_runtime):
     assert exc_info.value.detail["error"]["code"] == "HITL_CONFIRMATION_STALE"
 
 
+def _add_approval(store, call_id: str, *, approval_id: str | None = None,
+                  expires_at: str | None = None) -> None:
+    store.create_pending_approval({
+        "id": approval_id or f"pa_{call_id}", "run_id": RUN_ID, "call_id": call_id,
+        "tool_name": "run_command", "args_json": "{}", "risk_level": "high",
+        "status": run_events.APPROVAL_STATUS_PENDING,
+        "created_at": run_events.utc_now_iso(), "expires_at": expires_at,
+        "decided_at": None, "principal_id": None,
+    })
+
+
+def test_allow_consumes_only_the_submitted_call(isolated_run_runtime):
+    store = isolated_run_runtime
+    _seed_run(store, status=run_events.RUN_STATUS_AWAITING_CONFIRMATION)
+    _add_approval(store, "call-1")
+    _add_approval(store, "call-2")
+
+    consumed = chat_routes._consume_resume_approvals(store, RUN_ID, "allow", "call-1")
+
+    assert [row["call_id"] for row in consumed] == ["call-1"]
+    statuses = {
+        row["call_id"]: row["status"] for row in store.list_pending_approvals(RUN_ID)
+    }
+    assert statuses == {"call-1": "allowed", "call-2": "pending"}
+
+
+def test_stop_consumes_every_pending_call_of_the_pause(isolated_run_runtime):
+    store = isolated_run_runtime
+    _seed_run(store, status=run_events.RUN_STATUS_AWAITING_CONFIRMATION)
+    _add_approval(store, "call-1")
+    _add_approval(store, "call-2")
+
+    consumed = chat_routes._consume_resume_approvals(store, RUN_ID, "stop", "call-1")
+
+    assert {row["call_id"] for row in consumed} == {"call-1", "call-2"}
+    assert all(
+        row["status"] == "stopped" for row in store.list_pending_approvals(RUN_ID)
+    )
+
+
 def test_expired_pending_approval_is_not_consumed(isolated_run_runtime):
     store = isolated_run_runtime
     _seed_run(store, status=run_events.RUN_STATUS_AWAITING_CONFIRMATION)

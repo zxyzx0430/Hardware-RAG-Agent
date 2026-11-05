@@ -265,11 +265,11 @@ class InMemoryRunStore:
         with self._lock:
             pending = [
                 row for row in self._approvals
-                if row["run_id"] == run_id and row["status"] == APPROVAL_STATUS_PENDING
+                if row["run_id"] == run_id
+                and row["status"] == APPROVAL_STATUS_PENDING
+                and (call_id is None or row["call_id"] == call_id)
             ]
-            if call_id is not None and not any(
-                row["call_id"] == call_id for row in pending
-            ):
+            if call_id is not None and not pending:
                 return []
             for row in pending:
                 expires_at = row.get("expires_at")
