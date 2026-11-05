@@ -18,11 +18,13 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import re
+import threading
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import and_, case, delete, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
 from app.db import database
@@ -43,7 +45,13 @@ RUN_STATUS_CANCELLED = "cancelled"
 RUN_STATUS_INTERRUPTED = "interrupted"
 
 TERMINAL_RUN_STATUSES = frozenset(
-    {RUN_STATUS_COMPLETED, RUN_STATUS_FAILED, RUN_STATUS_CANCELLED}
+    {
+        RUN_STATUS_COMPLETED,
+        RUN_STATUS_FAILED,
+        RUN_STATUS_CANCELLED,
+        # Runtime treats interrupted as finished (no live writer remains).
+        RUN_STATUS_INTERRUPTED,
+    }
 )
 
 APPROVAL_STATUS_PENDING = "pending"
@@ -89,6 +97,7 @@ _SENSITIVE_KEY_SUFFIXES = (
     "_api_key",
     "_apikey",
     "_key",
+    "_keys",
     "_token",
     "_secret",
     "_password",
@@ -232,6 +241,36 @@ def _to_utc_aware(value: _dt.datetime | None) -> _dt.datetime | None:
     if value.tzinfo is None:
         return value.replace(tzinfo=_dt.timezone.utc)
     return value.astimezone(_dt.timezone.utc)
+
+
+def _isoformat(value: _dt.datetime | None) -> str | None:
+    aware = _to_utc_aware(value)
+    return aware.isoformat() if aware is not None else None
+
+
+def _parse_datetime(value: Any) -> _dt.datetime | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, _dt.datetime):
+        return value
+    if not isinstance(value, str):
+        raise TypeError(
+            f"expected an ISO-8601 datetime string, got {type(value).__name__}"
+        )
+    try:
+        return _dt.datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(f"invalid ISO-8601 datetime: {value!r}") from exc
+
+
+def _decode_json_argument(value: Any) -> Any:
+    """Accept either a JSON string (runtime rows) or an already-decoded value."""
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except ValueError:
+            return value
+    return value
 
 
 def _require_non_negative_int(value: Any, name: str) -> None:
@@ -403,11 +442,15 @@ class RunStore:
         return self.get_run(run_id)
 
     def mark_running_interrupted(
-        self, *, error_code: str = PROCESS_RESTART_ERROR_CODE
+        self,
+        *,
+        error_code: str = PROCESS_RESTART_ERROR_CODE,
+        error_message: str | None = None,
     ) -> int:
         """Startup recovery: running/awaiting_confirmation runs become interrupted.
 
-        Pending approval rows are deliberately left untouched.
+        Pending approval rows are deliberately left untouched. ``finished_at``
+        is stamped because no writer survives this process.
         """
         with self._session() as session:
             result = session.execute(
@@ -417,7 +460,12 @@ class RunStore:
                         (RUN_STATUS_RUNNING, RUN_STATUS_AWAITING_CONFIRMATION)
                     )
                 )
-                .values(status=RUN_STATUS_INTERRUPTED, error_code=error_code)
+                .values(
+                    status=RUN_STATUS_INTERRUPTED,
+                    error_code=error_code,
+                    error_message=error_message,
+                    finished_at=_utc_now_naive(),
+                )
                 .execution_options(synchronize_session=False)
             )
             changed = result.rowcount
@@ -650,6 +698,59 @@ class RunStore:
             principal_id=principal_id,
         )
 
+    def consume_pending_approvals(
+        self,
+        run_id: str,
+        *,
+        status: str,
+        call_id: str | None = None,
+        decided_at: _dt.datetime | None = None,
+    ) -> list[PendingApprovalRecord]:
+        """Atomically consume pending approvals for one run.
+
+        With ``call_id`` only that call is targeted; without it every pending
+        row of the run is consumed (cancel semantics). Overdue rows become
+        ``expired`` and are not returned. A concurrent consumer that loses the
+        race gets an empty list.
+        """
+        _require_decision_status(status)
+        moment = _to_utc_naive(decided_at) or _utc_now_naive()
+        conditions = [
+            PendingApproval.run_id == run_id,
+            PendingApproval.status == APPROVAL_STATUS_PENDING,
+        ]
+        if call_id is not None:
+            conditions.append(PendingApproval.call_id == call_id)
+        next_status = case(
+            (
+                and_(
+                    PendingApproval.expires_at.is_not(None),
+                    PendingApproval.expires_at <= moment,
+                ),
+                APPROVAL_STATUS_EXPIRED,
+            ),
+            else_=status,
+        )
+        statement = (
+            update(PendingApproval)
+            .where(*conditions)
+            .values(status=next_status, decided_at=moment)
+            .returning(PendingApproval.id, PendingApproval.status)
+            .execution_options(synchronize_session=False)
+        )
+        with self._session() as session:
+            updated = session.execute(statement).all()
+            session.commit()
+        consumed_ids = [
+            row.id for row in updated if row.status != APPROVAL_STATUS_EXPIRED
+        ]
+        records: list[PendingApprovalRecord] = []
+        for approval_id in consumed_ids:
+            record = self.get_pending_approval(approval_id)
+            if record is not None:
+                records.append(record)
+        return records
+
     def expire_pending_approvals(
         self, now: _dt.datetime | None = None
     ) -> int:
@@ -738,3 +839,236 @@ class RunStore:
             changed = result.rowcount
             session.commit()
         return changed
+
+
+_RUNTIME_DECISION_STATUS = {
+    "allow": APPROVAL_STATUS_ALLOWED,
+    "deny": APPROVAL_STATUS_DENIED,
+    "stop": APPROVAL_STATUS_STOPPED,
+}
+
+
+class RuntimeRunStore:
+    """Dict-row adapter expected by ``src.agent.run_events.get_run_store()``.
+
+    The runtime layer was written against plain dicts keyed by SQLite column
+    names and ISO-8601 timestamp strings. ``RunStore`` itself exposes typed
+    records; this adapter converts both directions and keeps JSON columns as
+    strings at rest as the runtime expects.
+    """
+
+    def __init__(self, store: RunStore | None = None):
+        self._store = store or RunStore()
+
+    @property
+    def store(self) -> RunStore:
+        return self._store
+
+    @staticmethod
+    def _run_row(record: RunRecord) -> dict[str, Any]:
+        return {
+            "id": record.id,
+            "session_id": record.session_id,
+            "status": record.status,
+            "model": record.model,
+            "permission_mode": record.permission_mode,
+            "config_json": (
+                _json_dumps(record.config) if record.config is not None else None
+            ),
+            "thread_id": record.thread_id,
+            "checkpoint_id": record.checkpoint_id,
+            "started_at": _isoformat(record.started_at),
+            "finished_at": _isoformat(record.finished_at),
+            "last_event_seq": record.last_event_seq,
+            "error_code": record.error_code,
+            "error_message": record.error_message,
+        }
+
+    @staticmethod
+    def _event_row(record: RunEventRecord) -> dict[str, Any]:
+        return {
+            "run_id": record.run_id,
+            "seq": record.seq,
+            "type": record.type,
+            "payload": record.payload,
+            "created_at": _isoformat(record.created_at),
+        }
+
+    @staticmethod
+    def _approval_row(record: PendingApprovalRecord) -> dict[str, Any]:
+        return {
+            "id": record.id,
+            "run_id": record.run_id,
+            "call_id": record.call_id,
+            "tool_name": record.tool_name,
+            "args_json": _json_dumps(record.args),
+            "risk_level": record.risk_level,
+            "status": record.status,
+            "created_at": _isoformat(record.created_at),
+            "expires_at": _isoformat(record.expires_at),
+            "decided_at": _isoformat(record.decided_at),
+            "principal_id": record.principal_id,
+        }
+
+    @staticmethod
+    def _snapshot_row(record: RequestSnapshotRecord) -> dict[str, Any]:
+        return {
+            "id": record.id,
+            "run_id": record.run_id,
+            "session_id": record.session_id,
+            "payload_json": _json_dumps(record.payload),
+            "created_at": _isoformat(record.created_at),
+            "expires_at": _isoformat(record.expires_at),
+        }
+
+    def create_run(self, run: Mapping[str, Any]) -> dict[str, Any]:
+        record = self._store.create_run(
+            run["session_id"],
+            run_id=run.get("id"),
+            status=run.get("status") or RUN_STATUS_RUNNING,
+            model=run.get("model"),
+            permission_mode=run.get("permission_mode"),
+            config=_decode_json_argument(run.get("config_json")),
+            thread_id=run.get("thread_id"),
+            checkpoint_id=run.get("checkpoint_id"),
+            started_at=_parse_datetime(run.get("started_at")),
+        )
+        return self._run_row(record)
+
+    def get_run(self, run_id: str) -> dict[str, Any] | None:
+        record = self._store.get_run(run_id)
+        return self._run_row(record) if record is not None else None
+
+    def append_run_event(
+        self, run_id: str, event_type: str, payload: Mapping[str, Any]
+    ) -> int:
+        return self._store.append_event(run_id, event_type, payload).seq
+
+    def list_run_events(
+        self, run_id: str, after_seq: int = 0
+    ) -> list[dict[str, Any]]:
+        return [
+            self._event_row(record)
+            for record in self._store.list_events(run_id, after=after_seq)
+        ]
+
+    def update_run_status(
+        self,
+        run_id: str,
+        status: str,
+        *,
+        error_code: str | None = None,
+        error_message: str | None = None,
+        finished_at: str | None = None,
+    ) -> bool:
+        kwargs: dict[str, Any] = {
+            "error_code": error_code,
+            "error_message": error_message,
+        }
+        if finished_at is not None:
+            kwargs["finished_at"] = _parse_datetime(finished_at)
+        return self._store.update_run_status(run_id, status, **kwargs) is not None
+
+    def mark_interrupted_runs(
+        self,
+        *,
+        error_code: str = PROCESS_RESTART_ERROR_CODE,
+        error_message: str | None = None,
+    ) -> int:
+        return self._store.mark_running_interrupted(
+            error_code=error_code, error_message=error_message
+        )
+
+    def create_pending_approval(
+        self, approval: Mapping[str, Any]
+    ) -> dict[str, Any] | None:
+        run_id = approval["run_id"]
+        call_id = approval["call_id"]
+        existing = self._store.get_pending_approval_by_call(
+            run_id, call_id, status=APPROVAL_STATUS_PENDING
+        )
+        if existing is not None:
+            return self._approval_row(existing)
+        try:
+            record = self._store.create_pending_approval(
+                run_id,
+                call_id,
+                approval["tool_name"],
+                _decode_json_argument(approval.get("args_json")),
+                approval_id=approval.get("id"),
+                risk_level=approval.get("risk_level"),
+                status=approval.get("status") or APPROVAL_STATUS_PENDING,
+                created_at=_parse_datetime(approval.get("created_at")),
+                expires_at=_parse_datetime(approval.get("expires_at")),
+                principal_id=approval.get("principal_id"),
+            )
+        except ValueError:
+            # A concurrent writer created the pending row first; SQLite's
+            # partial unique index guarantees only one survives.
+            existing = self._store.get_pending_approval_by_call(
+                run_id, call_id, status=APPROVAL_STATUS_PENDING
+            )
+            if existing is None:
+                raise
+            return self._approval_row(existing)
+        return self._approval_row(record)
+
+    def list_pending_approvals(
+        self, run_id: str, *, status: str | None = None
+    ) -> list[dict[str, Any]]:
+        return [
+            self._approval_row(record)
+            for record in self._store.list_pending_approvals(run_id, status=status)
+        ]
+
+    def consume_pending_approvals(
+        self,
+        run_id: str,
+        *,
+        call_id: str | None,
+        decision: str,
+        decided_at: str | None = None,
+    ) -> list[dict[str, Any]]:
+        target_status = _RUNTIME_DECISION_STATUS.get(decision)
+        if target_status is None:
+            raise ValueError(f"unsupported approval decision {decision!r}")
+        records = self._store.consume_pending_approvals(
+            run_id,
+            status=target_status,
+            call_id=call_id,
+            decided_at=_parse_datetime(decided_at),
+        )
+        return [self._approval_row(record) for record in records]
+
+    def create_request_snapshot(
+        self, snapshot: Mapping[str, Any]
+    ) -> dict[str, Any] | None:
+        record = self._store.save_request_snapshot(
+            snapshot["run_id"],
+            snapshot.get("session_id") or "",
+            _decode_json_argument(snapshot.get("payload_json")),
+            snapshot_id=snapshot.get("id"),
+            created_at=_parse_datetime(snapshot.get("created_at")),
+            expires_at=_parse_datetime(snapshot.get("expires_at")),
+        )
+        return self._snapshot_row(record)
+
+    def get_latest_request_snapshot(
+        self, run_id: str
+    ) -> dict[str, Any] | None:
+        record = self._store.get_request_snapshot(run_id=run_id)
+        return self._snapshot_row(record) if record is not None else None
+
+
+_RUNTIME_STORE: RuntimeRunStore | None = None
+_RUNTIME_STORE_LOCK = threading.Lock()
+
+
+def get_run_store() -> RuntimeRunStore:
+    """Return the process-wide dict-row store used by the runtime layer."""
+    global _RUNTIME_STORE
+    if _RUNTIME_STORE is None:
+        with _RUNTIME_STORE_LOCK:
+            if _RUNTIME_STORE is None:
+                _RUNTIME_STORE = RuntimeRunStore()
+    return _RUNTIME_STORE

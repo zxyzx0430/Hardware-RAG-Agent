@@ -10,7 +10,7 @@ Tables defined by the shared recovery contract:
 
 import datetime
 
-from sqlalchemy import CheckConstraint, Column, DateTime, Index, Integer, String, Text
+from sqlalchemy import CheckConstraint, Column, DateTime, Index, Integer, String, Text, text
 
 from app.db.database import Base
 
@@ -80,6 +80,15 @@ class PendingApproval(Base):
         Index("idx_pending_approvals_run", "run_id"),
         Index("idx_pending_approvals_call", "run_id", "call_id"),
         Index("idx_pending_approvals_status", "status"),
+        # At most one live approval per tool call; decided/expired rows stay
+        # append-only so history is preserved.
+        Index(
+            "uq_pending_approvals_pending_call",
+            "run_id",
+            "call_id",
+            unique=True,
+            sqlite_where=text("status = 'pending'"),
+        ),
         CheckConstraint(
             "status IN ('pending', 'allowed', 'denied', 'stopped', 'expired')",
             name="ck_pending_approvals_status",
