@@ -1,19 +1,19 @@
 # 新开发基线 handoff（2026-11-05）
 
-> 给用户醒来后的接手说明。产品代码已冻结在 tag `baseline-2026-11-05`；context 候选未合并。
+> 给用户醒来后的接手说明。产品代码已冻结在 tag `baseline-2026-11-05-1`（含 P0 hotfix）；context 候选未合并。
 
 ## 1. 官方新基线
 
 | 项 | 值 |
 | --- | --- |
 | 分支 | `w1-baseline` |
-| 冻结 commit | `46563470` |
-| tag | `baseline-2026-11-05`（annotated） |
-| 后端全量 | **26 failed / 890 passed / 20 skipped / 0 超时**，232s（tag 干净目录） |
+| 冻结 commit | `1da21736`（checkpoint hotfix） |
+| tag | `baseline-2026-11-05-1`（当前）；旧 tag `baseline-2026-11-05` 仍指向 `46563470` |
+| 后端全量 | **26 failed / 918 passed / 20 skipped / 0 超时**（含 hotfix 新增 4 条） |
 | 前端 | 174/174，lint 0 error（13 warnings）、tsc 0、build 0 |
 | 工作区 | 干净（`git status` 无产品改动） |
 
-> 注：主工作区曾记录的 914 passed 含 2 个被 `.gitignore` 忽略的旧测试文件（`test_html_ingest.py`、`test_ocr_parser.py`，共 24 例）；tag 本身可复现的数字是 890 passed。
+> 注：旧 tag `baseline-2026-11-05` 记录的 914 passed 含 2 个被 `.gitignore` 忽略的旧测试文件（`test_html_ingest.py`、`test_ocr_parser.py`，共 24 例）；新 tag 的 918 = 干净 tag 的 890 + 24 个忽略用例 + 4 个 hotfix 新测试。
 
 26 个失败**全部**是 context/compaction 簇：`context_guard.py` ×11、`sse_adapter.py` ×5、autocompact 断言 ×3、`chat_routes.py` ×2、`autocompact.py` ×1、其余 5 个 compaction/stream 断言。没有安全、HITL、FTS、删除级联、checkpoint GC、trace 失败。
 
@@ -28,7 +28,8 @@
 
 ## 3. 已知失败与边界
 
-- 26 个 context/compaction 失败是**已知、隔离**的；它们属于 context 候选要解决的范围，不是基线回归。
+- 26 个 context/compaction 失败是**已知、隔离**的；hotfix 未改变它们，属于 context 候选要解决的范围，不是基线回归。
+- **P0 已修复**：真实服务器 Agent 首请求的 `AsyncSqliteSaver ... exact supported binding` 及后续 `owner is quarantined`；hotfix `1da21736` 补 `setup()` 并改为 fail-closed，真实 HTTP 首请求/二次请求/重启后请求/普通聊天均通过。
 - 真实模型/浏览器已做基础冒烟（见第 9 节）；实体烧录/自动重连、新电脑空白安装仍未验收。
 - 20 个 skip 中 19 个是 W5 的 E2E/trace 骨架，代码内显式 `@pytest.mark.skip`，需要真实服务。
 
@@ -37,7 +38,7 @@
 | 项 | 值 |
 | --- | --- |
 | 分支 | `context-rebased`（worktree `E:\Desktop\agent-worktrees\skills-chat-install-s01b-20261009`） |
-| HEAD | `014c4e28` |
+| HEAD | `85b224cb`（writer A 进行中；工作树有未提交改动，最终以 context lead 报告为准） |
 | 基础 | `439d8c56`（已 merge 冻结基线 `46563470`） |
 | 原分支 | `codex/context-compaction-server-history-20261105`，HEAD `5f4cf227`，未动 |
 | 后端定向 | 251 passed / 17 skipped / 0 failed |
@@ -92,20 +93,20 @@ git revert -m 1 41a90cbe   # W4 cancellation
 
 ## 8. 醒来后的建议顺序
 
-1. 先看 `w1-baseline` + tag 是否满足“新开发基线”的预期；26 个 context 失败是否接受为已知缺口。
-2. 若接受：直接以 `baseline-2026-11-05` 为开发基线；下一步开 writer 统一任务（A）。
+1. 先看 `w1-baseline` + tag `baseline-2026-11-05-1` 是否满足“新开发基线”的预期；26 个 context 失败是否接受为已知缺口。
+2. 若接受：直接以 `baseline-2026-11-05-1` 为开发基线；下一步开 writer 统一任务（A）。
 3. 若不接受：先修 26 个 context 失败（不做大合并），或让 context 候选在 writer 统一后继续。
-4. 再考虑把 context 候选的 71 条降到 ≤26 后合入 `baseline-v2`（当前 `baseline-v2` 仍指向 46563470，未使用）。
+4. context 候选合入前必须先合并 `1da21736`（否则会带回 P0）；再把失败降到 ≤26 后合入 `baseline-v2`。
 
 ## 9. 干净环境验收（2026-11-05）
 
 - 目录：`E:\Desktopgent-test-baseline-20261105`（detached at tag `46563470`）；数据库/Chroma 复制到 E: 临时目录，原 `data/` 未改。
-- 后端：**26 failed / 890 passed / 20 skipped / 0 超时**（232s），失败仍是已知 context/compaction 簇。
+- 后端（旧 tag 干净目录）：**26 failed / 890 passed / 20 skipped / 0 超时**（232s）；hotfix 后 **26 failed / 918 passed / 20 skipped / 0 超时**。
 - 前端：**174/174 passed**；lint 0 error（13 warnings）；production build 成功。
 - 浏览器：`http://127.0.0.1:5173` 正常打开；模型选择/设置/技能开关/聊天框可见。
 - 真实模型：普通模式 `/api/chat` 200，SSE 63 事件，`done success=true`，usage 2530+169；key 取自现有 `.env`，未打印。
 - KB：`/api/kb/list` 122 文档 / 20 KB；BM25 16/20 KBs；558MB Chroma 集合完整。
-- **P0（真实服务器）**：Agent 模式首条消息失败 `AsyncSqliteSaver ... exact supported binding`；随后同进程请求报 `owner is quarantined`，重启才恢复。根因：`_get_checkpointer()` 懒创建 `AsyncSqliteSaver` 后没有 `await saver.setup()`，而 `reset_thread_checkpoint_for_writer` → `_validate_bound_async_sqlite_saver` 要求 `is_setup=True`；单测的 saver 已 setup，故没覆盖到。
+- **P0（已修复，hotfix `1da21736`）**：修复前 Agent 首条消息失败 `AsyncSqliteSaver ... exact supported binding`，随后 `owner is quarantined`。根因：`_get_checkpointer()` 懒创建 `AsyncSqliteSaver` 后没有 `await saver.setup()`，而 `reset_thread_checkpoint_for_writer` → `_validate_bound_async_sqlite_saver` 要求 `is_setup=True`；单测 saver 已 setup，故没覆盖。修复后真实 HTTP 复测：Agent 首请求成功、同进程二次请求成功、重启后 Agent 成功、无 `owner is quarantined`。
 - 普通聊天未带来源：`use_agent=false` 的 KB 检索回答“未找到文档”，需确认非 Agent 路径是否走 RAG；Agent 路径被 P0 挡住，未完成。
-- 建议：先修 P0（`_build_sqlite_checkpointer` 进入 context 后 `await checkpointer.setup()`），再重跑 Agent 冒烟；这是基线可用的前置条件。
+- 修复内容：`_build_sqlite_checkpointer` 在 `__aenter__` 后 `await checkpointer.setup()`；失败时先清理已进入的 cm，再 raise，不再静默降级 InMemorySaver。新增 `tests/test_checkpointer_setup.py` 4 条。
 
