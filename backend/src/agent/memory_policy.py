@@ -209,6 +209,21 @@ def normalize_candidate(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def route_candidate(payload: dict[str, Any]) -> dict[str, Any]:
+    """Normalize a model-derived candidate and choose its default tier.
+
+    Preferences default to user memory; facts, constraints, decisions and
+    procedures default to project memory. An explicit ``tier``/``scope`` in
+    the payload always wins. Used by checkpoint projection and tests.
+    """
+    if not isinstance(payload, dict):
+        raise MemoryValidationError("proposal must be a JSON object")
+    candidate = dict(payload)
+    if candidate.get("tier") is None and candidate.get("scope") is None:
+        candidate["tier"] = "user" if candidate.get("kind") == "preference" else "project"
+    return normalize_candidate(candidate)
+
+
 def review_target(current_status: Any, action: Any) -> str:
     """Map an approve/reject action to the target status.
 
@@ -245,4 +260,5 @@ __all__ = [
     "normalize_candidate",
     "normalize_text",
     "review_target",
+    "route_candidate",
 ]

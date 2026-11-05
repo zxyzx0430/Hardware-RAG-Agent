@@ -66,6 +66,21 @@ def test_candidate_rejects_hardware_and_secrets():
         )
 
 
+def test_route_candidate_defaults_by_kind():
+    preference = memory_policy.route_candidate(
+        {"content": "Use metric units.", "kind": "preference"}
+    )
+    assert preference["tier"] == "user"
+    decision = memory_policy.route_candidate(
+        {"content": "Use PlatformIO.", "kind": "decision", "project_id": "proj-a"}
+    )
+    assert decision["tier"] == "project"
+    explicit = memory_policy.route_candidate(
+        {"content": "Explicit tier.", "kind": "preference", "tier": "project", "project_id": "p"}
+    )
+    assert explicit["tier"] == "project"
+
+
 def test_review_target_state_machine():
     assert memory_policy.review_target("proposed", "approve") == "active"
     assert memory_policy.review_target("proposed", "reject") == "rejected"
