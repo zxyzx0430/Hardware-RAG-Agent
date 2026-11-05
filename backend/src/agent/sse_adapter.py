@@ -1081,7 +1081,32 @@ async def _apply_compacted(state: dict, original: list, compacted: list) -> bool
         # graph-only compaction, but the outcome is recorded for callers.
         _store_midrun_summary(state, compacted[0])
     _reset_tokens_for_compacted(compacted)
+    if host_scope is not None and outcome.receipt_status == "CONFIRMED":
+        await _project_confirmed_memory(state, host_scope)
     return True
+
+
+async def _project_confirmed_memory(state: dict, host_scope: Any) -> None:
+    """Project a confirmed checkpoint into Memory v2 working memory.
+
+    The compaction result is already applied and read back; projection runs in
+    its own short transaction and any fault is recorded only in request state.
+    """
+    try:
+        from src.agent.compact.checkpoint_publish import _run_host_record_transaction
+        from src.agent.memory_projection import project_confirmed_checkpoint
+
+        result = await _run_host_record_transaction(
+            project_confirmed_checkpoint, host_scope,
+        )
+        state["memory_projection_status"] = (
+            "projected" if result is not None else "unavailable"
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        state["memory_projection_status"] = "unavailable"
+        logger.warning("Confirmed checkpoint memory projection unavailable")
 
 
 def _store_midrun_summary(state: dict, summary_message: Any) -> None:

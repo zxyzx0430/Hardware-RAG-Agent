@@ -411,6 +411,26 @@ class HostContextReplacement:
     head: HostPublishedHead
 
 
+@dataclass(frozen=True)
+class ConfirmedCheckpoint:
+    """Readback of the selected, graph-confirmed checkpoint body.
+
+    ``body`` is the exact bound nine-field JSON and ``references`` are the host
+    locator projections it quotes. This is working-memory input only: it does
+    not grant restore, publication, or instruction authority. ``delete_epoch``
+    is the session lifecycle epoch the scope was validated against.
+    """
+
+    body: str
+    references: tuple[dict, ...]
+    generation: int
+    seal_id: str
+    session_id: str
+    principal_hash: str
+    session_epoch: str
+    delete_epoch: str
+
+
 def _host_json(value):
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True, allow_nan=False)
 
@@ -2056,4 +2076,47 @@ None means preserve complete input or explicitly fail, never trim or guess.
         return result
     except Exception:
         logger.warning("Published host context unavailable")
+        return None
+
+
+def read_confirmed_checkpoint(scope: ContextEventScope) -> ConfirmedCheckpoint | None:
+    """Read the selected checkpoint body after a confirmed host publication.
+
+    Read-only and same-request only: the caller must still hold the active host
+    archive scope and may call this only after the graph-applied receipt was
+    confirmed. A missing head, stale epoch, malformed record, or any read
+    failure returns None; nothing here publishes, restores, or widens the
+    fail-closed publication invariants.
+    """
+    try:
+        _host_scope(scope, "off")
+        with get_db_ctx() as db:
+            db.execute(text("BEGIN"))
+            _validate_scope(db, scope)
+            head, publication = _host_head_token(db, scope)
+            if head is None or publication is None:
+                return None
+            prepared, events, _content = publication
+            body = prepared["body"]
+            refs = _references(prepared["references"], scope)
+            # Replay the strict validator against the authenticated quotations
+            # instead of trusting the stored body shape.
+            _host_grounded_body(body, refs, events)
+            generation = prepared["seal_version"]
+            seal_id = prepared["seal_id"]
+            if (type(generation) is not int or not 1 <= generation <= 64
+                    or type(seal_id) is not str or not re.fullmatch(r"[0-9a-f]{32}", seal_id)):
+                return None
+            return ConfirmedCheckpoint(
+                body=body,
+                references=tuple(dict(reference) for reference in prepared["references"]),
+                generation=generation,
+                seal_id=seal_id,
+                session_id=scope.session_id,
+                principal_hash=scope.principal_hash,
+                session_epoch=scope.session_epoch,
+                delete_epoch=scope.session_epoch,
+            )
+    except Exception:
+        logger.warning("Confirmed checkpoint readback unavailable")
         return None
