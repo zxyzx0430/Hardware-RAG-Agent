@@ -17,6 +17,8 @@ import secrets
 from dataclasses import dataclass, field
 from typing import Any
 
+from src.observability.trace import current_trace_id
+
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +38,8 @@ _BODY_PREFIX = f"{_PREFIX}:body:"
 _QUOTA_LOCK_KEY = f"{_PREFIX}:quota-lock"
 _SESSION_DELETE_EPOCH_PREFIX = "_sessionDeleteEpoch:"
 _PRINCIPAL_PATTERN = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
+_IDENTIFIER_PATTERN = re.compile(r"[0-9a-f]{32}\Z", re.ASCII)
+_DIGEST_PATTERN = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
 _REQUEST_PATTERN = re.compile(r"[0-9a-f]{32}\Z", re.ASCII)
 _REFERENCE_PATTERN = re.compile(r"[A-Za-z0-9_-]{43}\Z", re.ASCII)
 _SKILL_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z", re.ASCII)
@@ -165,34 +169,43 @@ def archive_tool_observation(
     tool_name: str,
     scope: ToolObservationScope | None,
 ) -> str | None:
-    """Commit one eligible envelope and publish its opaque ref after commit."""
-    if type(tool_name) is not str or tool_name in _EXCLUDED_TOOLS:
+    """Commit one complete envelope and return its opaque ref only on success."""
+    if type(canonical_envelope) is not str or type(tool_name) is not str or not tool_name:
+        return None
+    if tool_name in _EXCLUDED_TOOLS:
         return None
     if type(scope) is not ToolObservationScope or not _valid_scope(scope):
         return None
-    body_bytes = _eligible_envelope_bytes(canonical_envelope, tool_name)
-    if body_bytes is None:
+
+    try:
+        body_bytes = canonical_envelope.encode("utf-8")
+    except UnicodeEncodeError:
+        return None
+    body_length = len(body_bytes)
+    if body_length == 0 or body_length > MAX_TOOL_OBSERVATION_BYTES:
         return None
 
     reference = secrets.token_urlsafe(32)
     reference_digest = hashlib.sha256(reference.encode("ascii")).hexdigest()
-    session_digest = hashlib.sha256(scope.session_id.encode("utf-8")).hexdigest()
-    metadata_key = f"{_META_PREFIX}{scope.principal_id}:{session_digest}:{reference_digest}"
+    session_digest = _session_digest(scope.session_id)
+    metadata_key = (
+        f"{_META_PREFIX}{scope.principal_id}:{session_digest}:{reference_digest}"
+    )
     body_key = f"{_BODY_PREFIX}{reference_digest}"
+    metadata = {
+        "reference": reference,
+        "tool_name": tool_name,
+        "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "sha256": hashlib.sha256(body_bytes).hexdigest(),
+        "body_bytes": body_length,
+        "principal_id": scope.principal_id,
+        "session_digest": session_digest,
+        "request_id": scope.request_id,
+        "trace_id": current_trace_id() or scope.request_id,
+        "session_delete_epoch": scope.session_delete_epoch,
+    }
     metadata_text = json.dumps(
-        {
-            "tool_name": tool_name,
-            "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            "sha256": hashlib.sha256(body_bytes).hexdigest(),
-            "body_bytes": len(body_bytes),
-            "principal_id": scope.principal_id,
-            "session_digest": session_digest,
-            "request_id": scope.request_id,
-            "session_delete_epoch": scope.session_delete_epoch,
-        },
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
+        metadata, ensure_ascii=False, separators=(",", ":"), sort_keys=True,
     )
 
     try:
