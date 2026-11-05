@@ -130,11 +130,15 @@ def project_info(root: str | None = None) -> dict[str, str]:
     resolved_root = _resolve_root(root)
     common_dir = _git_common_dir(resolved_root)
     if common_dir is not None:
+        # Identity is the repository's working-tree root, not ``.git`` and not
+        # the remote URL. This keeps the same id after ``git init``/remote
+        # changes and lets every linked worktree share the main checkout.
+        repo_root = os.path.dirname(common_dir.rstrip("/\\")) or common_dir
         remote = _git_remote(resolved_root)
-        identity = "\0".join(("git", common_dir, remote))
+        identity = "\0".join(("root", normalize_path(repo_root)))
     else:
         remote = ""
-        identity = "\0".join(("path", normalize_path(resolved_root)))
+        identity = "\0".join(("root", normalize_path(resolved_root)))
     digest = hashlib.sha256(identity.encode("utf-8", errors="strict")).hexdigest()
     return {
         "project_id": digest,

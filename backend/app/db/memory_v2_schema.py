@@ -29,6 +29,7 @@ from app.db.project_identity import current_project_id, is_path_like
 logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = MEMORY_SCHEMA_VERSION
+_LEGACY_IMPORT_MARKER_KEY = "memoryV2LongTermMemoryImported"
 
 _ENTRY_COLUMNS = (
     ("tier", "TEXT NOT NULL DEFAULT 'project'"),
@@ -156,6 +157,8 @@ def _migrate_legacy_entries(conn) -> None:
 def _migrate_legacy_long_term_memory(conn) -> None:
     if not _table_exists(conn, "settings"):
         return
+    if _legacy_import_marker_set(conn):
+        return
     row = conn.execute(
         text("SELECT value FROM settings WHERE key = 'longTermMemory' LIMIT 1")
     ).first()
@@ -174,6 +177,7 @@ def _migrate_legacy_long_term_memory(conn) -> None:
         )
         return
     if _legacy_import_exists(conn):
+        _set_legacy_import_marker(conn)
         return
     now = _utcnow_naive()
     evidence_json = json.dumps(
@@ -202,7 +206,28 @@ def _migrate_legacy_long_term_memory(conn) -> None:
             "version": SCHEMA_VERSION,
         },
     )
+    _set_legacy_import_marker(conn, now=now)
     logger.info("Memory v2 imported legacy longTermMemory as a proposed preference")
+
+
+def _legacy_import_marker_set(conn) -> bool:
+    row = conn.execute(
+        text("SELECT value FROM settings WHERE key = :key LIMIT 1"),
+        {"key": _LEGACY_IMPORT_MARKER_KEY},
+    ).first()
+    return row is not None and str(row[0] or "").strip() not in ("", "0", "false")
+
+
+def _set_legacy_import_marker(conn, *, now=None) -> None:
+    moment = now or _utcnow_naive()
+    conn.execute(
+        text(
+            "INSERT INTO settings (key, value, updated_at) "
+            "VALUES (:key, '1', :now) "
+            "ON CONFLICT(key) DO UPDATE SET value = '1', updated_at = :now"
+        ),
+        {"key": _LEGACY_IMPORT_MARKER_KEY, "now": moment},
+    )
 
 
 def _legacy_import_exists(conn) -> bool:

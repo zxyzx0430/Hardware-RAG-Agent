@@ -25,6 +25,7 @@ from sqlalchemy import and_, or_
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from app.db.database import SessionLocal
+from app.db.project_identity import current_project_id, is_path_like
 from app.db.memory_models import (
     DEFAULT_MEMORY_STATUS,
     DEFAULT_MEMORY_TIER,
@@ -91,9 +92,24 @@ _SECRET_PATTERNS = (
     re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{16,}"),
 )
 _ASSIGNMENT_RE = re.compile(
-    r"(?i)\b(?:api[_-]?key|apikey|access[_-]?key|secret|token|password|passwd|"
-    r"authorization|credential)\b['\"]?\s*[:=]\s*['\"]?(?P<value>[^\s'\",}]{6,})"
+    r"(?i)(?P<key>api[\s_-]?key|apikey|access[\s_-]?key|secret|token|password|passwd|"
+    r"pwd|authorization|credential|密码|口令|密钥)['\"]?\s*[:=：]\s*['\"]?"
+    r"(?P<value>[^\n\r'\",}]{4,160})"
 )
+_NATURAL_LANGUAGE_SECRET_RE = re.compile(
+    r"(?i)(?P<key>api[\s_-]?key|apikey|access[\s_-]?key|secret|token|password|passwd|"
+    r"pwd|authorization|credential|密码|口令|密钥)\s*"
+    r"(?:is|are|was|were|是|为)\s*['\"]?(?P<value>[^\n\r'\",}]{4,160})"
+)
+_SECRET_KEY_HINTS = (
+    "api_key", "apikey", "access_key", "secret", "token", "password",
+    "passwd", "pwd", "authorization", "credential", "密码", "口令", "密钥",
+)
+_PLACEHOLDER_VALUES = {
+    "required", "changeme", "change_me", "todo", "tbd", "example",
+    "placeholder", "none", "null", "n/a", "not set", "not_set",
+    "<redacted>", "[redacted]", "***", "xxxx", "xxxxx", "xxxxxx",
+}
 _TERM_SPLIT_RE = re.compile(r"[\s,;，；、:：()（）\[\]【】\"'“”‘’/\\|]+")
 
 
@@ -102,14 +118,60 @@ def utcnow_naive() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
 
 
-def _assignment_value_is_secret(value: str) -> bool:
-    # Reduces false positives such as "password: required" while still
-    # catching generated keys, which contain digits or symbols.
-    if len(value) >= 16:
+def _clean_secret_value(value: str) -> str:
+    cleaned = (value or "").strip().strip("'\"`")
+    return cleaned.rstrip(".,;!?。；！？")
+
+
+def _looks_like_placeholder(value: str) -> bool:
+    lowered = value.strip().casefold()
+    if not lowered:
         return True
-    if any(ch.isdigit() for ch in value):
+    tokens = lowered.split()
+    first = tokens[0] if tokens else lowered
+    if first in _PLACEHOLDER_VALUES:
         return True
-    return value.isupper()
+    if lowered in _PLACEHOLDER_VALUES:
+        return True
+    if lowered.startswith(("your_", "your-", "your ")):
+        return True
+    if lowered.startswith("<") and lowered.endswith(">"):
+        return True
+    if lowered.startswith("[") and lowered.endswith("]"):
+        return True
+    return False
+
+
+def _assignment_value_is_secret(value: str, key: str = "") -> bool:
+    """Conservative credential check for key/value and natural-language forms.
+
+    Placeholders such as ``password: required`` stay allowed. Password-like
+    keys reject any non-placeholder value of six characters or more so a short
+    passphrase does not need digits or mixed case to be recognized. Other key
+    names require eight characters, which catches short lowercase API-key
+    examples while keeping ordinary prose out.
+    """
+    cleaned = _clean_secret_value(value)
+    if not cleaned or _looks_like_placeholder(cleaned):
+        return False
+    key_lower = key.casefold()
+    if any(hint in key_lower for hint in _SECRET_KEY_HINTS):
+        return len(cleaned) >= 6
+    return len(cleaned) >= 16
+
+
+def _is_secret_match(match: re.Match[str]) -> bool:
+    return _assignment_value_is_secret(
+        match.group("value"), match.group("key"),
+    )
+
+
+def _redact_match(match: re.Match[str]) -> str:
+    if not _is_secret_match(match):
+        return match.group(0)
+    start = match.start("value") - match.start(0)
+    end = match.end("value") - match.start(0)
+    return match.group(0)[:start] + "[REDACTED]" + match.group(0)[end:]
 
 
 def contains_secret(text: str | None) -> bool:
@@ -118,9 +180,10 @@ def contains_secret(text: str | None) -> bool:
         return False
     if any(pattern.search(text) for pattern in _SECRET_PATTERNS):
         return True
-    for match in _ASSIGNMENT_RE.finditer(text):
-        if _assignment_value_is_secret(match.group("value")):
-            return True
+    for pattern in (_ASSIGNMENT_RE, _NATURAL_LANGUAGE_SECRET_RE):
+        for match in pattern.finditer(text):
+            if _is_secret_match(match):
+                return True
     return False
 
 
@@ -131,15 +194,9 @@ def redact_secrets(text: str | None) -> str | None:
     result = text
     for pattern in _SECRET_PATTERNS:
         result = pattern.sub("[REDACTED]", result)
-
-    def _redact_assignment(match: re.Match[str]) -> str:
-        value = match.group("value")
-        if not _assignment_value_is_secret(value):
-            return match.group(0)
-        prefix_end = match.start("value") - match.start(0)
-        return match.group(0)[:prefix_end] + "[REDACTED]"
-
-    return _ASSIGNMENT_RE.sub(_redact_assignment, result)
+    for pattern in (_ASSIGNMENT_RE, _NATURAL_LANGUAGE_SECRET_RE):
+        result = pattern.sub(_redact_match, result)
+    return result
 
 
 def _coerce_datetime(value: Any, field_name: str) -> datetime.datetime | None:
@@ -532,22 +589,32 @@ class MemoryStore:
     ) -> dict[str, Any]:
         if scope is None and tier is None:
             raise MemoryValidationError("either scope or tier is required")
-        if scope is not None:
-            scope = _normalize_scope(scope)
         if tier is not None:
             tier = _normalize_tier(tier)
         else:
+            scope = _normalize_scope(scope)
             tier = SCOPE_TO_TIER[scope]
-        if scope is None:
-            scope = TIER_TO_SCOPE[tier]
+        # The v2 tier owns the legacy scope column. Callers that still pass a
+        # mismatched scope cannot create a tier/scope hybrid row (R5).
+        scope = TIER_TO_SCOPE[tier]
         status = _normalize_status(status)
         if status == "superseded":
             raise MemoryValidationError("new entries cannot start as superseded")
         project_id = _normalize_project_id(project_id)
         principal_id = _normalize_principal_id(principal_id)
-        if tier == "project" and not scope_key and project_id:
-            scope_key = project_id
+        if tier == "user":
+            project_id = ""
+            scope_key = ""
+        elif tier == "project":
+            if not project_id and isinstance(scope_key, str) and is_path_like(scope_key):
+                project_id = current_project_id(scope_key.strip())
+            if not scope_key and project_id:
+                scope_key = project_id
         scope_key = _normalize_scope_key(scope, scope_key)
+        if tier == "working" and not scope_key:
+            raise MemoryValidationError(
+                "working memory requires a session scope_key"
+            )
         kind = _normalize_kind(kind)
         source = _normalize_source(source)
         content = _normalize_content(content)
@@ -882,8 +949,14 @@ class MemoryStore:
         principal_id: Any = DEFAULT_PRINCIPAL_ID,
         kind: str | None = None,
         content: str | None = None,
+        scope_key: str = "",
     ) -> dict[str, Any] | None:
-        """Find an active/proposed entry with the same normalized content."""
+        """Find an active/proposed entry with the same normalized content.
+
+        User memory is global, so a delivery project never fragments it.
+        Working/episodic memory is session-scoped, so identical text in two
+        sessions must not return the first session's row.
+        """
         tier = _normalize_tier(tier)
         project_id = _normalize_project_id(project_id)
         principal_id = _normalize_principal_id(principal_id)
@@ -895,20 +968,23 @@ class MemoryStore:
         normalized = _normalize_duplicate_text(content)
         now = utcnow_naive()
         with self._session() as db:
-            rows = (
-                db.query(MemoryEntry)
-                .filter(
-                    MemoryEntry.tier == tier,
-                    MemoryEntry.project_id == project_id,
-                    MemoryEntry.principal_id == principal_id,
-                    MemoryEntry.kind == kind,
-                    MemoryEntry.deleted_at.is_(None),
-                    or_(MemoryEntry.expires_at.is_(None), MemoryEntry.expires_at > now),
-                    MemoryEntry.status.in_(("active", "proposed")),
-                )
-                .order_by(MemoryEntry.status.asc(), MemoryEntry.updated_at.desc())
-                .all()
+            query = db.query(MemoryEntry).filter(
+                MemoryEntry.tier == tier,
+                MemoryEntry.principal_id == principal_id,
+                MemoryEntry.kind == kind,
+                MemoryEntry.deleted_at.is_(None),
+                or_(MemoryEntry.expires_at.is_(None), MemoryEntry.expires_at > now),
+                MemoryEntry.status.in_(("active", "proposed")),
             )
+            if tier == "user":
+                pass  # user memory is cross-project
+            elif tier in ("working", "episodic") and scope_key:
+                query = query.filter(MemoryEntry.scope_key == scope_key)
+            else:
+                query = query.filter(MemoryEntry.project_id == project_id)
+            rows = query.order_by(
+                MemoryEntry.status.asc(), MemoryEntry.updated_at.desc()
+            ).all()
             for row in rows:
                 if _normalize_duplicate_text(row.content) == normalized:
                     return _entry_to_dict(row)
@@ -928,13 +1004,17 @@ class MemoryStore:
         kind = proposal.get("kind") or "fact"
         content = proposal.get("content")
         project_id = proposal.get("project_id", "")
+        if tier == "user":
+            project_id = ""
         principal_id = proposal.get("principal_id", DEFAULT_PRINCIPAL_ID)
+        scope_key = proposal.get("scope_key", "") or ""
         existing = self.find_duplicate(
             tier,
             project_id,
             principal_id,
             kind,
             content,
+            scope_key=scope_key,
         )
         if existing is not None:
             return existing
@@ -944,7 +1024,7 @@ class MemoryStore:
             kind=kind,
             content=content,
             scope=proposal.get("scope"),
-            scope_key=proposal.get("scope_key", "") or "",
+            scope_key=scope_key,
             project_id=project_id,
             principal_id=principal_id,
             evidence=proposal.get("evidence"),

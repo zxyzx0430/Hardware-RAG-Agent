@@ -8,6 +8,7 @@ single-user local, so ``principal_id`` defaults to ``local``.
 
 from __future__ import annotations
 
+import datetime
 import hashlib
 from typing import Any, Optional
 
@@ -17,7 +18,7 @@ from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import current_user
-from app.api.memory_epoch import MEMORY_CLEAR_EPOCH_KEY
+from app.api.memory_epoch import MEMORY_CLEAR_EPOCH_KEY, stage_memory_clear_epoch
 from app.api.session_epoch import SESSION_DELETE_EPOCH_PREFIX
 from app.db.database import get_db
 from app.db.memory_models import (
@@ -79,6 +80,10 @@ class MemorySearchPayload(BaseModel):
     project_id: Optional[str] = None
     kind: Optional[str] = None
     limit: int = Field(default=5, ge=1, le=200)
+
+
+class MemoryClearPayload(BaseModel):
+    session_id: Optional[str] = None
 
 
 def _clean_filter(value: Optional[str]) -> Optional[str]:
@@ -288,6 +293,7 @@ def create_memory(
     except MemoryValidationError as exc:
         raise _validation_error(exc) from None
     db.commit()
+    memory_export.export_entry(entry, store=store)
     return {"success": True, "data": _public_entry(entry)}
 
 
@@ -344,6 +350,7 @@ def _review_proposal(
             "memory entry changed state before the review was applied",
         )
     db.commit()
+    memory_export.export_entry(updated, store=store)
     return {"success": True, "data": _public_entry(updated)}
 
 
@@ -363,6 +370,66 @@ def reject_proposal(
     _user: dict = Depends(current_user),
 ) -> dict[str, Any]:
     return _review_proposal(entry_id, "reject", db, _user)
+
+
+@router.get("/working/{session_id}")
+def get_working_memory(
+    session_id: str,
+    db: Session = Depends(get_db),
+    _user: dict = Depends(current_user),
+) -> dict[str, Any]:
+    """Return the current working snapshot, or null after a clear/delete.
+
+    The epochs are read from the request database and are required; a missing
+    or unreadable epoch returns null rather than an old snapshot.
+    """
+    epochs = _epochs_from_db(db, session_id)
+    if epochs is None:
+        return {"success": True, "data": {"snapshot": None}}
+    try:
+        snapshot = MemoryStore(db=db).latest_snapshot(
+            session_id,
+            memory_epoch=epochs["memory_epoch"],
+            delete_epoch=epochs["delete_epoch"],
+        )
+    except MemoryValidationError:
+        snapshot = None
+    return {
+        "success": True,
+        "data": {
+            "snapshot": _snapshot_summary(snapshot, epochs) if snapshot is not None else None
+        },
+    }
+
+
+@router.post("/clear")
+def clear_memory(
+    payload: "MemoryClearPayload | None" = None,
+    db: Session = Depends(get_db),
+    _user: dict = Depends(current_user),
+) -> dict[str, Any]:
+    """Clear working memory and invalidate old snapshots.
+
+    Project/user entries are intentionally preserved; deleting a single entry
+    uses ``DELETE /api/memory/{id}``. The clear epoch advances even when the
+    legacy ``longTermMemory`` setting is empty (review R2).
+    """
+    session_id = (payload.session_id if payload is not None else None) or ""
+    session_id = session_id.strip()
+    now = datetime.datetime.utcnow()
+    stage_memory_clear_epoch(db, now)
+    removed: dict[str, int] = {}
+    if session_id:
+        removed = MemoryStore(db=db).purge_session(session_id)
+    db.commit()
+    return {
+        "success": True,
+        "data": {
+            "cleared": True,
+            "session_id": session_id,
+            "removed": removed,
+        },
+    }
 
 
 @router.get("/episodes")
@@ -467,6 +534,7 @@ def update_memory(
         raise _error(status.HTTP_404_NOT_FOUND, "MEMORY_NOT_FOUND", "memory entry not found")
     if changes:
         db.commit()
+        memory_export.export_entry(entry, store=store)
     return {"success": True, "data": _public_entry(entry)}
 
 
@@ -477,9 +545,11 @@ def delete_memory(
     _user: dict = Depends(current_user),
 ) -> dict[str, Any]:
     store = MemoryStore(db=db)
-    if not store.soft_delete(entry_id):
+    entry = store.get(entry_id, include_inactive=True)
+    if entry is None or not store.soft_delete(entry_id):
         raise _error(status.HTTP_404_NOT_FOUND, "MEMORY_NOT_FOUND", "memory entry not found")
     db.commit()
+    memory_export.export_entry(entry, store=store)
     return {"success": True, "data": {"deleted": True, "id": entry_id}}
 
 

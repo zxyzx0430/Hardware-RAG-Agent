@@ -277,12 +277,12 @@ def run_harness(scenarios: list[Any]) -> tuple[list[dict[str, Any]], dict[str, A
 
 
 def run_product_stage(probe: dict[str, Any]) -> dict[str, Any]:
-    """Product evaluation is fail-closed until a merged adapter is bound.
+    """Run deterministic checks against the merged product store/context.
 
-    The deterministic reference harness must not be reported as product
-    acceptance.  When the probe finds the frozen v2 interfaces, an integration
-    owner still has to bind the store/context adapter; until then this stage is
-    pending rather than silently passing.
+    The broader reference harness is still labelled separately. This stage is
+    intentionally small: it binds the real store, context builder, status
+    transitions and mirror exporter so a merged product cannot leave the
+    evaluation permanently pending.
     """
     if not probe.get("available"):
         return {
@@ -291,16 +291,17 @@ def run_product_stage(probe: dict[str, Any]) -> dict[str, Any]:
             "metrics": None,
             "scenarios": [],
         }
-    return {
-        "status": "pending",
-        "reason": (
-            "Memory v2 interfaces were detected, but the deterministic product "
-            "adapter is not bound in this evaluation worktree. Bind the frozen "
-            "store/context interface before claiming product gates."
-        ),
-        "metrics": None,
-        "scenarios": [],
-    }
+    try:
+        from .product_adapter import run_product_checks
+
+        return run_product_checks()
+    except Exception as exc:
+        return {
+            "status": "fail",
+            "reason": f"product adapter failed: {type(exc).__name__}: {exc}",
+            "metrics": None,
+            "scenarios": [],
+        }
 
 
 def run_real_model_stage(requested: bool, probe: dict[str, Any]) -> dict[str, Any]:

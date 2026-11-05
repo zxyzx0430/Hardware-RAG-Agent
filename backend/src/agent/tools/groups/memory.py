@@ -20,7 +20,7 @@ from app.db.memory_store import (
     MemoryStore,
     MemoryValidationError,
 )
-from src.agent import memory_policy
+from src.agent import memory_export, memory_policy
 from src.agent.core.toolkit.tool_spec import RiskLevel, ToolSpec
 from src.agent.exceptions import ToolContext
 from src.agent.memory_context import collect_memory_entries, current_project_key
@@ -253,6 +253,7 @@ class MemoryRememberTool(ToolSpec):
             return {"output": f"拒绝保存：{exc}", "saved": False, "entry": None}
         except MemoryValidationError as exc:
             return {"output": f"记忆参数无效：{exc}", "saved": False, "entry": None}
+        memory_export.export_entry(entry, store=store)
         return {
             "output": (
                 f"已记住（id={entry['id']}，tier={entry.get('tier')}，"
@@ -294,7 +295,9 @@ class MemoryForgetTool(ToolSpec):
     async def execute(self, args: dict[str, Any], ctx: ToolContext) -> dict:
         store = self._store or MemoryStore()
         entry_id = args.get("id", "")
-        if store.soft_delete(entry_id):
+        entry = store.get(entry_id, include_inactive=True)
+        if entry is not None and store.soft_delete(entry_id):
+            memory_export.export_entry(entry, store=store)
             return {"output": f"已遗忘记忆 {entry_id}。", "deleted": True, "id": entry_id}
         return {
             "output": f"未找到可删除的记忆 {entry_id}（可能已删除）。",

@@ -2564,3 +2564,29 @@
   现在由 `log_tool_call` 接收并落库。
 - Agent 路径的 `done.usage` 仍未填充；归属 `chat_routes`/`sse_adapter`，
   由 W5 后续批次或对应线程处理。
+
+## 10. Memory v2（2026-11-06）
+
+Memory v2 保留旧 `/api/memory` 路径，新增 `tier/status/project_id/evidence`
+字段和审核/工作记忆接口。所有响应沿用 `{success, data}` envelope；默认读
+`status=active`，审核路径显式读 `proposed`。单机个人用户，`principal_id`
+默认 `local`。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/memory` | 过滤 `scope/scope_key/tier/status/project_id/kind/q/limit`；默认只返回 active |
+| POST | `/api/memory` | 显式创建；`tier` 可取 `working/project/user/episodic`，`tier` 优先于旧 `scope` |
+| PATCH | `/api/memory/{id}` | 更新 content/structured/confidence/expires_at |
+| DELETE | `/api/memory/{id}` | 软删除，并从 Markdown 镜像移除 |
+| POST | `/api/memory/search` | 关键词检索；默认 active，可按 tier/project 过滤 |
+| GET | `/api/memory/proposals` | 列出 proposed 候选 |
+| POST | `/api/memory/proposals/{id}/approve` | proposed → active |
+| POST | `/api/memory/proposals/{id}/reject` | proposed → rejected |
+| GET | `/api/memory/working/{session_id}` | 当前 session 的最新有效九字段 checkpoint；clear/delete 后返回 `null` |
+| GET | `/api/memory/episodes?session_id=` | checkpoint 历史摘要，标记 `valid` |
+| GET | `/api/memory/status?session_id=` | schema/表/列/计数/epoch/working snapshot/镜像路径 |
+| POST | `/api/memory/clear` | 推进 memory-clear epoch，并清理指定 session 的 working 条目和 snapshots；不动 user/project |
+
+设置键 `autoMemoryEnabled` 接受布尔值或 `"true"/"false"`，后端统一存成小写
+字符串；默认关闭。Memory 内容始终按明文参考数据注入，不当作指令；硬件档案
+仍走 `hardware-profile` Skill，不进入通用记忆。
