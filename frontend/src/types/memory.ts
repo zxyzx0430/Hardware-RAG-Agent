@@ -1,7 +1,17 @@
-// Memory v1 and hardware profile types — see docs memory-v1 contract.
+// Memory v1/v2 and hardware profile types — see docs memory-v1 contract.
 
 export const MEMORY_SCOPES = ["global", "project", "session"] as const;
 export type MemoryScope = (typeof MEMORY_SCOPES)[number];
+
+export const MEMORY_TIERS = ["working", "project", "user", "episodic"] as const;
+export type MemoryTier = (typeof MEMORY_TIERS)[number];
+
+// Episodic entries are projections, not something a user creates by hand.
+export const MEMORY_CREATE_TIERS = ["working", "project", "user"] as const;
+export type MemoryCreateTier = (typeof MEMORY_CREATE_TIERS)[number];
+
+export const MEMORY_STATUSES = ["proposed", "active", "rejected", "superseded"] as const;
+export type MemoryStatus = (typeof MEMORY_STATUSES)[number];
 
 export const MEMORY_KINDS = ["preference", "fact", "constraint", "decision", "procedure"] as const;
 export type MemoryKind = (typeof MEMORY_KINDS)[number];
@@ -11,11 +21,17 @@ export type MemorySource = (typeof MEMORY_SOURCES)[number];
 
 export interface MemoryEntry {
   id: string;
+  // v2 fields stay optional so a v1 backend response still renders.
+  tier?: MemoryTier | string;
+  status?: MemoryStatus | string;
   scope: MemoryScope;
   scope_key: string;
+  project_id?: string;
+  principal_id?: string;
   kind: MemoryKind;
   content: string;
   structured: Record<string, unknown>;
+  evidence?: Record<string, unknown> | string | null;
   source: MemorySource | string;
   confidence: number;
   created_at: string;
@@ -24,11 +40,15 @@ export interface MemoryEntry {
   expires_at?: string | null;
   deleted_at?: string | null;
   supersedes_id?: string | null;
+  schema_version?: number;
 }
 
 export interface MemoryListParams {
   scope?: MemoryScope | "";
   scope_key?: string;
+  tier?: MemoryTier | "";
+  status?: MemoryStatus | "";
+  project_id?: string;
   kind?: MemoryKind | "";
   q?: string;
   limit?: number;
@@ -37,6 +57,8 @@ export interface MemoryListParams {
 export interface MemoryCreateInput {
   scope: MemoryScope;
   scope_key?: string;
+  tier?: MemoryCreateTier;
+  project_id?: string;
   kind: MemoryKind;
   content: string;
   structured?: Record<string, unknown>;
@@ -58,6 +80,30 @@ export interface MemorySearchInput {
   scope_key?: string;
   kind?: MemoryKind;
   limit?: number;
+}
+
+export const WORKING_MEMORY_FIELDS = [
+  "goal",
+  "constraints",
+  "completed",
+  "current_state",
+  "decisions",
+  "failed_attempts",
+  "open_questions",
+  "artifacts_and_evidence",
+  "next_action",
+] as const;
+
+export type WorkingMemoryField = (typeof WORKING_MEMORY_FIELDS)[number];
+
+/** Latest structured checkpoint for one session, rendered read-only. */
+export interface WorkingMemorySnapshot {
+  body: Record<string, unknown>;
+  body_json?: string;
+  seal_id: string;
+  generation: number;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface HardwareProfile {

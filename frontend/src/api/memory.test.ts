@@ -1,10 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  approveProposal,
   createMemory,
   deleteMemory,
   getHardwareProfile,
+  getWorkingMemory,
   listHardwareProfiles,
   listMemory,
+  listProposals,
+  rejectProposal,
   searchMemory,
   updateMemory,
   upsertHardwareProfile,
@@ -56,6 +60,70 @@ describe("memory API client", () => {
     apiGetMock.mockResolvedValue([]);
     await listMemory({ scope: "", kind: "", q: "" });
     expect(apiGetMock).toHaveBeenCalledWith("memory");
+  });
+
+  it("sends v2 tier, status and project filters", async () => {
+    apiGetMock.mockResolvedValue({ entries: [entry] });
+    await expect(listMemory({ tier: "user", status: "proposed", project_id: "proj-1" })).resolves.toEqual([entry]);
+    expect(apiGetMock).toHaveBeenCalledWith("memory?tier=user&status=proposed&project_id=proj-1");
+  });
+
+  it("unwraps working-memory snapshots from envelope, direct and null shapes", async () => {
+    const snapshot = {
+      body: { goal: "Fix I2C", completed: [] },
+      seal_id: "seal-1",
+      generation: 2,
+      created_at: "2026-11-06T01:00:00Z",
+      updated_at: "2026-11-06T02:00:00Z",
+    };
+    apiGetMock
+      .mockResolvedValueOnce({ snapshot })
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ ...snapshot, body: JSON.stringify({ goal: "Serialized" }) });
+
+    await expect(getWorkingMemory("sess-1")).resolves.toEqual(snapshot);
+    await expect(getWorkingMemory("sess-2")).resolves.toBeNull();
+    await expect(getWorkingMemory("sess-3")).resolves.toEqual({
+      ...snapshot,
+      body: { goal: "Serialized" },
+    });
+    expect(apiGetMock).toHaveBeenNthCalledWith(1, "memory/working/sess-1");
+  });
+
+  it("lists proposals and falls back to the dedicated route", async () => {
+    apiGetMock.mockResolvedValueOnce({ entries: [entry] });
+    await expect(listProposals()).resolves.toEqual([entry]);
+    expect(apiGetMock).toHaveBeenLastCalledWith("memory?status=proposed&limit=200");
+
+    apiGetMock
+      .mockRejectedValueOnce(new Error("404"))
+      .mockResolvedValueOnce({ proposals: [entry] });
+    await expect(listProposals()).resolves.toEqual([entry]);
+    expect(apiGetMock).toHaveBeenLastCalledWith("memory/proposals?limit=200");
+  });
+
+  it("approves and rejects proposals", async () => {
+    const rejected = { ...entry, status: "rejected" };
+    apiPostMock.mockResolvedValueOnce({ entry }).mockResolvedValueOnce(rejected);
+
+    await expect(approveProposal("mem-1")).resolves.toEqual(entry);
+    expect(apiPostMock).toHaveBeenNthCalledWith(1, "memory/proposals/mem-1/approve");
+
+    await expect(rejectProposal("mem-1")).resolves.toEqual(rejected);
+    expect(apiPostMock).toHaveBeenNthCalledWith(2, "memory/proposals/mem-1/reject");
+  });
+
+  it("forwards v2 tier and project id on create", async () => {
+    apiPostMock.mockResolvedValue({ entry });
+    await createMemory({ scope: "project", kind: "decision", content: "Use SPI", tier: "project", project_id: "proj-1" });
+    expect(apiPostMock).toHaveBeenCalledWith("memory", {
+      scope: "project",
+      kind: "decision",
+      content: "Use SPI",
+      tier: "project",
+      project_id: "proj-1",
+      source: "user",
+    });
   });
 
   it("creates a user-sourced entry and unwraps it", async () => {

@@ -75,7 +75,7 @@ describe("MemoryPanel", () => {
     await screen.findByText("The board uses 3.3V logic.");
     expect(screen.getAllByText("项目").length).toBeGreaterThan(0);
     expect(screen.getAllByText("事实").length).toBeGreaterThan(0);
-    expect(screen.getByText("用户")).toBeTruthy();
+    expect(screen.getAllByText("用户").length).toBeGreaterThan(0);
     expect(screen.getByText("置信度 0.90")).toBeTruthy();
     expect(screen.getAllByText(/过期时间: /).length).toBeGreaterThan(0);
     expect(screen.getByText("Prefer concise answers.")).toBeTruthy();
@@ -89,7 +89,15 @@ describe("MemoryPanel", () => {
     listMemoryMock.mockResolvedValue([memoryEntry()]);
     render(<MemoryPanel />);
     await screen.findByText("The board uses 3.3V logic.");
-    await waitFor(() => expect(listMemoryMock).toHaveBeenCalledWith({ scope: "", kind: "", q: "", limit: 200 }));
+    await waitFor(() => expect(listMemoryMock).toHaveBeenCalledWith({
+      scope: "",
+      tier: "",
+      status: "active",
+      project_id: "",
+      kind: "",
+      q: "",
+      limit: 200,
+    }));
 
     fireEvent.change(screen.getByLabelText("按范围筛选"), { target: { value: "global" } });
     await waitFor(() => expect(listMemoryMock).toHaveBeenLastCalledWith(expect.objectContaining({ scope: "global" })));
@@ -102,6 +110,42 @@ describe("MemoryPanel", () => {
       () => expect(listMemoryMock).toHaveBeenLastCalledWith(expect.objectContaining({ q: "供电" })),
       { timeout: 2000 },
     );
+  });
+
+  it("filters by tier, status and project id", async () => {
+    listMemoryMock.mockResolvedValue([memoryEntry()]);
+    render(<MemoryPanel />);
+    await screen.findByText("The board uses 3.3V logic.");
+
+    fireEvent.change(screen.getByLabelText("按层级筛选"), { target: { value: "user" } });
+    await waitFor(() => expect(listMemoryMock).toHaveBeenLastCalledWith(expect.objectContaining({ tier: "user" })));
+
+    fireEvent.change(screen.getByLabelText("按状态筛选"), { target: { value: "proposed" } });
+    await waitFor(() => expect(listMemoryMock).toHaveBeenLastCalledWith(expect.objectContaining({ status: "proposed" })));
+
+    fireEvent.change(screen.getByLabelText("按项目筛选"), { target: { value: "proj-42" } });
+    await waitFor(
+      () => expect(listMemoryMock).toHaveBeenLastCalledWith(expect.objectContaining({ project_id: "proj-42" })),
+      { timeout: 2000 },
+    );
+  });
+
+  it("shows tier, status, project and evidence for v2 entries", async () => {
+    listMemoryMock.mockResolvedValue([
+      memoryEntry({
+        tier: "user",
+        status: "proposed",
+        project_id: "proj-42",
+        evidence: { seal_id: "seal-9", field: "decisions" },
+      }),
+    ]);
+    render(<MemoryPanel />);
+
+    await screen.findByText("The board uses 3.3V logic.");
+    expect(screen.getAllByText("待审核").length).toBeGreaterThan(0);
+    expect(screen.getByText(/项目 ID: proj-42/)).toBeTruthy();
+    expect(screen.getByText(/证据: seal_id: seal-9/)).toBeTruthy();
+    expect(screen.getByText(/field: decisions/)).toBeTruthy();
   });
 
   it("creates a memory entry with the selected scope key and confidence", async () => {
@@ -127,6 +171,59 @@ describe("MemoryPanel", () => {
       expires_at: null,
     });
     expect(await screen.findByText("Use SWD for flashing.")).toBeTruthy();
+  });
+
+  it("creates a user-tier memory without a scope key", async () => {
+    listMemoryMock.mockResolvedValue([]);
+    createMemoryMock.mockResolvedValue(memoryEntry({ id: "mem-user", scope: "global", scope_key: "", tier: "user" }));
+    render(<MemoryPanel />);
+    await screen.findByText("暂无记忆条目");
+
+    fireEvent.click(screen.getByRole("button", { name: "新增记忆" }));
+    fireEvent.change(screen.getByLabelText("层级"), { target: { value: "user" } });
+    fireEvent.change(screen.getByLabelText("内容"), { target: { value: "Prefer metric units." } });
+    fireEvent.click(screen.getByRole("button", { name: "保存记忆" }));
+
+    await screen.findByText("记忆已创建。");
+    expect(createMemoryMock).toHaveBeenCalledWith({
+      scope: "global",
+      scope_key: "",
+      kind: "fact",
+      content: "Prefer metric units.",
+      source: "user",
+      confidence: 0.7,
+      expires_at: null,
+      tier: "user",
+    });
+  });
+
+  it("requires a session id when creating working memory", async () => {
+    listMemoryMock.mockResolvedValue([]);
+    createMemoryMock.mockResolvedValue(memoryEntry({ id: "mem-working", scope: "session", scope_key: "sess-9", tier: "working" }));
+    render(<MemoryPanel />);
+    await screen.findByText("暂无记忆条目");
+
+    fireEvent.click(screen.getByRole("button", { name: "新增记忆" }));
+    fireEvent.change(screen.getByLabelText("层级"), { target: { value: "working" } });
+    fireEvent.change(screen.getByLabelText("内容"), { target: { value: "Session note." } });
+    fireEvent.click(screen.getByRole("button", { name: "保存记忆" }));
+    expect(screen.getByRole("alert").textContent).toContain("项目或会话记忆需要填写范围键。");
+    expect(createMemoryMock).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByLabelText("范围键"), { target: { value: "sess-9" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存记忆" }));
+
+    await screen.findByText("记忆已创建。");
+    expect(createMemoryMock).toHaveBeenCalledWith({
+      scope: "session",
+      scope_key: "sess-9",
+      kind: "fact",
+      content: "Session note.",
+      source: "user",
+      confidence: 0.7,
+      expires_at: null,
+      tier: "working",
+    });
   });
 
   it("rejects a project memory without a scope key", async () => {
