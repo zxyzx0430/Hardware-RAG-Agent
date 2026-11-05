@@ -90,7 +90,7 @@ async def test_upsert_merges_second_call(tool):
 
 async def test_search_requires_query_and_valid_limit(tool):
     missing = await _call(tool, action="search")
-    bad_limit = await _call(tool, action="search", query="esp32", limit=99)
+    bad_limit = await _call(tool, action="search", query="esp32", limit=201)
 
     assert missing["error"] == "invalid_arguments"
     assert bad_limit["error"] == "invalid_arguments"
