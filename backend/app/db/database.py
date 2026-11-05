@@ -4476,6 +4476,7 @@ def init_db():
         # 为 tool_audit 添加 call_id/success/error_type/trace 列（幂等）
         for col_def in (
             "call_id VARCHAR(64)",
+            "run_id VARCHAR(64)",
             "success BOOLEAN DEFAULT 1",
             "error_type VARCHAR(64)",
             "trace_id VARCHAR(64)",

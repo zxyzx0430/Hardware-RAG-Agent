@@ -189,8 +189,8 @@ FILE_GROUPS = {
 IMPORT_PROBES = [
     "app.db.run_store",
     "app.db.recovery_models",
-    "app.api.run_events",
-    "app.api.runs_routes",
+    "src.agent.run_events",
+    "app.api.runs",
     "src.agent.recovery",
 ]
 

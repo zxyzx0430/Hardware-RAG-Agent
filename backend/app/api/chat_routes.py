@@ -1922,6 +1922,8 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
     run_id = _create_chat_run(
         run_store, payload, model, run_session_id, run_principal_id,
     )
+    if request_snapshot.tool_context is not None:
+        request_snapshot.tool_context.run_id = run_id
     run_request_snapshot = _sanitized_run_request(payload)
 
     async def event_generator():

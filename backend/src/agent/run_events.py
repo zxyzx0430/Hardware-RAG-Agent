@@ -441,8 +441,20 @@ def reset_runtime_state() -> None:
 # ---------------------------------------------------------------------------
 
 def build_run_event_frame(run_id: str, seq: int, payload: Mapping[str, Any]) -> str:
-    body = json.dumps(payload, ensure_ascii=False)
+    # The wire id and the payload must agree. A legacy producer may already
+    # carry its own seq/run_id; overwrite them with the persisted sequence.
+    normalized = dict(payload)
+    normalized["run_id"] = run_id
+    normalized["seq"] = int(seq)
+    body = json.dumps(normalized, ensure_ascii=False)
     return f"id: {run_id}:{seq}\ndata: {body}\n\n"
+
+
+def _payload_with_type(payload: Mapping[str, Any], event_type: str | None) -> dict[str, Any]:
+    normalized = dict(payload or {})
+    if event_type and "type" not in normalized:
+        normalized["type"] = event_type
+    return normalized
 
 
 def build_unpersisted_frame(payload: Mapping[str, Any]) -> str:
@@ -524,8 +536,9 @@ class RunEventWriter:
         """Persist one semantic event, then return its seq and SSE frame."""
         if self.store is None:
             return None
+        event_payload = _payload_with_type(payload, event_type)
         try:
-            seq = self.store.append_run_event(self.run_id, event_type, payload)
+            seq = self.store.append_run_event(self.run_id, event_type, event_payload)
         except Exception:
             logger.warning(
                 "Run event persistence failed run=%s type=%s",
@@ -537,12 +550,12 @@ class RunEventWriter:
             self.bus.publish(self.run_id, {
                 "seq": self.last_seq,
                 "type": event_type,
-                "payload": dict(payload),
+                "payload": dict(event_payload),
             })
         if event_type == "tool_confirm_required":
             self._persist_pending_approvals(payload)
             self._persist_request_snapshot()
-        return self.last_seq, build_run_event_frame(self.run_id, self.last_seq, payload)
+        return self.last_seq, build_run_event_frame(self.run_id, self.last_seq, event_payload)
 
     def _persist_pending_approvals(self, payload: Mapping[str, Any]) -> None:
         if self.store is None:
@@ -799,10 +812,11 @@ async def iterate_run_events(
     try:
         for event in store.list_run_events(run_id, after_seq=last_seq):
             seq = int(event["seq"])
-            payload = event["payload"]
             last_seq = seq
             last_type = event.get("type")
-            yield build_run_event_frame(run_id, seq, payload)
+            yield build_run_event_frame(
+                run_id, seq, _payload_with_type(event["payload"], last_type),
+            )
             if last_type == "done":
                 return
 
@@ -817,7 +831,9 @@ async def iterate_run_events(
                 seq = int(event["seq"])
                 last_seq = seq
                 last_type = event.get("type")
-                yield build_run_event_frame(run_id, seq, event["payload"])
+                yield build_run_event_frame(
+                    run_id, seq, _payload_with_type(event["payload"], last_type),
+                )
             async for frame in _terminal_replay_frames(run_id, status, last_type):
                 yield frame
             return
@@ -835,7 +851,9 @@ async def iterate_run_events(
                     seq = int(event["seq"])
                     last_seq = seq
                     last_type = event.get("type")
-                    yield build_run_event_frame(run_id, seq, event["payload"])
+                    yield build_run_event_frame(
+                        run_id, seq, _payload_with_type(event["payload"], last_type),
+                    )
                     if last_type == "done":
                         return
                 run = store.get_run(run_id)
@@ -859,7 +877,9 @@ async def iterate_run_events(
                 return
             last_seq = seq
             last_type = item.get("type")
-            yield build_run_event_frame(run_id, seq, item["payload"])
+            yield build_run_event_frame(
+                run_id, seq, _payload_with_type(item["payload"], last_type),
+            )
             if last_type == "done":
                 return
     finally:

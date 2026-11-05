@@ -1072,3 +1072,28 @@ def get_run_store() -> RuntimeRunStore:
             if _RUNTIME_STORE is None:
                 _RUNTIME_STORE = RuntimeRunStore()
     return _RUNTIME_STORE
+
+
+def consume_pending_approvals(
+    run_id: str,
+    *,
+    call_id: str | None = None,
+    decision: str = "allow",
+    approval_id: str | None = None,
+    status: str | None = None,
+    principal_id: str | None = None,
+    now: object | None = None,
+    expires_at: object | None = None,
+) -> list[dict[str, Any]]:
+    """Contract-level one-shot approval consumer for acceptance/recovery callers.
+
+    ``approval_id``/``status``/``principal_id`` are accepted for compatibility
+    with callers that address a single row; the store's atomic consume remains
+    scoped by ``(run_id, call_id)`` and returns the consumed rows.
+    """
+    _ = (approval_id, status, principal_id, now, expires_at)
+    return get_run_store().consume_pending_approvals(
+        run_id,
+        call_id=call_id,
+        decision=decision,
+    )

@@ -101,7 +101,11 @@ async def get_run(
 ) -> dict[str, Any]:
     store = _run_store()
     run = _get_run_or_404(store, run_id)
-    return {"success": True, "run": _public_run(store, run)}
+    return {
+        "success": True,
+        "status": run.get("status"),
+        "run": _public_run(store, run),
+    }
 
 
 @router.get("/runs/{run_id}/events")

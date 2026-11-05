@@ -251,6 +251,7 @@ class ToolAudit(Base):
     error = Column(Text, nullable=True)
     # industrial-tool-runtime Task 6: extended audit fields
     call_id = Column(String(64), nullable=True)
+    run_id = Column(String(64), nullable=True, index=True)
     success = Column(Boolean, default=True)
     error_type = Column(String(64), nullable=True)
     trace_id = Column(String(64), nullable=True, index=True)

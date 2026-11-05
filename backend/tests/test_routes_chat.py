@@ -56,6 +56,8 @@ class TestChatSSE:
 
         events = _parse_sse(response.text)
         types = [e["type"] for e in events]
+        assert types[0] == "run_started"
+        types = [event_type for event_type in types if event_type != "run_started"]
 
         assert types[0] == "thinking"
         assert "text" in types

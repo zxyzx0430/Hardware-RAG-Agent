@@ -129,7 +129,11 @@ def test_writer_persists_before_returning_frame(isolated_run_runtime):
 
     assert seq == 1
     assert store.appended == [("text", 1, {"type": "text", "content": "hello"})]
-    assert frame == 'id: r_runtime_test:1\ndata: {"type": "text", "content": "hello"}\n\n'
+    assert frame.startswith("id: r_runtime_test:1" + chr(10) + "data: ")
+    assert json.loads(frame.split('data: ', 1)[1]) == {
+        "type": "text", "content": "hello",
+        "run_id": "r_runtime_test", "seq": 1,
+    }
     assert store.get_run(RUN_ID)["last_event_seq"] == 1
 
 
@@ -200,7 +204,10 @@ async def test_stream_unexpected_error_persists_error_and_failed_terminal(
     assert [payload["type"] for _, payload in frames] == [
         "run_started", "text", "error", "done",
     ]
-    assert frames[-1][1] == {"type": "done", "success": False, "completed": False}
+    assert {key: value for key, value in frames[-1][1].items()
+            if key not in ("run_id", "seq")} == {
+        "type": "done", "success": False, "completed": False,
+    }
     run = store.get_run(RUN_ID)
     assert run["status"] == run_events.RUN_STATUS_FAILED
     assert run["error_code"] == "INTERNAL_ERROR"
