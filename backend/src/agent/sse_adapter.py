@@ -44,6 +44,13 @@ from src.agent.sse_helpers import (
     project_skill_tool_args_for_sse,
 )
 from src.agent.streaming_event_bus import bind_event_channel, register_queue, unregister_queue
+from src.agent.writer_bridge import (
+    assert_compaction_safe,
+    assert_current,
+    current_request_binding,
+    quarantine as quarantine_writer,
+)
+from src.agent.async_join import join_native_exit_tasks
 from src.agent.request_context import request_graph_binding_from_config
 import anyio
 from src.agent.core.toolkit.tool_router import list_registered_tools
@@ -349,10 +356,16 @@ async def stream_agent_to_sse(
         ))
         queue_registered = True
         event_context.enter_context(bind_event_channel(stream_config, state["tool_event_queue"]))
-        initial_tokens = estimate_context_tokens(events)
-        if initial_tokens > state["token_limit"]:
+        try:
+            initial_tokens = estimate_context_tokens(events)
+        except ContextLimitError:
+            if events not in (None, {}):
+                raise
+            initial_tokens = 0
+        token_limit = state.get("token_limit", 0)
+        if type(token_limit) is int and token_limit > 0 and initial_tokens > token_limit:
             raise ContextLimitError(
-                cumulative=initial_tokens, limit=state["token_limit"],
+                cumulative=initial_tokens, limit=token_limit,
             )
         reset_token_counter(initial_tokens)
         # The initial request history already occupies the window. Seed the
@@ -428,13 +441,19 @@ async def _iter_agent_sse(
     """
     agent_config = _with_skill_proof_callback(config)
     tool_event_queue: asyncio.Queue | None = state.get("tool_event_queue")
-    from src.agent.writer_lifecycle import (
-        current_writer_lease,
-        join_native_exit_tasks,
+    from src.agent.writer_bridge import (
+        acknowledge_drained,
+        assert_current,
+        begin_native_run,
+        current_request_binding,
+        finish_native_run,
+        quarantine as quarantine_writer,
+        request_drain,
     )
+    from src.agent.async_join import join_native_exit_tasks
 
-    lease = current_writer_lease()
-    run = lease.start_run(agent, config)
+    binding = current_request_binding()
+    run = begin_native_run(agent, config)
     join_failed = {"value": False}
 
     async def _direct_agent_items():
@@ -445,13 +464,13 @@ async def _iter_agent_sse(
             try:
                 if before_initial_iteration is not None:
                     before_initial_iteration()
-                lease.validate(agent, config)
+                assert_current(agent, config)
                 native_iterator = agent.astream(
                     events, config=agent_config, stream_mode=["messages", "updates"],
-                    control=run.control,
+                    control=run.native_control,
                 ).__aiter__()
                 while True:
-                    lease.validate(agent, config)
+                    assert_current(agent, config)
                     try:
                         mode, chunk = await native_iterator.__anext__()
                     except asyncio.CancelledError as exc:
@@ -463,7 +482,7 @@ async def _iter_agent_sse(
                         raise
                     except StopAsyncIteration:
                         break
-                    lease.validate(agent, config)
+                    assert_current(agent, config)
                     ack = asyncio.get_running_loop().create_future()
                     await outgoing.put({
                         "source": "agent", "mode": mode, "chunk": chunk, "_ack": ack,
@@ -504,7 +523,7 @@ async def _iter_agent_sse(
     elif before_initial_iteration is None:
         source = _merge_agent_and_tool_events(
             agent, events, config, tool_event_queue, agent_config=agent_config,
-            run=run, lease=lease,
+            run=run,
             join_failed=join_failed,
         )
     else:
@@ -512,7 +531,7 @@ async def _iter_agent_sse(
             agent, events, config, tool_event_queue,
             agent_config=agent_config,
             before_initial_iteration=before_initial_iteration,
-            run=run, lease=lease, join_failed=join_failed,
+            run=run, join_failed=join_failed,
         )
     iterator = source.__aiter__()
     last_progress_at = time.monotonic()
@@ -523,7 +542,7 @@ async def _iter_agent_sse(
     try:
         while True:
             if next_item_task is None:
-                lease.validate(agent, config)
+                assert_current(agent, config)
                 next_item_task = asyncio.create_task(iterator.__anext__())
 
             active_tool_call = bool(call_start_time)
@@ -537,7 +556,7 @@ async def _iter_agent_sse(
                 wait_seconds = min(AGENT_HEARTBEAT_INTERVAL, remaining)
 
             ready, _ = await asyncio.wait({next_item_task}, timeout=wait_seconds)
-            lease.validate(agent, config)
+            assert_current(agent, config)
             if not ready:
                 check_active_tool_timeouts(call_start_time)
                 if not call_start_time:
@@ -554,7 +573,7 @@ async def _iter_agent_sse(
                 if join_failed["value"]:
                     had_error = True
                     raise
-                if lease.acknowledge_graph_drained(run, exc):
+                if acknowledge_drained(run, exc):
                     graph_drained = True
                     break
                 had_error = True
@@ -568,9 +587,9 @@ async def _iter_agent_sse(
                 )
             else:
                 sse = _convert_tool_event_to_sse(item["event"])
-            lease.validate(agent, config)
-            if state.get("needs_compact") and not run.control.drain_requested:
-                lease.request_drain(run, "context_compaction")
+            assert_current(agent, config)
+            if state.get("needs_compact") and not run.native_control.drain_requested:
+                request_drain(run, "context_compaction")
             ack = item.get("_ack")
             if isinstance(ack, asyncio.Future) and not ack.done():
                 ack.set_result(None)
@@ -621,7 +640,7 @@ async def _iter_agent_sse(
                         raise
             cleanup_joined = True
         finally:
-            lease.finish_run(run, joined=cleanup_joined and not had_error)
+            finish_native_run(run, joined=cleanup_joined and not had_error, had_error=had_error)
 
     if state.get("needs_compact"):
         if not graph_drained:
@@ -631,7 +650,7 @@ async def _iter_agent_sse(
         yield sse_event("context_compressing", {"message": "正在压缩上下文..."})
         if not await _do_compact(state):
             if state.pop("compaction_status", None) == "OUTCOME_UNKNOWN":
-                from src.agent.writer_lifecycle import WriterLifecycleError
+                from src.agent.compact.writer_lifecycle import WriterLifecycleError
 
                 raise WriterLifecycleError("Compaction outcome is unknown; request stopped without replay")
             raise ContextLimitError(
@@ -639,8 +658,8 @@ async def _iter_agent_sse(
             )
         continuation_config = state.pop("compaction_execution_config", None)
         if type(continuation_config) is not dict:
-            lease.quarantine()
-            from src.agent.writer_lifecycle import WriterLifecycleError
+            quarantine_writer()
+            from src.agent.compact.writer_lifecycle import WriterLifecycleError
 
             raise WriterLifecycleError(
                 "Compaction was applied, but its pending model continuation was not verified"
@@ -911,10 +930,10 @@ async def _do_compact(state: dict) -> bool:
     context_window = _effective_compaction_window(state)
     if not context_window:
         return False
-    from src.agent.writer_lifecycle import current_writer_lease
+    from src.agent.writer_bridge import current_request_binding
 
-    lease = current_writer_lease()
-    lease.assert_compaction_safe(state.get("agent"), state.get("config"))
+    binding = current_request_binding()
+    assert_compaction_safe(state.get("agent"), state.get("config"))
     applied_any = False
     rounds = 0
     max_rounds: int | None = None
@@ -922,7 +941,7 @@ async def _do_compact(state: dict) -> bool:
         if not _should_compact(state):
             break
         messages = await _read_agent_messages(state)
-        lease.validate(state.get("agent"), state.get("config"))
+        assert_current(state.get("agent"), state.get("config"))
         if not messages:
             break
         if max_rounds is None:
@@ -948,12 +967,12 @@ async def _read_agent_messages(state: dict) -> list:
     config = state.get("config")
     if agent is None or config is None:
         return []
-    from src.agent.writer_lifecycle import current_writer_lease
+    from src.agent.writer_bridge import current_request_binding
 
-    lease = current_writer_lease()
-    lease.validate(agent, config)
+    binding = current_request_binding()
+    assert_current(agent, config)
     snapshot = await agent.aget_state(config)
-    lease.validate(agent, config)
+    assert_current(agent, config)
     return list(snapshot.values.get("messages", []))
 
 
@@ -987,10 +1006,10 @@ async def _compact_and_apply(
                 source_message_ids=source_message_ids,
                 token_threshold=state.get("token_limit"),
             )
-            from src.agent.writer_lifecycle import current_writer_lease
+            from src.agent.writer_bridge import current_request_binding
 
-            lease = current_writer_lease()
-            lease.validate(state.get("agent"), state.get("config"))
+            binding = current_request_binding()
+            assert_current(state.get("agent"), state.get("config"))
             # The same list means no work was needed. A new list can have the
             # same length while replacing older messages with a shorter summary.
             if compacted is messages:
@@ -1034,14 +1053,14 @@ async def _apply_compacted(state: dict, original: list, compacted: list) -> bool
         _host_publication_scope_for_compacted,
         _is_midrun_summary_message,
     )
-    from src.agent.writer_lifecycle import current_writer_lease
+    from src.agent.writer_bridge import current_request_binding
 
-    lease = current_writer_lease()
+    binding = current_request_binding()
     host_scope = _host_publication_scope_for_compacted(compacted)
     registration = ({"host_context_scope": host_scope, "skills_mode": "off"}
                     if host_scope is not None else {})
     outcome = await _publish_compacted_checkpoint_outcome(
-        agent, config, original, compacted, writer_lease=lease, **registration,
+        agent, config, original, compacted, **registration,
     )
     state["compaction_status"] = outcome.status
     if outcome.status != "APPLIED":
@@ -1113,7 +1132,7 @@ def _reset_tokens_for_compacted(compacted: list) -> None:
 
 async def _merge_agent_and_tool_events(
     agent: Any, events: Any, config: dict, queue: asyncio.Queue,
-    *, agent_config: dict, before_initial_iteration=None, run, lease,
+    *, agent_config: dict, before_initial_iteration=None, run,
     join_failed: dict[str, bool],
 ) -> AsyncIterator[dict[str, Any]]:
     """Merge LangGraph agent stream with intermediate tool events from queue.
@@ -1136,17 +1155,17 @@ async def _merge_agent_and_tool_events(
         try:
             if before_initial_iteration is not None:
                 before_initial_iteration()
-            lease.validate(agent, config)
+            assert_current(agent, config)
             agent_iter = agent.astream(
                 events, config=agent_config, stream_mode=["messages", "updates"],
-                control=run.control,
+                control=run.native_control,
             ).__aiter__()
             while True:
-                lease.validate(agent, config)
+                assert_current(agent, config)
                 try:
                     mode, chunk = await agent_iter.__anext__()
                 except asyncio.CancelledError as exc:
-                    from src.agent.writer_lifecycle import join_native_exit_tasks
+                    from src.agent.async_join import join_native_exit_tasks
 
                     try:
                         await join_native_exit_tasks(exc)
@@ -1156,7 +1175,7 @@ async def _merge_agent_and_tool_events(
                     raise
                 except StopAsyncIteration:
                     break
-                lease.validate(agent, config)
+                assert_current(agent, config)
                 await _put_with_ack({"source": "agent", "mode": mode, "chunk": chunk})
         finally:
             try:
@@ -1166,7 +1185,7 @@ async def _merge_agent_and_tool_events(
                     try:
                         await closer()
                     except asyncio.CancelledError as exc:
-                        from src.agent.writer_lifecycle import join_native_exit_tasks
+                        from src.agent.async_join import join_native_exit_tasks
 
                         try:
                             await join_native_exit_tasks(exc)
@@ -1207,10 +1226,10 @@ async def _merge_agent_and_tool_events(
                     outgoing.get(), timeout=AGENT_HEARTBEAT_INTERVAL
                 )
             except asyncio.TimeoutError:
-                lease.validate(agent, config)
+                assert_current(agent, config)
                 yield {"source": "tool_event", "event": {"type": "heartbeat"}}
                 continue
-            lease.validate(agent, config)
+            assert_current(agent, config)
             source = item.get("source")
             if source == "agent_done":
                 agent_done = True
@@ -1229,7 +1248,7 @@ async def _merge_agent_and_tool_events(
                     task.cancel()
             if tasks:
                 joined = await asyncio.gather(*tasks, return_exceptions=True)
-                from src.agent.writer_lifecycle import join_native_exit_tasks
+                from src.agent.async_join import join_native_exit_tasks
 
                 for result in joined:
                     if isinstance(result, asyncio.CancelledError):

@@ -56,15 +56,23 @@ _RESUME_DENY: Command = Command(resume={"action": "deny"})
 
 async def _mark_writer_paused(agent: Any, config: dict, pending: list[dict]) -> None:
     """Record the exact tools-node pause before exposing a confirmation."""
+    from app.api.hitl_pause import make_pause_receipt, pause_key, record_pause
+    from src.agent.writer_bridge import current_request_identity, current_scope
+
+    identity = current_request_identity(required=False)
+    if identity is None:
+        raise RuntimeError("HITL pause requires a host request identity")
+    snapshot = await agent.aget_state(config)
+    scope = current_scope()
+    receipt = make_pause_receipt(snapshot, pending, scope.owner_key)
+    record_pause(
+        pause_key(identity, identity.session_delete_epoch), receipt,
+    )
     from src.agent.writer_lifecycle import current_writer_lease
 
-    lease = current_writer_lease()
-    if lease is None:
-        return
-    snapshot = await agent.aget_state(config)
-    lease.mark_paused(
-        agent, config, snapshot, pending, tools_node_name=TOOL_NODE_NAME,
-    )
+    compatible = current_writer_lease(required=False)
+    if compatible is not None:
+        compatible.pause_receipt = receipt
 
 
 async def handle_auto_resume(

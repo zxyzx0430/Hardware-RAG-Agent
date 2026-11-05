@@ -13,7 +13,7 @@ import threading
 import time
 import uuid
 from collections import Counter
-from contextlib import ExitStack, contextmanager, nullcontext
+from contextlib import ExitStack, contextmanager, nullcontext, nullcontext
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, AsyncIterator, Literal, Optional
@@ -303,20 +303,42 @@ def _release_request_writer_lease(
 
 
 @contextmanager
-def _request_writer_context(binding: Any, lease: Any, model: str = ""):
-    """Expose one lease to the adapter and all of its automatic HITL runs."""
+def _request_writer_context(
+    binding: Any, lease: Any, model: str = "", config: dict | None = None,
+    request_snapshot: Any = None,
+):
+    """Expose one baseline lease and host request identity to the adapter."""
     if binding is None or lease is None:
         yield
         return
     from src.agent.compact.writer_lifecycle import bind_writer_scope
-    from src.agent.writer_lifecycle import bind_writer_lease
+    from src.agent.writer_bridge import bind_request_identity
+    from src.agent.request_context import request_graph_binding_from_config
 
     scope = binding.current_scope()
     binding.registry.assert_scope(lease, scope)
-    with bind_writer_scope(
-        binding.registry, lease, scope, scope_provider=binding.current_scope,
-    ):
-        with bind_writer_lease(lease):
+    if request_snapshot is not None:
+        identity_scope = bind_request_identity(
+            request_snapshot.business_session_id,
+            request_snapshot.request_id,
+            getattr(request_snapshot, "session_delete_epoch", "") or "",
+        )
+    else:
+        graph_binding = (
+            request_graph_binding_from_config(config)
+            if type(config) is dict else None
+        )
+        identity_scope = (
+            bind_request_identity(
+                graph_binding.business_session_id,
+                graph_binding.request_id,
+            )
+            if graph_binding is not None else nullcontext()
+        )
+    with identity_scope:
+        with bind_writer_scope(
+            binding.registry, lease, scope, scope_provider=binding.current_scope,
+        ):
             yield
 
 
@@ -1442,7 +1464,7 @@ async def _stream_agent_in_context(
     from src.agent.request_context import activate_tool_context
     with activate_tool_context(tool_context):
         with bind_compaction_archive(archive_scope), bind_tool_event_archive(tool_event_scope):
-            with _request_writer_context(writer_binding, writer_lease, model):
+            with _request_writer_context(writer_binding, writer_lease, model, config, snapshot):
                 async for event in stream_agent_to_sse(
                     agent, agent_input, config, counter, permission_mode, model=model,
                     requested_max_tokens=requested_max_tokens,
@@ -2191,6 +2213,43 @@ async def resume_agent(req: ResumeRequest, request: Request, user: dict = Depend
             },
         ) from exc
 
+    from app.api.hitl_pause import (
+        make_pause_receipt,
+        pause_key,
+        require_and_consume_if_recorded,
+    )
+    from src.agent.hitl_handler import _detect_tools_interrupt
+    from src.agent.writer_bridge import WriterRequestIdentity
+
+    pause_scope = writer_binding.current_scope()
+    pause_pending = await _detect_tools_interrupt(agent, config)
+    pause_state = await agent.aget_state(config)
+    pause_receipt = make_pause_receipt(
+        pause_state, pause_pending, pause_scope.owner_key,
+    )
+    pause_identity = WriterRequestIdentity(
+        request_snapshot.business_session_id,
+        request_snapshot.request_id,
+        request_snapshot.session_delete_epoch or "",
+    )
+    try:
+        require_and_consume_if_recorded(
+            pause_key(pause_identity, pause_identity.session_delete_epoch),
+            pause_receipt,
+        )
+    except Exception as exc:
+        _release_request_writer_lease(writer_binding, writer_lease)
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "success": False,
+                "error": {
+                    "code": "HITL_CONFIRMATION_STALE",
+                    "message": "确认已失效或已被使用，请重新发送本轮请求。",
+                },
+            },
+        ) from exc
+
     lease_transferred = False
     lease_release_state = {"released": False}
     try:
@@ -2387,7 +2446,7 @@ async def _resume_in_context(ctx: ResumeContext, snapshot: AgentRequestSnapshot,
         else nullcontext()
     )
     with activate_tool_context(snapshot.tool_context), sidecar_scope:
-        with _request_writer_context(ctx.writer_binding, ctx.writer_lease, ctx.model):
+        with _request_writer_context(ctx.writer_binding, ctx.writer_lease, ctx.model, ctx.config, snapshot):
             async for event in handler(
                 ctx.agent, ctx.config, ctx.req.decision, ctx.call_counter,
                 ctx.req.payload.permission_mode, **options,

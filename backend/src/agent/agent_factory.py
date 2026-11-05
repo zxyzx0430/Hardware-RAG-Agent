@@ -213,13 +213,6 @@ async def create_hardware_agent_from_config(config: AgentConfig) -> Any:
             # Provenance is optional and host-only; never change the tools,
             # prompts, permissions or ordinary graph execution on mint failure.
             logger.debug("Private initial publication provenance unavailable")
-        try:
-            from src.agent.writer_lifecycle import mint_graph_provenance
-
-            if not mint_graph_provenance(agent):
-                logger.warning("Host writer lifecycle unavailable for this graph shape")
-        except Exception:
-            logger.warning("Host writer lifecycle provenance could not be minted")
         logger.info(
             "hardware_agent_created model=%s hitl=%s recursion_limit=%s",
             config.model, config.enable_hitl, MAX_RECURSION,

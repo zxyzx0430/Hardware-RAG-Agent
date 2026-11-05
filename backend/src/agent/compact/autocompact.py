@@ -1807,12 +1807,15 @@ async def compact_resumed_context(
     try:
         if (type(context_window) is not int or context_window <= 0):
             return False
-        from src.agent.writer_lifecycle import WriterLifecycleError, current_writer_lease
+        from src.agent.compact.writer_lifecycle import WriterLifecycleError
+        from src.agent.writer_bridge import (
+            assert_compaction_safe,
+            current_request_binding,
+        )
 
-        lease = current_writer_lease(required=False)
-        if lease is not None:
+        if current_request_binding(required=False) is not None:
             try:
-                lease.assert_compaction_safe(agent, config)
+                assert_compaction_safe(agent, config)
             except WriterLifecycleError:
                 return False
         snapshot = await agent.aget_state(config)

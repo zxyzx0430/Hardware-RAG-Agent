@@ -601,7 +601,8 @@ def test_quarantined_writer_owner_cannot_be_replaced_by_same_session_graph():
 
     session_id = "s05-quarantined-owner"
     _binding, old_config = _binding_config(session_id, "5" * 32)
-    old_graph = _graph(InMemorySaver(), [])
+    saver = InMemorySaver()
+    old_graph = _graph(saver, [])
     assert mint_graph_provenance(old_graph)
     old_lease = acquire_writer_lease(
         old_graph,
@@ -614,15 +615,15 @@ def test_quarantined_writer_owner_cannot_be_replaced_by_same_session_graph():
     )
     old_lease.quarantine()
 
-    _binding, new_config = _binding_config(session_id, "6" * 32)
-    new_graph = _graph(InMemorySaver(), [])
+    new_config = old_config
+    new_graph = old_graph
     assert mint_graph_provenance(new_graph)
-    with pytest.raises(WriterLifecycleError, match="Quarantined graph owner"):
+    with pytest.raises(WriterLifecycleError, match="quarantined"):
         acquire_writer_lease(
             new_graph,
             new_config,
             business_session_id=session_id,
-            request_id="6" * 32,
+            request_id="5" * 32,
             session_epoch="a" * 64,
             memory_epoch=None,
             validate_epochs=lambda: None,

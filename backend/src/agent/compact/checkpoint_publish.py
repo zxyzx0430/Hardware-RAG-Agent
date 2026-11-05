@@ -694,32 +694,40 @@ async def _publish_compacted_checkpoint_outcome(
     host_context_scope=None, skills_mode="off",
 ) -> _CompactionPublicationOutcome:
     """Publish only after a joined cooperative drain; retain the exact save ack."""
-    from src.agent.writer_lifecycle import (
-        WriterLifecycleError,
-        current_writer_lease,
-        join_owned_task,
+    from src.agent.compact.writer_lifecycle import WriterLifecycleError
+    from src.agent.async_join import join_owned_task
+    from src.agent.writer_bridge import (
+        assert_compaction_safe,
+        assert_current,
+        authorize_continuation,
+        begin_host_write,
+        current_request_binding,
+        current_request_identity,
+        current_saver,
+        current_scope,
+        finish_host_write,
+        quarantine,
     )
 
-    lease = writer_lease or current_writer_lease(required=False)
-    if lease is None:
+    if current_request_binding(required=False) is None:
         return _CompactionPublicationOutcome("REFUSED")
     try:
-        lease.assert_compaction_safe(agent, config)
+        assert_compaction_safe(agent, config)
     except WriterLifecycleError:
         return _CompactionPublicationOutcome("REFUSED")
     saver = agent.checkpointer
-    if saver is not lease.saver or type(saver) not in (InMemorySaver, AsyncSqliteSaver):
+    if saver is not current_saver() or type(saver) not in (InMemorySaver, AsyncSqliteSaver):
         return _CompactionPublicationOutcome("REFUSED")
     try:
         if type(saver) is AsyncSqliteSaver:
             async with saver.lock:
                 if saver.is_setup is not True or saver.conn.in_transaction:
                     return _CompactionPublicationOutcome("REFUSED")
-        lease.validate(agent, config)
+        assert_current(agent, config)
         snapshot = await agent.aget_state(config)
-        lease.validate(agent, config)
+        assert_current(agent, config)
     except asyncio.CancelledError:
-        lease.quarantine()
+        quarantine()
         raise
     current = snapshot.values.get("messages", [])
     if not original or current != original:
@@ -731,12 +739,12 @@ async def _publish_compacted_checkpoint_outcome(
     if type(expected) is not str or not expected:
         return _CompactionPublicationOutcome("REFUSED")
     checkpoint_ns = snapshot.config.get("configurable", {}).get("checkpoint_ns", "")
-    if (snapshot.config.get("configurable", {}).get("thread_id") != lease.binding.graph_thread_id
+    if (snapshot.config.get("configurable", {}).get("thread_id") != current_scope().owner_key
             or checkpoint_ns != ""):
         return _CompactionPublicationOutcome("REFUSED")
 
     prepared = None
-    graph_thread_id = lease.binding.graph_thread_id
+    graph_thread_id = current_scope().owner_key
     if host_context_scope is not None:
         try:
             from app.api.compaction_archive import get_compaction_scope
@@ -745,17 +753,17 @@ async def _publish_compacted_checkpoint_outcome(
 
             if (type(host_context_scope) is ContextEventScope and skills_mode == "off"
                     and get_compaction_scope() == host_context_scope
-                    and host_context_scope.session_id == lease.binding.business_session_id
-                    and host_context_scope.request_id == lease.binding.request_id):
-                lease.validate(agent, config)
+                    and host_context_scope.session_id == current_request_identity().business_session_id
+                    and host_context_scope.request_id == current_request_identity().request_id):
+                assert_current(agent, config)
                 prepared = await _run_host_record_transaction(
                     prepare_published_context, host_context_scope, original, compacted,
                     skills_mode=skills_mode, graph_thread_id=graph_thread_id,
                     checkpoint_ns=checkpoint_ns,
                 )
-                lease.validate(agent, config)
+                assert_current(agent, config)
         except asyncio.CancelledError:
-            lease.quarantine()
+            quarantine()
             raise
         except Exception:
             logger.warning("Host preparation unavailable; graph publication remains independent")
@@ -765,12 +773,13 @@ async def _publish_compacted_checkpoint_outcome(
     applied_config = None
     update_error = None
     try:
-        lease.assert_compaction_safe(agent, config)
+        assert_compaction_safe(agent, config)
+        begin_host_write()
         applied_config = await join_owned_task(publishing.aupdate_state(config, {"messages": [
             RemoveMessage(id=REMOVE_ALL_MESSAGES), *compacted,
         ]}))
     except asyncio.CancelledError:
-        lease.quarantine()
+        quarantine()
         raise
     except StaleCompaction as exc:
         update_error = exc
@@ -780,32 +789,34 @@ async def _publish_compacted_checkpoint_outcome(
     ack = adapter.ack_config
     if ack is None:
         if adapter.attempted or update_error is not None:
-            lease.quarantine()
+            quarantine()
             return _CompactionPublicationOutcome(
                 "OUTCOME_UNKNOWN",
                 receipt_status="UNKNOWN" if prepared is not None else "NOT_REQUESTED",
             )
+        finish_host_write(acknowledged=False)
         return _CompactionPublicationOutcome("REFUSED")
     ack_normalized = _host_publication_config(ack, graph_thread_id, checkpoint_ns)
     reported = _host_publication_config(applied_config, graph_thread_id, checkpoint_ns)
     if ack_normalized is None or (reported is not None and reported != ack_normalized):
-        lease.quarantine()
+        quarantine()
         return _CompactionPublicationOutcome(
             "OUTCOME_UNKNOWN",
             receipt_status="UNKNOWN" if prepared is not None else "NOT_REQUESTED",
         )
+    finish_host_write(acknowledged=True, applied_config=ack_normalized)
     execution_config = copy.deepcopy(config)
     execution_config["configurable"].update(ack_normalized["configurable"])
     try:
-        lease.validate(agent, execution_config)
+        assert_current(agent, execution_config)
         saved = await saver.aget_tuple(ack_normalized)
-        lease.validate(agent, execution_config)
+        assert_current(agent, execution_config)
         parent = (saved.parent_config or {}).get("configurable", {}).get("checkpoint_id") if saved else None
         if (saved is None or saved.checkpoint.get("id") != ack_normalized["configurable"]["checkpoint_id"]
                 or parent != expected or saved.pending_writes):
             raise WriterLifecycleError("Exact replacement checkpoint readback did not match")
         observed = await agent.aget_state(execution_config)
-        lease.validate(agent, execution_config)
+        assert_current(agent, execution_config)
         observed_conf = observed.config.get("configurable", {})
         tasks = tuple(getattr(observed, "tasks", ()) or ())
         resumable = (
@@ -819,17 +830,18 @@ async def _publish_compacted_checkpoint_outcome(
             and not getattr(observed, "interrupts", ())
         )
         if not resumable:
+            quarantine()
             return _CompactionPublicationOutcome(
                 "APPLIED",
                 receipt_status="UNKNOWN" if prepared is not None else "NOT_REQUESTED",
                 applied_config=copy.deepcopy(ack_normalized),
             )
-        lease.authorize_continuation(execution_config)
+        authorize_continuation(ack_normalized, execution_config)
     except asyncio.CancelledError:
-        lease.quarantine()
+        quarantine()
         raise
     except Exception:
-        lease.quarantine()
+        quarantine()
         return _CompactionPublicationOutcome(
             "OUTCOME_UNKNOWN",
             receipt_status="UNKNOWN" if prepared is not None else "NOT_REQUESTED",
@@ -850,7 +862,7 @@ async def _publish_compacted_checkpoint_outcome(
             )
             receipt_status = "CONFIRMED" if head is not None else "UNKNOWN"
         except asyncio.CancelledError:
-            lease.quarantine()
+            quarantine()
             raise
         except Exception:
             logger.warning("Graph applied without a confirmed host publication receipt")
