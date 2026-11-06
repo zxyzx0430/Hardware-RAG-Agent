@@ -119,6 +119,40 @@ async def test_checkpointer_bound_to_other_live_loop_fails_closed(monkeypatch):
         other_loop.close()
 
 
+async def test_direct_delete_works_against_a_live_saver_database():
+    """Session deletion removes rows while the async saver holds the WAL DB."""
+    checkpointer = await agent_factory._get_checkpointer()
+    path = agent_factory._SQLITE_CHECKPOINT_PATH
+
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.execute(
+            "INSERT INTO checkpoints (thread_id, checkpoint_ns, checkpoint_id) "
+            "VALUES ('t1', '', 'c1')"
+        )
+        conn.execute(
+            "INSERT INTO writes (thread_id, checkpoint_ns, checkpoint_id, "
+            "task_id, idx, channel) VALUES ('t1', '', 'c1', 'task', 0, 'ch')"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert agent_factory.delete_thread_checkpoint_direct("t1") is True
+
+    conn = sqlite3.connect(str(path))
+    try:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM checkpoints WHERE thread_id = 't1'"
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM writes WHERE thread_id = 't1'"
+        ).fetchone()[0] == 0
+    finally:
+        conn.close()
+    assert type(checkpointer) is AsyncSqliteSaver
+
+
 async def test_direct_checkpoint_delete_never_publishes_a_saver(
     monkeypatch, tmp_path,
 ):
