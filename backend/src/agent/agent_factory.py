@@ -18,6 +18,7 @@ import asyncio
 import inspect
 import json
 import logging
+import sqlite3
 import threading
 import time
 import weakref
@@ -322,13 +323,12 @@ _global_checkpointer: Any = None
 # context-manager object alive for the process lifetime so the aiosqlite connection
 # is not torn down after the first __aenter__ call.
 _global_checkpointer_cm: Any = None
-# Cooperative initialization only, not a graph writer fence or a deployment
-# assumption. Existing shared savers are never initialized/repaired here.
-_checkpointer_creation_lock = asyncio.Lock()
 
 # The async initializer lock is process-wide and independent of an asyncio
 # event loop. Contending loops yield while another caller initializes the
-# saver, so only one actual checkpointer can be published.
+# saver, so only one actual checkpointer can be published. It replaces an
+# asyncio.Lock, which binds to the first loop that uses it and therefore
+# cannot protect initialization across loops.
 _checkpointer_init_lock = threading.Lock()
 
 # The writer registry is bound once to the exact process checkpointer object.
@@ -346,17 +346,59 @@ _agent_writer_binding_token = object()
 _SQLITE_CHECKPOINT_PATH = Path(settings.agent_checkpoint_path)
 
 
+def _discard_checkpointer_bound_to_other_loop() -> None:
+    """Refuse or repair a process saver that belongs to another event loop.
+
+    AsyncSqliteSaver captures ``asyncio.get_running_loop()`` and its lock in
+    ``__init__``. Using such a saver from a different loop fails the exact
+    binding check and quarantines the writer. If the creating loop has already
+    closed and no writer registry has bound the saver yet, it can never be
+    used again, so it is safe to drop and rebuild on the current loop.
+    """
+    global _global_checkpointer, _global_checkpointer_cm
+    existing = _global_checkpointer
+    if existing is None:
+        return
+    bound_loop = getattr(existing, "loop", None)
+    if bound_loop is None:
+        return
+    running = asyncio.get_running_loop()
+    if bound_loop is running:
+        return
+    if bound_loop.is_closed() and _writer_lifecycle_registry is None:
+        logger.warning(
+            "discarding checkpointer bound to a closed event loop; "
+            "rebuilding it on the current loop"
+        )
+        _global_checkpointer = None
+        _global_checkpointer_cm = None
+        try:
+            # aiosqlite.stop() closes the raw connection and ends its worker
+            # thread without needing the (closed) creating loop.
+            stop = getattr(getattr(existing, "conn", None), "stop", None)
+            if callable(stop):
+                stop()
+        except Exception:
+            logger.warning("stale checkpointer cleanup failed", exc_info=True)
+        return
+    raise RuntimeError(
+        "process checkpointer is bound to a different event loop; "
+        "restart the server instead of reusing it"
+    )
+
+
 async def _get_checkpointer() -> Any:
     """Return the process-wide checkpointer (InMemorySaver or AsyncSqliteSaver).
 
     create_agent uses astream(), which calls checkpointer.aget_tuple(). The sync
     SqliteSaver does not implement async methods, so we must use AsyncSqliteSaver
-    for the astream path. Falls back to InMemorySaver on failure.
+    for the astream path.
     """
     global _global_checkpointer
     while not _checkpointer_init_lock.acquire(blocking=False):
         await asyncio.sleep(0.01)
     try:
+        _discard_checkpointer_bound_to_other_loop()
         if _global_checkpointer is None:
             cp_type = _read_checkpointer_type()
             if cp_type == "sqlite":
@@ -528,31 +570,30 @@ async def _build_sqlite_checkpointer() -> Any:
     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
     from src.agent.compact.checkpoint_publish import _join_initial_task
 
-    async with _checkpointer_creation_lock:
-        if _global_checkpointer is not None:
-            return _global_checkpointer
-        cm = None
-        task = None
-        try:
-            _SQLITE_CHECKPOINT_PATH.parent.mkdir(parents=True, exist_ok=True)
-            cm = AsyncSqliteSaver.from_conn_string(str(_SQLITE_CHECKPOINT_PATH))
-            task = asyncio.create_task(_initialize_owned_sqlite(cm))
-            checkpointer = await _join_initial_task(task)
-            # No await between publication of the ready saver and its owner CM.
-            _global_checkpointer, _global_checkpointer_cm = checkpointer, cm
-            logger.info("checkpointer=AsyncSqliteSaver path=%s", _SQLITE_CHECKPOINT_PATH)
-            return checkpointer
-        except asyncio.CancelledError:
-            # A joined initializer may have succeeded after parent cancellation.
-            # Its still-unpublished native CM is ours, never the shared pair.
-            if task is not None and task.done() and not task.cancelled() and task.exception() is None:
-                await _close_owned_sqlite(cm)
-            raise
-        except Exception as exc:
-            # A configured sqlite saver must fail loudly rather than run with
-            # an in-memory fallback that silently loses history on restart.
-            logger.error("AsyncSqliteSaver init failed: %s", exc)
-            raise
+    if _global_checkpointer is not None:
+        return _global_checkpointer
+    cm = None
+    task = None
+    try:
+        _SQLITE_CHECKPOINT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        cm = AsyncSqliteSaver.from_conn_string(str(_SQLITE_CHECKPOINT_PATH))
+        task = asyncio.create_task(_initialize_owned_sqlite(cm))
+        checkpointer = await _join_initial_task(task)
+        # No await between publication of the ready saver and its owner CM.
+        _global_checkpointer, _global_checkpointer_cm = checkpointer, cm
+        logger.info("checkpointer=AsyncSqliteSaver path=%s", _SQLITE_CHECKPOINT_PATH)
+        return checkpointer
+    except asyncio.CancelledError:
+        # A joined initializer may have succeeded after parent cancellation.
+        # Its still-unpublished native CM is ours, never the shared pair.
+        if task is not None and task.done() and not task.cancelled() and task.exception() is None:
+            await _close_owned_sqlite(cm)
+        raise
+    except Exception as exc:
+        # A configured sqlite saver must fail loudly rather than run with
+        # an in-memory fallback that silently loses history on restart.
+        logger.error("AsyncSqliteSaver init failed: %s", exc)
+        raise
 
 
 async def _close_owned_sqlite(cm) -> None:
@@ -1073,6 +1114,57 @@ async def delete_thread_checkpoint(thread_id: str) -> bool:
     except Exception as exc:
         logger.warning("checkpoint delete failed thread_id=%s: %s", thread_id, exc)
         return False
+
+
+def delete_thread_checkpoint_direct(thread_id: str) -> bool:
+    """Delete a thread's checkpoint rows without touching the async saver.
+
+    ``DELETE /sessions/{id}`` runs in a worker thread. Calling
+    ``_get_checkpointer()`` there would lazily publish the process-wide
+    AsyncSqliteSaver (and its aiosqlite connection) on a throwaway event loop
+    created by ``asyncio.run``; every later request would then fail the
+    exact-binding check and quarantine the writer. This helper is loop-free:
+    it opens a short-lived sqlite3 connection and deletes the same rows
+    ``adelete_thread`` removes.
+    """
+    if not isinstance(thread_id, str) or not thread_id:
+        return False
+    if _read_checkpointer_type() != "sqlite":
+        return False
+    path = _SQLITE_CHECKPOINT_PATH
+    if not path.exists():
+        return False
+    try:
+        conn = sqlite3.connect(str(path), timeout=5.0)
+    except sqlite3.Error as exc:
+        logger.warning("checkpoint delete connection failed thread_id=%s: %s", thread_id, exc)
+        return False
+    try:
+        removed = True
+        for table in ("checkpoints", "writes"):
+            try:
+                conn.execute(f"DELETE FROM {table} WHERE thread_id = ?", (thread_id,))
+            except sqlite3.OperationalError as exc:
+                # A not-yet-created schema has nothing to delete.
+                logger.info(
+                    "checkpoint delete skipped table=%s thread_id=%s: %s",
+                    table, thread_id, exc,
+                )
+                removed = False
+        conn.commit()
+        return removed
+    except sqlite3.Error as exc:
+        logger.warning("checkpoint delete failed thread_id=%s: %s", thread_id, exc)
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass
+        return False
+    finally:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
 
 
 def _clear_storage(cp: Any, thread_id: str) -> None:

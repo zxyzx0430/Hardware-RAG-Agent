@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 from src.agent.core.toolkit.tool_spec import RiskLevel, ToolSpec
 from src.agent.exceptions import ToolContext
 from src.agent.path_guard import resolve_agent_path, validate_path, is_path_allowed_for_tree
+from src.agent.tools.groups.file_ops._scan_policy import is_default_ignored_dir
 
 # ═══════════════════════════════════════════
 # Named constants
@@ -29,11 +30,15 @@ from src.agent.path_guard import resolve_agent_path, validate_path, is_path_allo
 
 _DEFAULT_SEARCH_ROOT: str = "."
 _DEFAULT_MAX_DEPTH: int = 3
-_DEFAULT_MAX_NODES: int = 200
+_MAX_DEPTH_LIMIT: int = 6
+_DEFAULT_MAX_NODES: int = 150
+_MAX_OUTPUT_CHARS: int = 24_000
+_PLAN_MODE_MAX_DEPTH: int = 2
+_PLAN_MODE_MAX_NODES: int = 80
+_PLAN_MODE_MAX_OUTPUT_CHARS: int = 12_000
+_APPROX_NODE_CHARS: int = 80
 _TRUNCATED_SUFFIX: str = "... (truncated)"
-_IGNORED_DIRS: frozenset[str] = frozenset({
-    "__pycache__", ".git", "node_modules", ".venv", ".idea", ".vscode",
-})
+_PLAN_PERMISSION_MODE: str = "plan"
 
 
 # ═══════════════════════════════════════════
@@ -42,7 +47,11 @@ _IGNORED_DIRS: frozenset[str] = frozenset({
 
 class ListFilesArgs(BaseModel):
     path: str = Field(default=_DEFAULT_SEARCH_ROOT, description="要列出的目录路径（建议传绝对路径）")
-    max_depth: int = Field(default=_DEFAULT_MAX_DEPTH, description="递归最大深度（默认 3）")
+    max_depth: int = Field(default=_DEFAULT_MAX_DEPTH, description="递归最大深度（默认 3，上限 6）")
+    include_ignored: bool = Field(
+        default=False,
+        description="为 true 时同时列出依赖/构建/缓存目录（node_modules、.venv、.git 等）",
+    )
 
 
 class ListFilesOutput(BaseModel):
@@ -53,20 +62,26 @@ class ListFilesOutput(BaseModel):
 
 @dataclass
 class _ListCfg:
-    """Bundle traversal options; counter is a 1-element mutable list."""
+    """Bundle traversal options; counters are 1-element mutable lists."""
     max_depth: int
+    include_ignored: bool = False
     counter: list[int] = field(default_factory=lambda: [0])
     max_nodes: int = _DEFAULT_MAX_NODES
+    chars: list[int] = field(default_factory=lambda: [0])
+    max_chars: int = _MAX_OUTPUT_CHARS
 
 
 class ListFilesTool(ToolSpec):
     """List directory tree with depth limit."""
     name: str = "list_files"
     description: str = (
-        "列出指定目录的文件树（含文件大小/修改时间），递归深度默认 3 层。"
+        "列出指定目录的文件树（含文件大小/修改时间），递归深度默认 3 层（上限 6）。"
         "与 glob 区分：已知文件名模式用 glob，探索未知目录结构用 list_files。"
-        "忽略 __pycache__/.git/node_modules/.venv/.idea/.vscode。"
-        "结果超过 200 节点自动截断。敏感路径（.git/.env/*.key/*.pem）会被拦截。"
+        "默认跳过依赖/构建/缓存目录（node_modules、.venv、venv、.git、.pio、"
+        ".platformio、dist、build、__pycache__、.pytest_cache 等）；"
+        "需要查看这些目录时传 include_ignored=true，或直接把 path 指向该目录。"
+        "计划模式下降到 2 层并收紧到 80 节点；普通模式 150 节点、约 24k 字符。"
+        "敏感路径（.git/.env/*.key/*.pem）会被拦截。"
     )
     args_schema: type = ListFilesArgs
     output_schema: type[BaseModel] | None = ListFilesOutput
@@ -83,38 +98,50 @@ class ListFilesTool(ToolSpec):
         err = _check_path(path)
         if err:
             return err
-        max_depth = int(args.get("max_depth", _DEFAULT_MAX_DEPTH))
-        return await _run_list(path, max_depth)
+        max_depth = min(int(args.get("max_depth", _DEFAULT_MAX_DEPTH)), _MAX_DEPTH_LIMIT)
+        plan_mode = getattr(ctx, "permission_mode", "") == _PLAN_PERMISSION_MODE
+        if plan_mode:
+            max_depth = min(max_depth, _PLAN_MODE_MAX_DEPTH)
+        cfg = _ListCfg(
+            max_depth=max_depth,
+            include_ignored=bool(args.get("include_ignored", False)),
+            max_nodes=_PLAN_MODE_MAX_NODES if plan_mode else _DEFAULT_MAX_NODES,
+            max_chars=_PLAN_MODE_MAX_OUTPUT_CHARS if plan_mode else _MAX_OUTPUT_CHARS,
+        )
+        return await _run_list(path, cfg)
 
 
-async def _run_list(root: str, max_depth: int) -> dict:
+async def _run_list(root: str, cfg: _ListCfg) -> dict:
     """Run sync list in a worker thread, return envelope dict."""
-    tree, truncated = await asyncio.to_thread(_build_tree, root, max_depth)
+    tree, truncated = await asyncio.to_thread(_build_tree, root, cfg)
     return {"tree": tree, "truncated": truncated}
 
 
-def _build_tree(root: str, max_depth: int) -> tuple[dict | None, bool]:
+def _build_tree(root: str, cfg: _ListCfg) -> tuple[dict | None, bool]:
     """Build the entire tree from root, return (tree, truncated)."""
     root_path = Path(root)
     if not root_path.exists():
         return None, False
-    cfg = _ListCfg(max_depth)
     node = _build_node(root_path, 1, cfg)
-    return node, cfg.counter[0] >= cfg.max_nodes
+    truncated = cfg.counter[0] >= cfg.max_nodes or cfg.chars[0] >= cfg.max_chars
+    return node, truncated
 
 
 def _build_node(p: Path, depth: int, cfg: _ListCfg) -> dict | None:
-    """Build a single tree node, return None if cap reached."""
-    if cfg.counter[0] >= cfg.max_nodes:
+    """Build a single tree node, return None if a cap is reached."""
+    if cfg.counter[0] >= cfg.max_nodes or cfg.chars[0] >= cfg.max_chars:
         return None
     cfg.counter[0] += 1
+    cfg.chars[0] += len(p.name) + _APPROX_NODE_CHARS
+    if cfg.chars[0] > cfg.max_chars:
+        return None
     if not _is_dir(p):
         return _node_dict(p, "file", None)
     return _node_dict(p, "dir", _collect_children(p, depth, cfg))
 
 
 def _collect_children(p: Path, depth: int, cfg: _ListCfg) -> list[dict]:
-    """Iterate dir children; append truncated marker when cap reached.
+    """Iterate dir children; append truncated marker when a cap is reached.
 
     depth is the parent node's depth (root=1). We expand children when
     parent depth <= max_depth, so max_depth=N yields N levels of children
@@ -124,6 +151,8 @@ def _collect_children(p: Path, depth: int, cfg: _ListCfg) -> list[dict]:
         return []
     children: list[dict] = []
     for child in _iter_children(p):
+        if not cfg.include_ignored and is_default_ignored_dir(child.name):
+            continue
         node = _build_node(child, depth + 1, cfg)
         if node is None:
             children.append(_truncated_marker())
@@ -139,8 +168,6 @@ def _iter_children(p: Path) -> Iterator[Path]:
     except OSError:
         return
     for child in items:
-        if _is_ignored(child.name):
-            continue
         if not is_path_allowed_for_tree(str(child)):
             continue
         yield child
@@ -161,11 +188,6 @@ def _truncated_marker() -> dict:
     """Build a marker node indicating the tree was truncated."""
     return {"name": _TRUNCATED_SUFFIX, "type": "marker",
             "size_bytes": 0, "modified_at": "", "children": None}
-
-
-def _is_ignored(name: str) -> bool:
-    """Return True if name matches ignored dirs."""
-    return name in _IGNORED_DIRS
 
 
 def _is_dir(p: Path) -> bool:

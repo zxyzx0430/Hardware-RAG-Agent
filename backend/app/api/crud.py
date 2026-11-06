@@ -84,6 +84,46 @@ db_router = APIRouter(prefix="/api")
 # 会话标题预览长度（首条用户消息截取字符数）
 TITLE_PREVIEW_LENGTH = 30
 
+# Titles that mean "the user has not named this session yet"; auto-titling
+# may replace only these.
+_PLACEHOLDER_TITLES: frozenset[str] = frozenset({"", "新对话"})
+_PLACEHOLDER_TITLE_PREFIXES: tuple[str, ...] = ("对话",)
+
+# Synthetic message sent after plan approval. It must never become a session
+# title; the title of the real task has to survive plan execution.
+PLAN_APPROVAL_USER_MESSAGE = "按照已批准的计划开始执行。"
+
+
+def _is_placeholder_title(title: str | None) -> bool:
+    """True when a session still has its default (never user-named) title."""
+    if title is None:
+        return True
+    stripped = title.strip()
+    return (
+        not stripped
+        or stripped in _PLACEHOLDER_TITLES
+        or stripped.startswith(_PLACEHOLDER_TITLE_PREFIXES)
+    )
+
+
+def _title_from_user_message(content: str) -> str:
+    """Build the title preview from a user message."""
+    return content[:TITLE_PREVIEW_LENGTH] + (
+        "..." if len(content) > TITLE_PREVIEW_LENGTH else ""
+    )
+
+
+def _should_set_title_from_message(title: str | None, content: str) -> bool:
+    """Only name a session from its first real user task.
+
+    A meaningful existing title is never overwritten by a later user message,
+    and the synthetic plan-approval message is not a task title.
+    """
+    return (
+        _is_placeholder_title(title)
+        and content.strip() != PLAN_APPROVAL_USER_MESSAGE
+    )
+
 
 def _ok(data: dict | None = None) -> dict:
     """统一成功响应包装。"""
@@ -723,14 +763,8 @@ def delete_session(session_id: str, db: DBSession = Depends(get_db), user: dict 
         _purge_session_rows(db, session_id)
         db.delete(s)
         db.commit()
-        import asyncio
 
-        cleanup = _purge_session_runtime(session_id)
-        try:
-            asyncio.run(cleanup)
-        except RuntimeError:
-            cleanup.close()
-            logger.warning("runtime session cleanup deferred: %s", session_id)
+        _purge_session_runtime(session_id)
         logger.info("会话已删除: id=%s", session_id)
         return _ok({"id": session_id, "deleted": True})
     except Exception:
@@ -779,12 +813,16 @@ def _purge_session_rows(db: DBSession, session_id: str) -> None:
     purge_session_memory(db, session_id)
 
 
-async def _purge_session_runtime(session_id: str) -> None:
-    """Best-effort cleanup outside the database transaction."""
-    try:
-        from src.agent.agent_factory import delete_thread_checkpoint
+def _purge_session_runtime(session_id: str) -> None:
+    """Best-effort cleanup outside the database transaction.
 
-        await delete_thread_checkpoint(session_id)
+    Runs synchronously in the endpoint's worker thread; it must never create
+    the async checkpointer there (see delete_thread_checkpoint_direct).
+    """
+    try:
+        from src.agent.agent_factory import delete_thread_checkpoint_direct
+
+        delete_thread_checkpoint_direct(session_id)
     except Exception:
         logger.warning("checkpoint cleanup deferred: %s", session_id)
     try:
@@ -1004,9 +1042,9 @@ def create_message(session_id: str, payload: MessageCreate, db: DBSession = Depe
             msg.activity = normalized_activity
             s.message_revision = int(s.message_revision or 0) + 1
         s.updated_at = datetime.datetime.utcnow()
-        if is_new and payload.role == "user" and not s.title.startswith("对话"):
-            # 用第一条用户消息做标题预览
-            s.title = payload.content[:TITLE_PREVIEW_LENGTH] + ("..." if len(payload.content) > TITLE_PREVIEW_LENGTH else "")
+        if is_new and payload.role == "user" and _should_set_title_from_message(s.title, payload.content):
+            # 用第一条真实用户消息做标题预览
+            s.title = _title_from_user_message(payload.content)
 
         logger.info("消息已%s: session=%s role=%s id=%s", "保存" if is_new else "更新", session_id, payload.role, mid)
         if is_new:
@@ -1239,10 +1277,8 @@ def append_message_v1(
 
             updated_at = datetime.datetime.utcnow().isoformat(sep=" ")
             next_title = session_title
-            if payload.role == "user" and not session_title.startswith("对话"):
-                next_title = payload.content[:TITLE_PREVIEW_LENGTH] + (
-                    "..." if len(payload.content) > TITLE_PREVIEW_LENGTH else ""
-                )
+            if payload.role == "user" and _should_set_title_from_message(session_title, payload.content):
+                next_title = _title_from_user_message(payload.content)
             updated = callback_handle.execute(
                 "UPDATE sessions SET msg_count = COALESCE(msg_count, 0) + 1, "
                 "message_revision = COALESCE(message_revision, 0) + 1, title = ?, updated_at = ? "

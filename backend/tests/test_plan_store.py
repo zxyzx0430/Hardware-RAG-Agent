@@ -8,6 +8,7 @@ from sqlalchemy.pool import StaticPool
 from app.db import database
 from app.db.database import Base
 from app.db.models import Plan, Session as SessionModel
+from app.db.recovery_models import PendingApproval, Run
 from app.db import plan_store
 
 
@@ -83,6 +84,125 @@ def test_executed_plan_is_not_superseded(factory):
 
     assert plan_store.get(first["id"])["status"] == "approved"
     assert plan_store.get(first["id"])["executed_run_id"] == "run-1"
+
+
+def _add_run(factory, run_id, status, *, error_message=None):
+    with factory() as session:
+        session.add(Run(
+            id=run_id,
+            session_id="s1",
+            status=status,
+            error_message=error_message,
+        ))
+        session.commit()
+
+
+def _add_approval(factory, run_id, status):
+    with factory() as session:
+        session.add(PendingApproval(
+            id=f"pa_{run_id}_{status}",
+            run_id=run_id,
+            call_id="call-1",
+            tool_name="write_file",
+            args_json="{}",
+            status=status,
+        ))
+        session.commit()
+
+
+def _approved_and_executed(factory, run_id):
+    plan = plan_store.create_version("s1", _payload(), "r1")
+    plan_store.approve("s1", plan["id"])
+    assert plan_store.mark_executed(plan["id"], run_id) is True
+    return plan
+
+
+def test_execution_state_without_execution_is_none(factory):
+    plan = plan_store.create_version("s1", _payload(), "r1")
+
+    assert plan["execution_state"] == "none"
+    assert plan["execution_note"] is None
+
+
+def test_execution_state_of_rejected_plan_is_rejected(factory):
+    plan = plan_store.create_version("s1", _payload(), "r1")
+    plan_store.reject("s1", plan["id"])
+
+    rejected = plan_store.get(plan["id"])
+    assert rejected["execution_state"] == "rejected"
+    assert "未执行" in rejected["execution_note"]
+
+
+def test_execution_state_started_after_admission(factory):
+    plan = _approved_and_executed(factory, "run-started")
+    _add_run(factory, "run-started", "running")
+
+    executed = plan_store.get(plan["id"])
+    assert executed["execution_state"] == "started"
+    assert executed["execution_note"] is None
+
+
+def test_execution_state_waiting_for_confirmation(factory):
+    plan = _approved_and_executed(factory, "run-wait")
+    _add_run(factory, "run-wait", "awaiting_confirmation")
+
+    executed = plan_store.get(plan["id"])
+    assert executed["execution_state"] == "started"
+    assert "确认" in executed["execution_note"]
+
+
+def test_execution_state_completed(factory):
+    plan = _approved_and_executed(factory, "run-ok")
+    _add_run(factory, "run-ok", "completed")
+
+    assert plan_store.get(plan["id"])["execution_state"] == "completed"
+
+
+@pytest.mark.parametrize(
+    ("run_status", "run_error", "expected_note"),
+    [
+        ("failed", "model exploded", "model exploded"),
+        ("cancelled", None, "执行已取消"),
+        ("interrupted", None, "服务重启，执行被中断"),
+    ],
+)
+def test_execution_state_terminal_failures(
+    factory, run_status, run_error, expected_note,
+):
+    run_id = f"run-{run_status}"
+    plan = _approved_and_executed(factory, run_id)
+    _add_run(factory, run_id, run_status, error_message=run_error)
+
+    executed = plan_store.get(plan["id"])
+    assert executed["execution_state"] == "failed"
+    assert executed["execution_note"] == expected_note
+
+
+def test_execution_state_completed_run_with_denied_tool_is_rejected(factory):
+    plan = _approved_and_executed(factory, "run-denied")
+    _add_run(factory, "run-denied", "completed")
+    _add_approval(factory, "run-denied", "denied")
+
+    executed = plan_store.get(plan["id"])
+    assert executed["execution_state"] == "rejected"
+    assert "拒绝" in executed["execution_note"]
+
+
+def test_execution_state_missing_run_degrades_to_started(factory):
+    plan = _approved_and_executed(factory, "run-missing")
+
+    executed = plan_store.get(plan["id"])
+    assert executed["execution_state"] == "started"
+    assert executed["execution_note"] == "执行记录不可用"
+
+
+def test_execution_state_included_in_plan_metadata(factory):
+    plan = _approved_and_executed(factory, "run-meta")
+    _add_run(factory, "run-meta", "completed")
+
+    metadata = plan_store.list_metadata("s1")
+    assert metadata[0]["id"] == plan["id"]
+    assert metadata[0]["execution_state"] == "completed"
 
 
 def test_same_run_same_content_is_idempotent(factory):
