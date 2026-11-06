@@ -6,11 +6,12 @@
 
 本轮在 `feat/plan-todo-integration` 集成 Todo 持久化与只读计划模式：`todo_write` 改为写已有 `todos` 表，新增读取/清空接口并在系统提示中注入小预算的当前清单；计划使用新 `plans` 表按会话保存版本，新增 `submit_plan` 工具、批准/拒绝接口和 `plan_update` SSE。计划模式是请求级 `permission_mode="plan"`，不写入设置；工具暴露和执行入口都按只读白名单过滤，MCP、写文件、命令、烧录和技能安装被拒绝。批准计划后由前端发起普通 `/chat`（`approved_plan_id`），后端注入“批准不等于授权”的计划上下文、把步骤 seed 为初始任务清单，并仍按原权限执行每次工具调用。
 
-- 后端定向：WP1 Todo 43 + 126 passed；WP2 Plan 与关联组 141 passed（含审查后新增的 ctx/snapshot/build-agent 断言）；`--ignore=tests/rag_eval` 全量 **1784 passed / 68 skipped / 0 failed**（595.15 秒，exit 0，审查修复前）。含 `rag_eval` 的首轮为 1833 passed / 68 skipped / 6 failed，6 项为测试夹具缺少 `permission_mode`，修复后该文件 6 passed；含 `rag_eval` 的完整复跑在 eval 阶段停滞，未写成通过。
-- 对抗复查修复：`SubmitPlanTool` 追加在 `_ctx` 注入之后，真实 Agent 路径会把它当成非 plan mode；现已在最终工具列表上统一绑定 `ToolContext`，并补了 `_apply_plan_mode_tools` 与 `_build_agent_for_payload` 的断言。
+- 后端定向：WP1 Todo 43 + 126 passed；WP2 Plan 与关联组 145 passed（含审查后新增的 ctx/snapshot/build-agent、旧库建表、并发版本和 approved prompt 断言）；完整后端含 `tests/rag_eval`（`--timeout=180`）**1867 passed / 68 skipped / 0 failed**（812.55 秒，exit 0）。
+- 对抗复查修复：`SubmitPlanTool` 追加在 `_ctx` 注入之后，真实 Agent 路径会把它当成非 plan mode（`4068d646`）；HITL resume 的 `_persisted_rows` 在 DB 会话关闭后读取过期 ORM 行，触发 `DetachedInstanceError`（`66f477fc`，含回归测试）。
+- 真实模型端到端：`ccgo/gpt-6-luna` 在计划模式只读调用 `list_files` → `submit_plan`，批准后执行 `write_file`，HITL 弹出写文件确认；允许后文件创建/读取成功（`plan e2e ok`），无 page error。证据在 `E:/DevCaches/Temp/plan-todo-e2e/evidence/e2e-result.json`。
 - 前端：目标 29 passed；全量 51 files / 351 passed；`tsc`、`npm run build` 通过；eslint 0 error / 13 条既有 warning。
-- 浏览器：seed 计划/任务后验证计划横幅、计划面板、任务清单、批准、清空、刷新恢复和会话隔离；`/api/chat` 在浏览器路由层返回 503 以隔离真实模型；计划模式请求体实测 `permission_mode="plan"`。证据在 `E:/DevCaches/Temp/plan-todo-browser/evidence/`。
-- 未验证：真实模型生成计划、真实模型执行已批准计划、真实硬件/串口/烧录。P0 的 Run 所有权和后台自动执行仍未做，批准后的执行仍由前端发起。
+- GitNexus：刷新索引后 `detect-changes` 3 files / 8 symbols / 0 affected processes / low；`_persisted_rows` impact LOW（6/1）；`build_tool_specs` 为 UNKNOWN，已用文本搜索确认调用点。
+- 未验证：真实硬件/串口/烧录；真实模型 E2E 使用文件写入任务，未覆盖硬件动作。P0 的 Run 所有权和后台自动执行仍未做，批准后的执行仍由前端发起。
 
 ## 2026-11-05 合并后完整后端门禁
 

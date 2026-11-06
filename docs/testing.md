@@ -4,14 +4,17 @@
 
 ## 2026-11-06 Plan Mode 与 Todo v1
 
-在 `feat/plan-todo-integration` 集成 WP1 Todo 后端（`b78a5d00`）、WP3 前端（`000eff4e`）和 WP2 Plan 后端（`0d7bfa81`）。Todo 改用已有 `todos` 表作为服务端权威快照；Plan 使用新 `plans` 表保存版本，`plan` 是请求级只读模式，不写入持久化设置。
+在 `feat/plan-todo-integration` 集成 WP1 Todo 后端（`b78a5d00`）、WP3 前端（`000eff4e`）和 WP2 Plan 后端（`0d7bfa81`），合并到 `w1-baseline`，并完成真实模型端到端验收。Todo 改用已有 `todos` 表作为服务端权威快照；Plan 使用新 `plans` 表保存版本，`plan` 是请求级只读模式，不写入持久化设置。
 
 - WP1 定向（E 盘隔离 `TEMP`/`SQLITE_DB_PATH`，显式 `-p asyncio -p pytest_timeout`）：`test_todo_store/routes/tool_persistence/context/permission_mode_setting` 共 **43 passed**；含 `test_crud_message_idempotency`、`test_session_delete_resume`、`test_build_tool`、`test_protected_routes` 等关联组 **126 passed**。WP1 报告的全后端首轮为 **1791 passed / 68 skipped / 0 failed**（704s，exit 0）。
-- WP2 定向：plan store/policy/tool/routes/execution/SSE 与 Todo、chat、HITL、factory 关联组 **141 passed**（含审查后新增的 `submit_plan` ctx、snapshot 和 build-agent 断言）。全后端首轮 **1833 passed / 68 skipped / 6 failed**；6 项均为 `test_tool_router_observation_capture.py` 的 `SimpleNamespace` 夹具缺少 `permission_mode`，改为 `getattr` 后该文件 **6 passed**。全后端第二轮在 `rag_eval` 阶段停滞，已停止；`--ignore=tests/rag_eval` 单列复跑为 **1784 passed / 68 skipped / 0 failed**（595.15 秒，exit 0，审查修复前）。RAG 全量评测仍按其独立门禁记录，不把停滞轮写成通过。
-- 对抗复查发现并修复：新增的 `SubmitPlanTool` 在 `_attach_skill_install_tool` 之后追加，未经过 `build_tool_specs` 的 `_ctx` 注入，真实 Agent 路径会把计划工具当成非 plan mode 而拒绝提交；现在 `_apply_plan_mode_tools` 对最终工具列表统一绑定 `snapshot.tool_context`，并新增 `test_apply_plan_mode_injects_context_into_submit_plan` 与 `test_build_agent_payload_plan_mode_filters_and_binds`，验证只读过滤、submit_plan 存在、write_file 不在列表、`enable_hitl=True`。
-- WP3 前端：目标 6 文件 **29 passed**；全量 **51 files / 351 passed**（基线 45/322）；`tsc --noEmit -p tsconfig.app.json`、`npm run build` 通过；`eslint .` 0 error / 13 条既有 warning。
-- 浏览器验收（Chromium，seed 计划与任务，`/api/chat` 在浏览器路由层返回 503 以隔离真实模型）：计划横幅、计划面板、任务清单、批准后“已批准/开始执行”、清空、刷新恢复、会话隔离均通过；无 page error。计划模式请求体实测为 `permission_mode: "plan"`，界面标签为“计划（只读）”；控制台仅出现预期的拦截 503。证据在 `E:/DevCaches/Temp/plan-todo-browser/evidence/`。
-- 未验证：真实模型生成计划、真实模型执行已批准计划、真实硬件/串口/烧录；浏览器执行聊天被拦截，不能代表真实模型链路。RAG 全量质量评测仍按其独立门禁记录。
+- WP2 定向：plan store/policy/tool/routes/execution/SSE 与 Todo、chat、HITL、factory、router、context-history 关联组 **145 passed**，含审查后新增的 `submit_plan` ctx、snapshot、build-agent、旧库建表、并发版本和 approved prompt 断言。
+- 完整后端（含 `tests/rag_eval`，`--timeout=180`）：**1867 passed / 68 skipped / 0 failed**，812.55 秒，exit 0。此前含 `rag_eval` 的复跑曾在 eval 阶段停滞；本轮加单测超时后完整跑完，没有测试超时。该轮早于最后 3 项边界测试文件，产品代码相同；边界组单独 **145 passed**。
+- 真实模型端到端（Chromium + `ccgo/gpt-6-luna` + 复制的真实 DB/keys 副本）：计划模式只读调用 `list_files` → `submit_plan`，计划横幅出现；批准后执行 `todo_write` → `write_file`，HITL 弹出 `write_file` 确认；点“允许本次”后文件创建、`read_file` 复核，最终回答“已按已批准计划执行”。文件 `E:/DevCaches/Temp/plan-todo-e2e/plan_e2e_note.txt` 内容为 `plan e2e ok`；无 page error。证据在 `E:/DevCaches/Temp/plan-todo-e2e/evidence/e2e-result.json`。
+- 对抗复查发现并修复两个真实问题：`SubmitPlanTool` 追加在 `_ctx` 注入之后，真实 Agent 路径会把它当成非 plan mode（`4068d646`）；HITL resume 的 `_persisted_rows` 在 `get_db_ctx` 提交/关闭后读取过期 ORM 行，触发 `DetachedInstanceError`（`66f477fc`，含回归测试）。
+- 浏览器 UI（seed 计划/任务，拦截 `/api/chat`）此前已验证：计划横幅、计划面板、任务清单、批准、清空、刷新恢复、会话隔离；计划模式请求体实测 `permission_mode="plan"`。
+- 前端：目标 29 passed；全量 **51 files / 351 passed**；`tsc --noEmit -p tsconfig.app.json`、`npm run build` 通过；`eslint .` 0 error / 13 条既有 warning。
+- GitNexus：刷新索引后 `detect-changes --scope all` 为 **3 files / 8 symbols / 0 affected processes / low**；`_persisted_rows` 上游 impact **LOW（6 impacted / 1 process）**；`build_tool_specs` 图谱无解析调用者（`UNKNOWN`），已用文本搜索确认实际调用点在 `agent_factory`。
+- 未验证：真实硬件/串口/烧录；真实模型 E2E 使用文件写入任务，未覆盖硬件动作；RAG 全量质量结论仍按独立门禁记录。
 
 ## 2026-11-05 合并后完整后端门禁
 
