@@ -20,6 +20,7 @@ from typing import Any
 
 from src.agent.core.toolkit.tool_spec import ConfirmationRule, RiskLevel, ToolSpec
 from src.agent.exceptions import ToolContext
+from src.agent.plan_policy import PLAN_MODE, is_allowed_in_plan_mode
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,8 @@ class PermissionClassifier:
     """3-state permission gate evaluated per pending tool_call.
 
     Decision matrix (spec §PermissionClassifier + v2 §2):
+      * plan mode                        -> allow only the plan read-only
+                                            allowlist; everything else DENY
       * requires_confirmation == ALWAYS -> ask (every mode)
       * risk_level == HIGH               -> _decide_high; run_command is
                                             allowed only when command_policy
@@ -71,6 +74,8 @@ class PermissionClassifier:
 
     def check(self, spec: ToolSpec, args: dict[str, Any], ctx: ToolContext) -> str:
         """Return allow/ask/deny for a tool call. Pure, no side effects."""
+        if getattr(ctx, "permission_mode", "default") == PLAN_MODE:
+            return ALLOW if is_allowed_in_plan_mode(spec.name, args) else DENY
         if spec.mcp_info is not None:
             return ASK
         if spec.requires_confirmation == ConfirmationRule.ALWAYS:

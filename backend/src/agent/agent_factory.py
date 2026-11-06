@@ -102,6 +102,8 @@ class AgentConfig:
     context_window_override: int | None = None
     user_query: str = ""
     session_id: str = ""
+    plan_mode: bool = False
+    approved_plan_text: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,8 +198,13 @@ async def create_hardware_agent_from_config(config: AgentConfig) -> Any:
             )
             if hardware_hint:
                 prompt = f"{prompt}\n\n## Hardware profile hint\n{hardware_hint}"
-            if todo_block:
+            if not config.plan_mode and todo_block:
                 prompt = f"{prompt}\n\n{todo_block}"
+            if config.plan_mode:
+                from src.agent.plan_prompt import build_plan_mode_prompt
+                prompt = f"{prompt}\n\n{build_plan_mode_prompt()}"
+            if config.approved_plan_text:
+                prompt = f"{prompt}\n\n{config.approved_plan_text}"
             system_prompt = prompt
             agent = create_agent(
                 model=llm,
@@ -282,6 +289,8 @@ async def create_hardware_agent(
     context_window_override: int | None = None,
     user_query: str = "",
     session_id: str = "",
+    plan_mode: bool = False,
+    approved_plan_text: str = "",
 ) -> Any:
     """Backward-compat shim around create_hardware_agent_from_config (P2-I-1).
 
@@ -300,6 +309,8 @@ async def create_hardware_agent(
         context_window_override=context_window_override,
         user_query=user_query,
         session_id=session_id,
+        plan_mode=plan_mode,
+        approved_plan_text=approved_plan_text,
     )
     return await create_hardware_agent_from_config(config)
 
@@ -1138,6 +1149,16 @@ class _BuiltRequestToolMap(dict[str, BaseTool]):
     ) -> None:
         super().__init__((tool.name, tool) for tool in tools)
         self.injected_tools = injected_tools
+
+
+def replace_request_tools(ctx: ToolContext, tools: list[BaseTool]) -> None:
+    """Rebuild request-local lookup after a final exposure filter (plan mode)."""
+    original = ctx.request_tools
+    injected = tuple(getattr(original, "injected_tools", ()))
+    tool_ids = {id(tool) for tool in tools}
+    included = tuple(tool for tool in injected if id(tool) in tool_ids)
+    ctx.request_tools = _BuiltRequestToolMap(tools, included)
+    ctx.skills_allowed_tools = frozenset(tool.name for tool in tools)
 
 
 def _preconfigured_request_tools(ctx: ToolContext) -> tuple[BaseTool, ...]:
