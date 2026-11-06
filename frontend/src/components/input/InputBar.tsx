@@ -61,7 +61,7 @@ export function InputBar() {
   // Guard against double send (e.g. rapid Enter + click)
   const sendingRef = useRef(false);
 
-  const { sendMessage, stopStreaming, isStreaming, activeSessionId, drafts, setDraft, clearDraft, sessionAttachments, setSessionAttachments, clearSessionAttachments } = useChatStore();
+  const { sendMessage, stopStreaming, isStreaming, activeSessionId, drafts, setDraft, clearDraft, sessionAttachments, setSessionAttachments, clearSessionAttachments, planMode, setPlanMode } = useChatStore();
   const { providers, chatProviderId, chatModel, setChatModel, permissionMode, updateSetting } = useSettingsStore();
   const { sessions, updateSessionMeta } = useSessionStore();
   // 输入框文本从 store 草稿派生，切换会话自动响应
@@ -454,7 +454,7 @@ export function InputBar() {
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
                 </svg>
-                <span className="permission-label" id="permissionLabel">{permissionLabels[permissionMode]}</span>
+                <span className="permission-label" id="permissionLabel">{planMode ? t('permissionPlan') : permissionLabels[permissionMode]}</span>
                 <svg className="permission-chevron" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <polyline points="6 9 12 15 18 9" />
                 </svg>
@@ -574,9 +574,10 @@ export function InputBar() {
             {PERMISSION_MODE_ORDER.map((mode) => (
               <button
                 key={mode}
-                className={`permission-option${permissionMode === mode ? " selected" : ""}`}
+                className={`permission-option${!planMode && permissionMode === mode ? " selected" : ""}`}
                 onClick={(e) => {
                   e.stopPropagation();
+                  setPlanMode(false);
                   updateSetting("permissionMode", mode);
                   setShowPermissionDropdown(false);
                 }}
@@ -584,6 +585,18 @@ export function InputBar() {
                 {permissionLabels[mode]}
               </button>
             ))}
+            <div className="permission-divider" />
+            <button
+              className={`permission-option${planMode ? " selected" : ""}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                // Plan mode is request-scoped; the persisted permission mode stays untouched.
+                setPlanMode(true);
+                setShowPermissionDropdown(false);
+              }}
+            >
+              {t('permissionPlan')}
+            </button>
           </div>
         </div>,
         document.body,

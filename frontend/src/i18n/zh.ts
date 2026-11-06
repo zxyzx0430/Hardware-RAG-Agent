@@ -465,6 +465,37 @@ const zh: Record<string, string> = {
   permissionBypass: '放宽',
   permissionAsk: '按风险询问',
   permissionAuto: '自动放行低/中',
+  permissionPlan: '计划（只读）',
+
+  // Plan mode - banner, panel, status
+  planTab: '计划',
+  planPendingTitle: '计划 v{n} 待批准',
+  planApprovedTitle: '计划 v{n} 已批准',
+  planView: '查看',
+  planApprove: '批准并执行',
+  planReject: '拒绝',
+  planExecute: '开始执行',
+  planApproving: '批准中…',
+  planRejecting: '拒绝中…',
+  planSteps: '步骤',
+  planStepVerification: '验证',
+  planRisks: '风险',
+  planOpenQuestions: '待确认问题',
+  planStatus: '状态',
+  planVersion: '版本',
+  planCreatedAt: '创建时间',
+  planDecidedAt: '决定时间',
+  planExecutedRun: '执行 Run',
+  planStatus_pending: '待批准',
+  planStatus_approved: '已批准',
+  planStatus_rejected: '已拒绝',
+  planStatus_superseded: '已被替代',
+  noPlan: '暂无计划',
+
+  // Todo card - clear action
+  todoClear: '清空',
+  todoClearConfirm: '确认清空？',
+  todoClearing: '清空中…',
 
   // Top bar - additional
   sourceCount: '来源',

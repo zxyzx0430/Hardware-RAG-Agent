@@ -3,6 +3,7 @@ import type {
   Lang,
   NavView,
   RightMode,
+  RightContentTab,
   WbTab,
   PreviewTab,
   OpenFileItem,
@@ -22,6 +23,8 @@ export interface AppState {
   rightPanelWidth: number;
   inputBarWidth: number;
   rightMode: RightMode;
+  /** Selected tab inside the "content" right-panel mode. */
+  rightContentTab: RightContentTab;
   // 工作台
   wbTab: WbTab;
   workbenchUserOverride: boolean;
@@ -71,6 +74,7 @@ export interface AppState {
   setRightPanelWidth: (w: number) => void;
   setInputBarWidth: (w: number) => void;
   setRightMode: (m: RightMode) => void;
+  setRightContentTab: (tab: RightContentTab) => void;
   setWbTab: (t: WbTab, source?: "user" | "bridge") => void;
   setWorkbenchUserOverride: (val: boolean) => void;
   resetWorkbenchOverride: () => void;

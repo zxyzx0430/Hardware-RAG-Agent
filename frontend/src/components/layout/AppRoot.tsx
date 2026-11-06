@@ -24,6 +24,7 @@ import { LeftPanel } from "./LeftPanel";
 import { TopBar } from "../topbar/TopBar";
 import { ChatArea } from "../chat/ChatArea";
 import { InputBar } from "../input/InputBar";
+import { PlanBanner } from "../plan/PlanBanner";
 import { RightPanel } from "./RightPanel";
 import { ExplorerPanel } from "../explorer";
 import { SettingsPage } from "../settings/SettingsPage";
@@ -240,7 +241,7 @@ export function AppRoot() {
         useChatStore.getState().setActiveSession(sessions[0].id);
       } else if (activeSessionId !== "") {
         // 无会话：清空 activeSessionId，避免幽灵 "s1" 持续触发
-        useChatStore.setState({ messages: [], activeSessionId: "" });
+        useChatStore.setState({ messages: [], activeSessionId: "", planMode: false });
         localStorage.removeItem("activeSession");
       }
       return;
@@ -300,6 +301,7 @@ export function AppRoot() {
               <ChatArea />
               <div className="inputbar-resize-wrap" style={{ display: "flex", alignItems: "stretch" }}>
                 <div style={{ width: resolvedLayout.inputBarWidth, maxWidth: "100%", minWidth: INPUT_BAR_MIN_WIDTH, flexShrink: 0 }}>
+                  <PlanBanner />
                   <InputBar />
                 </div>
                 <div

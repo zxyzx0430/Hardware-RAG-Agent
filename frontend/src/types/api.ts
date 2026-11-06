@@ -4,8 +4,10 @@ import type { SourceRef, ActivityBlock, ContentPart, TodoItem } from './session'
 import type { ProviderInfo } from './settings';
 import type { KBItem } from './kb';
 import type { SerialDevice } from './serial';
+import type { Plan } from './plan';
 
 export type { SourceRef, ActivityBlock, ContentPart, ProviderInfo, KBItem as KBDoc, SerialDevice };
+export type { Plan, PlanStep, PlanStatus, PlanMeta } from './plan';
 
 export interface ModelInfo {
   id: string;
@@ -51,6 +53,8 @@ export interface ChatRequest {
   skills_mode?: 'off' | 'auto' | 'manual';
   skill_ids?: string[];
   permission_mode?: string;
+  /** Execute an approved plan for this session; validated server-side. */
+  approved_plan_id?: string;
   tool_keys?: Record<string, string>;
 }
 
@@ -128,7 +132,13 @@ export interface ToolResultSSEEvent {
 
 export interface TodoUpdateSSEEvent {
   type: 'todo_update';
+  /** An empty list is a valid clear and must replace older message-level todos. */
   todos: TodoItem[];
+}
+
+export interface PlanUpdateSSEEvent {
+  type: 'plan_update';
+  plan: Plan;
 }
 
 export interface SourceSSEEvent {
@@ -226,6 +236,7 @@ export type ChatSSEEvent = RunEventMeta & (
   | ToolResultSSEEvent
   | SourceSSEEvent
   | TodoUpdateSSEEvent
+  | PlanUpdateSSEEvent
   | ProgressSSEEvent
   | BuildCompileLogSSEEvent
   | ToolConfirmRequiredSSEEvent
