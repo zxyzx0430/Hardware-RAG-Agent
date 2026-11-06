@@ -25,13 +25,40 @@ export class ApiError extends Error {
 }
 
 // ─── Auth Headers ────────────────────────────────────────────
+export const AUTH_TOKEN_CHANGED_EVENT = "hwrag:auth-token-changed";
+
+/**
+ * Store or clear the session token and notify long-lived consumers (file
+ * watcher SSE, WebSocket helpers) that they should reconnect with new auth.
+ */
+export function setSessionToken(token: string | null): void {
+  try {
+    if (token) sessionStorage.setItem("session_token", token);
+    else sessionStorage.removeItem("session_token");
+  } catch {
+    // Storage may be unavailable in private mode; the in-memory callers can
+    // still proceed, and the next request simply lacks a token.
+  }
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(AUTH_TOKEN_CHANGED_EVENT));
+  }
+}
+
+export function getSessionToken(): string | null {
+  try {
+    return sessionStorage.getItem("session_token");
+  } catch {
+    return null;
+  }
+}
+
 export function getAuthHeaders(): Record<string, string> {
   const { resolveChatCreds } = useSettingsStore.getState();
   const creds = resolveChatCreds();
   const headers: Record<string, string> = {};
   if (creds.apiKey) headers["X-API-Key"] = creds.apiKey;
-  // 从 localStorage 读取 session_token，添加 Authorization header
-  const sessionToken = sessionStorage.getItem("session_token");
+  // session_token 存于 sessionStorage，用于本地会话鉴权。
+  const sessionToken = getSessionToken();
   if (sessionToken) headers["Authorization"] = `Bearer ${sessionToken}`;
   if (creds.model) headers["X-Model"] = creds.model;
   if (creds.providerId) headers["X-Provider"] = creds.providerId;
@@ -649,7 +676,7 @@ export function apiWS(
   }
   // Inject session_token for WebSocket auth — mirrors getAuthHeaders for fetch.
   // Backend ws_auth() reads it from query_params["token"] before accept().
-  const sessionToken = sessionStorage.getItem("session_token");
+  const sessionToken = getSessionToken();
   if (sessionToken) {
     const sep = url.includes("?") ? "&" : "?";
     url = `${url}${sep}token=${encodeURIComponent(sessionToken)}`;

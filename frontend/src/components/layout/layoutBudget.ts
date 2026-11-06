@@ -31,6 +31,8 @@ export interface LayoutBudgetInput {
   rightPanelWidth: number;
   explorerWidth: number;
   inputBarWidth: number;
+  /** Auto mode makes the composer follow the available chat-column width. */
+  inputBarAuto?: boolean;
   protectedPanel?: LayoutPanel | null;
 }
 
@@ -204,10 +206,13 @@ export function resolveLayout(input: LayoutBudgetInput): ResolvedLayout {
       ? widths.explorer + PANEL_RESIZER_WIDTH
       : EXPLORER_COLLAPSED_STRIP_WIDTH);
   const chatColumnWidth = Math.max(CHAT_COLUMN_MIN_WIDTH, input.viewportWidth - outerWidth);
-  const inputBarWidth = Math.max(
+  const maxInputBarWidth = Math.max(
     INPUT_BAR_MIN_WIDTH,
-    Math.min(INPUT_BAR_MAX_WIDTH, input.inputBarWidth, chatColumnWidth - INPUT_BAR_RESIZER_WIDTH),
+    Math.min(INPUT_BAR_MAX_WIDTH, chatColumnWidth - INPUT_BAR_RESIZER_WIDTH),
   );
+  const inputBarWidth = input.inputBarAuto === false
+    ? Math.max(INPUT_BAR_MIN_WIDTH, Math.min(maxInputBarWidth, input.inputBarWidth))
+    : maxInputBarWidth;
 
   return {
     showChatShell: true,

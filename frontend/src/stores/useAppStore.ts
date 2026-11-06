@@ -9,6 +9,8 @@ import {
   saveRightContentTabBySession,
   loadInputBarWidth,
   saveInputBarWidth,
+  loadInputBarAuto,
+  saveInputBarAuto,
   loadBoolean,
   loadNumber,
   loadStringArray,
@@ -35,6 +37,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   leftPanelWidth: 280,
   rightPanelWidth: loadRightPanelWidth(),
   inputBarWidth: loadInputBarWidth(),
+  inputBarAuto: loadInputBarAuto(),
   rightMode: "workbench",
   rightContentTabBySession: loadRightContentTabBySession(),
   wbTab: "serial",
@@ -98,7 +101,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   setInputBarWidth: (inputBarWidth) => {
     saveInputBarWidth(inputBarWidth);
-    set({ inputBarWidth });
+    saveInputBarAuto(false);
+    set({ inputBarWidth, inputBarAuto: false });
+  },
+  resetInputBarWidth: () => {
+    saveInputBarAuto(true);
+    set({ inputBarAuto: true });
   },
   setRightMode: (rightMode) => set({ rightMode }),
   setRightContentTab: (sessionId, tab) => {

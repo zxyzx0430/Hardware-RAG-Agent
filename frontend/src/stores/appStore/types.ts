@@ -25,6 +25,8 @@ export interface AppState {
   leftPanelWidth: number;
   rightPanelWidth: number;
   inputBarWidth: number;
+  /** When true, the composer follows the available chat-column width. */
+  inputBarAuto: boolean;
   rightMode: RightMode;
   /** Selected tab inside the "content" right-panel mode, keyed by session. */
   rightContentTabBySession: Record<string, RightContentTab>;
@@ -76,6 +78,8 @@ export interface AppState {
   setLeftPanelWidth: (w: number) => void;
   setRightPanelWidth: (w: number) => void;
   setInputBarWidth: (w: number) => void;
+  /** Return the composer to auto-fill mode. */
+  resetInputBarWidth: () => void;
   setRightMode: (m: RightMode) => void;
   setRightContentTab: (sessionId: string, tab: RightContentTab) => void;
   setWbTab: (t: WbTab, source?: "user" | "bridge") => void;

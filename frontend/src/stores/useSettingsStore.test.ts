@@ -14,6 +14,7 @@ vi.mock("../api/client", () => ({
   apiPost: apiPostMock,
   apiPatch: vi.fn(),
   apiDelete: vi.fn(),
+  setSessionToken: vi.fn(),
 }));
 
 vi.mock("./useLogStore", () => ({

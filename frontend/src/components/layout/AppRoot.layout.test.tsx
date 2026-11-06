@@ -66,6 +66,7 @@ function resetLayoutState(state: Partial<ReturnType<typeof useAppStore.getState>
     explorerOpen: true,
     explorerWidth: 450,
     inputBarWidth: 720,
+    inputBarAuto: true,
     openFiles: [openFile],
     activeFileId: openFile.id,
     ...state,
@@ -245,6 +246,56 @@ describe("AppRoot responsive layout", () => {
       explorerOpen: true,
     });
     expect(showInfoMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("fits the composer to the chat column at 1710/1440/1280/1024", () => {
+    const cases: Array<[number, string, string]> = [
+      [1710, "702px", "714"],
+      [1440, "480px", "492"],
+      [1280, "556px", "568"],
+      [1024, "644px", "656"],
+    ];
+
+    for (const [width, inputWidth, chatWidth] of cases) {
+      setViewportWidth(width);
+      resetLayoutState({
+        leftPanelWidth: 280,
+        rightPanelWidth: 340,
+        explorerWidth: 280,
+        inputBarAuto: true,
+      });
+      const { unmount } = render(<AppRoot />);
+
+      expect(document.getElementById("inputBarHost")?.style.width, `viewport=${width}`).toBe(inputWidth);
+      expect(document.getElementById("chatColumn")?.dataset.chatWidth, `viewport=${width}`).toBe(chatWidth);
+      expect(Number(document.getElementById("chatColumn")?.dataset.chatWidth)).toBeGreaterThanOrEqual(
+        Number(document.getElementById("inputBarHost")?.style.width.replace("px", "")) + 12,
+      );
+      unmount();
+    }
+  });
+
+  it("shrinks the composer when dragging the sidebar wider and never rejoins below the chat minimum", () => {
+    setViewportWidth(1710);
+    resetLayoutState({
+      leftPanelWidth: 280,
+      rightPanelWidth: 340,
+      explorerWidth: 280,
+      inputBarAuto: true,
+    });
+    render(<AppRoot />);
+
+    expect(document.getElementById("inputBarHost")?.style.width).toBe("702px");
+
+    const resizeHandle = document.querySelector<HTMLElement>("#sidebarResizer")!;
+    setElementWidth(resizeHandle.parentElement!, 1710);
+    fireEvent.mouseDown(resizeHandle, { clientX: 0 });
+    fireEvent.mouseMove(document, { clientX: 1000 });
+
+    expect(useAppStore.getState().leftPanelWidth).toBe(500);
+    expect(document.getElementById("inputBarHost")?.style.width).toBe("482px");
+    expect(Number(document.getElementById("chatColumn")?.dataset.chatWidth)).toBeGreaterThanOrEqual(492);
+    fireEvent.mouseUp(document);
   });
 
   it("re-budgets on window narrowing without changing preferred widths or dirty drafts", () => {

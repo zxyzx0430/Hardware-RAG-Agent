@@ -170,3 +170,27 @@ describe('apiSSE connection loss', () => {
     }
   });
 });
+
+describe('session token broadcast', () => {
+  beforeEach(() => {
+    sessionStorage.clear();
+  });
+
+  it('writes or clears the token and emits the auth change event', async () => {
+    const { AUTH_TOKEN_CHANGED_EVENT, setSessionToken } = await import('./client');
+    const listener = vi.fn();
+    window.addEventListener(AUTH_TOKEN_CHANGED_EVENT, listener);
+
+    try {
+      setSessionToken('token-1');
+      expect(sessionStorage.getItem('session_token')).toBe('token-1');
+      expect(listener).toHaveBeenCalledTimes(1);
+
+      setSessionToken(null);
+      expect(sessionStorage.getItem('session_token')).toBeNull();
+      expect(listener).toHaveBeenCalledTimes(2);
+    } finally {
+      window.removeEventListener(AUTH_TOKEN_CHANGED_EVENT, listener);
+    }
+  });
+});

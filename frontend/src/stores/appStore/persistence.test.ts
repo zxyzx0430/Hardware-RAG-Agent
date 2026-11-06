@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { OpenFileItem } from "../../types";
-import { loadOpenFiles, saveOpenFiles } from "./persistence";
+import { loadInputBarAuto, loadOpenFiles, saveInputBarAuto, saveOpenFiles } from "./persistence";
 
 describe("Explorer editor draft persistence", () => {
   beforeEach(() => localStorage.clear());
@@ -52,5 +52,19 @@ describe("Explorer editor draft persistence", () => {
       isBuffer: true,
       language: "cpp",
     });
+  });
+});
+
+describe("composer auto width persistence", () => {
+  beforeEach(() => localStorage.clear());
+
+  it("defaults to auto and remembers an explicit manual mode", () => {
+    expect(loadInputBarAuto()).toBe(true);
+
+    saveInputBarAuto(false);
+    expect(loadInputBarAuto()).toBe(false);
+
+    saveInputBarAuto(true);
+    expect(loadInputBarAuto()).toBe(true);
   });
 });
