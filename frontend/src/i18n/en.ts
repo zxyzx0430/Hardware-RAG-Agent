@@ -465,6 +465,37 @@ const en: Record<string, string> = {
   permissionBypass: 'Relaxed',
   permissionAsk: 'Ask by Risk',
   permissionAuto: 'Auto Low/Med',
+  permissionPlan: 'Plan (read-only)',
+
+  // Plan mode - banner, panel, status
+  planTab: 'Plan',
+  planPendingTitle: 'Plan v{n} awaiting approval',
+  planApprovedTitle: 'Plan v{n} approved',
+  planView: 'View',
+  planApprove: 'Approve & Run',
+  planReject: 'Reject',
+  planExecute: 'Start Execution',
+  planApproving: 'Approving…',
+  planRejecting: 'Rejecting…',
+  planSteps: 'Steps',
+  planStepVerification: 'Verification',
+  planRisks: 'Risks',
+  planOpenQuestions: 'Open Questions',
+  planStatus: 'Status',
+  planVersion: 'Version',
+  planCreatedAt: 'Created',
+  planDecidedAt: 'Decided',
+  planExecutedRun: 'Executed Run',
+  planStatus_pending: 'Pending',
+  planStatus_approved: 'Approved',
+  planStatus_rejected: 'Rejected',
+  planStatus_superseded: 'Superseded',
+  noPlan: 'No plan',
+
+  // Todo card - clear action
+  todoClear: 'Clear',
+  todoClearConfirm: 'Confirm clear?',
+  todoClearing: 'Clearing…',
 
   // Top bar - additional
   sourceCount: 'Sources',
