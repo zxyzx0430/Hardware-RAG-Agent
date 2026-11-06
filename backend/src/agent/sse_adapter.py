@@ -707,7 +707,10 @@ def _sse_indicates_progress(serialized_events: str) -> bool:
             if any(isinstance(payload.get(key), str) and payload[key].strip() for key in ("id", "title", "doc", "excerpt")):
                 return True
         elif event_type == "todo_update":
-            if payload.get("todos"):
+            if isinstance(payload.get("todos"), list):
+                return True
+        elif event_type == "plan_update":
+            if isinstance(payload.get("plan"), dict):
                 return True
         elif event_type in {"context_compressing", "tool_confirm_required"}:
             if payload.get("message") or payload.get("calls") or payload.get("count"):
@@ -865,7 +868,12 @@ def _emit_tool_call(
     spec = next((item for item in specs if item.name == name), None)
     risk_level = spec.risk_level.value if spec is not None else None
     perm_mode = state.get("permission_mode", "bypassPermissions")
-    decision_source = "mode_bypass" if perm_mode == "bypassPermissions" else "auto_allow"
+    if perm_mode == "bypassPermissions":
+        decision_source = "mode_bypass"
+    elif perm_mode == "plan":
+        decision_source = "plan_mode"
+    else:
+        decision_source = "auto_allow"
     if spec is not None and spec.mcp_info is not None:
         decision_source = "confirmation_required"
     parts.append(sse_event("tool_call", {

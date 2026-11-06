@@ -75,6 +75,7 @@ from app.db.models import Feedback as FeedbackModel
 from app.db.models import TokenUsage as TokenUsageModel
 from app.db.models import ToolAudit as ToolAuditModel
 from app.db.models import Todo as TodoModel
+from app.db.models import Plan as PlanModel
 from app.db.models import SessionTombstone
 from app.api.tool_observations import purge_session_observations
 
@@ -759,7 +760,7 @@ def _purge_session_rows(db: DBSession, session_id: str) -> None:
     now = utc_now()
     epoch = stage_session_delete_epoch(db, session_id, now)
     _write_tombstone(db, session_id, now, epoch)
-    for model in (FeedbackModel, TokenUsageModel, ToolAuditModel, TodoModel):
+    for model in (FeedbackModel, TokenUsageModel, ToolAuditModel, TodoModel, PlanModel):
         db.query(model).filter(model.session_id == session_id).delete(
             synchronize_session=False,
         )

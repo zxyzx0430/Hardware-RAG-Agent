@@ -96,6 +96,7 @@ async def stream_agent_to_sse(
 try:
     from src.agent.agent_factory import (
         _should_use_agent, build_agent_config, build_tools, create_hardware_agent,
+        replace_request_tools,
     )
     _AGENT_PATH_AVAILABLE = True
 except ImportError as _agent_import_err:
@@ -152,6 +153,8 @@ class AgentRequestSnapshot:
     pending_call_ids: tuple[str, ...] = ()
     pending_call_fingerprints: tuple[tuple[str, str], ...] = field(default=(), repr=False)
     skill_install_tool: Any = field(default=None, repr=False, compare=False)
+    approved_plan_id: str | None = None
+    approved_plan_text: str = ""
 
 
 class _RequestSnapshotEpochError(RuntimeError):
@@ -375,6 +378,7 @@ def _request_snapshot_from_payload(
         relevance_threshold=getattr(payload, "relevance_threshold", None),
         skills_mode=getattr(payload, "skills_mode", "off") or "off",
         skill_ids=tuple(getattr(payload, "skill_ids", None) or ()),
+        approved_plan_id=getattr(payload, "approved_plan_id", None),
     )
 
 
@@ -387,6 +391,7 @@ def _payload_with_request_snapshot(payload: Any, snapshot: AgentRequestSnapshot)
         "relevance_threshold": snapshot.relevance_threshold,
         "skills_mode": snapshot.skills_mode,
         "skill_ids": list(snapshot.skill_ids),
+        "approved_plan_id": snapshot.approved_plan_id,
     }
     if hasattr(payload, "model_copy"):
         return payload.model_copy(update=updates)
@@ -845,7 +850,8 @@ class ChatRequest(BaseModel):
     # Agent path opt-in (spec §10.1): when True + model supports tools + langgraph available,
     # the request flows through the ReAct agent instead of the single-shot LLM stream.
     use_agent: bool = False
-    permission_mode: Literal["bypassPermissions", "default", "acceptEdits"] = "default"
+    permission_mode: Literal["bypassPermissions", "default", "acceptEdits", "plan"] = "default"
+    approved_plan_id: Optional[str] = Field(default=None, max_length=128)
     tool_keys: dict[str, str] = {}  # per-request tool credentials, e.g. {"tavily": "..."}
     skills_mode: Literal["off", "auto", "manual"] = "off"
     skill_ids: list[str] = Field(default_factory=list, max_length=3)
@@ -1569,9 +1575,10 @@ async def _build_agent_for_payload(
     _attach_skill_install_tool(
         snapshot.tool_context, tools, snapshot.skill_install_tool,
     )
+    plan_mode, tools = _apply_plan_mode_tools(snapshot, tools)
     # HITL must stay enabled even in bypass mode: PermissionClassifier still
     # asks for HIGH/ALWAYS tools, and disabling the interrupt would skip it.
-    enable_hitl = bool(tools)
+    enable_hitl = True if plan_mode else bool(tools)
     resolved_memory = snapshot.long_term_memory
     skills_catalog = (
         snapshot.skills_runtime.catalog()
@@ -1586,6 +1593,8 @@ async def _build_agent_for_payload(
         "skills_mode": snapshot.skills_mode,
         "skills_catalog": skills_catalog,
         "skills_context": list(snapshot.skills_context),
+        "plan_mode": plan_mode,
+        "approved_plan_text": snapshot.approved_plan_text,
     }
     last_user_query = ""
     for message in reversed(payload.messages):
@@ -1594,7 +1603,7 @@ async def _build_agent_for_payload(
             last_user_query = content if isinstance(content, str) else str(content or "")
             break
     kwargs["user_query"] = last_user_query
-    kwargs["session_id"] = payload.session_id or ""
+    kwargs["session_id"] = _session_memory_key(payload.session_id)
     _optional_arg(kwargs, "temperature", payload.temperature)
     _optional_arg(kwargs, "max_tokens", payload.max_tokens)
     _optional_arg(kwargs, "context_window_override", context_window_override)
@@ -1605,6 +1614,26 @@ def _optional_arg(kwargs: dict, key: str, value) -> None:
     """Add key=value to kwargs only when value is not None (let the callee use its default)."""
     if value is not None:
         kwargs[key] = value
+
+
+def _filter_plan_mode_tools(tools: list) -> list:
+    """Final plan-mode exposure: read-only allowlist plus submit_plan."""
+    from src.agent.plan_policy import SUBMIT_PLAN_TOOL_NAME, filter_tools_for_plan_mode
+    from src.agent.tools.groups.execution.submit_plan import SubmitPlanTool
+
+    filtered = filter_tools_for_plan_mode(tools)
+    if not any(tool.name == SUBMIT_PLAN_TOOL_NAME for tool in filtered):
+        filtered.append(SubmitPlanTool())
+    return filtered
+
+
+def _apply_plan_mode_tools(snapshot: AgentRequestSnapshot, tools: list) -> tuple[bool, list]:
+    """Filter the final tool list and rebuild request-local lookup in plan mode."""
+    if snapshot.permission_mode != "plan":
+        return False, tools
+    filtered = _filter_plan_mode_tools(tools)
+    replace_request_tools(snapshot.tool_context, filtered)
+    return True, filtered
 
 
 # ═══════════════════════════════════════════
@@ -1772,6 +1801,64 @@ def _consume_resume_approvals(
 # POST /api/chat — SSE 流式聊天
 # ═══════════════════════════════════════════
 
+def _plan_error(code: str, message: str, status_code: int) -> HTTPException:
+    return HTTPException(
+        status_code=status_code,
+        detail={"success": False, "error": {"code": code, "message": message}},
+    )
+
+
+def _require_plan_mode_agent(payload: ChatRequest, model: str) -> None:
+    if payload.permission_mode != "plan":
+        return
+    if not (_AGENT_PATH_AVAILABLE and _should_use_agent(payload, model)):
+        raise _plan_error(
+            "PLAN_REQUIRES_AGENT",
+            "计划模式需要支持工具调用的 Agent 模型。",
+            400,
+        )
+
+
+def _resolve_approved_plan(payload: ChatRequest, session_id: str, model: str) -> dict | None:
+    plan_id = payload.approved_plan_id
+    if not plan_id:
+        return None
+    if payload.permission_mode == "plan":
+        raise _plan_error("PLAN_MODE_CONFLICT", "计划模式下不能同时执行已批准计划。", 409)
+    if not (_AGENT_PATH_AVAILABLE and _should_use_agent(payload, model)):
+        raise _plan_error("PLAN_REQUIRES_AGENT", "执行已批准计划需要 Agent 模型。", 400)
+    from app.db import plan_store
+
+    plan = plan_store.get(plan_id)
+    if plan is None or plan.get("session_id") != session_id:
+        raise _plan_error("PLAN_NOT_FOUND", "计划不存在或不属于当前会话。", 404)
+    latest = plan_store.latest(session_id)
+    if latest is None or latest.get("id") != plan_id:
+        raise _plan_error("PLAN_SUPERSEDED", "计划已被更新版本替代，请重新批准。", 409)
+    if plan.get("status") != "approved":
+        raise _plan_error("PLAN_NOT_APPROVED", "计划尚未批准或已失效。", 409)
+    return plan
+
+
+def _seed_plan_todos(session_id: str, plan: dict) -> list[dict] | None:
+    from app.db import todo_store
+
+    steps = plan.get("steps") if isinstance(plan.get("steps"), list) else []
+    todos = [
+        {"content": str(step.get("title", "")).strip(), "status": "pending", "priority": "medium"}
+        for step in steps
+        if isinstance(step, dict) and str(step.get("title", "")).strip()
+    ]
+    if not todos:
+        return None
+    try:
+        todo_store.replace_todos(session_id, todos)
+    except Exception:
+        logger.warning("plan todo seeding failed session=%s", session_id, exc_info=True)
+        return None
+    return todos
+
+
 @router.post("/chat")
 async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(current_user)):
     """RAG 流式聊天，严格匹配前端 SSE 事件协议。"""
@@ -1780,6 +1867,7 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
     base_url = creds["base_url"]
     model = creds["model"]
     provider = creds["provider"]
+    _require_plan_mode_agent(payload, model)
     from src.agent.tools.groups.skills.install_tool import parse_explicit_install_intent
 
     explicit_install = (
@@ -1841,6 +1929,12 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
     skill_install_tool, skill_install_response = await _prepare_chat_skill_install(
         payload, user, model,
     )
+    if payload.permission_mode == "plan" and (explicit_install or skill_install_response is not None):
+        raise _plan_error(
+            "PLAN_MODE_SKILLS_UNAVAILABLE",
+            "计划模式只读，不能安装或导入技能。",
+            400,
+        )
     if payload.skills_mode != "off" and not (
         _AGENT_PATH_AVAILABLE and _should_use_agent(payload, model)
     ) and skill_install_response is None and not explicit_install:
@@ -1927,11 +2021,29 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
     run_store = _resolve_run_store()
     run_session_id = _session_memory_key(payload.session_id)
     run_principal_id = _verified_principal_id(user)
+    approved_plan = _resolve_approved_plan(payload, run_session_id, model)
+    if approved_plan is not None:
+        from src.agent.plan_prompt import build_approved_plan_prompt
+        request_snapshot = replace(
+            request_snapshot,
+            approved_plan_id=approved_plan["id"],
+            approved_plan_text=build_approved_plan_prompt(approved_plan),
+        )
     run_id = _create_chat_run(
         run_store, payload, model, run_session_id, run_principal_id,
     )
     if request_snapshot.tool_context is not None:
         request_snapshot.tool_context.run_id = run_id
+    seeded_todos = None
+    if approved_plan is not None:
+        from app.db import plan_store
+        try:
+            first_execution = plan_store.mark_executed(approved_plan["id"], run_id)
+        except Exception:
+            logger.warning("plan execution claim failed plan=%s", approved_plan["id"], exc_info=True)
+            first_execution = False
+        if first_execution:
+            seeded_todos = _seed_plan_todos(run_session_id, approved_plan)
     run_request_snapshot = _sanitized_run_request(payload)
 
     async def event_generator():
@@ -1947,6 +2059,18 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
                 yield sse_event("text", {"content": skill_install_response})
                 yield sse_event("done", {"success": True, "completed": True, "usage": None})
                 return
+
+            if approved_plan is not None:
+                if seeded_todos:
+                    yield sse_event("todo_update", {
+                        "todos": seeded_todos, "session_id": run_session_id,
+                    })
+                from app.db import plan_store
+                try:
+                    current_plan = plan_store.get(approved_plan["id"]) or approved_plan
+                except Exception:
+                    current_plan = approved_plan
+                yield sse_event("plan_update", {"plan": current_plan})
 
             # ── 附件 + 历史构建 ──
             attachment_texts, image_parts = await _process_attachments(payload)

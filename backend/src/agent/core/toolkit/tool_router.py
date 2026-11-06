@@ -39,6 +39,7 @@ from src.agent.core.toolkit.tool_result_envelope import (
 )
 from src.agent.core.toolkit.tool_spec import ToolSpec
 from src.agent.exceptions import ToolContext
+from src.agent.plan_policy import PLAN_MODE, is_allowed_in_plan_mode
 
 logger = logging.getLogger(__name__)
 
@@ -159,6 +160,17 @@ class ToolRouter:
                 _not_found_envelope(tool_name, call_id, start_ms)
             )
         state = _DispatchState(call_id, spec, args, ctx, start_ms)
+        if getattr(ctx, "permission_mode", "default") == PLAN_MODE and not is_allowed_in_plan_mode(spec.name, args):
+            envelope = _error_envelope(
+                state,
+                "PLAN_MODE_READ_ONLY",
+                "Plan mode is read-only; submit a plan before executing this tool.",
+                "计划模式只读：请先 submit_plan，等用户批准后再执行。",
+            )
+            self.audit_recorder.record(
+                AuditRecord(call_id, spec, args, envelope, "deny", "plan_mode_read_only", ctx)
+            )
+            return _with_observation_status(envelope)
         if tool_name == "install_github_skill":
             # Only the request-local install tool with its exact one-shot host
             # grant may write Skills; direct/global dispatch cannot satisfy this.

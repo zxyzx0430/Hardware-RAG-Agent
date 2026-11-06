@@ -284,6 +284,36 @@ class Todo(Base):
     updated_at = Column(DateTime, default=datetime.datetime.now(datetime.timezone.utc), onupdate=datetime.datetime.now(datetime.timezone.utc))
 
 
+class Plan(Base):
+    """Versioned, session-scoped plan submitted in read-only plan mode."""
+
+    __tablename__ = "plans"
+    __table_args__ = (
+        UniqueConstraint("session_id", "version", name="uq_plans_session_version"),
+        Index("idx_plans_session_status", "session_id", "status"),
+        Index("idx_plans_session_created", "session_id", "created_at"),
+        CheckConstraint(
+            "status IN ('pending', 'approved', 'rejected', 'superseded')",
+            name="ck_plans_status",
+        ),
+    )
+
+    id = Column(String, primary_key=True)
+    session_id = Column(String, ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False)
+    version = Column(Integer, nullable=False)
+    status = Column(String, nullable=False, default="pending")
+    title = Column(Text, nullable=False)
+    summary = Column(Text, nullable=False)
+    steps_json = Column(Text, nullable=False)
+    risks_json = Column(Text, nullable=False, default="[]")
+    open_questions_json = Column(Text, nullable=False, default="[]")
+    run_id = Column(String(128), nullable=True)
+    content_sha256 = Column(String(64), nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.datetime.now(datetime.timezone.utc))
+    decided_at = Column(DateTime, nullable=True)
+    executed_run_id = Column(String(128), nullable=True)
+
+
 class MCPServerConfig(Base):
     """Persisted MCP stdio server configuration (no secrets handling here)."""
 
