@@ -65,6 +65,45 @@ describe('apiSSE connection loss', () => {
     mockFetch.mockReset();
   });
 
+  it('surfaces a 401 as an auth failure instead of the generic run-id disconnect', async () => {
+    const { apiSSE } = await import('./client');
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 401,
+      statusText: 'Unauthorized',
+      clone: () => ({
+        json: async () => ({ code: 'AUTH_REQUIRED', message: '未提供认证 token' }),
+      }),
+    });
+    const onError = vi.fn();
+
+    await apiSSE('chat', {}, { onEvent: vi.fn(), onError }, new AbortController(), {
+      reconnect: { maxAttempts: 3, baseDelayMs: 1 },
+    });
+
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError.mock.calls[0][0].message).toContain('未提供认证 token');
+    expect(onError.mock.calls[0][0].message).not.toContain('无法确定运行 ID');
+  });
+
+  it('uses a login hint for a 401 without a JSON body', async () => {
+    const { apiSSE } = await import('./client');
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 401,
+      statusText: 'Unauthorized',
+      clone: () => ({ json: async () => { throw new Error('not json'); } }),
+    });
+    const onError = vi.fn();
+
+    await apiSSE('chat', {}, { onEvent: vi.fn(), onError }, new AbortController(), {
+      reconnect: { maxAttempts: 3, baseDelayMs: 1 },
+    });
+
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError.mock.calls[0][0].message).toMatch(/认证|登录|令牌/);
+  });
+
   it('reports a stalled chat stream after heartbeats stop', async () => {
     vi.useFakeTimers();
     const { apiSSE } = await import('./client');

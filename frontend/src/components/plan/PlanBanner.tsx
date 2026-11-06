@@ -27,7 +27,7 @@ export function PlanBanner() {
   const viewPlan = () => {
     setRightPanelOpen(true);
     setRightMode("content");
-    setRightContentTab("plan");
+    setRightContentTab(activeSessionId, "plan");
   };
 
   const handleApprove = async () => {

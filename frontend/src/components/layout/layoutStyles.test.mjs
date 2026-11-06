@@ -15,10 +15,11 @@ describe("responsive layout style contracts", () => {
     expect(layoutStyles).not.toMatch(/\.panel-btn-strip(?:\.right)?\s*\{[^}]*pointer-events:\s*none/s);
   });
 
-  it("wraps input actions as whole controls and keeps send/stop labels intact", () => {
+  it("keeps input actions on one stable row and shrinks long labels with ellipsis", () => {
     expect(chatStyles).toMatch(/container-name:\s*inputbar-actions/);
-    expect(chatStyles).toMatch(/@container\s+inputbar-actions\s*\([^)]*\)[\s\S]*?\.input-actions\s*\{[^}]*flex-wrap:\s*wrap/s);
-    expect(chatStyles).toMatch(/\.input-left\s*\{[^}]*flex-wrap:\s*wrap/s);
+    expect(chatStyles).toMatch(/@container\s+inputbar-actions\s*\([^)]*\)[\s\S]*?\.input-actions\s*\{[^}]*flex-wrap:\s*nowrap/s);
+    expect(chatStyles).toMatch(/\.input-left\s*\{[^}]*flex-wrap:\s*nowrap/s);
+    expect(chatStyles).toMatch(/\.model-selector \.model-label\s*\{[^}]*text-overflow:\s*ellipsis/s);
     expect(chatStyles).toMatch(/\.send-btn\s*,\s*\.stop-btn\s*\{[^}]*flex:\s*0\s+0\s+auto[^}]*white-space:\s*nowrap/s);
   });
 

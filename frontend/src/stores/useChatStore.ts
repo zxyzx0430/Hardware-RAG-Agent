@@ -1571,6 +1571,24 @@ function _failChatStream(sessionId: string, terminal: ChatTerminalState, err: Er
   terminal.errorMessage = err.message;
   console.warn('[ChatStore] stream_error session=%s error=%s', sessionId, err.message);
   getLog()("error", "chat", `SSE 连接错误: ${err.message}`);
+  const isAuthError = /(^|\D)40[13](\D|$)|AUTH_REQUIRED|AUTH_INVALID|Unauthorized|Forbidden|认证失败|未提供认证/i
+    .test(err.message);
+  // A 401/403 must read as an authentication problem (and point at the login
+  // hint), not as a generic dropped connection.
+  useChatStore.setState({
+    streamingError: isAuthError
+      ? {
+          code: "AUTH_FAILED",
+          message: "认证失败：请先登录或检查访问令牌后重试。",
+          detail: err.message,
+        }
+      : {
+          code: "NETWORK_ERROR",
+          message: err.message,
+          detail: "",
+        },
+    needsApiKey: isAuthError ? true : useChatStore.getState().needsApiKey,
+  });
   // SubTask 8.5: 清理 backgroundSseRequests 对应条目（后台流错误也要清理）
   useChatStore.setState((s) => {
     if (!s.backgroundSseRequests.has(sessionId)) return {};
@@ -2377,7 +2395,15 @@ export const useChatStore = create<ChatState>((set, get) => {
   rejectPlan: async (sessionId, planId) => {
     try {
       const plan = await rejectSessionPlan(sessionId, planId);
-      set((s) => ({ ...planSnapshotState(s, sessionId, plan), planMode: false }));
+      // Rejecting a proposal must not silently drop the user out of plan mode:
+      // they usually want to revise the request and generate a new plan.
+      set((s) => ({ ...planSnapshotState(s, sessionId, plan), planMode: true }));
+      const english = useAppStore.getState().lang === "en";
+      useToastStore.getState().showInfo(
+        english
+          ? `Plan v${plan.version} rejected; plan mode stays on so you can revise and regenerate.`
+          : `已拒绝计划 v${plan.version}；仍处于计划模式，可修改描述后重新生成计划。`,
+      );
       return true;
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);

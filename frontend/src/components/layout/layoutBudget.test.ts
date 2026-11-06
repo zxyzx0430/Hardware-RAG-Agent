@@ -146,6 +146,45 @@ describe("layout width budget", () => {
     expect(restored).toMatchObject({ leftPanelWidth: 500, rightPanelWidth: 560, explorerWidth: 450 });
   });
 
+  it("renders a protected right panel as an overlay drawer when it cannot share the row", () => {
+    const resolved = resolveLayout({
+      ...allPanelsOpen,
+      viewportWidth: 900,
+      protectedPanel: "right",
+    });
+
+    expect(resolved).toMatchObject({
+      leftPanelOpen: false,
+      rightPanelOpen: true,
+      explorerOpen: false,
+      rightPanelOverlay: true,
+      rightPanelWidth: 340,
+      overflow: false,
+    });
+    // The drawer does not consume row width; the chat column stays usable.
+    expect(resolved.requiredMinimumWidth).toBe(
+      ICON_NAV_WIDTH + PANEL_STRIP_WIDTH + CHAT_COLUMN_MIN_WIDTH
+        + PANEL_STRIP_WIDTH + EXPLORER_COLLAPSED_STRIP_WIDTH,
+    );
+    expect(resolved.autoCollapsedPanels).toEqual(["left", "explorer"]);
+  });
+
+  it("keeps the right panel in the row when it still fits", () => {
+    const resolved = resolveLayout({
+      ...allPanelsOpen,
+      viewportWidth: 1147,
+      protectedPanel: "right",
+    });
+
+    expect(resolved).toMatchObject({
+      rightPanelOpen: true,
+      rightPanelOverlay: false,
+      rightPanelWidth: RIGHT_PANEL_MIN_WIDTH,
+      explorerOpen: true,
+      overflow: false,
+    });
+  });
+
   it("reserves only the current visible slots for each resize handle", () => {
     const collapsed = resolveLayout({
       ...allPanelsOpen,

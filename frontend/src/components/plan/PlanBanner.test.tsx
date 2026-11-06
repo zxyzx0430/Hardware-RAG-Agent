@@ -155,7 +155,9 @@ describe("PlanBanner", () => {
 
     await waitFor(() => expect(rejectPlanMock).toHaveBeenCalledWith("s1", "pl_1"));
     await waitFor(() => expect(screen.queryByText("计划 v2 待批准")).toBeNull());
-    expect(useChatStore.getState().planMode).toBe(false);
+    // Rejecting keeps plan mode so the user can revise instead of silently
+    // falling back to the normal permission mode.
+    expect(useChatStore.getState().planMode).toBe(true);
   });
 
   it("renders nothing without a pending or approved plan", () => {

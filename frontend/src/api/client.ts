@@ -295,6 +295,32 @@ function buildSseUrl(path: string, method: "GET" | "POST", afterSeq: number): st
   return url;
 }
 
+function buildSseError(status: number, statusText: string, body: unknown): ApiError {
+  const envelope = body && typeof body === "object"
+    ? ((body as { error?: unknown }).error ?? body)
+    : null;
+  const code = envelope && typeof envelope === "object" && typeof (envelope as { code?: unknown }).code === "string"
+    ? (envelope as { code: string }).code
+    : (status === 401 || status === 403 ? "AUTH_REQUIRED" : `HTTP_${status}`);
+  const bodyMessage = envelope && typeof envelope === "object" && typeof (envelope as { message?: unknown }).message === "string"
+    ? (envelope as { message: string }).message
+    : "";
+  const message = bodyMessage || (status === 401 || status === 403
+    ? `认证失败：请先登录或检查访问令牌（HTTP ${status}）`
+    : `SSE ${status}: ${statusText}`);
+  return new ApiError(code, message);
+}
+
+async function readSseHttpError(res: Response): Promise<ApiError> {
+  let body: unknown = null;
+  try {
+    body = await res.clone().json();
+  } catch {
+    // Non-JSON error body: fall back to the status text.
+  }
+  return buildSseError(res.status, res.statusText, body);
+}
+
 function delayAbortable(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     if (signal.aborted) { resolve(); return; }
@@ -394,7 +420,7 @@ export async function apiSSE(
           ...(requestMethod === "POST" ? { body: JSON.stringify(body) } : {}),
           signal: connection.signal,
         });
-        if (!res.ok) throw new Error(`SSE ${res.status}: ${res.statusText}`);
+        if (!res.ok) throw await readSseHttpError(res);
 
         const headerRunId = res.headers?.get("X-Run-Id") ?? res.headers?.get("x-run-id");
         if (headerRunId && !runId) {
@@ -578,7 +604,9 @@ export async function apiSSE(
         return result();
       }
       if (!runId) {
-        callbacks.onError?.(new Error("连接断开且无法确定运行 ID，点击重试"));
+        // Keep the concrete HTTP/auth failure instead of masking it with the
+        // generic "cannot determine run id" message.
+        callbacks.onError?.(failure ?? new Error("连接断开且无法确定运行 ID，点击重试"));
         return result();
       }
 

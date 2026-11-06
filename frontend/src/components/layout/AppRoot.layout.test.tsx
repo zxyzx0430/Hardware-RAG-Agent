@@ -89,15 +89,16 @@ beforeEach(() => {
 });
 
 describe("AppRoot responsive layout", () => {
-  it("folds lower-priority panes at 1024px and preserves drafts and width preferences", () => {
+  it("folds lower-priority panes at 1024px without touching stored preferences or drafts", () => {
     setViewportWidth(1024);
     resetLayoutState();
 
     render(<AppRoot />);
 
+    // Auto-fold is a render-time decision: the user's preferences survive.
     expect(useAppStore.getState()).toMatchObject({
-      leftPanelOpen: false,
-      rightPanelOpen: false,
+      leftPanelOpen: true,
+      rightPanelOpen: true,
       explorerOpen: true,
       leftPanelWidth: 500,
       rightPanelWidth: 560,
@@ -105,11 +106,91 @@ describe("AppRoot responsive layout", () => {
       openFiles: [openFile],
       activeFileId: openFile.id,
     });
+    expect(document.getElementById("rightPanelHost")?.dataset.open).toBe("false");
+    expect(document.getElementById("explorerHost")?.dataset.open).toBe("true");
     expect(useChatStore.getState().drafts["layout-session"]).toBe("unsent chat draft");
     expect(showInfoMock).toHaveBeenCalledTimes(1);
     expect(String(showInfoMock.mock.calls[0][0])).toMatch(/空间不足|space/i);
 
     act(() => window.dispatchEvent(new Event("resize")));
+    expect(showInfoMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("restores auto-folded panes when the window widens again", () => {
+    setViewportWidth(1536);
+    resetLayoutState();
+    render(<AppRoot />);
+    expect(document.getElementById("rightPanelHost")?.dataset.open).toBe("true");
+    expect(document.getElementById("explorerHost")?.dataset.open).toBe("true");
+
+    setViewportWidth(1024);
+    act(() => window.dispatchEvent(new Event("resize")));
+    expect(useAppStore.getState()).toMatchObject({
+      leftPanelOpen: true,
+      rightPanelOpen: true,
+      explorerOpen: true,
+    });
+    expect(document.getElementById("rightPanelHost")?.dataset.open).toBe("false");
+
+    setViewportWidth(1536);
+    act(() => window.dispatchEvent(new Event("resize")));
+    expect(document.getElementById("rightPanelHost")?.dataset.open).toBe("true");
+    expect(document.getElementById("explorerHost")?.dataset.open).toBe("true");
+    expect(showInfoMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the right panel at its usable minimum width when the Explorer is open", () => {
+    setViewportWidth(1147);
+    resetLayoutState();
+    render(<AppRoot />);
+
+    const rightHost = document.getElementById("rightPanelHost")!;
+    expect(rightHost.dataset.open).toBe("true");
+    expect(rightHost.style.width).toBe("340px");
+    expect(rightHost.style.minWidth).toBe("340px");
+    expect(rightHost.style.flexShrink).toBe("0");
+  });
+
+  it("reveals an auto-folded right panel when another UI path asks to open it", () => {
+    setViewportWidth(1024);
+    resetLayoutState();
+    render(<AppRoot />);
+    expect(document.getElementById("rightPanelHost")?.dataset.open).toBe("false");
+
+    act(() => {
+      // e.g. clicking a source chip calls setRightPanelOpen(true) while the
+      // stored preference is already true but the panel was auto-folded.
+      useAppStore.getState().setRightPanelOpen(true);
+    });
+
+    expect(document.getElementById("rightPanelHost")?.dataset.open).toBe("true");
+    expect(useAppStore.getState()).toMatchObject({
+      rightPanelOpen: true,
+      leftPanelOpen: false,
+      explorerOpen: false,
+    });
+  });
+
+  it("opens the right panel as a drawer at 900px without closing other panel preferences", () => {
+    setViewportWidth(900);
+    resetLayoutState();
+    render(<AppRoot />);
+    expect(useAppStore.getState()).toMatchObject({
+      leftPanelOpen: true,
+      rightPanelOpen: true,
+      explorerOpen: true,
+    });
+    expect(document.getElementById("rightPanelHost")?.dataset.open).toBe("false");
+
+    fireEvent.click(document.getElementById("rightToggleBtn")!);
+
+    expect(useAppStore.getState()).toMatchObject({
+      leftPanelOpen: true,
+      rightPanelOpen: true,
+      explorerOpen: true,
+    });
+    expect(document.getElementById("rightPanelOverlay")).toBeTruthy();
+    expect(document.getElementById("rightPanelBackdrop")).toBeTruthy();
     expect(showInfoMock).toHaveBeenCalledTimes(1);
   });
 
@@ -180,8 +261,8 @@ describe("AppRoot responsive layout", () => {
     act(() => window.dispatchEvent(new Event("resize")));
 
     expect(useAppStore.getState()).toMatchObject({
-      leftPanelOpen: false,
-      rightPanelOpen: false,
+      leftPanelOpen: true,
+      rightPanelOpen: true,
       explorerOpen: true,
       leftPanelWidth: 500,
       rightPanelWidth: 560,
@@ -189,19 +270,14 @@ describe("AppRoot responsive layout", () => {
       openFiles: [openFile],
       activeFileId: openFile.id,
     });
+    expect(document.getElementById("rightPanelHost")?.dataset.open).toBe("false");
     expect(useChatStore.getState().drafts["layout-session"]).toBe("unsent chat draft");
     expect(showInfoMock).toHaveBeenCalledTimes(1);
 
     setViewportWidth(1536);
     act(() => window.dispatchEvent(new Event("resize")));
-    expect(useAppStore.getState()).toMatchObject({
-      leftPanelOpen: false,
-      rightPanelOpen: false,
-      explorerOpen: true,
-      leftPanelWidth: 500,
-      rightPanelWidth: 560,
-      explorerWidth: 450,
-    });
+    expect(document.getElementById("rightPanelHost")?.dataset.open).toBe("true");
+    expect(document.getElementById("explorerHost")?.dataset.open).toBe("true");
     expect(showInfoMock).toHaveBeenCalledTimes(1);
   });
 

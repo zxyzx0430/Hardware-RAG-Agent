@@ -80,8 +80,8 @@ function showLayoutFoldNotice(): void {
   const english = useAppStore.getState().lang === "en";
   useToastStore.getState().showInfo(
     english
-      ? "Space is limited. Some panels were folded; reopen them from the side strips."
-      : "空间不足，已暂时收起部分面板；可从侧边按钮重新打开。",
+      ? "Space is limited. Some panels are folded; reopen them from the side strips or widen the window."
+      : "空间不足，已暂时收起部分面板；可从侧边按钮重新打开，窗口变宽后会自动恢复。",
   );
 }
 
@@ -93,7 +93,6 @@ export function AppRoot() {
     rightPanelOpen,
     leftPanelWidth,
     rightPanelWidth,
-    setLeftPanelOpen,
     setRightPanelOpen,
     setLeftPanelWidth,
     setRightPanelWidth,
@@ -102,7 +101,6 @@ export function AppRoot() {
     setShortcutHelpOpen,
     explorerOpen,
     explorerWidth,
-    setExplorerOpen,
     setExplorerWidth,
     inputBarWidth,
     setInputBarWidth,
@@ -150,6 +148,18 @@ export function AppRoot() {
   );
   const resolvedLayoutRef = useRef(resolvedLayout);
   resolvedLayoutRef.current = resolvedLayout;
+  const autoCollapsedKeyRef = useRef("");
+  const lastFoldNoticeAtRef = useRef(Number.NEGATIVE_INFINITY);
+  // Ephemeral drawer state: the right panel is preferred open but does not fit
+  // in the row. It overlays the chat until closed or the window widens.
+  const [rightDrawerOpen, setRightDrawerOpen] = useState(false);
+  const rightPanelPreferredOpen = useAppStore((s) => s.rightPanelOpen);
+  useEffect(() => {
+    if (!rightPanelPreferredOpen) setRightDrawerOpen(false);
+  }, [rightPanelPreferredOpen]);
+  useEffect(() => {
+    if (activeNav !== "chat") setRightDrawerOpen(false);
+  }, [activeNav]);
 
   // Re-budget the four resize handles whenever the visible layout changes.
   const left = usePanelResize(
@@ -200,17 +210,23 @@ export function AppRoot() {
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  // Close only panes that no longer fit. Stored width preferences and file/chat drafts remain intact.
-  useLayoutEffect(() => {
-    if (resolvedLayout.autoCollapsedPanels.length === 0) return;
-    const folded = closeAutoFoldedPanels(
-      useAppStore.getState(),
-      resolvedLayout.autoCollapsedPanels,
-    );
-    if (folded.length > 0) showLayoutFoldNotice();
-  }, [
-    resolvedLayout.autoCollapsedPanels,
-  ]);
+  // Auto-fold is a render-time decision, never a persisted preference: widening
+  // the window (or refreshing at a wider size) restores the same panels.
+  useEffect(() => {
+    const panels = resolvedLayout.autoCollapsedPanels;
+    const nextKey = [...panels].sort().join(",");
+    const previous = autoCollapsedKeyRef.current
+      ? new Set(autoCollapsedKeyRef.current.split(","))
+      : new Set<string>();
+    autoCollapsedKeyRef.current = nextKey;
+    if (panels.length === 0) return;
+    const newlyFolded = panels.filter((panel) => !previous.has(panel));
+    if (newlyFolded.length === 0) return;
+    const now = Date.now();
+    if (now - lastFoldNoticeAtRef.current < 2000) return;
+    lastFoldNoticeAtRef.current = now;
+    showLayoutFoldNotice();
+  }, [resolvedLayout.autoCollapsedPanels]);
 
   // Any user-facing path that opens a pane is protected, including source/workbench actions.
   useLayoutEffect(() => {
@@ -220,7 +236,6 @@ export function AppRoot() {
       if (state.leftPanelOpen && !previousState.leftPanelOpen && state.activeNav === "chat") {
         newlyOpened.push("left");
       }
-      if (state.rightPanelOpen && !previousState.rightPanelOpen) newlyOpened.push("right");
       if (state.explorerOpen && !previousState.explorerOpen) newlyOpened.push("explorer");
       previousState = state;
       if (newlyOpened.length !== 1) return;
@@ -232,6 +247,58 @@ export function AppRoot() {
       if (folded.length > 0) showLayoutFoldNotice();
     });
   }, []);
+
+  // Opening the right panel is a reveal action even when the stored preference
+  // is already true (the panel may have been auto-folded by a narrow window).
+  useEffect(() => {
+    let previousNonce = useAppStore.getState().rightPanelRevealNonce;
+    return useAppStore.subscribe((state) => {
+      if (state.rightPanelRevealNonce === previousNonce) return;
+      previousNonce = state.rightPanelRevealNonce;
+      if (!state.rightPanelOpen) {
+        setRightDrawerOpen(false);
+        return;
+      }
+      const nextLayout = resolveLayout(
+        makeLayoutBudgetInput(state, viewportWidthRef.current, "right"),
+      );
+      if (nextLayout.rightPanelOverlay) {
+        setRightDrawerOpen(true);
+        return;
+      }
+      setRightDrawerOpen(false);
+      const folded = closeAutoFoldedPanels(state, nextLayout.autoCollapsedPanels);
+      if (folded.length > 0) showLayoutFoldNotice();
+    });
+  }, []);
+
+  const togglePanel = (panel: LayoutPanel) => {
+    const layout = resolvedLayoutRef.current;
+    const effectiveOpen = panel === "left"
+      ? layout.leftPanelOpen
+      : panel === "right"
+        ? layout.rightPanelOpen
+        : layout.explorerOpen;
+    if (panel === "right") {
+      // setRightPanelOpen(true) bumps the reveal nonce, so the drawer/protection
+      // logic in the subscription handles both already-open and folded states.
+      useAppStore.getState().setRightPanelOpen(!effectiveOpen);
+      return;
+    }
+    const store = useAppStore.getState();
+    const setOpen = panel === "left" ? store.setLeftPanelOpen : store.setExplorerOpen;
+    if (effectiveOpen) {
+      setOpen(false);
+      return;
+    }
+    setOpen(true);
+    const nextState = useAppStore.getState();
+    const nextLayout = resolveLayout(
+      makeLayoutBudgetInput(nextState, viewportWidthRef.current, panel),
+    );
+    const folded = closeAutoFoldedPanels(nextState, nextLayout.autoCollapsedPanels);
+    if (folded.length > 0) showLayoutFoldNotice();
+  };
 
   useEffect(() => {
     if (!sessionsInitialized) return;
@@ -284,7 +351,7 @@ export function AppRoot() {
           <button
             className="panel-toggle left"
             id="leftToggleBtn"
-            onClick={() => setLeftPanelOpen(!leftPanelOpenForRender)}
+            onClick={() => togglePanel("left")}
             aria-label={t('toggleLeftPanel')}
             title={leftPanelOpenForRender ? '折叠左侧面板' : '展开左侧面板'}
           >
@@ -296,7 +363,7 @@ export function AppRoot() {
           </button>
         </div>
         <div className="main-area" id="mainArea" style={{ minWidth: 0 }}>
-          <div id="chatFlex" style={{ flex: 1, display: showChatShell ? "flex" : "none", minHeight: 0, overflow: "hidden" }}>
+          <div id="chatFlex" style={{ flex: 1, position: "relative", display: showChatShell ? "flex" : "none", minHeight: 0, overflow: "hidden" }}>
             <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: CHAT_COLUMN_MIN_WIDTH, overflow: "hidden", background: "var(--bg)" }}>
               <ChatArea />
               <div className="inputbar-resize-wrap" style={{ display: "flex", alignItems: "stretch" }}>
@@ -316,7 +383,7 @@ export function AppRoot() {
               <button
                 className="panel-toggle right"
                 id="rightToggleBtn"
-                onClick={() => setRightPanelOpen(!resolvedLayout.rightPanelOpen)}
+                onClick={() => togglePanel("right")}
                 aria-label={t('toggleRightPanel')}
                 title={resolvedLayout.rightPanelOpen ? '折叠右侧面板' : '展开右侧面板'}
               >
@@ -328,22 +395,64 @@ export function AppRoot() {
               </button>
             </div>
             <div
-              className={`chat-resizer${showChatShell && resolvedLayout.rightPanelOpen ? '' : ' hidden'}`}
+              className={`chat-resizer${showChatShell && resolvedLayout.rightPanelOpen && !resolvedLayout.rightPanelOverlay ? '' : ' hidden'}`}
               id="chatResizer"
               onMouseDown={(e) => {
                 right.onMouseDown(e);
               }}
               style={{ cursor: 'col-resize' }}
             />
-            <div style={{ width: resolvedLayout.rightPanelOpen ? `${resolvedLayout.rightPanelWidth}px` : 0, overflow: 'hidden', display: 'flex', transition: resolvedLayout.rightPanelOpen ? 'none' : 'width 0.2s' }}>
+            <div
+              id="rightPanelHost"
+              data-open={resolvedLayout.rightPanelOpen && !resolvedLayout.rightPanelOverlay ? "true" : "false"}
+              style={{
+                width: resolvedLayout.rightPanelOpen && !resolvedLayout.rightPanelOverlay
+                  ? `${resolvedLayout.rightPanelWidth}px`
+                  : 0,
+                minWidth: resolvedLayout.rightPanelOpen && !resolvedLayout.rightPanelOverlay
+                  ? `${RIGHT_PANEL_MIN_WIDTH}px`
+                  : 0,
+                flexShrink: 0,
+                overflow: 'hidden',
+                display: resolvedLayout.rightPanelOpen && !resolvedLayout.rightPanelOverlay ? 'flex' : 'none',
+                transition: resolvedLayout.rightPanelOpen ? 'none' : 'width 0.2s',
+              }}
+            >
               <RightPanel />
             </div>
+
+            {showChatShell && rightDrawerOpen && !resolvedLayout.rightPanelOpen ? (
+              <>
+                <div
+                  className="right-panel-backdrop"
+                  id="rightPanelBackdrop"
+                  onClick={() => {
+                    setRightDrawerOpen(false);
+                    setRightPanelOpen(false);
+                  }}
+                  aria-hidden="true"
+                />
+                <div
+                  className="right-panel-overlay"
+                  id="rightPanelOverlay"
+                  style={{ width: Math.min(RIGHT_PANEL_MAX_WIDTH, Math.max(RIGHT_PANEL_MIN_WIDTH, rightPanelWidth)) }}
+                >
+                  <RightPanel
+                    overlay
+                    onClose={() => {
+                      setRightDrawerOpen(false);
+                      setRightPanelOpen(false);
+                    }}
+                  />
+                </div>
+              </>
+            ) : null}
 
             <div className={`explorer-collapsed-strip${resolvedLayout.explorerOpen ? ' hidden' : ''}`} id="explorerStrip">
               <button
                 className="explorer-toggle"
                 id="explorerToggleBtn"
-                onClick={() => setExplorerOpen(true)}
+                onClick={() => togglePanel("explorer")}
                 aria-label={t('toggleExplorerPanel')}
                 title="展开资源管理器"
               >
@@ -356,18 +465,20 @@ export function AppRoot() {
               className={`explorer-resizer${resolvedLayout.explorerOpen ? '' : ' hidden'}`}
               id="explorerResizer"
               onMouseDown={(e) => {
-                if (!resolvedLayout.explorerOpen) setExplorerOpen(true);
+                if (!resolvedLayout.explorerOpen) togglePanel("explorer");
                 explorer.onMouseDown(e);
               }}
               style={{ cursor: 'col-resize' }}
             />
             <div
+              id="explorerHost"
+              data-open={resolvedLayout.explorerOpen ? "true" : "false"}
               style={{
                 width: resolvedLayout.explorerOpen ? resolvedLayout.explorerWidth : 0,
                 minWidth: resolvedLayout.explorerOpen ? EXPLORER_MIN_WIDTH : 0,
                 flexShrink: 0,
                 overflow: 'hidden',
-                display: 'flex',
+                display: resolvedLayout.explorerOpen ? 'flex' : 'none',
                 transition: resolvedLayout.explorerOpen ? 'none' : 'width 0.2s',
               }}
             >

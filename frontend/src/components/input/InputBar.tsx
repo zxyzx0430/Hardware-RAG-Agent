@@ -10,6 +10,7 @@ import { useSkillsStore } from "../../stores/useSkillsStore";
 import { TemplatePanel } from "../shared/TemplatePanel";
 import { SkillModeSelector } from "./SkillModeSelector";
 import { useI18n } from "../../i18n";
+import { buildModelGroups, filterModelGroups } from "../../utils/modelOptions";
 import type { Attachment } from "../../types/api";
 
 type PermissionMode = "bypassPermissions" | "default" | "acceptEdits";
@@ -46,6 +47,7 @@ function mergeUniqueAttachments(current: Attachment[], incoming: Attachment[]): 
 export function InputBar() {
   const { t, lang } = useI18n();
   const [showModelDropdown, setShowModelDropdown] = useState(false);
+  const [modelQuery, setModelQuery] = useState("");
   const [showPermissionDropdown, setShowPermissionDropdown] = useState(false);
   const [attachError, setAttachError] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
@@ -80,6 +82,11 @@ export function InputBar() {
   const verifiedProviders = useMemo(
     () => providers.filter((p) => p.verified && p.models.length > 0),
     [providers],
+  );
+  // 去重：多个本地路由可能暴露同一批模型，同一模型只显示一行。
+  const modelGroups = useMemo(
+    () => filterModelGroups(buildModelGroups(verifiedProviders, chatProviderId), modelQuery),
+    [verifiedProviders, chatProviderId, modelQuery],
   );
 
   const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number } | null>(null);
@@ -433,7 +440,10 @@ export function InputBar() {
                 <span className="input-btn-label">{t('attachBtn')}</span>
               </button>
 
-              <div className="model-selector" id="modelSelector" ref={dropdownRef} onClick={() => setShowModelDropdown((v) => !v)}>
+              <div className="model-selector" id="modelSelector" ref={dropdownRef} onClick={() => {
+                setModelQuery("");
+                setShowModelDropdown((v) => !v);
+              }}>
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <rect x="4" y="4" width="16" height="16" rx="2" />
                   <path d="M9 9h6v6H9z" />
@@ -492,14 +502,14 @@ export function InputBar() {
             bottom: "auto",
             top: "auto",
             left: dropdownPos.left,
-            maxHeight: Math.min(360, dropdownPos.top - 8),
+            maxHeight: 340,
             overflowY: "auto",
           }}
           ref={(el) => {
             if (el) {
               // 向上弹出：定位到 selector 上方
               const elRect = el.getBoundingClientRect();
-              el.style.top = `${dropdownPos.top - elRect.height - 4}px`;
+              el.style.top = `${Math.max(8, dropdownPos.top - elRect.height - 4)}px`;
             }
           }}
         >
@@ -507,29 +517,34 @@ export function InputBar() {
             onClick={(e) => e.stopPropagation()}
             onMouseDown={(e) => e.stopPropagation()}
           >
+            <div className="model-search-wrap">
+              <input
+                className="model-search-input"
+                type="search"
+                value={modelQuery}
+                onChange={(e) => setModelQuery(e.target.value)}
+                placeholder={t('modelSearchPlaceholder')}
+                aria-label={t('modelSearchPlaceholder')}
+                autoFocus
+              />
+            </div>
             {verifiedProviders.length === 0 ? (
-              <div
-                className="model-empty-hint"
-                style={{
-                  padding: "12px 16px",
-                  fontSize: 12,
-                  color: "var(--text-muted, #999)",
-                  textAlign: "center",
-                }}
-              >
-                请先在设置中配置并验证服务商
+              <div className="model-empty-hint model-search-empty">
+                {t('modelSelectFirst')}
               </div>
+            ) : modelGroups.length === 0 ? (
+              <div className="model-search-empty">{t('modelNoMatch')}</div>
             ) : (
-              verifiedProviders.map((provider) => (
-                <div key={provider.id}>
-                  <div className="model-group-header">{provider.name}</div>
-                  {provider.models.map((modelId) => (
+              modelGroups.map((group) => (
+                <div key={group.providerId}>
+                  <div className="model-group-header">{group.providerName}</div>
+                  {group.models.map((modelId) => (
                     <button
-                      key={`${provider.id}:${modelId}`}
-                      className={`model-option${modelId === model && provider.id === chatProviderId ? " selected" : ""}`}
+                      key={`${group.providerId}:${modelId}`}
+                      className={`model-option${modelId === model && group.providerId === chatProviderId ? " selected" : ""}`}
                       onClick={(e) => {
                         e.stopPropagation();
-                        setChatModel(provider.id, modelId); // 更新全局默认
+                        setChatModel(group.providerId, modelId); // 更新全局默认
                         if (activeSessionId) {
                           updateSessionMeta(activeSessionId, { model: modelId }); // 更新当前会话
                         }

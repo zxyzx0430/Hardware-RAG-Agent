@@ -75,6 +75,31 @@ describe("PlanPanel", () => {
     expect(screen.getByText(/run_42/)).toBeTruthy();
   });
 
+  it("shows the backend execution outcome and note when present", () => {
+    const plan = makePlan({
+      status: "approved",
+      execution_state: "failed",
+      execution_note: "write_file was denied at step 2",
+    });
+    useChatStore.setState({ sessionPlans: { s1: plan } });
+
+    render(<PlanPanel />);
+
+    expect(screen.getByText("执行失败")).toBeTruthy();
+    expect(screen.getByText(/write_file was denied at step 2/)).toBeTruthy();
+  });
+
+  it("keeps the legacy approved/executed display when execution fields are absent", () => {
+    const plan = makePlan();
+    useChatStore.setState({ sessionPlans: { s1: plan } });
+
+    const { container } = render(<PlanPanel />);
+
+    expect(screen.getByText("已批准")).toBeTruthy();
+    expect(screen.getByText(/run_42/)).toBeTruthy();
+    expect(container.querySelector(".plan-execution")).toBeNull();
+  });
+
   it("shows the empty state when the session has no plan", () => {
     useChatStore.setState({
       activeSessionId: "s2",

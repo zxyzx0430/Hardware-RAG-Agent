@@ -130,6 +130,9 @@ describe("typed 256K context-limit error", () => {
     expect(container.querySelector(".error-block")?.textContent).toContain(contextLimitError.message);
     expect(screen.getByText(contextLimitError.detail!)).toBeTruthy();
     expect(screen.queryByText("普通助手回答")).toBeNull();
+    // No unconditional retry: it would replay the same oversized history.
+    expect(screen.queryByText("重试")).toBeNull();
+    expect(screen.getByText(/新建会话或缩短上下文/)).toBeTruthy();
     expect(apiSSEMock).toHaveBeenCalledTimes(1);
     expect(apiPostMock.mock.calls.every(([path]) => path === `sessions/${sessionId}/messages`)).toBe(true);
   });

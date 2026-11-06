@@ -8,6 +8,7 @@
   border-left: 1px solid var(--border);
   color: var(--card-fg);
   position: relative;
+  z-index: 5;
 }
 
 .explorer-header {
@@ -490,21 +491,29 @@
   flex-shrink: 0;
 }
 
-/* ── Folder Picker Dialog (embedded inside explorer panel) ── */
+/* ── Folder Picker Dialog (modal overlay, independent of Explorer width) ── */
 .folder-picker-embed {
-  position: absolute;
+  position: fixed;
   inset: 0;
-  z-index: 10;
-  background: var(--card);
+  z-index: 10020;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.35);
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  justify-content: center;
 }
 
 .folder-picker-embed-inner {
-  flex: 1;
+  width: min(680px, 94vw);
+  max-height: min(640px, 90vh);
+  min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
 }
 
 .folder-picker-header {
@@ -795,17 +804,23 @@
   padding: 10px 18px 14px;
   border-top: 1px solid var(--border);
   gap: 12px;
+  flex-shrink: 0;
 }
 
 .folder-picker-hint {
   font-size: 11px;
   color: var(--muted-fg);
   flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .folder-picker-actions {
   display: flex;
   gap: 8px;
+  flex-shrink: 0;
 }
 
 .folder-picker-btn {

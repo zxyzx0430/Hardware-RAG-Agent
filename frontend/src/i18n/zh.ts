@@ -490,6 +490,13 @@ const zh: Record<string, string> = {
   planStatus_approved: '已批准',
   planStatus_rejected: '已拒绝',
   planStatus_superseded: '已被替代',
+  planExecutionState: '执行状态',
+  planExecutionNote: '执行说明',
+  planExecution_none: '未执行',
+  planExecution_started: '执行中',
+  planExecution_completed: '已完成',
+  planExecution_rejected: '执行被拒绝',
+  planExecution_failed: '执行失败',
   noPlan: '暂无计划',
 
   // Todo card - clear action
@@ -821,6 +828,20 @@ const zh: Record<string, string> = {
   hardwareLoadFailed: '加载硬件档案失败',
   hardwareDetailFailed: '加载档案详情失败',
   hardwareJsonInvalid: 'JSON 格式无效',
+
+  // Context limit / auth errors
+  contextLimitHint: '请新建会话或缩短上下文后再发送；直接重试会再次超出模型上限。',
+  newSessionBtn: '新建会话',
+  authErrorHint: '请检查登录状态或访问令牌（session token），完成认证后再重试。',
+
+  // Source preview
+  previewLoading: '正在加载预览…',
+  backToSources: '返回来源引用',
+
+  // Model dropdown
+  modelSearchPlaceholder: '搜索模型或服务商…',
+  modelNoMatch: '没有匹配的模型',
+  modelSelectFirst: '请先在设置中配置并验证服务商',
 
   // Provider names (Chinese-specific)
   providerGlm: '智谱 GLM',
