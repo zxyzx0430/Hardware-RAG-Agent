@@ -542,7 +542,7 @@
 .model-selector .model-label,
 .permission-selector { white-space: nowrap; }
 .permission-selector {
-  min-width: 0; max-width: 160px; flex: 0 1 auto; overflow: hidden;
+  min-width: max-content; flex: 0 0 auto; max-width: 160px; overflow: hidden;
 }
 .permission-selector .permission-label {
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

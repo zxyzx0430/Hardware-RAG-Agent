@@ -1,6 +1,13 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { OpenFileItem } from "../../types";
-import { loadInputBarAuto, loadOpenFiles, saveInputBarAuto, saveOpenFiles } from "./persistence";
+import {
+  loadInputBarAuto,
+  loadOpenFiles,
+  loadRightMode,
+  saveInputBarAuto,
+  saveOpenFiles,
+  saveRightMode,
+} from "./persistence";
 
 describe("Explorer editor draft persistence", () => {
   beforeEach(() => localStorage.clear());
@@ -66,5 +73,19 @@ describe("composer auto width persistence", () => {
 
     saveInputBarAuto(true);
     expect(loadInputBarAuto()).toBe(true);
+  });
+});
+
+describe("right panel mode persistence", () => {
+  beforeEach(() => localStorage.clear());
+
+  it("restores the content mode after a refresh", () => {
+    expect(loadRightMode()).toBe("workbench");
+
+    saveRightMode("content");
+    expect(loadRightMode()).toBe("content");
+
+    saveRightMode("workbench");
+    expect(loadRightMode()).toBe("workbench");
   });
 });

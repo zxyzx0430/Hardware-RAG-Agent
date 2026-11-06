@@ -18,6 +18,18 @@ export class WatchAuthRequiredError extends Error {
   }
 }
 
+/**
+ * Marker error: the session is valid but this folder has not been explicitly
+ * opened in the current backend process. Waiting for a token will not help;
+ * the caller must reopen the folder, which bumps the reconnect key.
+ */
+export class WatchForbiddenError extends Error {
+  constructor(message = "SSE 403: Forbidden") {
+    super(message);
+    this.name = "WatchForbiddenError";
+  }
+}
+
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 // Exponential backoff reconnect: 1s, 2s, 4s, 8s, 16s, 30s (capped), max 10 attempts.
 const MAX_RETRIES = 10;
@@ -53,18 +65,22 @@ export function useExplorerWatch(
   onError?: (err: Error) => void,
   onStatusChange?: (connected: boolean) => void,
   onAuthRequired?: () => void,
+  onForbidden?: () => void,
+  reconnectKey = 0,
 ) {
   const onEventRef = useRef(onEvent);
   const onErrorRef = useRef(onError);
   const onStatusRef = useRef(onStatusChange);
   const onAuthRequiredRef = useRef(onAuthRequired);
+  const onForbiddenRef = useRef(onForbidden);
 
   useEffect(() => {
     onEventRef.current = onEvent;
     onErrorRef.current = onError;
     onStatusRef.current = onStatusChange;
     onAuthRequiredRef.current = onAuthRequired;
-  }, [onEvent, onError, onStatusChange, onAuthRequired]);
+    onForbiddenRef.current = onForbidden;
+  }, [onEvent, onError, onStatusChange, onAuthRequired, onForbidden]);
 
   useEffect(() => {
     if (!rootPath) return;
@@ -173,8 +189,11 @@ export function useExplorerWatch(
         const url = `/api/explorer/watch?path=${encodeURIComponent(rootPath)}`;
         const res = await fetch(url, { headers: getAuthHeaders(), signal: controller.signal });
         if (!res.ok) {
-          if (res.status === 401 || res.status === 403) {
+          if (res.status === 401) {
             throw new WatchAuthRequiredError(`SSE ${res.status}: ${res.statusText || "Unauthorized"}`);
+          }
+          if (res.status === 403) {
+            throw new WatchForbiddenError(`SSE ${res.status}: ${res.statusText || "Forbidden"}`);
           }
           throw new Error(`SSE ${res.status}: ${res.statusText}`);
         }
@@ -217,6 +236,13 @@ export function useExplorerWatch(
           waitForAuth();
           return;
         }
+        if (err instanceof WatchForbiddenError) {
+          // The folder lost its explicit grant (e.g. backend restarted); no
+          // token can fix this. Wait for the caller to reopen the folder.
+          useLogStore.getState().log("warn", "sse", `explorer/watch forbidden: ${err.message}`);
+          onForbiddenRef.current?.();
+          return;
+        }
         if (idleAborted) {
           // Idle timeout: reconnect silently without surfacing an error.
           idleAborted = false;
@@ -229,7 +255,9 @@ export function useExplorerWatch(
         scheduleReconnect();
       } finally {
         if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
-        setStatus(false);
+        // A torn-down effect (reopen / root change) must not clobber the
+        // status of the replacement connection that already started.
+        if (!stopped) setStatus(false);
       }
     };
 
@@ -244,5 +272,5 @@ export function useExplorerWatch(
       attemptController?.abort();
       setStatus(false);
     };
-  }, [rootPath]);
+  }, [rootPath, reconnectKey]);
 }

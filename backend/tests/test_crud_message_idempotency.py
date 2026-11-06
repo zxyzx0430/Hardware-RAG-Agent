@@ -164,6 +164,19 @@ def test_plan_approval_as_first_message_keeps_placeholder_title(
     assert client.get("/api/sessions/session-2").json()["data"]["title"] == "新对话"
 
 
+def test_first_message_names_a_frontend_default_title(client: TestClient) -> None:
+    # The frontend creates new sessions as "新对话 · HH:MM"; that is still a
+    # placeholder, so the first real task must become the session title.
+    client.patch("/api/sessions/session-2", json={"title": "新对话 · 02:29"})
+
+    client.post(
+        "/api/sessions/session-2/messages",
+        json={"id": "first-task", "role": "user", "content": "帮我检查串口日志"},
+    )
+
+    assert client.get("/api/sessions/session-2").json()["data"]["title"] == "帮我检查串口日志"
+
+
 def test_delete_session_never_creates_the_async_checkpointer(
     client: TestClient, monkeypatch,
 ) -> None:

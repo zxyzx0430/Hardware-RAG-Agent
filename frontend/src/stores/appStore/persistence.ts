@@ -1,9 +1,10 @@
 import { loadFromStorage } from "../../utils/persistence";
-import type { OpenFileItem, RightContentTab } from "../../types";
+import type { OpenFileItem, RightContentTab, RightMode } from "../../types";
 
 export const RIGHT_PANEL_KEY = "hwrag_right_panel_open";
 export const RIGHT_PANEL_WIDTH_KEY = "hwrag_right_panel_width";
 export const RIGHT_CONTENT_TAB_KEY = "hwrag_right_content_tab_by_session";
+export const RIGHT_MODE_KEY = "hwrag_right_mode";
 export const EXPLORER_OPEN_KEY = "hwrag_explorer_open";
 export const EXPLORER_WIDTH_KEY = "hwrag_explorer_width";
 export const EXPLORER_ROOT_PATH_KEY = "hwrag_explorer_root_path";
@@ -53,6 +54,16 @@ export function saveRightPanelWidth(width: number): void {
 }
 
 const RIGHT_CONTENT_TABS: ReadonlySet<string> = new Set(["sources", "todos", "plan"]);
+const RIGHT_MODES: ReadonlySet<string> = new Set(["workbench", "content"]);
+
+export function loadRightMode(): RightMode {
+  const raw = loadString(RIGHT_MODE_KEY);
+  return raw && RIGHT_MODES.has(raw) ? (raw as RightMode) : "workbench";
+}
+
+export function saveRightMode(mode: RightMode): void {
+  saveString(RIGHT_MODE_KEY, mode);
+}
 
 export function loadRightContentTabBySession(): Record<string, RightContentTab> {
   try {

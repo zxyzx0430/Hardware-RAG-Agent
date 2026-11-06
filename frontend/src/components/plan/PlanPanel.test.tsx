@@ -100,6 +100,37 @@ describe("PlanPanel", () => {
     expect(container.querySelector(".plan-execution")).toBeNull();
   });
 
+  it("shows only the rejected status when the plan was never executed", () => {
+    const plan = makePlan({
+      status: "rejected",
+      executed_run_id: null,
+      execution_state: "rejected",
+      execution_note: "计划未获批准，未执行",
+    });
+    useChatStore.setState({ sessionPlans: { s1: plan } });
+
+    const { container } = render(<PlanPanel />);
+
+    expect(screen.getByText("已拒绝")).toBeTruthy();
+    expect(screen.queryByText("执行被拒绝")).toBeNull();
+    expect(container.querySelector(".plan-execution")).toBeNull();
+    expect(screen.queryByText(/计划未获批准，未执行/)).toBeNull();
+  });
+
+  it("shows the execution rejection when an approved run's tools were denied", () => {
+    const plan = makePlan({
+      status: "approved",
+      execution_state: "rejected",
+      execution_note: "执行中部分工具调用被拒绝，计划未完整执行",
+    });
+    useChatStore.setState({ sessionPlans: { s1: plan } });
+
+    render(<PlanPanel />);
+
+    expect(screen.getByText("执行被拒绝")).toBeTruthy();
+    expect(screen.getByText(/部分工具调用被拒绝/)).toBeTruthy();
+  });
+
   it("shows the empty state when the session has no plan", () => {
     useChatStore.setState({
       activeSessionId: "s2",

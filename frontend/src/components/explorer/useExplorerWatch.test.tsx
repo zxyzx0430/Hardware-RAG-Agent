@@ -145,3 +145,51 @@ describe("useExplorerWatch auth handling", () => {
     unmount();
   });
 });
+
+describe("useExplorerWatch folder grant handling", () => {
+  it("waits for a reopen after 403 instead of asking for a login or retrying", async () => {
+    let calls = 0;
+    fetchMock.mockImplementation((_url: string, init: RequestInit) => {
+      calls += 1;
+      if (calls === 1) {
+        return Promise.resolve({ ok: false, status: 403, statusText: "Forbidden" });
+      }
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          init.signal?.addEventListener("abort", () => {
+            controller.error(new DOMException("Aborted", "AbortError"));
+          });
+        },
+      });
+      return Promise.resolve({ ok: true, body });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const onAuthRequired = vi.fn();
+    const onForbidden = vi.fn();
+    const onError = vi.fn();
+    const statuses: boolean[] = [];
+    const { rerender, unmount } = renderHook(
+      ({ reconnectKey }) => useExplorerWatch(
+        "C:/project",
+        undefined,
+        onError,
+        (connected) => statuses.push(connected),
+        onAuthRequired,
+        onForbidden,
+        reconnectKey,
+      ),
+      { initialProps: { reconnectKey: 0 } },
+    );
+
+    await waitFor(() => expect(onForbidden).toHaveBeenCalledTimes(1));
+    expect(onAuthRequired).not.toHaveBeenCalled();
+    expect(onError).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    rerender({ reconnectKey: 1 });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(statuses.at(-1)).toBe(true));
+    unmount();
+  });
+});

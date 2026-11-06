@@ -87,7 +87,9 @@ TITLE_PREVIEW_LENGTH = 30
 # Titles that mean "the user has not named this session yet"; auto-titling
 # may replace only these.
 _PLACEHOLDER_TITLES: frozenset[str] = frozenset({"", "新对话"})
-_PLACEHOLDER_TITLE_PREFIXES: tuple[str, ...] = ("对话",)
+# The frontend names fresh sessions "新对话 · HH:MM"; those still count as
+# placeholders so the first real user message can name the session.
+_PLACEHOLDER_TITLE_PREFIXES: tuple[str, ...] = ("对话", "新对话 ·")
 
 # Synthetic message sent after plan approval. It must never become a session
 # title; the title of the real task has to survive plan execution.

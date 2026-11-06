@@ -92,6 +92,13 @@ function formatError(prefix: string, err: unknown): string {
   return `${prefix}: ${err instanceof Error ? err.message : String(err)}`;
 }
 
+/** A persisted project root is not authorized again after a backend restart;
+ *  that is an expected state, not an error worth a toast at startup. */
+function isMissingAuthorizationError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /security check failed|not been explicitly opened|outside authorized directories/i.test(message);
+}
+
 export function ExplorerPanel() {
   const rootPath = useAppStore((s) => s.explorerRootPath);
   const recentFolders = useAppStore((s) => s.recentFolders);
@@ -127,6 +134,9 @@ export function ExplorerPanel() {
   const [dirErrors, setDirErrors] = useState<Map<string, string>>(new Map());
   const [watchConnected, setWatchConnected] = useState(false);
   const [watchAuthRequired, setWatchAuthRequired] = useState(false);
+  // Bumped after an explicit open/reopen so a watcher that gave up on a 403
+  // (backend restarted, folder grant lost) reconnects to the same root.
+  const [watchEpoch, setWatchEpoch] = useState(0);
   const [matchCount, setMatchCount] = useState(0);
   // Tree pane width (px) — draggable divider, persisted to localStorage
   const [treePaneWidth, setTreePaneWidth] = useState<number>(() => {
@@ -186,6 +196,7 @@ export function ExplorerPanel() {
         if (!silent) {
           setExplorerRootPath(first.path);
           addRecentFolder(first.path);
+          setWatchEpoch((value) => value + 1);
         }
         // Restore previously-expanded directories that are still lazy (not yet loaded).
         const lazyExpanded = collectLazyExpandedPaths(merged, expandedRef.current);
@@ -235,7 +246,9 @@ export function ExplorerPanel() {
       }
     } catch (err) {
       if (token !== loadTokenRef.current) return;
-      if (!silent) showError(formatError(t("openFolderFailed", "打开文件夹失败"), err));
+      if (!silent && !isMissingAuthorizationError(err)) {
+        showError(formatError(t("openFolderFailed", "打开文件夹失败"), err));
+      }
     } finally {
       if (token === loadTokenRef.current && !silent) setLoading(false);
     }
@@ -436,6 +449,12 @@ export function ExplorerPanel() {
         t("watchAuthRequired", "请先登录后再查看文件变更；登录成功后会自动重连。"),
       );
     },
+    () => {
+      // The folder grant was lost (usually a backend restart). The placeholder
+      // already asks the user to reopen the project; stay quiet here.
+      setWatchAuthRequired(false);
+    },
+    watchEpoch,
   );
 
   useEffect(() => {

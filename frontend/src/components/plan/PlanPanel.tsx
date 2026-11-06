@@ -15,13 +15,21 @@ export function PlanPanel() {
     );
   }
 
+  // A plan rejected before it was ever executed is not an execution failure;
+  // "执行被拒绝" is reserved for an approved run whose tools were denied.
+  const showExecution = Boolean(
+    plan.execution_state
+    && plan.execution_state !== "none"
+    && !(plan.status === "rejected" && !plan.executed_run_id),
+  );
+
   return (
     <div className="plan-panel">
       <div className="plan-panel-head">
         <span className={`plan-status plan-status-${plan.status}`}>
           {t(`planStatus_${plan.status}`)}
         </span>
-        {plan.execution_state && plan.execution_state !== "none" ? (
+        {showExecution ? (
           <span className={`plan-execution plan-execution-${plan.execution_state}`}>
             {t(`planExecution_${plan.execution_state}`)}
           </span>
@@ -75,10 +83,10 @@ export function PlanPanel() {
       <div className="plan-meta">
         <div>{t('planStatus')}: {t(`planStatus_${plan.status}`)}</div>
         <div>{t('planVersion')}: v{plan.version}</div>
-        {plan.execution_state ? (
+        {showExecution ? (
           <div>{t('planExecutionState')}: {t(`planExecution_${plan.execution_state}`)}</div>
         ) : null}
-        {plan.execution_note ? <div>{t('planExecutionNote')}: {plan.execution_note}</div> : null}
+        {showExecution && plan.execution_note ? <div>{t('planExecutionNote')}: {plan.execution_note}</div> : null}
         {plan.created_at ? <div>{t('planCreatedAt')}: {plan.created_at}</div> : null}
         {plan.decided_at ? <div>{t('planDecidedAt')}: {plan.decided_at}</div> : null}
         {plan.executed_run_id ? <div>{t('planExecutedRun')}: {plan.executed_run_id}</div> : null}
