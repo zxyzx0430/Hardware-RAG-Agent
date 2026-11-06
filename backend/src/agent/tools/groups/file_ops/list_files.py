@@ -22,7 +22,10 @@ from pydantic import BaseModel, Field
 from src.agent.core.toolkit.tool_spec import RiskLevel, ToolSpec
 from src.agent.exceptions import ToolContext
 from src.agent.path_guard import resolve_agent_path, validate_path, is_path_allowed_for_tree
-from src.agent.tools.groups.file_ops._scan_policy import is_default_ignored_dir
+from src.agent.tools.groups.file_ops._scan_policy import (
+    is_default_ignored_dir,
+    is_link_or_junction,
+)
 
 # ═══════════════════════════════════════════
 # Named constants
@@ -98,6 +101,11 @@ class ListFilesTool(ToolSpec):
         err = _check_path(path)
         if err:
             return err
+        root = Path(path)
+        if not root.exists():
+            return _error(f"path not found: {path}")
+        if not root.is_dir():
+            return _error(f"not a directory: {path}")
         max_depth = min(int(args.get("max_depth", _DEFAULT_MAX_DEPTH)), _MAX_DEPTH_LIMIT)
         plan_mode = getattr(ctx, "permission_mode", "") == _PLAN_PERMISSION_MODE
         if plan_mode:
@@ -168,6 +176,8 @@ def _iter_children(p: Path) -> Iterator[Path]:
     except OSError:
         return
     for child in items:
+        if is_link_or_junction(str(child)):
+            continue
         if not is_path_allowed_for_tree(str(child)):
             continue
         yield child

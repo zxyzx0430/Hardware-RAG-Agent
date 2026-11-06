@@ -12,6 +12,7 @@ removed (inherited from ToolSpec, injected by agent_factory).
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -99,33 +100,73 @@ async def _do_read(path: str, offset: int, limit: int, max_chars: int) -> dict:
 
 
 def _read_file_sync(path: str, offset: int, limit: int, max_chars: int) -> str:
-    """Sync file read with line offset/limit, byte cap and output truncation."""
+    """Sync file read with line offset/limit, byte cap and output truncation.
+
+    Reads in binary mode with bounded line reads so a multi-megabyte single
+    line cannot be loaded whole; binary files are rejected with a clear error.
+    """
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+        with open(path, "rb") as handle:
+            if _looks_binary(handle):
+                return (
+                    f"Error: binary file: {path} ({_file_size(path)} bytes); "
+                    "read_file only supports text files"
+                )
             for _ in range(max(int(offset), 0)):
-                if not handle.readline():
+                if not _skip_one_line(handle):
                     return ""
-            lines: list[str] = []
+            chunks: list[bytes] = []
             bytes_read = 0
             byte_truncated = False
             for _ in range(max(int(limit), 0)):
-                line = handle.readline()
+                line = handle.readline(MAX_READ_BYTES + 1)
                 if not line:
                     break
-                line_bytes = len(line.encode("utf-8", errors="replace"))
-                if bytes_read + line_bytes > MAX_READ_BYTES:
+                line_too_long = (
+                    len(line) > MAX_READ_BYTES and not line.endswith(b"\n")
+                )
+                if bytes_read + len(line) > MAX_READ_BYTES or line_too_long:
+                    remaining = max(MAX_READ_BYTES - bytes_read, 0)
+                    if remaining:
+                        chunks.append(line[:remaining])
                     byte_truncated = True
                     break
-                lines.append(line)
-                bytes_read += line_bytes
+                chunks.append(line)
+                bytes_read += len(line)
+                if line_too_long:
+                    break
     except FileNotFoundError:
         return f"Error: file not found: {path}"
+    except PermissionError:
+        return f"Error: permission denied: {path}"
     except OSError as exc:
         return f"Error reading file: {exc}"
-    text = "".join(lines)
+    text = b"".join(chunks).decode("utf-8", errors="replace")
+    # Match the previous text-mode universal-newline behavior.
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
     if byte_truncated:
         text += TRUNCATE_SUFFIX
     return _truncate(text, max_chars)
+
+
+def _looks_binary(handle: Any) -> bool:
+    """Detect a binary file from its first 8 KiB (seek back afterwards)."""
+    sample = handle.read(8192)
+    try:
+        handle.seek(0)
+    except OSError:
+        pass
+    return b"\x00" in sample
+
+
+def _skip_one_line(handle: Any) -> bool:
+    """Skip one line of arbitrary length; return False at EOF."""
+    while True:
+        chunk = handle.readline(MAX_READ_BYTES + 1)
+        if not chunk:
+            return False
+        if chunk.endswith(b"\n"):
+            return True
 
 
 def _truncate(text: str, max_chars: int) -> str:
@@ -133,3 +174,10 @@ def _truncate(text: str, max_chars: int) -> str:
     if len(text) <= max_chars:
         return text
     return text[:max_chars] + TRUNCATE_SUFFIX
+
+
+def _file_size(path: str) -> int:
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return 0

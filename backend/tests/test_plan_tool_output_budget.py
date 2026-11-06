@@ -182,3 +182,24 @@ def test_budget_scales_down_for_small_model_windows():
 
     assert get_plan_budget(small).limit_tokens == 4_000
     assert get_plan_budget(large).limit_tokens == PLAN_TOOL_OUTPUT_TOKEN_BUDGET
+
+
+async def test_fourteen_large_tool_calls_stay_under_the_model_window():
+    """The audit scenario: 14 large calls must not reach 235k > 206k."""
+    from src.agent import context_guard
+
+    router = ToolRouter(_Recorder())
+    context = ToolContext(permission_mode="plan", context_token_limit=206_233)
+    context_guard.reset_token_counter(0)
+
+    for index in range(14):
+        result = await router.dispatch(
+            f"audit-call-{index}", "read_file", {}, context,
+            tool_spec=_BigReadTool(),
+        )
+        context_guard.accumulate_tokens(result, {"token_limit": 206_233})
+        assert context_guard._CUMULATIVE_TOKENS.get() <= 206_233
+
+    total = context_guard._CUMULATIVE_TOKENS.get()
+    assert total <= PLAN_TOOL_OUTPUT_TOKEN_BUDGET + 2_000
+    assert context.plan_tool_output_budget.spent_tokens <= PLAN_TOOL_OUTPUT_TOKEN_BUDGET

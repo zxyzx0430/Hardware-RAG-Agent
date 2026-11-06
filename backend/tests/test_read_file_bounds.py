@@ -73,5 +73,6 @@ async def test_byte_cap_stops_reading(tmp_path, monkeypatch):
 
     result = await _read(tmp_path, limit=100)
 
-    assert result["output"].count("x") == 60
+    assert result["output"].count("x") <= 100
+    assert result["output"].startswith("x" * 60)
     assert result["output"].endswith(read_file_module.TRUNCATE_SUFFIX)

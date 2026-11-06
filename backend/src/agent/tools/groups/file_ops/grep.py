@@ -33,7 +33,10 @@ from pydantic import BaseModel, Field
 from src.agent.core.toolkit.tool_spec import RiskLevel, ToolSpec
 from src.agent.exceptions import ToolContext
 from src.agent.path_guard import resolve_agent_path, validate_path, is_path_allowed_for_tree, matches_deny_pattern
-from src.agent.tools.groups.file_ops._scan_policy import is_default_ignored_dir
+from src.agent.tools.groups.file_ops._scan_policy import (
+    is_default_ignored_dir,
+    is_link_or_junction,
+)
 
 # ═══════════════════════════════════════════
 # Named constants
@@ -126,6 +129,8 @@ class GrepTool(ToolSpec):
         err = _check_path(path)
         if err:
             return err
+        if not Path(path).exists():
+            return _error(f"path not found: {path}")
         regex = _compile_pattern(args.get("pattern", ""))
         if regex is None:
             return _error("invalid regex pattern")
@@ -189,6 +194,7 @@ def _walk_and_collect(root_path: Path, cfg: _GrepCfg, state: _GrepState) -> bool
         dirnames[:] = [
             d for d in dirnames
             if (cfg.include_ignored or not is_default_ignored_dir(d))
+            and not is_link_or_junction(os.path.join(dirpath, d))
             and matches_deny_pattern(os.path.join(dirpath, d)) is None
         ]
         for name in filenames:

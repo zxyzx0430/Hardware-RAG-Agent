@@ -12,6 +12,8 @@ Distinguishes from list_files: glob matches a KNOWN filename pattern
 from __future__ import annotations
 
 import asyncio
+import fnmatch
+import time
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +24,7 @@ from src.agent.exceptions import ToolContext
 from src.agent.path_guard import resolve_agent_path, validate_path, is_path_allowed_for_tree
 from src.agent.tools.groups.file_ops._scan_policy import (
     explicit_ignored_segments,
-    is_default_ignored_dir,
+    iter_scan_files,
 )
 
 # ═══════════════════════════════════════════
@@ -33,6 +35,8 @@ _DEFAULT_SEARCH_ROOT: str = "."
 _DEFAULT_MAX_RESULTS: int = 100
 _PLAN_MODE_MAX_RESULTS: int = 50
 _MAX_OUTPUT_CHARS: int = 16_000
+_MAX_SCAN_FILES: int = 50_000
+_SEARCH_BUDGET_SECONDS: float = 8.0
 _APPROX_MATCH_CHARS: int = 40
 _PLAN_PERMISSION_MODE: str = "plan"
 
@@ -85,6 +89,8 @@ class GlobTool(ToolSpec):
         err = _check_path(path)
         if err:
             return err
+        if not Path(path).exists():
+            return _error(f"path not found: {path}")
         pattern = args.get("pattern", "")
         if not pattern:
             return _error("pattern is required")
@@ -119,40 +125,85 @@ def _glob_sync(
     max_results: int,
     include_ignored: bool = False,
 ) -> tuple[list[dict], bool]:
-    """Match glob pattern under root, sort by mtime desc, truncate."""
+    """Match glob pattern under root, sort by mtime desc, truncate.
+
+    Uses one pruned walk instead of ``Path.glob`` so ignored directories and
+    symlink/junction loops are never traversed (a junction loop previously
+    duplicated matches exponentially before truncation).
+    """
     root_path = Path(root)
     if not root_path.exists():
         return [], False
+    pattern_parts = _pattern_parts(pattern)
+    if not pattern_parts:
+        return [], False
     allowed_ignored = explicit_ignored_segments(pattern)
-    raw = list(root_path.glob(pattern))
-    files = [p for p in raw if not _is_dir(p)]
-    files = [
-        p for p in files
-        if include_ignored or not _is_ignored(p, root_path, allowed_ignored)
-    ]
-    files = [p for p in files if _has_mtime(p)]
-    files = [p for p in files if is_path_allowed_for_tree(str(p))]
-    files.sort(key=_get_mtime, reverse=True)
-    return _truncate_matches(files, max_results)
+    matches: list[Path] = []
+    scanned = 0
+    truncated = False
+    deadline = time.monotonic() + _SEARCH_BUDGET_SECONDS
+    for file_path in iter_scan_files(
+        root_path,
+        include_ignored=include_ignored,
+        allowed_ignored=allowed_ignored,
+        max_depth=None if "**" in pattern_parts else len(pattern_parts) - 1,
+    ):
+        scanned += 1
+        if scanned > _MAX_SCAN_FILES or time.monotonic() > deadline:
+            truncated = True
+            break
+        try:
+            rel_parts = file_path.relative_to(root_path).parts
+        except ValueError:
+            continue
+        if not _matches_glob(rel_parts, pattern_parts):
+            continue
+        if not _has_mtime(file_path):
+            continue
+        if not is_path_allowed_for_tree(str(file_path)):
+            continue
+        matches.append(file_path)
+    matches.sort(key=_get_mtime, reverse=True)
+    listed, budget_truncated = _truncate_matches(matches, max_results)
+    return listed, truncated or budget_truncated
 
 
-def _is_ignored(
-    path: Path,
-    root: Path,
-    allowed_ignored: frozenset[str] = frozenset(),
-) -> bool:
-    """True when a relative component is a default-ignored directory.
+def _pattern_parts(pattern: str) -> list[str]:
+    """Normalize a relative glob pattern; reject absolute/drive patterns."""
+    normalized = str(pattern or "").replace("\\", "/")
+    if normalized.startswith("/") or (
+        len(normalized) > 1 and normalized[1] == ":"
+    ):
+        raise ValueError("glob pattern must be relative (no drive or leading slash)")
+    parts = [part for part in normalized.split("/") if part not in ("", ".")]
+    return parts
 
-    Components the pattern names literally (``node_modules``) are exempt.
+
+def _matches_glob(rel_parts: tuple[str, ...], pattern_parts: list[str]) -> bool:
+    """Match path segments against pattern segments with ``**`` support.
+
+    Dynamic programming keeps a pathological pattern with many ``**``
+    segments linear in segments x pattern length instead of exponential.
     """
-    try:
-        parts = path.relative_to(root).parts
-    except ValueError:
-        parts = path.parts
-    return any(
-        is_default_ignored_dir(part) and part not in allowed_ignored
-        for part in parts
-    )
+    pattern_count = len(pattern_parts)
+    part_count = len(rel_parts)
+    matches = [[False] * (part_count + 1) for _ in range(pattern_count + 1)]
+    matches[pattern_count][part_count] = True
+    for pattern_index in range(pattern_count - 1, -1, -1):
+        part = pattern_parts[pattern_index]
+        next_row = matches[pattern_index + 1]
+        row = matches[pattern_index]
+        if part == "**":
+            row[part_count] = next_row[part_count]
+            for part_index in range(part_count - 1, -1, -1):
+                row[part_index] = next_row[part_index] or row[part_index + 1]
+        else:
+            for part_index in range(part_count - 1, -1, -1):
+                row[part_index] = (
+                    fnmatch.fnmatch(rel_parts[part_index], part)
+                    and next_row[part_index + 1]
+                )
+    return matches[0][0]
 
 
 def _truncate_matches(files: list[Path], max_results: int) -> tuple[list[dict], bool]:
@@ -188,14 +239,6 @@ def _has_mtime(p: Path) -> bool:
         return True
     except OSError:
         return False
-
-
-def _is_dir(p: Path) -> bool:
-    """Return True if path is a directory (fail-closed on error)."""
-    try:
-        return p.is_dir()
-    except OSError:
-        return True
 
 
 def _check_path(path: str) -> dict | None:

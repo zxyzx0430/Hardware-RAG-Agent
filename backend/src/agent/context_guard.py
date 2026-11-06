@@ -436,7 +436,14 @@ def accumulate_tokens(content: Any, state: dict) -> None:
     """
     if state.get("token_limit", 0) <= 0:
         return
-    delta = LLMClient._estimate_tokens(content)
+    if type(content) is dict:
+        # Tool results are dicts; the multimodal text estimator returns 0 for
+        # them, which previously made tool-generated context invisible.
+        from src.agent.request_budget import estimate_payload_tokens
+
+        delta = estimate_payload_tokens(content)
+    else:
+        delta = LLMClient._estimate_tokens(content)
     cumulative = _CUMULATIVE_TOKENS.get() + max(delta, 0)
     _CUMULATIVE_TOKENS.set(cumulative)
 

@@ -156,6 +156,18 @@ async def test_glob_include_ignored_flag(tmp_path):
     assert result["count"] == len(IGNORED_DIRS)
 
 
+async def test_glob_handles_repeated_double_star_pattern(tmp_path):
+    project = _make_project(tmp_path)
+
+    result = await glob_tool.GlobTool().execute(
+        {"pattern": "**/**/**/**/**/**/*.ino", "path": str(project)},
+        ToolContext(),
+    )
+
+    assert result["count"] == 1
+    assert result["matches"][0]["path"].endswith("main.ino")
+
+
 async def test_grep_skips_generated_dirs_by_default(tmp_path):
     project = _make_project(tmp_path)
 
