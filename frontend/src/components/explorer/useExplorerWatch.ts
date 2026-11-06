@@ -117,6 +117,16 @@ export function useExplorerWatch(
     };
 
     const waitForAuth = () => {
+      // A token may have arrived while the failed request was in flight. Use it
+      // immediately instead of waiting for another change event.
+      const currentToken = getSessionToken();
+      if (currentToken && currentToken !== knownToken) {
+        knownToken = currentToken;
+        authNotified = false;
+        retryCount = 0;
+        void connect();
+        return;
+      }
       waitingForAuth = true;
       if (!authNotified) {
         authNotified = true;
@@ -140,8 +150,12 @@ export function useExplorerWatch(
     const tryTokenReconnect = () => {
       const token = getSessionToken();
       if (!token || token === knownToken) return;
+      if (!waitingForAuth) {
+        // An attempt is still in flight; leave knownToken unchanged so a 401
+        // on that attempt sees the new token and reconnects immediately.
+        return;
+      }
       knownToken = token;
-      if (!waitingForAuth) return;
       stopAuthWait();
       authNotified = false;
       retryCount = 0;

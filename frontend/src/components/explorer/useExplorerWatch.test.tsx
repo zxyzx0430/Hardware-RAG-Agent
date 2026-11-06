@@ -80,6 +80,52 @@ describe("useExplorerWatch auth handling", () => {
     unmount();
   });
 
+  it("uses a token that arrives while the failing request is in flight", async () => {
+    let resolveFirst!: (value: unknown) => void;
+    const calls: FetchCall[] = [];
+    fetchMock.mockImplementation((_url: string, init: RequestInit) => {
+      calls.push({ headers: (init.headers ?? {}) as Record<string, string> });
+      if (calls.length === 1) {
+        return new Promise((resolve) => { resolveFirst = resolve; });
+      }
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          init.signal?.addEventListener("abort", () => {
+            controller.error(new DOMException("Aborted", "AbortError"));
+          });
+        },
+      });
+      return Promise.resolve({ ok: true, body });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const onAuthRequired = vi.fn();
+    const { unmount } = renderHook(() => useExplorerWatch(
+      "C:/project",
+      undefined,
+      undefined,
+      undefined,
+      onAuthRequired,
+    ));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    // The token arrives before the request that lacks it fails.
+    sessionStorage.setItem("session_token", "token-race");
+    act(() => {
+      window.dispatchEvent(new Event(AUTH_TOKEN_CHANGED_EVENT));
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveFirst({ ok: false, status: 401, statusText: "Unauthorized" });
+    });
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(calls[1].headers).toMatchObject({ Authorization: "Bearer token-race" });
+    expect(onAuthRequired).not.toHaveBeenCalled();
+    unmount();
+  });
+
   it("does not treat an auth failure as a generic watch error", async () => {
     installFetch(true);
     const onError = vi.fn();
