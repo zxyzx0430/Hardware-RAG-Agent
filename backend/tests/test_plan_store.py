@@ -151,3 +151,52 @@ def test_delete_session_store_helper(factory):
     plan_store.create_version("s1", _payload(), "r1")
     assert plan_store.delete_session("s1") == 1
     assert plan_store.latest("s1") is None
+
+
+def test_create_all_adds_plans_to_existing_database(tmp_path):
+    from sqlalchemy import create_engine, inspect
+
+    db_path = tmp_path / "old.db"
+    engine = create_engine(f"sqlite:///{db_path}")
+    with engine.begin() as connection:
+        connection.exec_driver_sql("PRAGMA user_version=3")
+        connection.exec_driver_sql("CREATE TABLE sessions (id TEXT PRIMARY KEY)")
+    Base.metadata.create_all(bind=engine)
+    try:
+        assert inspect(engine).has_table("plans") is True
+    finally:
+        engine.dispose()
+
+
+def test_concurrent_versions_are_unique(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from sqlalchemy import create_engine, event
+
+    db_path = tmp_path / "concurrent.db"
+    engine = create_engine(
+        f"sqlite:///{db_path}",
+        connect_args={"check_same_thread": False, "timeout": 10},
+    )
+
+    @event.listens_for(engine, "connect")
+    def _busy_timeout(connection, _record):
+        connection.execute("PRAGMA busy_timeout=10000")
+
+    Base.metadata.create_all(bind=engine)
+    factory = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    monkeypatch.setattr(database, "SessionLocal", factory)
+    with factory() as session:
+        session.add(SessionModel(id="s1", title="A", model="test"))
+        session.commit()
+
+    def worker(index: int):
+        return plan_store.create_version(
+            "s1", {**_payload(), "title": f"Plan {index}"}, f"r{index}",
+        )
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        results = list(executor.map(worker, range(4)))
+
+    assert sorted(result["version"] for result in results) == [1, 2, 3, 4]
+    assert len({result["id"] for result in results}) == 4
+    engine.dispose()
