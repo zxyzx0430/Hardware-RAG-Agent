@@ -12,10 +12,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session as DBSession
 
 from app.api.dependencies import current_user_optional
-from app.api.session_owner import require_session_owner
+from app.api.session_owner import require_session_owner_if_bound
 from app.db.database import get_db
 from app.db.models import Session as SessionModel
-from app.db.models import SessionOwnerBinding
 from app.db.time_utils import to_utc_iso_z
 from app.db.todo_store import clear_todos, list_todos
 
@@ -41,20 +40,11 @@ def _require_session_owner_if_bound(
     user: dict,
 ) -> None:
     """Preserve shared legacy sessions while enforcing an existing owner binding."""
-    _require_bound_owner(db, session_id, user)
-    _require_existing_session(db, session_id)
-
-
-def _require_bound_owner(db: DBSession, session_id: str, user: dict) -> None:
-    binding = db.query(SessionOwnerBinding.session_id).filter(
-        SessionOwnerBinding.session_id == session_id
-    ).first()
-    if binding is None:
-        return
     try:
-        require_session_owner(db, session_id, user)
+        require_session_owner_if_bound(db, session_id, user)
     except PermissionError as exc:
         raise _fail("FORBIDDEN", "无权访问该会话", status_code=403) from exc
+    _require_existing_session(db, session_id)
 
 
 def _require_existing_session(db: DBSession, session_id: str) -> None:
