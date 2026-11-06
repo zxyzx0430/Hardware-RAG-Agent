@@ -1,5 +1,5 @@
 /* ── ChatArea ── */
-.chat-scroll { flex: 1; min-width: 0; overflow-y: auto; overflow-x: hidden; padding: 0 24px 20px; display: flex; flex-direction: column; gap: 20px; }
+.chat-scroll { flex: 1; min-width: 0; overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable; padding: 0 24px 20px; display: flex; flex-direction: column; gap: 20px; }
 /* contain: 隔离 layout/paint，避免单条消息变化触发全列表重排。
    不用 content-visibility:auto —— 流式输出时消息不断变长，content-visibility 会反向增加 containment 边界重算开销。 */
 .msg-row { display: flex; gap: 12px; contain: layout style; min-width: 0; }
