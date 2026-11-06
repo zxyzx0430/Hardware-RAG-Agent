@@ -51,6 +51,8 @@ from app.api.search_routes import router as search_router
 from app.api.agent_sandbox_routes import router as agent_sandbox_router
 from app.api.skill_routes import router as skill_router
 from app.api.explorer_routes import router as explorer_router
+from app.api.todo_routes import router as todo_router
+from app.api.plan_routes import router as plan_router
 from prometheus_client import Counter, Histogram, make_asgi_app
 from src.config.settings import settings
 from src.config.local_network import validate_local_bind_host
@@ -396,6 +398,8 @@ def create_app() -> FastAPI:
     app.include_router(agent_sandbox_router)
     app.include_router(skill_router)
     app.include_router(explorer_router)
+    app.include_router(todo_router)
+    app.include_router(plan_router)
 
     # Prometheus 指标（B9 优化）— 引用模块级单例，避免重复注册
     if settings.metrics_enabled:

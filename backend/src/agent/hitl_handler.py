@@ -26,6 +26,7 @@ from src.agent.context_guard import estimate_context_tokens, reset_token_counter
 from src.agent.exceptions import ContextLimitError
 from src.agent.hitl_sse import emit_deny_tool_results
 from src.agent.hitl_permission import evaluate_pending, build_confirm_required_event
+from src.agent.plan_policy import PLAN_MODE
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,7 @@ DECISION_ASK: str = "ask"
 DECISION_DENY: str = "deny"
 USER_DECISION_STOP: str = "stop"
 DENY_MESSAGE: str = "用户拒绝执行此工具"
+PLAN_MODE_DENY_MESSAGE: str = "计划模式只读：请先调用 submit_plan，等用户批准后再执行该工具。"
 
 # Audit decision_source enums (spec industrial-tool-runtime §AuditRecorder).
 SOURCE_USER_DENY: str = "user_deny"
@@ -106,8 +108,11 @@ async def handle_auto_resume(
             yield build_confirm_required_event(pending)
             return
         if decision == DECISION_DENY:
-            await _inject_deny_messages(agent, config, pending, SOURCE_PATH_DENY)
-            for sse in emit_deny_tool_results(pending, call_start_time, DENY_MESSAGE):
+            deny_message = PLAN_MODE_DENY_MESSAGE if permission_mode == PLAN_MODE else DENY_MESSAGE
+            await _inject_deny_messages(
+                agent, config, pending, SOURCE_PATH_DENY, message=deny_message,
+            )
+            for sse in emit_deny_tool_results(pending, call_start_time, deny_message):
                 yield sse
             resume_cmd = _RESUME_DENY
         else:
@@ -267,7 +272,10 @@ def _format_pending_call(tc: dict) -> dict:
 # Deny injection
 # ═══════════════════════════════════════════
 
-async def _inject_deny_messages(agent: Any, config: dict, pending: list[dict], decision_source: str) -> None:
+async def _inject_deny_messages(
+    agent: Any, config: dict, pending: list[dict], decision_source: str,
+    message: str = DENY_MESSAGE,
+) -> None:
     """Inject ToolMessage denials so the tools node skips execution.
 
     industrial-tool-runtime: also record the deny decision to ToolAudit
@@ -301,7 +309,7 @@ async def _inject_deny_messages(agent: Any, config: dict, pending: list[dict], d
         before_messages, verified_pending = _verify_pending_checkpoint(
             before_snapshot, pending,
         )
-        deny_msgs = [_build_deny_message(tc) for tc in verified_pending]
+        deny_msgs = [_build_deny_message(tc, message) for tc in verified_pending]
         expected_checkpoint = _snapshot_checkpoint(
             before_snapshot, binding.scope.owner_key,
         )
@@ -631,9 +639,9 @@ def _audit_deny_decisions(config: dict, pending: list[dict], decision_source: st
             logger.warning("audit_deny_failed tool=%s err=%s", name, exc)
 
 
-def _build_deny_message(tc: dict) -> ToolMessage:
+def _build_deny_message(tc: dict, message: str = DENY_MESSAGE) -> ToolMessage:
     """Build one denial ToolMessage matching the pending tool_call_id."""
-    return ToolMessage(content=DENY_MESSAGE, tool_call_id=tc.get("call_id", ""))
+    return ToolMessage(content=message, tool_call_id=tc.get("call_id", ""))
 
 
 def _get_tool_ctx() -> Any:

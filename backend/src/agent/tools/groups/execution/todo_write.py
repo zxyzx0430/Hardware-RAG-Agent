@@ -5,8 +5,11 @@ Maintains a session-scoped TODO list. Agent self-uses this on long tasks
 (3+ steps): list first, then check off step-by-step. Inspired by
 Claude Code's TodoWrite tool.
 
-Session isolation: each session_id has its own list stored in a
-module-level dict (not persisted — closing the session clears it).
+Session isolation: the list is persisted per session through
+``app.db.todo_store`` (server-authoritative snapshot). When the database write
+fails, the tool keeps a module-level in-memory fallback and reports
+``persisted=false`` instead of failing the chat; ``session_id == "default"``
+stays memory-only.
 
 SSE contract: this tool DOES NOT push SSE directly (avoids conflict
 with Task 0 / Task 14 changes in sse_adapter.py). Instead it tags the
@@ -54,9 +57,8 @@ _MAX_TODO_ITEMS: int = 50
 # Session state (module-level, not persisted)
 # ═══════════════════════════════════════════
 
-# Maps session_id -> list of todo dicts (in submission order).
-# Chosen over a dataclass because the spec requires "module-level dict
-# 按 session_id 存 TODO 清单". Cleared on process restart (not persisted).
+# Fallback store only: the database is authoritative when a write succeeds.
+# Maps session_id -> list of todo dicts in submission order.
 _SESSION_TODOS: dict[str, list[dict]] = {}
 
 
@@ -93,7 +95,8 @@ class TodoWriteTool(ToolSpec):
         "维护会话级 TODO 清单。长任务（3+ 步骤）应先列清单再逐步执行："
         "pending=灰圈、in_progress=蓝转圈（同时只能有 1 项）、"
         "completed=绿勾划线。每次调用整体替换当前会话的清单。"
-        "短任务（1-2 步）不要使用此工具。清单仅存内存，关闭会话即清空。"
+        "短任务（1-2 步）不要使用此工具。清单持久化到当前会话，"
+        "刷新或重启后可继续；数据库不可用时退回内存并标记 persisted=false。"
     )
     args_schema: type = TodoWriteArgs
 
@@ -110,9 +113,16 @@ class TodoWriteTool(ToolSpec):
             return _invalid_result()
         if len(normalized) > _MAX_TODO_ITEMS:
             return _too_many_result(len(normalized))
-        _SESSION_TODOS[session_id] = normalized
-        logger.info("todo_write session=%s count=%d", session_id, len(normalized))
-        return _build_result(session_id, normalized)
+        persisted = _persist_todos(session_id, normalized)
+        if persisted:
+            _SESSION_TODOS.pop(session_id, None)
+        else:
+            _SESSION_TODOS[session_id] = normalized
+        logger.info(
+            "todo_write session=%s count=%d persisted=%s",
+            session_id, len(normalized), persisted,
+        )
+        return _build_result(session_id, normalized, persisted)
 
 
 # ═══════════════════════════════════════════
@@ -156,12 +166,30 @@ def _normalize_one(item: Any) -> dict | None:
     return {"content": content, "status": status, "priority": priority}
 
 
-def _build_result(session_id: str, todos: list[dict]) -> dict:
+def _persist_todos(session_id: str, todos: list[dict]) -> bool:
+    """Write the full replacement to the DB; never raise into the chat."""
+    if session_id == _DEFAULT_SESSION_ID:
+        return False
+    try:
+        from app.db import todo_store
+
+        todo_store.replace_todos(session_id, todos)
+        return True
+    except Exception:
+        logger.warning(
+            "todo_write persistence failed session=%s; using memory fallback",
+            session_id, exc_info=True,
+        )
+        return False
+
+
+def _build_result(session_id: str, todos: list[dict], persisted: bool) -> dict:
     """Build success result; marker triggers SSE in Task 14."""
     return {
         "output": f"updated {len(todos)} todos",
         "todos": todos,
         "session_id": session_id,
+        "persisted": persisted,
         _UPDATE_MARKER_KEY: True,
     }
 

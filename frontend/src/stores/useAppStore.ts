@@ -33,6 +33,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   rightPanelWidth: loadRightPanelWidth(),
   inputBarWidth: loadInputBarWidth(),
   rightMode: "workbench",
+  rightContentTab: "sources",
   wbTab: "serial",
   workbenchUserOverride: false,
   flashCode: "",
@@ -92,6 +93,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ inputBarWidth });
   },
   setRightMode: (rightMode) => set({ rightMode }),
+  setRightContentTab: (rightContentTab) => set({ rightContentTab }),
   setWbTab: (wbTab, source = "user") =>
     set(source === "user" ? { wbTab, workbenchUserOverride: true } : { wbTab }),
   setWorkbenchUserOverride: (workbenchUserOverride) => set({ workbenchUserOverride }),

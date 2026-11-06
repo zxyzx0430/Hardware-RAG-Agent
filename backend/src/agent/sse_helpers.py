@@ -303,6 +303,7 @@ def _assemble_tool_result_events(
     if tool_name in ("search_docs", "web_search"):
         events.extend(build_source_events(envelope))
     _maybe_emit_todo_update(events, envelope)
+    _maybe_emit_plan_update(events, envelope)
     events.append(sse_event("tool_result", {
         "call_id": call_id,
         "tool": tool_name,
@@ -369,6 +370,15 @@ def _maybe_emit_todo_update(events: list[str], envelope: dict) -> None:
         todos = data.get("todos")
         if isinstance(todos, list):
             events.append(sse_event("todo_update", {"todos": todos}))
+
+
+def _maybe_emit_plan_update(events: list[str], envelope: dict) -> None:
+    """If the tool result is from submit_plan, emit a plan_update SSE event."""
+    data = envelope.get("data") if isinstance(envelope.get("data"), dict) else None
+    if data is None:
+        data = envelope if "_plan_update" in envelope else {}
+    if data.get("_plan_update") and isinstance(data.get("plan"), dict):
+        events.append(sse_event("plan_update", {"plan": data["plan"]}))
 
 
 def _valid_skill_trace_id(value: Any) -> bool:

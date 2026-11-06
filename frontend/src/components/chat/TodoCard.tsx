@@ -1,13 +1,47 @@
+import { useEffect, useRef, useState } from "react";
 import type { TodoItem } from "../../types/session";
+import { useI18n } from "../../i18n";
 
 /** Agent 任务清单卡片：渲染 TodoWriteTool 推送的 todo_update 事件。
- *  同会话新 TODO 由 useChatStore 直接覆盖 message.todos，本组件只做纯展示。 */
-export default function TodoCard({ todos }: { todos: TodoItem[] }) {
+ *  同会话新 TODO 由 useChatStore 直接覆盖 message.todos，本组件只做纯展示。
+ *  传入 onClear 时显示"清空"按钮（两次点击确认）。 */
+export default function TodoCard({ todos, onClear }: {
+  todos: TodoItem[];
+  onClear?: () => Promise<unknown> | void;
+}) {
+  const { t } = useI18n();
+  const [confirming, setConfirming] = useState(false);
+  const [clearing, setClearing] = useState(false);
+  const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => () => {
+    if (confirmTimer.current) clearTimeout(confirmTimer.current);
+  }, []);
+
   // LLM 偶尔会生成 content 为空的 todo；过滤掉避免计数和显示不一致。
-  const visibleTodos = todos.filter((t) => typeof t.content === "string" && t.content.trim() !== "");
+  const visibleTodos = todos.filter((todo) => typeof todo.content === "string" && todo.content.trim() !== "");
   if (visibleTodos.length === 0) return null;
   const completed = countCompleted(visibleTodos);
   const progress = visibleTodos.length ? Math.round((completed / visibleTodos.length) * 100) : 0;
+
+  const handleClear = async () => {
+    if (!onClear || clearing) return;
+    if (!confirming) {
+      setConfirming(true);
+      if (confirmTimer.current) clearTimeout(confirmTimer.current);
+      confirmTimer.current = setTimeout(() => setConfirming(false), 3000);
+      return;
+    }
+    if (confirmTimer.current) clearTimeout(confirmTimer.current);
+    setConfirming(false);
+    setClearing(true);
+    try {
+      await onClear();
+    } finally {
+      setClearing(false);
+    }
+  };
+
   return (
     <div className="todo-card">
       <div className="todo-card-header">
@@ -15,7 +49,20 @@ export default function TodoCard({ todos }: { todos: TodoItem[] }) {
           <ListIcon />
           任务清单
         </span>
-        <span className="todo-card-progress">{completed}/{visibleTodos.length} 完成</span>
+        <div className="todo-card-header-right">
+          <span className="todo-card-progress">{completed}/{visibleTodos.length} 完成</span>
+          {onClear ? (
+            <button
+              type="button"
+              className={`todo-clear-btn${confirming ? " confirming" : ""}`}
+              onClick={() => void handleClear()}
+              disabled={clearing}
+              title={confirming ? t('todoClearConfirm') : t('todoClear')}
+            >
+              {clearing ? t('todoClearing') : confirming ? t('todoClearConfirm') : t('todoClear')}
+            </button>
+          ) : null}
+        </div>
       </div>
       <div className="todo-progress-bar">
         <div className="todo-progress-fill" style={{ width: `${progress}%` }} />

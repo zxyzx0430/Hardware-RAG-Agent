@@ -389,6 +389,11 @@
 }
 .permission-option:hover { background: var(--muted); }
 .permission-option.selected { background: var(--accent); color: var(--accent-fg); }
+.permission-divider {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--border);
+}
 
 /* Export dialog */
 .export-card {

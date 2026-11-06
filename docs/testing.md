@@ -1,6 +1,16 @@
 # 测试与测试数据
 
-> 更新日期：2026-11-04。记录修复后的最终软件门禁，并单列修复前 606 项快照与 67 项失败轨迹；浏览器、硬件和 RAG 全量质量评测仍分别记录，不混作软件测试结论。
+> 更新日期：2026-11-06。记录修复后的最终软件门禁，并单列修复前 606 项快照与 67 项失败轨迹；浏览器、硬件和 RAG 全量质量评测仍分别记录，不混作软件测试结论。
+
+## 2026-11-06 Plan Mode 与 Todo v1
+
+在 `feat/plan-todo-integration` 集成 WP1 Todo 后端（`b78a5d00`）、WP3 前端（`000eff4e`）和 WP2 Plan 后端（`0d7bfa81`）。Todo 改用已有 `todos` 表作为服务端权威快照；Plan 使用新 `plans` 表保存版本，`plan` 是请求级只读模式，不写入持久化设置。
+
+- WP1 定向（E 盘隔离 `TEMP`/`SQLITE_DB_PATH`，显式 `-p asyncio -p pytest_timeout`）：`test_todo_store/routes/tool_persistence/context/permission_mode_setting` 共 **43 passed**；含 `test_crud_message_idempotency`、`test_session_delete_resume`、`test_build_tool`、`test_protected_routes` 等关联组 **126 passed**。WP1 报告的全后端首轮为 **1791 passed / 68 skipped / 0 failed**（704s，exit 0）。
+- WP2 定向：plan store/policy/tool/routes/execution/SSE 与 Todo、chat、HITL、factory 关联组 **132 passed**。全后端首轮 **1833 passed / 68 skipped / 6 failed**；6 项均为 `test_tool_router_observation_capture.py` 的 `SimpleNamespace` 夹具缺少 `permission_mode`，改为 `getattr` 后该文件 **6 passed**。全后端第二轮在 `rag_eval` 阶段停滞，已停止；`--ignore=tests/rag_eval` 单列复跑为 **1784 passed / 68 skipped / 0 failed**（595.15 秒，exit 0）。RAG 全量评测仍按其独立门禁记录，不把停滞轮写成通过。
+- WP3 前端：目标 6 文件 **29 passed**；全量 **51 files / 351 passed**（基线 45/322）；`tsc --noEmit -p tsconfig.app.json`、`npm run build` 通过；`eslint .` 0 error / 13 条既有 warning。
+- 浏览器验收（Chromium，seed 计划与任务，`/api/chat` 在浏览器路由层返回 503 以隔离真实模型）：计划横幅、计划面板、任务清单、批准后“已批准/开始执行”、清空、刷新恢复、会话隔离均通过；无 page error。计划模式请求体实测为 `permission_mode: "plan"`，界面标签为“计划（只读）”；控制台仅出现预期的拦截 503。证据在 `E:/DevCaches/Temp/plan-todo-browser/evidence/`。
+- 未验证：真实模型生成计划、真实模型执行已批准计划、真实硬件/串口/烧录；浏览器执行聊天被拦截，不能代表真实模型链路。RAG 全量质量评测仍按其独立门禁记录。
 
 ## 2026-11-05 合并后完整后端门禁
 

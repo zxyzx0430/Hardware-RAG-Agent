@@ -2590,3 +2590,36 @@ Memory v2 保留旧 `/api/memory` 路径，新增 `tier/status/project_id/eviden
 设置键 `autoMemoryEnabled` 接受布尔值或 `"true"/"false"`，后端统一存成小写
 字符串；默认关闭。Memory 内容始终按明文参考数据注入，不当作指令；硬件档案
 仍走 `hardware-profile` Skill，不进入通用记忆。
+
+## 11. Todo 与 Plan（2026-11-06）
+
+Todo 使用已有 `todos` 表作为服务端权威快照；Plan 使用新 `plans` 表按会话保存
+版本。两者都沿用 `{success, data}` envelope 和会话 owner 规则；未绑定 owner 的
+旧会话保持可访问。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/sessions/{sid}/todos` | 返回 `{todos:[{content,status,priority}], updated_at}`；空清单 `updated_at=null` |
+| DELETE | `/api/sessions/{sid}/todos` | 清空并返回 `{todos:[], cleared:true}` |
+| GET | `/api/sessions/{sid}/plans/latest` | 最新计划完整 JSON，或 `{plan:null}` |
+| GET | `/api/sessions/{sid}/plans?limit=20` | 版本元数据列表；不返回 steps |
+| POST | `/api/sessions/{sid}/plans/{plan_id}/approve` | 只接受最新 `pending` 版本，返回 `{plan}` |
+| POST | `/api/sessions/{sid}/plans/{plan_id}/reject` | 只接受最新 `pending` 版本，返回 `{plan}` |
+
+Plan JSON 字段：`id, session_id, version, status, title, summary, steps[],
+risks[], open_questions[], run_id, executed_run_id, created_at, decided_at`。
+`status` 为 `pending/approved/rejected/superseded`；新版本会把旧的未执行
+`pending/approved` 版本改为 `superseded`，已开始执行的计划不被覆盖。
+
+`ChatRequest` 新增 `approved_plan_id?: string`，`permission_mode` 新增请求级
+`"plan"`（不写入设置，刷新后回到原三态）。带 `approved_plan_id` 时后端校验
+计划属于该会话、已批准且仍是最新版本；执行请求不能同时使用 `permission_mode
+="plan"`。批准只提供任务上下文，不预授权任何工具调用；写文件、命令、MCP、构建
+和烧录仍按原权限策略确认。
+
+SSE 新增：
+
+- `plan_update {plan}`：`submit_plan` 成功后推送；执行开始时也会推送带
+  `executed_run_id` 的版本，前端据此隐藏“待执行”提示。
+- `todo_update {todos:[]}`：合法的清空事件，前端必须用空数组覆盖旧展示。
+- 空 session 的 Todo 只走内存回退；不影响聊天完成。

@@ -50,9 +50,14 @@
 import { create } from "zustand";
 import type { Message, SourceRef, ActivityStep, Session, ContentPart, TodoItem } from "../types/session";
 import type { ChatRequest, ChatSSEEvent, Attachment, BackendMessage, RunStatus } from "../types/api";
+import type { Plan } from "../types/plan";
 import type { SSEEventMeta } from "../api/client";
 import { loadFromStorage, saveToStorage, saveSessionMessages as writeSessionMessages, loadSessionMessages, removeSessionMessages, migrateMessagesToShards } from "../utils/persistence";
 import { getSessionHistoryMode } from "../utils/rollingHistoryClient";
+import { normalizeTodos } from "../utils/planTodo";
+import { fetchSessionTodos as fetchSessionTodosApi, clearSessionTodos as clearSessionTodosApi } from "../api/todo";
+import { approveSessionPlan, fetchLatestPlan, rejectSessionPlan } from "../api/plan";
+import { planSnapshotState, planUpdateState, todoSnapshotState, todoUpdateState } from "./planTodoState";
 import {
   clearActiveRun,
   fetchRunState,
@@ -76,6 +81,8 @@ import { useToastStore } from "./useToastStore";
 import { handleToolCallEvent, handleToolResultEvent, handleCompileLogEvent, handleProgressEvent } from "./useWorkbenchBridge";
 
 const DEFAULT_MODEL = "";
+/** User-visible turn that starts executing an approved plan. */
+export const APPROVED_PLAN_EXECUTION_MESSAGE = "按照已批准的计划开始执行。";
 type KbScopeIssue = "corrupt" | "unavailable" | "repair" | "storage_error" | "verification_failed" | null;
 type StoredKbScope = { version: 1; mode: "all" } | { version: 1; mode: "selected"; ids: string[] } | { version: 1; mode: "repair" };
 const KB_SCOPE_STORAGE_PREFIX = "hwrag_chat_kb_scope_v1_";
@@ -208,6 +215,32 @@ interface ChatState {
   setSessionAttachments: (sessionId: string, attachments: Attachment[]) => void;
   /** 清空某会话的附件（发送后调用） */
   clearSessionAttachments: (sessionId: string) => void;
+
+  // ── Plan mode + server-authoritative todos/plans ──
+  /** Request-scoped read-only plan mode. Never written to settings or localStorage. */
+  planMode: boolean;
+  setPlanMode: (value: boolean) => void;
+  /** Server-authoritative todo snapshot per session (loaded flag separates empty from unloaded). */
+  sessionTodos: Record<string, TodoItem[]>;
+  sessionTodosLoaded: Record<string, boolean>;
+  sessionTodosRevision: Record<string, number>;
+  /** True once an SSE todo_update arrived for the session (including a clear). */
+  streamingTodosSeen: Record<string, boolean>;
+  sessionPlans: Record<string, Plan | null>;
+  sessionPlanLoaded: Record<string, boolean>;
+  sessionPlanRevision: Record<string, number>;
+  /** Load GET /todos for a session; stale responses lose to newer SSE updates. */
+  loadSessionTodos: (sessionId: string) => Promise<void>;
+  /** Load GET /plans/latest for a session; stale responses lose to newer SSE updates. */
+  loadSessionPlan: (sessionId: string) => Promise<void>;
+  /** DELETE the persisted todo list and clear it from the visible assistant message. */
+  clearSessionTodos: (sessionId?: string) => Promise<boolean>;
+  /** Approve a pending plan; closes planMode on success. */
+  approvePlan: (sessionId: string, planId: string) => Promise<Plan | null>;
+  /** Reject a pending plan; closes planMode on success. */
+  rejectPlan: (sessionId: string, planId: string) => Promise<boolean>;
+  /** Send the approved-plan execution turn. Returns false when it cannot start. */
+  executeApprovedPlan: (plan: Plan) => boolean;
   /** HITL pending confirm: when set, ConfirmDialog shows (v2-T4) */
   pendingConfirm: PendingConfirm | null;
   /** Last agent request body, cached for resume API (v2-T4) */
@@ -239,7 +272,13 @@ interface ChatState {
   /** 删除会话时清理对应来源查看器状态 */
   cleanupSessionSourceState: (sessionId: string) => void;
 
-  sendMessage: (content: string, attachments?: Attachment[], quoted?: Message, skills?: ChatSkillsRequest) => void;
+  sendMessage: (
+    content: string,
+    attachments?: Attachment[],
+    quoted?: Message,
+    skills?: ChatSkillsRequest,
+    options?: { approvedPlanId?: string },
+  ) => void;
   stopStreaming: (errorMessage?: string) => void;
   retryMessage: (msgId: string) => void;
   editAndResend: (msgId: string, newContent: string) => void;
@@ -985,6 +1024,30 @@ function _trackChatRunEvent(
 }
 
 /**
+ * Apply a todo snapshot to the owning session, including a completed stream's
+ * background session. An empty list is authoritative and replaces older todos.
+ */
+function _todoUpdatePatch(state: ChatState, sessionId: string, rawTodos: unknown): Partial<ChatState> {
+  const todos = normalizeTodos(rawTodos);
+  const isActive = state.activeSessionId === sessionId;
+  const msgs = [...(isActive ? state.messages : (state.sessionMessages[sessionId] ?? []))];
+  let sessionMessages = state.sessionMessages;
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].role === "assistant") {
+      msgs[i] = { ...msgs[i], todos };
+      sessionMessages = { ...state.sessionMessages, [sessionId]: msgs };
+      saveSessionMessages(sessionId, msgs);
+      break;
+    }
+  }
+  return {
+    ...todoUpdateState(state, sessionId, todos),
+    sessionMessages,
+    ...(isActive ? { messages: msgs, streamingTodos: todos } : {}),
+  };
+}
+
+/**
  * Apply one chat SSE event to the session that owns the run.
  * Shared by the initial POST stream, gap replays and refresh reattachment.
  */
@@ -1306,21 +1369,11 @@ function _applyChatEvent(event: ChatSSEEvent, requestSessionId: string, terminal
       }
 
       case "todo_update": {
-        const todos = (Array.isArray(sse.todos) ? (sse.todos as TodoItem[]) : []).map((t, idx) => ({
-          ...t,
-          id: t.id || `todo-${idx}`,
-        }));
-        const msgs = [...currentMsgs];
-        const last = msgs[msgs.length - 1];
-        if (last?.role === "assistant") {
-          msgs[msgs.length - 1] = { ...last, todos };
-        }
-        const newSM = { ...s.sessionMessages, [sid]: msgs };
-        saveSessionMessages(sid, msgs);
-        if (isActive) {
-          return { streamingTodos: todos, messages: msgs, sessionMessages: newSM };
-        }
-        return { sessionMessages: newSM };
+        return _todoUpdatePatch(s, sid, sse.todos);
+      }
+
+      case "plan_update": {
+        return planUpdateState(s, sid, sse.plan ?? null);
       }
 
       case "done": {
@@ -1728,6 +1781,14 @@ export const useChatStore = create<ChatState>((set, get) => {
     if (evt.type === "source") { _appendResumeSource(evt, sid); return; }
     if (evt.type === "tool_call") { _appendResumeToolCall(evt, sid, resumeSteps); return; }
     if (evt.type === "tool_result") { _updateResumeToolResult(evt, sid, resumeSteps); return; }
+    if (evt.type === "todo_update") {
+      set((s) => _todoUpdatePatch(s, sid, evt.todos));
+      return;
+    }
+    if (evt.type === "plan_update") {
+      set((s) => planUpdateState(s, sid, evt.plan ?? null));
+      return;
+    }
     if (evt.type === "tool_confirm_required") {
       if (get().activeSessionId === sid) set({ pendingConfirm: { calls: evt.calls, count: evt.count } });
       return;
@@ -2177,6 +2238,15 @@ export const useChatStore = create<ChatState>((set, get) => {
   // 来源查看器状态按 sessionId 隔离（仅内存，刷新后丢失可接受）
   sessionFileViewerSource: {},
   sessionHighlightSourceId: {},
+  // Plan mode is request-scoped; todo/plan snapshots are reloaded from the server.
+  planMode: false,
+  sessionTodos: {},
+  sessionTodosLoaded: {},
+  sessionTodosRevision: {},
+  streamingTodosSeen: {},
+  sessionPlans: {},
+  sessionPlanLoaded: {},
+  sessionPlanRevision: {},
 
   setSelectedKbIds: (ids) => {
     const selectedKbIds = [...new Set(ids.filter((id) => typeof id === "string" && id.length > 0))];
@@ -2239,6 +2309,100 @@ export const useChatStore = create<ChatState>((set, get) => {
     return { sessionAttachments: next };
   }),
 
+  setPlanMode: (planMode) => set({ planMode }),
+
+  loadSessionTodos: async (sessionId) => {
+    if (!sessionId) return;
+    const startRevision = get().sessionTodosRevision[sessionId] ?? 0;
+    try {
+      const snapshot = await fetchSessionTodosApi(sessionId);
+      if ((get().sessionTodosRevision[sessionId] ?? 0) !== startRevision) {
+        getLog()("debug", "chat", `丢弃过期任务清单快照: ${sessionId}`);
+        return;
+      }
+      set((s) => todoSnapshotState(s, sessionId, snapshot.todos));
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      getLog()("warn", "chat", `加载任务清单失败: ${sessionId} - ${errMsg}`);
+    }
+  },
+
+  loadSessionPlan: async (sessionId) => {
+    if (!sessionId) return;
+    const startRevision = get().sessionPlanRevision[sessionId] ?? 0;
+    try {
+      const plan = await fetchLatestPlan(sessionId);
+      if ((get().sessionPlanRevision[sessionId] ?? 0) !== startRevision) {
+        getLog()("debug", "chat", `丢弃过期计划快照: ${sessionId}`);
+        return;
+      }
+      set((s) => planSnapshotState(s, sessionId, plan));
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      getLog()("warn", "chat", `加载计划失败: ${sessionId} - ${errMsg}`);
+    }
+  },
+
+  clearSessionTodos: async (sessionId) => {
+    const sid = sessionId || get().activeSessionId;
+    if (!sid) return false;
+    try {
+      await clearSessionTodosApi(sid);
+      // Clear the visible assistant message too: the stream's done handler only
+      // copies streamingTodos when it is non-empty, so a message-level list
+      // would otherwise resurrect on the next view.
+      set((s) => _todoUpdatePatch(s, sid, []));
+      return true;
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      getLog()("warn", "chat", `清空任务清单失败: ${sid} - ${errMsg}`);
+      useToastStore.getState().showError(`清空任务清单失败: ${errMsg}`);
+      return false;
+    }
+  },
+
+  approvePlan: async (sessionId, planId) => {
+    try {
+      const plan = await approveSessionPlan(sessionId, planId);
+      set((s) => ({ ...planSnapshotState(s, sessionId, plan), planMode: false }));
+      return plan;
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      getLog()("warn", "chat", `批准计划失败: ${planId} - ${errMsg}`);
+      useToastStore.getState().showError(`批准计划失败: ${errMsg}`);
+      return null;
+    }
+  },
+
+  rejectPlan: async (sessionId, planId) => {
+    try {
+      const plan = await rejectSessionPlan(sessionId, planId);
+      set((s) => ({ ...planSnapshotState(s, sessionId, plan), planMode: false }));
+      return true;
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      getLog()("warn", "chat", `拒绝计划失败: ${planId} - ${errMsg}`);
+      useToastStore.getState().showError(`拒绝计划失败: ${errMsg}`);
+      return false;
+    }
+  },
+
+  executeApprovedPlan: (plan) => {
+    const { activeSessionId, isStreaming } = get();
+    if (!plan || plan.status !== "approved") return false;
+    if (plan.session_id && plan.session_id !== activeSessionId) return false;
+    if (isStreaming) return false;
+    set({ planMode: false });
+    void get().sendMessage(
+      APPROVED_PLAN_EXECUTION_MESSAGE,
+      undefined,
+      undefined,
+      undefined,
+      { approvedPlanId: plan.id },
+    );
+    return true;
+  },
+
   setSessionFileViewerSource: (sessionId, messageId, sourceId) => set((s) => {
     if (!messageId || !sourceId) {
       const next = { ...s.sessionFileViewerSource };
@@ -2283,6 +2447,7 @@ export const useChatStore = create<ChatState>((set, get) => {
       streamingSteps: [],
       streamingSources: [],
       streamingTodos: [],
+      streamingTodosSeen: { ...get().streamingTodosSeen, [sid]: false },
       isStreaming: true,
       streamingSessionId: sid,
       streamingStartTime: Date.now(),
@@ -2596,6 +2761,15 @@ export const useChatStore = create<ChatState>((set, get) => {
         }));
         saveSessionMessages(sessionId, msgs);
       }
+      // Server-authoritative todo/plan snapshots. A live stream (foreground or
+      // background) will replay its own todo_update/plan_update events, and a
+      // GET started now could overwrite newer SSE state.
+      const liveForSession = (get().isStreaming && get().streamingSessionId === sessionId)
+        || get().backgroundSseRequests.has(sessionId);
+      if (!liveForSession) {
+        void get().loadSessionTodos(sessionId);
+        void get().loadSessionPlan(sessionId);
+      }
       // Recovery R1: after a refresh, reattach to a run that was still active.
       void get().reattachRun(sessionId);
     } catch (err) {
@@ -2843,6 +3017,9 @@ export const useChatStore = create<ChatState>((set, get) => {
 
     set({
       activeSessionId: id,
+      // Plan mode is a per-turn toggle; switching sessions always returns to the
+      // persisted permission mode.
+      planMode: false,
       selectedKbIds: nextKbScope.ids,
       kbScopeIssue: nextKbScope.issue,
       messages: loadedMessages,
@@ -2852,6 +3029,9 @@ export const useChatStore = create<ChatState>((set, get) => {
       streamingSteps: restoredSteps,
       streamingSources: [],
       streamingTodos: [],
+      // Until the target session emits its own todo_update, prefer its persisted
+      // snapshot over an empty streaming buffer (background streams included).
+      streamingTodosSeen: { ...get().streamingTodosSeen, [id]: false },
       // SubTask 8.3: 正确清理 streamingSessionId / currentSseRequest（原 no-op 三元已修复）
       streamingSessionId: hasBackgroundStream ? id : null,
       streamingStartTime: hasBackgroundStream ? restoredStartTime : null,
@@ -2867,7 +3047,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     void get().fetchMessages(id);
   },
 
-  sendMessage: async (content, attachments, quoted, skills) => {
+  sendMessage: async (content, attachments, quoted, skills, options) => {
     const initialState = get();
     let { messages, activeSessionId } = initialState;
     const { isStreaming, selectedKbIds, kbScopeIssue } = initialState;
@@ -3027,6 +3207,8 @@ export const useChatStore = create<ChatState>((set, get) => {
         }],
         streamingSources: [],
         streamingTodos: [],
+        // A new turn starts from the persisted list until its own todo_update arrives.
+        streamingTodosSeen: { ...state.streamingTodosSeen, [activeSessionId]: false },
         streamingSessionId: activeSessionId,
         streamingStartTime: Date.now(),
         _pendingUsage: null,
@@ -3039,6 +3221,9 @@ export const useChatStore = create<ChatState>((set, get) => {
     // 构建请求体：历史消息 + 设置（扁平结构，对齐后端 ChatRequest）
     // 模型优先从当前会话读取（各对话独立），回退到全局设置
     const { topK, temperature, systemPrompt, longTermMemory, maxTokens, relevanceThreshold, permissionMode, webSearchConfig } = useSettingsStore.getState();
+    // Plan mode is request-scoped: it maps to permission_mode "plan" for this
+    // turn only and never touches the persisted settings value.
+    const planMode = get().planMode;
     const currentSession = useSessionStore.getState().sessions.find((s) => s.id === activeSessionId);
     const model = currentSession?.model || useSettingsStore.getState().chatModel;
     getLog()("info", "chat", `model=${model} topK=${topK} maxTokens=${maxTokens} threshold=${relevanceThreshold} sessionId=${activeSessionId} systemPrompt="${systemPrompt?.slice(0, 50)}..."`);
@@ -3074,7 +3259,8 @@ export const useChatStore = create<ChatState>((set, get) => {
       use_agent: true,
       skills_mode: skillsMode,
       ...(skillsMode === "manual" ? { skill_ids: skillIds } : {}),
-      permission_mode: permissionMode,
+      permission_mode: planMode ? "plan" : permissionMode,
+      ...(options?.approvedPlanId ? { approved_plan_id: options.approvedPlanId } : {}),
       tool_keys: {
         tavily: webSearchConfig.apiKey || "",
         tavily_base_url: webSearchConfig.baseUrl || "",

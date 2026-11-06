@@ -3,6 +3,7 @@
 // UI meta types (local to this file)
 export type NavView = 'chat' | 'knowledge' | 'bookmarks' | 'settings';
 export type RightMode = 'workbench' | 'content';
+export type RightContentTab = 'sources' | 'todos' | 'plan';
 export type Lang = 'zh' | 'en';
 export type Theme = 'light' | 'dark' | 'auto';
 export type WbTab = 'serial' | 'flash' | 'preview' | 'wiring' | 'safety';

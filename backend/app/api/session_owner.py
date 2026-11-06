@@ -73,6 +73,24 @@ def require_session_owner(
     return binding
 
 
+def require_session_owner_if_bound(
+    db: DBSession,
+    session_id: str,
+    user: dict | None,
+) -> None:
+    """Enforce ownership only when the session already has an owner binding.
+
+    Unbound legacy sessions stay accessible; bound sessions require the same
+    verified principal. Raises ``PermissionError`` on a mismatch.
+    """
+    binding = db.query(SessionOwnerBinding.session_id).filter(
+        SessionOwnerBinding.session_id == session_id
+    ).first()
+    if binding is None:
+        return
+    require_session_owner(db, session_id, user)
+
+
 def bind_new_session_owner(
     db: DBSession,
     session: Session,

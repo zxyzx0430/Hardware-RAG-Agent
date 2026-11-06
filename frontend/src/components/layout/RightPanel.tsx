@@ -9,6 +9,7 @@ import { WorkbenchPanel } from "../workbench/WorkbenchPanel";
 import { useI18n } from "../../i18n";
 import type { TodoItem, SourceRef } from "../../types/session";
 import TodoCard from "../chat/TodoCard";
+import { PlanPanel } from "../plan/PlanPanel";
 import { useAppliedDarkMode } from "../shared/MarkdownRenderer";
 import { EmptyState } from "../shared/EmptyState";
 import { fetchBigChunk, type BigChunkData } from "../../api/client";
@@ -56,12 +57,14 @@ function SourcePanel() {
   const { t } = useI18n();
   const { messages, isStreaming, streamingSources, activeSessionId,
           sessionFileViewerSource, sessionHighlightSourceId,
+          sessionTodos, sessionTodosLoaded, streamingTodos, streamingTodosSeen,
+          clearSessionTodos,
           setSessionFileViewerSource, setSessionHighlightSourceId } = useChatStore();
   const { items: kbItems } = useKnowledgeStore();
-  const { themeMode } = useAppStore();
+  const { themeMode, rightContentTab, setRightContentTab } = useAppStore();
   const isDark = useAppliedDarkMode();
   const editorTheme = themeMode === "dark" || (themeMode === "auto" && isDark) ? "vs-dark" : "vs-light";
-  const [tab, setTab] = useState<'sources' | 'todos'>('sources');
+  const tab = rightContentTab;
 
   // 当前会话的来源查看器状态（按 sessionId 隔离）
   const fileViewerSource = sessionFileViewerSource[activeSessionId] ?? null;
@@ -116,12 +119,9 @@ function SourcePanel() {
     }
   }, [defaultExpandedId]);
 
-  // 当前待办：流式中优先用 streamingTodos，否则取最后一条 assistant 消息的 todos
-  const todos: TodoItem[] = (() => {
-    if (isStreaming) {
-      const streamingTodos = useChatStore.getState().streamingTodos;
-      return streamingTodos;
-    }
+  // 当前待办优先级：流式中 SSE 快照 > 已加载的服务端快照 > 旧消息兜底。
+  // loaded 为 true 时空清单必须显示空态，不能回退到旧消息里的 todos。
+  const fallbackTodos: TodoItem[] = (() => {
     for (let i = messages.length - 1; i >= 0; i--) {
       const msg = messages[i];
       if (msg.role === 'assistant' && msg.todos && msg.todos.length > 0) {
@@ -130,6 +130,11 @@ function SourcePanel() {
     }
     return [];
   })();
+  const todosLoaded = sessionTodosLoaded[activeSessionId] ?? false;
+  const todosSeen = streamingTodosSeen[activeSessionId] ?? false;
+  const todos: TodoItem[] = isStreaming
+    ? (todosSeen ? streamingTodos : todosLoaded ? (sessionTodos[activeSessionId] ?? []) : fallbackTodos)
+    : (todosLoaded ? (sessionTodos[activeSessionId] ?? []) : fallbackTodos);
 
   // 查找文件查看源：先按 messageId 定位消息，再在该消息的 sources 里找 sourceId
   const viewed = useMemo(() => {
@@ -220,8 +225,9 @@ function SourcePanel() {
     <div className="source-panel" id="sourcePanel">
       <div className="source-header">
         <div className="source-tabs">
-          <button className={`source-tab ${tab === 'sources' ? 'active' : 'inactive'}`} id="tab-sources" onClick={() => setTab('sources')}>{t('sources')}</button>
-          <button className={`source-tab ${tab === 'todos' ? 'active' : 'inactive'}`} id="tab-todos" onClick={() => setTab('todos')}>{t('todos')}</button>
+          <button className={`source-tab ${tab === 'sources' ? 'active' : 'inactive'}`} id="tab-sources" onClick={() => setRightContentTab('sources')}>{t('sources')}</button>
+          <button className={`source-tab ${tab === 'todos' ? 'active' : 'inactive'}`} id="tab-todos" onClick={() => setRightContentTab('todos')}>{t('todos')}</button>
+          <button className={`source-tab ${tab === 'plan' ? 'active' : 'inactive'}`} id="tab-plan" onClick={() => setRightContentTab('plan')}>{t('planTab')}</button>
         </div>
       </div>
       <div className="source-scroll" id="sourceScroll">
@@ -245,7 +251,11 @@ function SourcePanel() {
             />
           )) : <EmptyState size="sm" title={t('noSourceData')} icon={<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 7h16M4 12h16M4 17h10" strokeLinecap="round" /></svg>} />
         ) : tab === 'todos' ? (
-          todos.length ? <TodoCard todos={todos} /> : <EmptyState size="sm" title={t('noTodos') || '暂无任务清单'} icon={<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M9 9h6M9 13h4" strokeLinecap="round" /></svg>} />
+          todos.length ? (
+            <TodoCard todos={todos} onClear={() => clearSessionTodos(activeSessionId)} />
+          ) : <EmptyState size="sm" title={t('noTodos') || '暂无任务清单'} icon={<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M9 9h6M9 13h4" strokeLinecap="round" /></svg>} />
+        ) : tab === 'plan' ? (
+          <PlanPanel />
         ) : null}
       </div>
     </div>
