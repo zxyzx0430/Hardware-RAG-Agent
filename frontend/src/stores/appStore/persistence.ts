@@ -1,8 +1,9 @@
 import { loadFromStorage } from "../../utils/persistence";
-import type { OpenFileItem } from "../../types";
+import type { OpenFileItem, RightContentTab } from "../../types";
 
 export const RIGHT_PANEL_KEY = "hwrag_right_panel_open";
 export const RIGHT_PANEL_WIDTH_KEY = "hwrag_right_panel_width";
+export const RIGHT_CONTENT_TAB_KEY = "hwrag_right_content_tab_by_session";
 export const EXPLORER_OPEN_KEY = "hwrag_explorer_open";
 export const EXPLORER_WIDTH_KEY = "hwrag_explorer_width";
 export const EXPLORER_ROOT_PATH_KEY = "hwrag_explorer_root_path";
@@ -48,6 +49,34 @@ export function loadRightPanelWidth(): number {
 
 export function saveRightPanelWidth(width: number): void {
   saveNumber(RIGHT_PANEL_WIDTH_KEY, width);
+}
+
+const RIGHT_CONTENT_TABS: ReadonlySet<string> = new Set(["sources", "todos", "plan"]);
+
+export function loadRightContentTabBySession(): Record<string, RightContentTab> {
+  try {
+    const raw = localStorage.getItem(RIGHT_CONTENT_TAB_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const tabs: Record<string, RightContentTab> = {};
+    for (const [sessionId, tab] of Object.entries(parsed)) {
+      if (sessionId && typeof tab === "string" && RIGHT_CONTENT_TABS.has(tab)) {
+        tabs[sessionId] = tab as RightContentTab;
+      }
+    }
+    return tabs;
+  } catch {
+    return {};
+  }
+}
+
+export function saveRightContentTabBySession(tabs: Record<string, RightContentTab>): void {
+  try {
+    localStorage.setItem(RIGHT_CONTENT_TAB_KEY, JSON.stringify(tabs));
+  } catch {
+    // ignore
+  }
 }
 
 export function loadInputBarWidth(): number {

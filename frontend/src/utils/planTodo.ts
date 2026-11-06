@@ -28,6 +28,8 @@ export function normalizeTodos(raw: unknown): TodoItem[] {
 }
 
 const PLAN_STATUSES: PlanStatus[] = ["pending", "approved", "rejected", "superseded"];
+const PLAN_EXECUTION_STATES = ["none", "started", "completed", "rejected", "failed"] as const;
+type PlanExecutionState = (typeof PLAN_EXECUTION_STATES)[number];
 
 function normalizeSteps(raw: unknown): PlanStep[] {
   if (!Array.isArray(raw)) return [];
@@ -54,6 +56,9 @@ export function normalizePlan(raw: unknown): Plan | null {
   const status = PLAN_STATUSES.includes(record.status as PlanStatus)
     ? (record.status as PlanStatus)
     : "pending";
+  const executionState = PLAN_EXECUTION_STATES.includes(record.execution_state as PlanExecutionState)
+    ? (record.execution_state as PlanExecutionState)
+    : undefined;
   return {
     id: record.id,
     session_id: typeof record.session_id === "string" ? record.session_id : "",
@@ -66,6 +71,10 @@ export function normalizePlan(raw: unknown): Plan | null {
     open_questions: normalizeStringList(record.open_questions),
     run_id: typeof record.run_id === "string" ? record.run_id : null,
     executed_run_id: typeof record.executed_run_id === "string" ? record.executed_run_id : null,
+    ...(executionState ? { execution_state: executionState } : {}),
+    ...(typeof record.execution_note === "string" && record.execution_note
+      ? { execution_note: record.execution_note }
+      : {}),
     created_at: typeof record.created_at === "string" ? record.created_at : "",
     decided_at: typeof record.decided_at === "string" ? record.decided_at : null,
   };

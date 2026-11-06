@@ -5,6 +5,8 @@ import {
   getDefaultRightPanelOpen,
   loadRightPanelWidth,
   saveRightPanelWidth,
+  loadRightContentTabBySession,
+  saveRightContentTabBySession,
   loadInputBarWidth,
   saveInputBarWidth,
   loadBoolean,
@@ -29,11 +31,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   activeNav: "chat",
   leftPanelOpen: true,
   rightPanelOpen: getDefaultRightPanelOpen(),
+  rightPanelRevealNonce: 0,
   leftPanelWidth: 280,
   rightPanelWidth: loadRightPanelWidth(),
   inputBarWidth: loadInputBarWidth(),
   rightMode: "workbench",
-  rightContentTab: "sources",
+  rightContentTabBySession: loadRightContentTabBySession(),
   wbTab: "serial",
   workbenchUserOverride: false,
   flashCode: "",
@@ -81,7 +84,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   setLeftPanelOpen: (leftPanelOpen) => set({ leftPanelOpen }),
   setRightPanelOpen: (rightPanelOpen) => {
     saveRightPanelOpen(rightPanelOpen);
-    set({ rightPanelOpen });
+    set((state) => ({
+      rightPanelOpen,
+      rightPanelRevealNonce: rightPanelOpen
+        ? state.rightPanelRevealNonce + 1
+        : state.rightPanelRevealNonce,
+    }));
   },
   setLeftPanelWidth: (leftPanelWidth) => set({ leftPanelWidth }),
   setRightPanelWidth: (rightPanelWidth) => {
@@ -93,7 +101,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ inputBarWidth });
   },
   setRightMode: (rightMode) => set({ rightMode }),
-  setRightContentTab: (rightContentTab) => set({ rightContentTab }),
+  setRightContentTab: (sessionId, tab) => {
+    if (!sessionId) return;
+    set((state) => {
+      const rightContentTabBySession = { ...state.rightContentTabBySession, [sessionId]: tab };
+      saveRightContentTabBySession(rightContentTabBySession);
+      return { rightContentTabBySession };
+    });
+  },
   setWbTab: (wbTab, source = "user") =>
     set(source === "user" ? { wbTab, workbenchUserOverride: true } : { wbTab }),
   setWorkbenchUserOverride: (workbenchUserOverride) => set({ workbenchUserOverride }),

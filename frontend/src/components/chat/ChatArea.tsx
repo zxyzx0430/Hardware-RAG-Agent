@@ -8,6 +8,7 @@ import { MarkdownRenderer } from "../shared/MarkdownRenderer";
 import { copyToClipboard } from "../../utils/clipboard";
 import { useI18n } from "../../i18n";
 import { renderMessageContent as renderContent } from "../../utils/content";
+import { shouldShowHistoryPagination } from "../../utils/chatHistory";
 import ActivityBlock from "./ActivityBlock";
 import ConfirmDialog from "./ConfirmDialog";
 import { UserMessageRow } from "./UserMessageRow";
@@ -88,6 +89,7 @@ export function ChatArea() {
   // 每次 render 同步更新 ref，供 rAF closure 读取实时值（避免切会话时写错 cache）
   activeSessionIdRef.current = activeSessionId;
   const sessions = useSessionStore((s) => s.sessions);
+  const newSession = useSessionStore((s) => s.newSession);
   const currentSession = sessions.find((s) => s.id === activeSessionId);
   const parentSession = currentSession?.branchFromSessionId
     ? sessions.find((s) => s.id === currentSession.branchFromSessionId)
@@ -357,7 +359,9 @@ export function ChatArea() {
     }
   };
 
-  const historyPagination = (
+  const showHistoryPagination = shouldShowHistoryPagination(messages.length, pagedHistoryStatus);
+
+  const historyPagination = showHistoryPagination ? (
     <div
       className="chat-history-pagination"
       style={{ padding: "8px 12px", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, flexWrap: "wrap" }}
@@ -395,7 +399,7 @@ export function ChatArea() {
         <span role="alert">分页消息已显示，但本地缓存保存失败：{pagedHistoryStatus.persistenceError}</span>
       )}
     </div>
-  );
+  ) : null;
 
   // 防御性处理：流式进行中但 messages 为空时（状态同步异常），显示流式占位
   if (!messages.length) {
@@ -505,6 +509,7 @@ export function ChatArea() {
             onScrollToMessage={scrollToMessage}
             onToggleBookmark={handleToggleBookmark}
             onRetry={handleRetry}
+            onNewSession={() => { void newSession(); }}
             onQuote={handleQuote}
             onCopy={handleCopy}
             onSetPickerMsgId={setPickerMsgId}

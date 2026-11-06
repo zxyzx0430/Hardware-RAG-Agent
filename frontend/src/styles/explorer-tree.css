@@ -75,6 +75,7 @@
 
 .explorer-recent-wrapper {
   position: relative;
+  z-index: 30;
 }
 
 .explorer-recent-dropdown {
@@ -89,7 +90,8 @@
   border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow: var(--shadow-md);
-  z-index: 100;
+  /* Must paint above the right workbench, which can sit to the left. */
+  z-index: 200;
 }
 
 .explorer-recent-item {

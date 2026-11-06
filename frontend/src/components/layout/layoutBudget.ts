@@ -47,6 +47,8 @@ export interface ResolvedLayout {
   requiredMinimumWidth: number;
   overflow: boolean;
   autoCollapsedPanels: LayoutPanel[];
+  /** Right panel cannot share the row with the chat column: render it as a drawer. */
+  rightPanelOverlay: boolean;
 }
 
 const COLLAPSE_PRIORITY: LayoutPanel[] = ["left", "right", "explorer"];
@@ -143,6 +145,7 @@ export function resolveLayout(input: LayoutBudgetInput): ResolvedLayout {
       requiredMinimumWidth: 0,
       overflow: false,
       autoCollapsedPanels: [],
+      rightPanelOverlay: false,
     };
   }
 
@@ -156,11 +159,24 @@ export function resolveLayout(input: LayoutBudgetInput): ResolvedLayout {
     rightPanelOpen,
     explorerOpen,
   };
-  const requiredMinimumWidth = getLayoutMinimumWidth(collapsedInput);
+  let requiredMinimumWidth = getLayoutMinimumWidth(collapsedInput);
+  // A protected right panel can still overflow the row at narrow widths. In
+  // that case render it as an overlay drawer instead of squeezing it to 1px
+  // or covering the Explorer strip.
+  let rightPanelOverlay = false;
+  if (rightPanelOpen && requiredMinimumWidth > input.viewportWidth) {
+    rightPanelOverlay = true;
+    requiredMinimumWidth = getLayoutMinimumWidth({ ...collapsedInput, rightPanelOpen: false });
+  }
   let remainingWidth = Math.max(0, input.viewportWidth - requiredMinimumWidth);
   let widths: Record<LayoutPanel, number> = {
     left: leftPanelOpen ? LEFT_PANEL_MIN_WIDTH : 0,
-    right: rightPanelOpen ? RIGHT_PANEL_MIN_WIDTH : 0,
+    right: rightPanelOpen
+      ? Math.min(
+          getPanelMaximum(input, "right"),
+          Math.max(RIGHT_PANEL_MIN_WIDTH, getPreferredWidth(input, "right")),
+        )
+      : 0,
     explorer: explorerOpen ? EXPLORER_MIN_WIDTH : 0,
   };
 
@@ -169,6 +185,7 @@ export function resolveLayout(input: LayoutBudgetInput): ResolvedLayout {
     : WIDTH_ALLOCATION_PRIORITY;
   for (const panel of allocationOrder) {
     if (!getPanelOpen(collapsedInput, panel)) continue;
+    if (panel === "right" && rightPanelOverlay) continue;
     const preferred = Math.min(
       getPanelMaximum(input, panel),
       Math.max(getPanelMinimum(panel), getPreferredWidth(input, panel)),
@@ -182,7 +199,7 @@ export function resolveLayout(input: LayoutBudgetInput): ResolvedLayout {
     + PANEL_STRIP_WIDTH
     + (leftPanelOpen ? widths.left + PANEL_RESIZER_WIDTH : 0)
     + PANEL_STRIP_WIDTH
-    + (rightPanelOpen ? widths.right + PANEL_RESIZER_WIDTH : 0)
+    + (rightPanelOpen && !rightPanelOverlay ? widths.right + PANEL_RESIZER_WIDTH : 0)
     + (explorerOpen
       ? widths.explorer + PANEL_RESIZER_WIDTH
       : EXPLORER_COLLAPSED_STRIP_WIDTH);
@@ -205,6 +222,7 @@ export function resolveLayout(input: LayoutBudgetInput): ResolvedLayout {
     requiredMinimumWidth,
     overflow: requiredMinimumWidth > input.viewportWidth,
     autoCollapsedPanels,
+    rightPanelOverlay,
   };
 }
 
@@ -214,7 +232,7 @@ export function getResizeReservedWidth(
 ): number {
   if (!layout.showChatShell) return 0;
 
-  const rightSlot = layout.rightPanelOpen
+  const rightSlot = layout.rightPanelOpen && !layout.rightPanelOverlay
     ? layout.rightPanelWidth + PANEL_RESIZER_WIDTH
     : 0;
   const explorerSlot = layout.explorerOpen

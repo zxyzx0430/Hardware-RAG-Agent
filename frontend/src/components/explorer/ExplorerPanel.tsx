@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useAppStore } from "../../stores/useAppStore";
 import { useModalStore } from "../../stores/useModalStore";
 import { useToastStore } from "../../stores/useToastStore";
@@ -20,6 +21,7 @@ import { EditorPanel } from "./EditorPanel";
 import { FileTree, type FileNode } from "./FileTree";
 import { FolderPickerDialog } from "./FolderPickerDialog";
 import { useExplorerWatch, type WatchEvent } from "./useExplorerWatch";
+import { createFollowToastThrottle, isIgnoredWatchPath } from "./watchEvents";
 import { collectDirPaths, collectLazyExpandedPaths, fileNameFromPath } from "./treeUtils";
 
 interface OpenResponse {
@@ -137,6 +139,7 @@ export function ExplorerPanel() {
   const treeContainerRef = useRef<HTMLDivElement>(null);
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const recentDropdownRef = useRef<HTMLDivElement>(null);
+  const followToastThrottleRef = useRef(createFollowToastThrottle(2000));
   // 防并发覆盖：每次 loadTree 递增 token，只有最新 token 的响应才能 setState。
   const loadTokenRef = useRef(0);
   // 期望路径：用户最新打开/切换的路径，refreshTree 用它而不是 rootPath state。
@@ -391,6 +394,9 @@ export function ExplorerPanel() {
 
   const handleWatchEvent = useCallback((event: WatchEvent) => {
     if (event.type === "heartbeat") return;
+    // SQLite WAL/SHM writes come from the app's own database and are not
+    // project changes; ignore them before refresh/highlight/toast work.
+    if (isIgnoredWatchPath(event.path) || isIgnoredWatchPath(event.dest_path)) return;
     // Only structural events (create/delete/rename) need a tree refresh.
     // "change" events (file content modified) don't affect the tree structure.
     if (event.type !== "change") {
@@ -407,9 +413,11 @@ export function ExplorerPanel() {
       highlightPath(targetPath);
       scrollToNode(targetPath);
       if (!explorerOpen) setExplorerOpen(true);
-      useToastStore.getState().showInfo(
-        t("followModeChangeToast", "{name} 已更新").replace("{name}", fileNameFromPath(targetPath)),
-      );
+      if (followToastThrottleRef.current.shouldShow()) {
+        useToastStore.getState().showInfo(
+          t("followModeChangeToast", "{name} 已更新").replace("{name}", fileNameFromPath(targetPath)),
+        );
+      }
     }
   }, [followMode, explorerOpen, highlightPath, debouncedRefresh, scrollToNode, setExplorerOpen, t]);
 
@@ -575,12 +583,13 @@ export function ExplorerPanel() {
         </div>
       </div>
 
-      {showFolderPicker && (
+      {showFolderPicker && typeof document !== "undefined" && createPortal(
         <FolderPickerDialog
           initialPath={rootPath}
           onConfirm={handleFolderPicked}
           onCancel={() => setShowFolderPicker(false)}
-        />
+        />,
+        document.body,
       )}
 
       {(editorShowTree || !hasFiles) && (

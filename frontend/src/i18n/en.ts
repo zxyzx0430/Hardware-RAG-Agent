@@ -490,6 +490,13 @@ const en: Record<string, string> = {
   planStatus_approved: 'Approved',
   planStatus_rejected: 'Rejected',
   planStatus_superseded: 'Superseded',
+  planExecutionState: 'Execution',
+  planExecutionNote: 'Execution note',
+  planExecution_none: 'Not started',
+  planExecution_started: 'Running',
+  planExecution_completed: 'Completed',
+  planExecution_rejected: 'Execution rejected',
+  planExecution_failed: 'Execution failed',
   noPlan: 'No plan',
 
   // Todo card - clear action
@@ -821,6 +828,20 @@ const en: Record<string, string> = {
   hardwareLoadFailed: 'Failed to load hardware profiles',
   hardwareDetailFailed: 'Failed to load profile details',
   hardwareJsonInvalid: 'Invalid JSON',
+
+  // Context limit / auth errors
+  contextLimitHint: 'Start a new session or shorten the context before sending again; retrying the same request will hit the same model limit.',
+  newSessionBtn: 'New session',
+  authErrorHint: 'Check your sign-in state or access token (session token), then retry.',
+
+  // Source preview
+  previewLoading: 'Loading preview…',
+  backToSources: 'Back to sources',
+
+  // Model dropdown
+  modelSearchPlaceholder: 'Search models or providers…',
+  modelNoMatch: 'No matching models',
+  modelSelectFirst: 'Configure and verify a provider in Settings first',
 
   // Provider names (Chinese-specific)
   providerGlm: 'Zhipu GLM',

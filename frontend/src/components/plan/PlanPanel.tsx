@@ -21,6 +21,11 @@ export function PlanPanel() {
         <span className={`plan-status plan-status-${plan.status}`}>
           {t(`planStatus_${plan.status}`)}
         </span>
+        {plan.execution_state && plan.execution_state !== "none" ? (
+          <span className={`plan-execution plan-execution-${plan.execution_state}`}>
+            {t(`planExecution_${plan.execution_state}`)}
+          </span>
+        ) : null}
         <span className="plan-version">{t('planVersion')} v{plan.version}</span>
       </div>
       <h2 className="plan-panel-title">{plan.title}</h2>
@@ -70,6 +75,10 @@ export function PlanPanel() {
       <div className="plan-meta">
         <div>{t('planStatus')}: {t(`planStatus_${plan.status}`)}</div>
         <div>{t('planVersion')}: v{plan.version}</div>
+        {plan.execution_state ? (
+          <div>{t('planExecutionState')}: {t(`planExecution_${plan.execution_state}`)}</div>
+        ) : null}
+        {plan.execution_note ? <div>{t('planExecutionNote')}: {plan.execution_note}</div> : null}
         {plan.created_at ? <div>{t('planCreatedAt')}: {plan.created_at}</div> : null}
         {plan.decided_at ? <div>{t('planDecidedAt')}: {plan.decided_at}</div> : null}
         {plan.executed_run_id ? <div>{t('planExecutedRun')}: {plan.executed_run_id}</div> : null}

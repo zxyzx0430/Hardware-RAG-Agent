@@ -42,6 +42,15 @@ STATUS_REJECTED = "rejected"
 STATUS_SUPERSEDED = "superseded"
 ACTIVE_STATUSES = (STATUS_PENDING, STATUS_APPROVED)
 
+# Derived execution state exposed alongside the plan. It is computed from the
+# plan row and its execution run so no schema migration is required; these
+# values are additive and optional for older clients.
+EXECUTION_NONE = "none"
+EXECUTION_STARTED = "started"
+EXECUTION_COMPLETED = "completed"
+EXECUTION_REJECTED = "rejected"
+EXECUTION_FAILED = "failed"
+
 
 class PlanValidationError(ValueError):
     """Plan payload is outside the accepted bounds."""
@@ -108,7 +117,63 @@ def normalize_plan_payload(payload: Any) -> dict[str, Any]:
     return normalized
 
 
+def _has_blocked_approval(store: Any, run_id: str) -> bool:
+    """True when a tool call in this run was denied or stopped by the user."""
+    for status in ("denied", "stopped"):
+        try:
+            if store.list_pending_approvals(run_id, status=status):
+                return True
+        except Exception:
+            logger.warning(
+                "plan execution approval lookup failed run=%s status=%s",
+                run_id, status, exc_info=True,
+            )
+    return False
+
+
+def _execution_state(row: Plan) -> tuple[str, str | None]:
+    """Derive (execution_state, execution_note) from the plan and its run.
+
+    Never raises: plan reads must keep working when run recovery storage is
+    unavailable, so an unreachable run degrades to ``started`` with a note.
+    """
+    if row.status == STATUS_REJECTED:
+        return EXECUTION_REJECTED, "计划未获批准，未执行"
+    run_id = row.executed_run_id
+    if not run_id:
+        return EXECUTION_NONE, None
+    try:
+        from app.db import run_store as run_store_module
+
+        store = run_store_module.RunStore()
+        run = store.get_run(run_id)
+        if run is None:
+            return EXECUTION_STARTED, "执行记录不可用"
+        if run.status == run_store_module.RUN_STATUS_AWAITING_CONFIRMATION:
+            return EXECUTION_STARTED, "等待工具调用确认"
+        if run.status == run_store_module.RUN_STATUS_RUNNING:
+            return EXECUTION_STARTED, None
+        if run.status == run_store_module.RUN_STATUS_COMPLETED:
+            if _has_blocked_approval(store, run_id):
+                return EXECUTION_REJECTED, "执行中部分工具调用被拒绝，计划未完整执行"
+            return EXECUTION_COMPLETED, None
+        if run.status == run_store_module.RUN_STATUS_FAILED:
+            return EXECUTION_FAILED, run.error_message or "执行失败"
+        if run.status == run_store_module.RUN_STATUS_CANCELLED:
+            return EXECUTION_FAILED, "执行已取消"
+        if run.status == run_store_module.RUN_STATUS_INTERRUPTED:
+            return EXECUTION_FAILED, "服务重启，执行被中断"
+        return EXECUTION_STARTED, None
+    except Exception:
+        logger.warning(
+            "plan execution state unavailable plan=%s run=%s", row.id, run_id,
+            exc_info=True,
+        )
+        return EXECUTION_STARTED, None
+
+
 def _plan_dict(row: Plan) -> dict[str, Any]:
+    execution_state, execution_note = _execution_state(row)
     return {
         "id": row.id,
         "session_id": row.session_id,
@@ -121,6 +186,8 @@ def _plan_dict(row: Plan) -> dict[str, Any]:
         "open_questions": _load_json(row.open_questions_json, []),
         "run_id": row.run_id,
         "executed_run_id": row.executed_run_id,
+        "execution_state": execution_state,
+        "execution_note": execution_note,
         "created_at": to_utc_iso_z(row.created_at),
         "decided_at": to_utc_iso_z(row.decided_at) or None,
     }
@@ -135,6 +202,7 @@ def _load_json(raw: Any, default: Any) -> Any:
 
 
 def _plan_meta(row: Plan) -> dict[str, Any]:
+    execution_state, execution_note = _execution_state(row)
     return {
         "id": row.id,
         "session_id": row.session_id,
@@ -144,6 +212,8 @@ def _plan_meta(row: Plan) -> dict[str, Any]:
         "created_at": to_utc_iso_z(row.created_at),
         "decided_at": to_utc_iso_z(row.decided_at) or None,
         "executed_run_id": row.executed_run_id,
+        "execution_state": execution_state,
+        "execution_note": execution_note,
     }
 
 

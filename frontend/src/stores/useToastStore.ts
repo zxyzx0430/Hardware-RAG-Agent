@@ -24,6 +24,8 @@ interface ToastState {
 }
 
 const DEFAULT_DURATION = 3000;
+// A burst of file-watcher or progress events must not cover the whole UI.
+const MAX_VISIBLE_TOASTS = 5;
 
 function genId(): string {
   if (typeof crypto !== "undefined" && crypto.randomUUID) {
@@ -41,8 +43,14 @@ function scheduleRemoval(id: string, duration: number): void {
 export const useToastStore = create<ToastState>((set, get) => ({
   toasts: [],
   addToast: (type, message, duration = DEFAULT_DURATION) => {
+    // Coalesce identical toasts that are already on screen. Watcher storms
+    // otherwise stack dozens of copies of the same "file updated" message.
+    const duplicate = get().toasts.some((t) => t.type === type && t.message === message);
+    if (duplicate) return;
     const id = genId();
-    set((s) => ({ toasts: [...s.toasts, { id, type, message, duration }] }));
+    set((s) => ({
+      toasts: [...s.toasts, { id, type, message, duration }].slice(-MAX_VISIBLE_TOASTS),
+    }));
     scheduleRemoval(id, duration);
   },
   removeToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),

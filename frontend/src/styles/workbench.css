@@ -264,6 +264,16 @@
 .plan-status-approved { background: var(--success-soft); color: var(--success); }
 .plan-status-rejected { background: var(--danger-soft); color: var(--danger); }
 .plan-status-superseded { background: var(--muted); color: var(--muted-fg); }
+.plan-execution {
+  display: inline-flex; align-items: center;
+  padding: 2px 8px; border-radius: 999px;
+  font-size: 11px; font-weight: 600;
+  background: var(--muted); color: var(--muted-fg);
+}
+.plan-execution-started { background: var(--activity-bg); color: var(--primary); }
+.plan-execution-completed { background: var(--success-soft); color: var(--success); }
+.plan-execution-rejected { background: var(--danger-soft); color: var(--danger); }
+.plan-execution-failed { background: var(--danger-soft); color: var(--danger); }
 .plan-version {
   font-size: 11px; color: var(--muted-fg);
   font-family: var(--font-mono);
@@ -444,7 +454,23 @@
 .source-fv-header {
   display: flex; align-items: center; gap: 8px;
   padding: 12px; border-bottom: 1px solid var(--border);
+  flex-shrink: 0; min-width: 0;
 }
+.source-fv-heading {
+  display: flex; flex-direction: column; min-width: 0; flex: 1;
+}
+.source-fv-breadcrumb {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--muted-fg);
+}
+.source-fv-loading {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px; color: var(--muted-fg);
+  background: var(--card);
+  z-index: 2;
+}
+.source-fv-back { flex-shrink: 0; white-space: nowrap; }
 .source-fv-back {
   display: flex; align-items: center; gap: 4px;
   padding: 4px 8px; border-radius: var(--radius-sm); font-size: 11px;

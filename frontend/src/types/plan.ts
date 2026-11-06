@@ -2,6 +2,9 @@
 
 export type PlanStatus = "pending" | "approved" | "rejected" | "superseded";
 
+/** Optional backend-reported execution outcome of an approved plan. */
+export type PlanExecutionState = "none" | "started" | "completed" | "rejected" | "failed";
+
 export interface PlanStep {
   title: string;
   detail?: string;
@@ -21,6 +24,9 @@ export interface Plan {
   open_questions: string[];
   run_id?: string | null;
   executed_run_id?: string | null;
+  /** Optional: absent on older backends; UI must fall back to approved/executed display. */
+  execution_state?: PlanExecutionState;
+  execution_note?: string | null;
   created_at: string;
   decided_at?: string | null;
 }

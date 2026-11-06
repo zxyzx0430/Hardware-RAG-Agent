@@ -29,6 +29,7 @@ export interface AssistantMessageRowProps {
   onScrollToMessage: (id: string) => void;
   onToggleBookmark: (msgId: string) => void;
   onRetry: (msgId: string) => void;
+  onNewSession?: () => void;
   onQuote: (msgId: string) => void;
   onCopy: (msgId: string, content: string | ContentPart[]) => void;
   onSetPickerMsgId: (id: string | null) => void;
@@ -60,6 +61,7 @@ export const AssistantMessageRow = memo(function AssistantMessageRow(props: Assi
     onScrollToMessage,
     onToggleBookmark,
     onRetry,
+    onNewSession,
     onQuote,
     onCopy,
     onSetPickerMsgId,
@@ -68,6 +70,9 @@ export const AssistantMessageRow = memo(function AssistantMessageRow(props: Assi
     onAddBookmarkFolder,
   } = props;
 
+  // The retry button is a stable affordance, but a context-limit turn would
+  // replay the exact same oversized history and fail again.
+  const contextLimitError = streamingError?.code === "CONTEXT_LIMIT";
   // 稳定 onSourceClick 引用，避免内联箭头每次 render 新建导致 AssistantMessageContent memo 失效
   const handleSourceClick = useCallback((id: string) => {
     onSourceClick(id, msg.id, msg.sources);
@@ -98,7 +103,8 @@ export const AssistantMessageRow = memo(function AssistantMessageRow(props: Assi
             code={streamingError.code}
             message={streamingError.message}
             detail={streamingError.detail}
-            onRetry={() => onRetry(msg.id)}
+            onRetry={streamingError.code === "CONTEXT_LIMIT" ? undefined : () => onRetry(msg.id)}
+            onNewSession={onNewSession}
           />
         )}
         {msg.sources && msg.sources.length > 0 && !isCurrentlyStreaming && (
@@ -189,9 +195,11 @@ export const AssistantMessageRow = memo(function AssistantMessageRow(props: Assi
             <button className={`action-btn${copiedMsgId === msg.id ? ' copied' : ''}`} onClick={() => { onCopy(msg.id, msg.content); }}>
               <svg width="12" height="12" viewBox="0 0 24 24" fill={copiedMsgId === msg.id ? 'var(--success)' : 'none'} stroke={copiedMsgId === msg.id ? 'var(--success)' : 'currentColor'} strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>{copiedMsgId === msg.id ? '✓ 已复制' : t('copy')}
             </button>
-            <button className="action-btn" onClick={() => onRetry(msg.id)} disabled={isStreaming}>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>{t('retry')}
-            </button>
+            {!contextLimitError && (
+              <button className="action-btn" onClick={() => onRetry(msg.id)} disabled={isStreaming}>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>{t('retry')}
+              </button>
+            )}
             <button className="action-btn" onClick={() => onQuote(msg.id)}>
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 21c3 0 7-1 7-8V5c0-1.25-.756-2.017-2-2H4c-1.25 0-2 .75-2 1.972V11c0 1.25.75 2 2 2 1 0 1 0 1 1v1c0 1-1 2-2 2s-1 .008-1 1.031V20c0 1 0 1 1 1z"/><path d="M15 21c3 0 7-1 7-8V5c0-1.25-.757-2.017-2-2h-4c-1.25 0-2 .75-2 1.972V11c0 1.25.75 2 2 2 1 0 1 0 1 1v1c0 1-1 2-2 2s-1 .008-1 1.031V20c0 1 0 1 1 1z"/></svg>{t('quote')}
             </button>

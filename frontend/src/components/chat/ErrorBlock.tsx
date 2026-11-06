@@ -5,9 +5,12 @@ import { copyToClipboard } from "../../utils/clipboard";
 // 错误样式：边框/背景统一用 CSS 变量，自动适配明暗主题
 const ERROR_STYLES: Record<string, { border: string; bg: string; icon: string }> = {
   AUTH_FAILED:    { border: "var(--warn)",   bg: "var(--warn-soft)",   icon: "warning" },
+  AUTH_REQUIRED:  { border: "var(--warn)",   bg: "var(--warn-soft)",   icon: "warning" },
+  AUTH_INVALID:   { border: "var(--warn)",   bg: "var(--warn-soft)",   icon: "warning" },
   MODEL_NOT_FOUND:{ border: "var(--warn)",   bg: "var(--warn-soft)",   icon: "warning" },
   TIMEOUT:        { border: "var(--warn)",   bg: "var(--warn-soft)",   icon: "clock" },
   RATE_LIMITED:   { border: "var(--warn)",   bg: "var(--warn-soft)",   icon: "clock" },
+  CONTEXT_LIMIT:  { border: "var(--warn)",   bg: "var(--warn-soft)",   icon: "info" },
   NETWORK_ERROR:  { border: "var(--danger)", bg: "var(--danger-soft)", icon: "link-off" },
   RAG_FAILED:     { border: "var(--primary)",bg: "var(--activity-bg)", icon: "info" },
   INTERNAL_ERROR: { border: "var(--danger)", bg: "var(--danger-soft)", icon: "warning" },
@@ -60,12 +63,15 @@ interface ErrorBlockProps {
   message: string;
   detail?: string;
   onRetry?: () => void;
+  onNewSession?: () => void;
 }
 
-export default function ErrorBlock({ code, message, detail, onRetry }: ErrorBlockProps) {
+export default function ErrorBlock({ code, message, detail, onRetry, onNewSession }: ErrorBlockProps) {
   const { t } = useI18n();
   const style = ERROR_STYLES[code] ?? ERROR_STYLES.UNKNOWN;
   const [copied, setCopied] = useState(false);
+  const isContextLimit = code === "CONTEXT_LIMIT";
+  const isAuthError = code === "AUTH_FAILED" || code === "AUTH_REQUIRED" || code === "AUTH_INVALID";
 
   const handleCopy = useCallback(() => {
     const text = [code, message, detail].filter(Boolean).join("\n");
@@ -101,22 +107,52 @@ export default function ErrorBlock({ code, message, detail, onRetry }: ErrorBloc
             {detail}
           </div>
         )}
-        {onRetry && (
-          <button
-            onClick={onRetry}
-            style={{
-              marginTop: 6,
-              padding: "4px 12px",
-              borderRadius: 6,
-              border: `1px solid ${style.border}`,
-              background: "transparent",
-              color: style.border,
-              fontSize: 12,
-              cursor: "pointer",
-            }}
-          >
-            {t('retry') ?? '重试'}
-          </button>
+        {isContextLimit ? (
+          <div className="error-hint" style={{ marginTop: 6, fontSize: 12, color: "var(--fg)" }}>
+            <div>{t('contextLimitHint')}</div>
+            {onNewSession ? (
+              <button
+                onClick={onNewSession}
+                style={{
+                  marginTop: 6,
+                  padding: "4px 12px",
+                  borderRadius: 6,
+                  border: "1px solid var(--primary)",
+                  background: "transparent",
+                  color: "var(--primary)",
+                  fontSize: 12,
+                  cursor: "pointer",
+                }}
+              >
+                {t('newSessionBtn')}
+              </button>
+            ) : null}
+          </div>
+        ) : (
+          <>
+            {isAuthError ? (
+              <div style={{ marginTop: 4, fontSize: 12, color: "var(--fg)" }}>
+                {t('authErrorHint')}
+              </div>
+            ) : null}
+            {onRetry ? (
+              <button
+                onClick={onRetry}
+                style={{
+                  marginTop: 6,
+                  padding: "4px 12px",
+                  borderRadius: 6,
+                  border: `1px solid ${style.border}`,
+                  background: "transparent",
+                  color: style.border,
+                  fontSize: 12,
+                  cursor: "pointer",
+                }}
+              >
+                {t('retry') ?? '重试'}
+              </button>
+            ) : null}
+          </>
         )}
       </div>
       <button
