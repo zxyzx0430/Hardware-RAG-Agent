@@ -8,7 +8,7 @@
 
 - 后端定向：WP1 Todo 43 + 126 passed；WP2 Plan 与关联组 145 passed（含审查后新增的 ctx/snapshot/build-agent、旧库建表、并发版本和 approved prompt 断言）；完整后端含 `tests/rag_eval`（`--timeout=180`）**1867 passed / 68 skipped / 0 failed**（812.55 秒，exit 0）。
 - 对抗复查修复：`SubmitPlanTool` 追加在 `_ctx` 注入之后，真实 Agent 路径会把它当成非 plan mode（`4068d646`）；HITL resume 的 `_persisted_rows` 在 DB 会话关闭后读取过期 ORM 行，触发 `DetachedInstanceError`（`66f477fc`，含回归测试）。
-- 真实模型端到端：`ccgo/gpt-6-luna` 在计划模式只读调用 `list_files` → `submit_plan`，批准后执行 `write_file`，HITL 弹出写文件确认；允许后文件创建/读取成功（`plan e2e ok`），无 page error。证据在 `E:/DevCaches/Temp/plan-todo-e2e/evidence/e2e-result.json`。
+- 真实模型端到端：`ccgo/gpt-6-luna` 在计划模式只读调用 `list_files` → `submit_plan`，批准后执行 `write_file`，HITL 弹出写文件确认；允许后文件创建/读取成功（`plan e2e ok`），刷新后计划仍为已批准、待办仍可见，无 page error。证据在 `E:/DevCaches/Temp/plan-todo-e2e/evidence/e2e-result.json` 与 `reload-result.json`。
 - 前端：目标 29 passed；全量 51 files / 351 passed；`tsc`、`npm run build` 通过；eslint 0 error / 13 条既有 warning。
 - GitNexus：刷新索引后 `detect-changes` 3 files / 8 symbols / 0 affected processes / low；`_persisted_rows` impact LOW（6/1）；`build_tool_specs` 为 UNKNOWN，已用文本搜索确认调用点。
 - 未验证：真实硬件/串口/烧录；真实模型 E2E 使用文件写入任务，未覆盖硬件动作。P0 的 Run 所有权和后台自动执行仍未做，批准后的执行仍由前端发起。
