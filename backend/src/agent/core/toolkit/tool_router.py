@@ -38,6 +38,10 @@ from src.agent.core.toolkit.tool_result_envelope import (
     ToolResultEnvelope,
 )
 from src.agent.core.toolkit.tool_spec import ToolSpec
+from src.agent.core.toolkit.tool_output_budget import (
+    apply_plan_output_budget,
+    plan_budget_preflight,
+)
 from src.agent.exceptions import ToolContext
 from src.agent.plan_policy import PLAN_MODE, is_allowed_in_plan_mode
 
@@ -214,12 +218,23 @@ class ToolRouter:
                 return _with_observation_status(envelope)
             if external or source != "auto_allow":
                 decision, decision_source = "allow", source
+        notice = plan_budget_preflight(spec.name, ctx)
+        if notice is not None:
+            notice_envelope = ToolResultEnvelope(**notice)
+            self.audit_recorder.record(
+                AuditRecord(
+                    call_id, spec, audit_args, notice_envelope,
+                    "deny", "plan_output_budget", ctx,
+                )
+            )
+            return notice
         envelope = await self._run_pipeline(state)
         self.audit_recorder.record(
             AuditRecord(call_id, spec, audit_args, envelope, decision, decision_source, ctx)
         )
         reference = _archive_tool_observation(envelope, spec, ctx)
-        return _with_observation_status(envelope, reference)
+        result = _with_observation_status(envelope, reference)
+        return apply_plan_output_budget(result, spec.name, ctx)
 
     async def _run_pipeline(self, state: _DispatchState) -> ToolResultEnvelope:
         """Validate args, execute, wrap and soft-validate, then preserve output."""

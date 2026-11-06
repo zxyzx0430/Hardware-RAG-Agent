@@ -12,7 +12,14 @@ MAX_SUMMARY_CHARS = 800
 _PLAN_MODE_PROMPT = """## Plan mode (read-only)
 You are in plan mode. Only read-only research tools are available. Do not write files, run commands, install or import skills, flash hardware, or write memory/todos.
 Research the request enough to make a concrete plan. For a multi-step task that would write files, run commands, build, or touch hardware, call `submit_plan` exactly once when ready. For a simple question, answer directly; do not force a plan.
-After `submit_plan` succeeds, stop and wait for the user's decision. A plan is a proposal, not a permission grant: the user must approve a specific version before execution, and every tool call still follows the normal permission policy."""
+After `submit_plan` succeeds, stop and wait for the user's decision. A plan is a proposal, not a permission grant: the user must approve a specific version before execution, and every tool call still follows the normal permission policy.
+
+### Scanning discipline
+- Start from the exact file or directory the user named. Prefer `grep`/`glob` with a specific pattern and a narrow `path` over scanning the repository root or a home directory.
+- `list_files`/`glob`/`grep` skip dependency, build and cache directories by default (`node_modules`, `.venv`, `venv`, `.git`, `.pio`, `.platformio`, `dist`, `build`, `__pycache__`, `.pytest_cache`, ...). Keep those defaults unless the user explicitly asked to inspect one of those directories.
+- Do not read whole large files. Locate the relevant section with `grep`, then read a small `offset`/`limit` window; plan mode caps each read at 3000 characters.
+- A plan-mode turn has a bounded tool-output budget (~48000 estimated tokens across all tool calls). If a scan is large or the budget is nearly used, stop and submit a plan: put missing information in `open_questions` and name the directory or file the user should narrow down, instead of repeating broad scans.
+- Never retry a failed broad scan with the same scope; narrow it or ask the user."""
 
 
 def build_plan_mode_prompt() -> str:

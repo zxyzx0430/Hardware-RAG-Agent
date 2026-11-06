@@ -105,11 +105,12 @@ def test_resume_context_limit_emits_failed_terminal_and_does_not_retry(
     assert events[1] == {
         "type": "error",
         "code": "CONTEXT_LIMIT",
+        "retryable": False,
         "message": (
-            "上下文超过当前模型可处理上限，本轮请求已停止。"
-            "请缩短对话历史或开启新会话后重试。"
+            "上下文超过模型 test-model 的可处理上限（80 tokens），本轮已停止。"
+            "直接重试会再次超限；请开启新会话，或缩小扫描/对话范围后重新提问。"
         ),
-        "detail": "累计上下文估算为 101 tokens，限制为 80 tokens。",
+        "detail": "本轮累计估算 101 tokens；已执行的工具输出也计入上下文。",
     }
     assert events[2] == {"type": "done", "success": False, "completed": False}
     assert handler_calls == [decision]

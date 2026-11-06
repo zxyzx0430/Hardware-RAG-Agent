@@ -10,7 +10,10 @@ which is treated as an explicit request to inspect it.
 
 from __future__ import annotations
 
+import os
 import re
+from pathlib import Path
+from typing import Iterator
 
 # Generated, vendored or VCS directories that never belong to a broad scan.
 DEFAULT_IGNORED_DIRS: frozenset[str] = frozenset({
@@ -43,3 +46,52 @@ def explicit_ignored_segments(pattern: str) -> frozenset[str]:
     """
     segments = {segment for segment in re.split(r"[\\/]+", pattern) if segment}
     return frozenset(segment for segment in segments if is_default_ignored_dir(segment))
+
+
+def is_link_or_junction(path: str) -> bool:
+    """True for symlinks and Windows junctions (never traversed).
+
+    Junctions are not symlinks on Windows, so ``os.walk(followlinks=False)``
+    still descends into them; a junction loop then duplicates or loops the
+    scan. Unreadable entries fail closed.
+    """
+    try:
+        if os.path.islink(path):
+            return True
+        isjunction = getattr(os.path, "isjunction", None)
+        return bool(isjunction and isjunction(path))
+    except OSError:
+        return True
+
+
+def iter_scan_files(
+    root: Path,
+    *,
+    include_ignored: bool = False,
+    allowed_ignored: frozenset[str] = frozenset(),
+    max_depth: int | None = None,
+) -> Iterator[Path]:
+    """Walk regular files under root, pruning ignored dirs and links/junctions.
+
+    ``max_depth`` is the deepest directory depth to descend into (root = 0);
+    files directly inside a pruned directory are still yielded.
+    """
+    root_depth = len(Path(root).parts)
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        depth = len(Path(dirpath).parts) - root_depth
+        kept: list[str] = []
+        if max_depth is None or depth < max_depth:
+            for name in dirnames:
+                full = os.path.join(dirpath, name)
+                if is_link_or_junction(full):
+                    continue
+                if (
+                    not include_ignored
+                    and is_default_ignored_dir(name)
+                    and name not in allowed_ignored
+                ):
+                    continue
+                kept.append(name)
+        dirnames[:] = sorted(kept)
+        for name in sorted(filenames):
+            yield Path(dirpath) / name

@@ -86,3 +86,14 @@ async def test_router_denies_write_in_plan_mode():
 
     assert result["success"] is False
     assert result["error"]["error_type"] == "PLAN_MODE_READ_ONLY"
+
+
+def test_plan_mode_prompt_documents_narrow_scanning_and_budget():
+    from src.agent.plan_prompt import build_plan_mode_prompt
+
+    prompt = build_plan_mode_prompt()
+
+    assert "Scanning discipline" in prompt
+    assert "node_modules" in prompt
+    assert "48000" in prompt
+    assert "submit_plan" in prompt

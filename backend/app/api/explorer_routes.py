@@ -622,7 +622,12 @@ async def explorer_watch(
         # reconnect or after a backend restart.
         root = require_authorized_root(path, session_id)
     except ExplorerSecurityError as exc:
-        return _error_response("security check failed", str(exc), 403, "FORBIDDEN")
+        return _error_response(
+            "watch root not authorized",
+            f"{exc}; 请重新打开该文件夹后再连接文件监视",
+            403,
+            "EXPLORER_ROOT_NOT_AUTHORIZED",
+        )
     except Exception as exc:
         logger.exception("explorer_watch validation failed")
         return _error_response("watch failed", str(exc), 500)

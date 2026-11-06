@@ -12,6 +12,7 @@ removed (inherited from ToolSpec, injected by agent_factory).
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -26,8 +27,11 @@ from src.agent.path_guard import resolve_agent_path, validate_path
 
 DEFAULT_READ_LIMIT: int = 2000
 DEFAULT_READ_OFFSET: int = 0
+MAX_READ_LINES: int = 5000
+MAX_READ_BYTES: int = 512 * 1024
 MAX_OUTPUT_CHARS: int = 5000
-TRUNCATE_SUFFIX: str = "...[truncated]"
+PLAN_MAX_OUTPUT_CHARS: int = 3000
+TRUNCATE_SUFFIX: str = "...[truncated; use offset/limit to continue]"
 
 
 # ═══════════════════════════════════════════
@@ -53,8 +57,10 @@ class ReadFileTool(ToolSpec):
     description: str = (
         "读取本地文件内容，支持分段读取（offset/limit）。"
         "路径必须在项目目录内（path_guard 安全校验）。"
+        "单次最多 5000 字符（计划模式 3000 字符）、5000 行、512KB；"
+        "超出时返回截断标记，请用 offset/limit 继续读取，不要一次读完整份大文件。"
         "\n\n与 run_command cat/type 的区分："
-        "\n- read_file：有 path_guard 安全校验 + 分段读取 + 自动截断（>5000 字符）"
+        "\n- read_file：有 path_guard 安全校验 + 分段读取 + 自动截断"
         "\n- run_command cat：无安全校验，但支持管道（如 cat | grep）"
         "\n需要读单个文件用 read_file；需要管道处理用 run_command。"
     )
@@ -76,29 +82,102 @@ class ReadFileTool(ToolSpec):
         resolved = resolve_agent_path(path)
         if not resolved:
             return {"output": "Error: path could not be resolved", "path": path, "offset": offset, "limit": limit}
-        return await _do_read(resolved, offset, limit)
+        limit = max(0, min(int(limit), MAX_READ_LINES))
+        max_chars = (
+            PLAN_MAX_OUTPUT_CHARS
+            if getattr(ctx, "permission_mode", "") == "plan"
+            else MAX_OUTPUT_CHARS
+        )
+        return await _do_read(resolved, offset, limit, max_chars)
 
 
-async def _do_read(path: str, offset: int, limit: int) -> dict:
+async def _do_read(path: str, offset: int, limit: int, max_chars: int) -> dict:
     """Read file content with offset/limit, return truncated output."""
-    content = await asyncio.to_thread(_read_file_sync, path, offset, limit)
+    content = await asyncio.to_thread(
+        _read_file_sync, path, offset, limit, max_chars,
+    )
     return {"output": content, "path": path, "offset": offset, "limit": limit}
 
 
-def _read_file_sync(path: str, offset: int, limit: int) -> str:
-    """Sync file read with line offset/limit + truncation."""
+def _read_file_sync(path: str, offset: int, limit: int, max_chars: int) -> str:
+    """Sync file read with line offset/limit, byte cap and output truncation.
+
+    Reads in binary mode with bounded line reads so a multi-megabyte single
+    line cannot be loaded whole; binary files are rejected with a clear error.
+    """
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            lines = f.readlines()
+        with open(path, "rb") as handle:
+            if _looks_binary(handle):
+                return (
+                    f"Error: binary file: {path} ({_file_size(path)} bytes); "
+                    "read_file only supports text files"
+                )
+            for _ in range(max(int(offset), 0)):
+                if not _skip_one_line(handle):
+                    return ""
+            chunks: list[bytes] = []
+            bytes_read = 0
+            byte_truncated = False
+            for _ in range(max(int(limit), 0)):
+                line = handle.readline(MAX_READ_BYTES + 1)
+                if not line:
+                    break
+                line_too_long = (
+                    len(line) > MAX_READ_BYTES and not line.endswith(b"\n")
+                )
+                if bytes_read + len(line) > MAX_READ_BYTES or line_too_long:
+                    remaining = max(MAX_READ_BYTES - bytes_read, 0)
+                    if remaining:
+                        chunks.append(line[:remaining])
+                    byte_truncated = True
+                    break
+                chunks.append(line)
+                bytes_read += len(line)
+                if line_too_long:
+                    break
     except FileNotFoundError:
         return f"Error: file not found: {path}"
+    except PermissionError:
+        return f"Error: permission denied: {path}"
     except OSError as exc:
         return f"Error reading file: {exc}"
-    return _truncate("".join(lines[offset:offset + limit]))
+    text = b"".join(chunks).decode("utf-8", errors="replace")
+    # Match the previous text-mode universal-newline behavior.
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    if byte_truncated:
+        text += TRUNCATE_SUFFIX
+    return _truncate(text, max_chars)
 
 
-def _truncate(text: str) -> str:
-    """Truncate text to MAX_OUTPUT_CHARS."""
-    if len(text) <= MAX_OUTPUT_CHARS:
+def _looks_binary(handle: Any) -> bool:
+    """Detect a binary file from its first 8 KiB (seek back afterwards)."""
+    sample = handle.read(8192)
+    try:
+        handle.seek(0)
+    except OSError:
+        pass
+    return b"\x00" in sample
+
+
+def _skip_one_line(handle: Any) -> bool:
+    """Skip one line of arbitrary length; return False at EOF."""
+    while True:
+        chunk = handle.readline(MAX_READ_BYTES + 1)
+        if not chunk:
+            return False
+        if chunk.endswith(b"\n"):
+            return True
+
+
+def _truncate(text: str, max_chars: int) -> str:
+    """Truncate text to max_chars with an explicit continuation marker."""
+    if len(text) <= max_chars:
         return text
-    return text[:MAX_OUTPUT_CHARS] + TRUNCATE_SUFFIX
+    return text[:max_chars] + TRUNCATE_SUFFIX
+
+
+def _file_size(path: str) -> int:
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return 0
