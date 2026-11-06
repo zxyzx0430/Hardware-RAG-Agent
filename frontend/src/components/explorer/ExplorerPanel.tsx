@@ -492,6 +492,7 @@ export function ExplorerPanel() {
   );
 
   const hasFiles = openFiles.length > 0;
+  const showExplorerToolbar = editorShowTree || !hasFiles;
   const treeHiddenStyle = { display: loading ? "none" : undefined } as const;
   const fileTreeEl = tree && (
     <FileTree
@@ -520,6 +521,16 @@ export function ExplorerPanel() {
         <span className="explorer-header-title">{t("explorerTitle", "文件资源管理器")}</span>
         {rootPath ? <span className="explorer-root-hint" title={rootPath}>{rootPath}</span> : null}
         <div className="explorer-header-actions">
+          {watchAuthRequired && !showExplorerToolbar ? (
+            <button
+              type="button"
+              className="explorer-watch-auth"
+              title={t("watchAuthRequired", "请先登录后再查看文件变更；登录成功后会自动重连。")}
+              onClick={() => useAppStore.getState().setActiveNav("settings")}
+            >
+              {t("watchAuthRequiredShort", "请先登录")}
+            </button>
+          ) : null}
           <button
             className={`explorer-follow-btn${followMode ? " active" : ""}`}
             title={t("followMode", "跟随模式")}
@@ -606,7 +617,7 @@ export function ExplorerPanel() {
         document.body,
       )}
 
-      {(editorShowTree || !hasFiles) && (
+      {(showExplorerToolbar) && (
         <div className="explorer-toolbar">
           <input
             className="explorer-search-input"

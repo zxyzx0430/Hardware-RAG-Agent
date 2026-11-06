@@ -392,6 +392,10 @@
   color: #fff;
 }
 
+.explorer-header-actions .explorer-watch-auth {
+  margin-left: 0;
+}
+
 /* Virtual scrolling container. */
 .explorer-virtual-tree {
   height: 100%;
