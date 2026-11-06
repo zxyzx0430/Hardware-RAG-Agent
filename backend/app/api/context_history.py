@@ -83,18 +83,20 @@ def _persisted_rows(session_id: str, user: dict | None) -> list[tuple[str, str, 
                 .order_by(MessageModel.created_at.asc(), MessageModel.id.asc())
                 .all()
             )
+            # Materialize while the rows are still attached: get_db_ctx commits
+            # and closes the session, and expire_on_commit would detach them.
+            history: list[tuple[str, str, str]] = []
+            for row in rows:
+                if row.role not in _HISTORY_ROLES or type(row.content) is not str:
+                    continue
+                if type(row.id) is not str or not row.id:
+                    return None
+                history.append((row.role, row.content, row.id))
+            return history
     except PermissionError:
         return None
     except Exception:
         return None
-    history: list[tuple[str, str, str]] = []
-    for row in rows:
-        if row.role not in _HISTORY_ROLES or type(row.content) is not str:
-            continue
-        if type(row.id) is not str or not row.id:
-            return None
-        history.append((row.role, row.content, row.id))
-    return history
 
 
 def _find_last(history: Sequence[tuple[str, str, str]], message_id: str) -> int | None:
