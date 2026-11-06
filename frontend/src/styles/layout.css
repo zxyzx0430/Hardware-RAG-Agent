@@ -85,6 +85,27 @@
 .sidebar-resizer.hidden { display: none !important; }
 .panel-btn-strip.left.hidden { display: none !important; }
 
+/* Narrow widths: the right workbench becomes an overlay drawer instead of a 1px sliver. */
+.right-panel-backdrop {
+  position: absolute; inset: 0; z-index: 60;
+  background: rgba(0, 0, 0, 0.16);
+}
+.right-panel-overlay {
+  position: absolute; top: 0; right: 0; bottom: 0; z-index: 61;
+  display: flex; min-width: 280px;
+  background: var(--card);
+  box-shadow: -10px 0 28px rgba(0, 0, 0, 0.22);
+}
+.dark .right-panel-overlay { box-shadow: -10px 0 28px rgba(0, 0, 0, 0.55); }
+.right-mode-close {
+  flex: 0 0 32px !important;
+  padding: 0 4px !important;
+  font-size: 16px;
+  line-height: 1;
+  color: var(--muted-fg);
+}
+.right-mode-close:hover { color: var(--fg); background: var(--muted); }
+
 /* ── TopBar ── */
 .topbar {
   display: grid;

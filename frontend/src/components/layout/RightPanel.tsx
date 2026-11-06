@@ -33,7 +33,7 @@ const mapLanguage = (lang?: string): string => {
   }
 };
 
-export function RightPanel() {
+export function RightPanel({ overlay = false, onClose }: { overlay?: boolean; onClose?: () => void } = {}) {
   const { t } = useI18n();
   const { rightMode, setRightMode } = useAppStore();
 
@@ -43,6 +43,17 @@ export function RightPanel() {
         <div className="right-modebar" id="rightModebar">
           <button className={`right-mode${rightMode === 'workbench' ? ' active' : ''}`} data-rmode="workbench" onClick={() => setRightMode('workbench')}>{t('workbench')}</button>
           <button className={`right-mode${rightMode === 'content' ? ' active' : ''}`} data-rmode="content" onClick={() => setRightMode('content')}>{t('chatContent')}</button>
+          {overlay ? (
+            <button
+              type="button"
+              className="right-mode right-mode-close"
+              onClick={onClose}
+              aria-label={t('toggleRightPanel')}
+              title={t('toggleRightPanel')}
+            >
+              ×
+            </button>
+          ) : null}
         </div>
         <div className="right-modepanes">
           <div className={`rmode-pane${rightMode === 'workbench' ? ' active' : ''}`} id="rmode-workbench"><WorkbenchPanel /></div>
@@ -61,10 +72,10 @@ function SourcePanel() {
           clearSessionTodos,
           setSessionFileViewerSource, setSessionHighlightSourceId } = useChatStore();
   const { items: kbItems } = useKnowledgeStore();
-  const { themeMode, rightContentTab, setRightContentTab } = useAppStore();
+  const { themeMode, rightContentTabBySession, setRightContentTab } = useAppStore();
   const isDark = useAppliedDarkMode();
   const editorTheme = themeMode === "dark" || (themeMode === "auto" && isDark) ? "vs-dark" : "vs-light";
-  const tab = rightContentTab;
+  const tab = activeSessionId ? (rightContentTabBySession[activeSessionId] ?? "sources") : "sources";
 
   // 当前会话的来源查看器状态（按 sessionId 隔离）
   const fileViewerSource = sessionFileViewerSource[activeSessionId] ?? null;
@@ -173,47 +184,15 @@ function SourcePanel() {
     // Score: show actual relevance percentage (0-100)
     const displayScore = Math.round((viewed.score || 0) * 100);
     return (
-      <div className="source-panel" id="sourcePanel">
-        <div className="source-fv-header">
-          <button className="source-fv-back" onClick={() => setSessionFileViewerSource(activeSessionId, null, null)}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15 18 9 12 15 6"/></svg> {t('back')}</button>
-          <span className="source-fv-title" title={viewed.title}>{viewed.title}</span>
-        </div>
-        <div className="source-fv-scroll">
-          {viewed.section_title ? <div className="source-fv-section">{viewed.section_title}</div> : null}
-          <div className="source-fv-meta">
-            {viewed.kb_name ? <span className="fv-kb-badge">{viewed.kb_name}</span> : null}
-            {viewed.source_url ? (
-              <a className="source-url-link" href={viewed.source_url} target="_blank" rel="noopener noreferrer" title={viewed.source_url}>
-                {viewed.source_url.length > 55 ? `${viewed.source_url.slice(0, 55)}...` : viewed.source_url}
-              </a>
-            ) : null}
-            {viewed.source_url ? <span className="fv-sep">·</span> : null}
-            <span>{pageLabel}</span>
-            <span className="fv-sep">·</span>
-            <span>{t('relevance')} {displayScore}%</span>
-            {viewed.category ? <span className="fv-sep">·</span> : null}
-            {viewed.category ? <span className="fv-category">{viewed.category}</span> : null}
-          </div>
-          <div className="source-fv-content" style={{ flex: 1, minHeight: 0 }}>
-            <MonacoEditor
-              language={mapLanguage(viewed.language)}
-              value={viewed.excerpt}
-              theme={editorTheme}
-              height="100%"
-              options={{
-                readOnly: true,
-                minimap: { enabled: false },
-                fontSize: 13,
-                lineNumbers: "on",
-                scrollBeyondLastLine: false,
-                wordWrap: "on",
-                tabSize: 2,
-                automaticLayout: true,
-              }}
-            />
-          </div>
-        </div>
-      </div>
+      <SourceExcerptViewer
+        key={`${viewed.messageId || ""}-${viewed.id}`}
+        viewed={viewed}
+        editorTheme={editorTheme}
+        pageLabel={pageLabel}
+        displayScore={displayScore}
+        onBack={() => setSessionFileViewerSource(activeSessionId, null, null)}
+        t={t}
+      />
     );
   }
 
@@ -225,9 +204,9 @@ function SourcePanel() {
     <div className="source-panel" id="sourcePanel">
       <div className="source-header">
         <div className="source-tabs">
-          <button className={`source-tab ${tab === 'sources' ? 'active' : 'inactive'}`} id="tab-sources" onClick={() => setRightContentTab('sources')}>{t('sources')}</button>
-          <button className={`source-tab ${tab === 'todos' ? 'active' : 'inactive'}`} id="tab-todos" onClick={() => setRightContentTab('todos')}>{t('todos')}</button>
-          <button className={`source-tab ${tab === 'plan' ? 'active' : 'inactive'}`} id="tab-plan" onClick={() => setRightContentTab('plan')}>{t('planTab')}</button>
+          <button className={`source-tab ${tab === 'sources' ? 'active' : 'inactive'}`} id="tab-sources" onClick={() => setRightContentTab(activeSessionId, 'sources')}>{t('sources')}</button>
+          <button className={`source-tab ${tab === 'todos' ? 'active' : 'inactive'}`} id="tab-todos" onClick={() => setRightContentTab(activeSessionId, 'todos')}>{t('todos')}</button>
+          <button className={`source-tab ${tab === 'plan' ? 'active' : 'inactive'}`} id="tab-plan" onClick={() => setRightContentTab(activeSessionId, 'plan')}>{t('planTab')}</button>
         </div>
       </div>
       <div className="source-scroll" id="sourceScroll">
@@ -257,6 +236,76 @@ function SourcePanel() {
         ) : tab === 'plan' ? (
           <PlanPanel />
         ) : null}
+      </div>
+    </div>
+  );
+}
+
+// ─── Source excerpt viewer: explicit loading state + breadcrumb back to the source list ───
+function SourceExcerptViewer({ viewed, editorTheme, pageLabel, displayScore, onBack, t }: {
+  viewed: SourceRef;
+  editorTheme: string;
+  pageLabel: string;
+  displayScore: number;
+  onBack: () => void;
+  t: (key: string, fallback?: string) => string;
+}) {
+  const [editorReady, setEditorReady] = useState(false);
+  useEffect(() => {
+    setEditorReady(false);
+  }, [viewed.id, viewed.messageId]);
+  return (
+    <div className="source-panel" id="sourcePanel">
+      <div className="source-fv-header">
+        <button className="source-fv-back" onClick={onBack}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15 18 9 12 15 6"/></svg> {t('backToSources', '返回来源引用')}
+        </button>
+        <div className="source-fv-heading">
+          <span className="source-fv-breadcrumb">{t('sources')}</span>
+          <span className="source-fv-title" title={viewed.title}>{viewed.title}</span>
+        </div>
+      </div>
+      <div className="source-fv-scroll">
+        {viewed.section_title ? <div className="source-fv-section">{viewed.section_title}</div> : null}
+        <div className="source-fv-meta">
+          {viewed.kb_name ? <span className="fv-kb-badge">{viewed.kb_name}</span> : null}
+          {viewed.source_url ? (
+            <a className="source-url-link" href={viewed.source_url} target="_blank" rel="noopener noreferrer" title={viewed.source_url}>
+              {viewed.source_url.length > 55 ? `${viewed.source_url.slice(0, 55)}...` : viewed.source_url}
+            </a>
+          ) : null}
+          {viewed.source_url ? <span className="fv-sep">·</span> : null}
+          <span>{pageLabel}</span>
+          <span className="fv-sep">·</span>
+          <span>{t('relevance')} {displayScore}%</span>
+          {viewed.category ? <span className="fv-sep">·</span> : null}
+          {viewed.category ? <span className="fv-category">{viewed.category}</span> : null}
+        </div>
+        <div className="source-fv-content" style={{ flex: 1, minHeight: 0, position: "relative" }}>
+          {!editorReady ? (
+            <div className="source-fv-loading" role="status" aria-live="polite">
+              {t('previewLoading', '正在加载预览…')}
+            </div>
+          ) : null}
+          <MonacoEditor
+            language={mapLanguage(viewed.language)}
+            value={viewed.excerpt}
+            theme={editorTheme}
+            height="100%"
+            loading={<div className="source-fv-loading">{t('previewLoading', '正在加载预览…')}</div>}
+            onMount={() => setEditorReady(true)}
+            options={{
+              readOnly: true,
+              minimap: { enabled: false },
+              fontSize: 13,
+              lineNumbers: "on",
+              scrollBeyondLastLine: false,
+              wordWrap: "on",
+              tabSize: 2,
+              automaticLayout: true,
+            }}
+          />
+        </div>
       </div>
     </div>
   );

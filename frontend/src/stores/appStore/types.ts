@@ -19,12 +19,15 @@ export interface AppState {
   // 面板
   leftPanelOpen: boolean;
   rightPanelOpen: boolean;
+  /** Bumped whenever a caller explicitly asks to open the right panel, even if
+   *  the preference is already true but the panel was auto-folded by width. */
+  rightPanelRevealNonce: number;
   leftPanelWidth: number;
   rightPanelWidth: number;
   inputBarWidth: number;
   rightMode: RightMode;
-  /** Selected tab inside the "content" right-panel mode. */
-  rightContentTab: RightContentTab;
+  /** Selected tab inside the "content" right-panel mode, keyed by session. */
+  rightContentTabBySession: Record<string, RightContentTab>;
   // 工作台
   wbTab: WbTab;
   workbenchUserOverride: boolean;
@@ -74,7 +77,7 @@ export interface AppState {
   setRightPanelWidth: (w: number) => void;
   setInputBarWidth: (w: number) => void;
   setRightMode: (m: RightMode) => void;
-  setRightContentTab: (tab: RightContentTab) => void;
+  setRightContentTab: (sessionId: string, tab: RightContentTab) => void;
   setWbTab: (t: WbTab, source?: "user" | "bridge") => void;
   setWorkbenchUserOverride: (val: boolean) => void;
   resetWorkbenchOverride: () => void;

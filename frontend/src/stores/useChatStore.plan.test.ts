@@ -9,6 +9,7 @@ const {
   rejectPlanMock,
   sessionState,
   toastErrorMock,
+  toastInfoMock,
 } = vi.hoisted(() => ({
   apiGetMock: vi.fn(),
   fetchPlanMock: vi.fn(),
@@ -18,6 +19,7 @@ const {
     sessions: [{ id: "s1", title: "Session 1", model: "gpt-4o" }],
   },
   toastErrorMock: vi.fn(),
+  toastInfoMock: vi.fn(),
 }));
 
 let capturedCallbacks: {
@@ -81,7 +83,7 @@ vi.mock("../stores/useLogStore", () => ({
 
 vi.mock("../stores/useToastStore", () => ({
   useToastStore: {
-    getState: () => ({ showError: toastErrorMock, showWarning: vi.fn() }),
+    getState: () => ({ showError: toastErrorMock, showWarning: vi.fn(), showInfo: toastInfoMock }),
   },
 }));
 
@@ -162,6 +164,7 @@ beforeEach(() => {
   approvePlanMock.mockReset();
   rejectPlanMock.mockReset();
   toastErrorMock.mockReset();
+  toastInfoMock.mockReset();
   localStorage.clear();
 });
 
@@ -242,7 +245,7 @@ describe("useChatStore plans", () => {
     expect(toastErrorMock).toHaveBeenCalledWith(expect.stringContaining("PLAN_SUPERSEDED"));
   });
 
-  it("rejects a pending plan, updates its status and closes planMode", async () => {
+  it("rejects a pending plan, updates its status and keeps planMode so the user can revise", async () => {
     const pending = makePlan();
     const rejected = makePlan({ status: "rejected", decided_at: "2026-11-06T10:06:00Z" });
     rejectPlanMock.mockResolvedValue(rejected);
@@ -253,7 +256,8 @@ describe("useChatStore plans", () => {
 
     expect(ok).toBe(true);
     expect(store.getState().sessionPlans.s1).toEqual(rejected);
-    expect(store.getState().planMode).toBe(false);
+    expect(store.getState().planMode).toBe(true);
+    expect(toastInfoMock).toHaveBeenCalledWith(expect.stringContaining("计划模式"));
   });
 
   it("sends the approved-plan execution turn through sendMessage", async () => {
