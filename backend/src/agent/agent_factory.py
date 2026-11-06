@@ -179,6 +179,12 @@ async def create_hardware_agent_from_config(config: AgentConfig) -> Any:
                     hardware_hint = build_hardware_mention_hint(config.user_query)
                 except Exception:
                     logger.warning("hardware mention hint failed", exc_info=True)
+            todo_block = ""
+            try:
+                from src.agent.todo_context import build_todo_context
+                todo_block = build_todo_context(config.session_id)
+            except Exception:
+                logger.warning("todo context build failed", exc_info=True)
             prompt = append_long_term_memory(build_system_prompt(), config.long_term_memory)
             if memory_block:
                 prompt = f"{prompt}\n\n{memory_block}"
@@ -190,6 +196,8 @@ async def create_hardware_agent_from_config(config: AgentConfig) -> Any:
             )
             if hardware_hint:
                 prompt = f"{prompt}\n\n## Hardware profile hint\n{hardware_hint}"
+            if todo_block:
+                prompt = f"{prompt}\n\n{todo_block}"
             system_prompt = prompt
             agent = create_agent(
                 model=llm,

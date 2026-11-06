@@ -74,6 +74,7 @@ from app.db.models import CONTEXT_WINDOW_256K
 from app.db.models import Feedback as FeedbackModel
 from app.db.models import TokenUsage as TokenUsageModel
 from app.db.models import ToolAudit as ToolAuditModel
+from app.db.models import Todo as TodoModel
 from app.db.models import SessionTombstone
 from app.api.tool_observations import purge_session_observations
 
@@ -758,7 +759,7 @@ def _purge_session_rows(db: DBSession, session_id: str) -> None:
     now = utc_now()
     epoch = stage_session_delete_epoch(db, session_id, now)
     _write_tombstone(db, session_id, now, epoch)
-    for model in (FeedbackModel, TokenUsageModel, ToolAuditModel):
+    for model in (FeedbackModel, TokenUsageModel, ToolAuditModel, TodoModel):
         db.query(model).filter(model.session_id == session_id).delete(
             synchronize_session=False,
         )
@@ -785,6 +786,12 @@ async def _purge_session_runtime(session_id: str) -> None:
         await delete_thread_checkpoint(session_id)
     except Exception:
         logger.warning("checkpoint cleanup deferred: %s", session_id)
+    try:
+        from app.db.todo_store import clear_todos
+
+        clear_todos(session_id)
+    except Exception:
+        logger.warning("todo store cleanup failed: %s", session_id)
     try:
         from src.agent.tools.groups.execution.todo_write import clear_session_todos
 
@@ -1439,6 +1446,10 @@ ALLOWED_SETTINGS_KEYS = {
     "chatFontSize", "themeMode", "lang", "permissionMode",
 }
 
+# permissionMode is persisted only in these three app-wide modes. "plan" is a
+# request-level mode and must never become a stored setting.
+PERSISTED_PERMISSION_MODES = frozenset({"bypassPermissions", "default", "acceptEdits"})
+
 
 @db_router.get("/settings")
 def get_settings(db: DBSession = Depends(get_db), user: dict = Depends(current_user_optional)) -> dict:
@@ -1489,6 +1500,14 @@ def update_settings(payload: dict, db: DBSession = Depends(get_db), user: dict =
                 status_code=422,
             )
         payload = {**payload, "autoMemoryEnabled": normalized_auto}
+    if "permissionMode" in payload:
+        mode = payload["permissionMode"]
+        if not isinstance(mode, str) or mode not in PERSISTED_PERMISSION_MODES:
+            raise _fail(
+                "INVALID_PERMISSION_MODE",
+                "permissionMode must be one of bypassPermissions, default, acceptEdits.",
+                status_code=422,
+            )
     for key in ("topK", "relevanceThreshold"):
         if key not in payload:
             continue
