@@ -373,6 +373,25 @@
   color: var(--muted-fg);
 }
 
+/* Persistent login hint shown instead of repeated watch 401 toasts. */
+.explorer-watch-auth {
+  margin-left: auto;
+  flex-shrink: 0;
+  padding: 2px 7px;
+  border: 1px solid var(--warn);
+  border-radius: 999px;
+  background: var(--warn-soft, var(--muted));
+  color: var(--warn);
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.explorer-watch-auth:hover {
+  background: var(--warn);
+  color: #fff;
+}
+
 /* Virtual scrolling container. */
 .explorer-virtual-tree {
   height: 100%;

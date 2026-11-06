@@ -69,6 +69,10 @@
 .sidebar-resizer::after, .right-resizer::after, .chat-resizer::after {
   content: ''; position: absolute; inset: 0 -3px;
 }
+/* The left splitter must not extend its hit area over the chat column. */
+.app-root .sidebar-resizer::after {
+  inset: 0 0 0 -3px;
+}
 .sidebar-resizer:hover, .sidebar-resizer.active,
 .right-resizer:hover, .right-resizer.active,
 .chat-resizer:hover, .chat-resizer.active {

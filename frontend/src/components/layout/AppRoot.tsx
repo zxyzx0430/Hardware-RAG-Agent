@@ -55,6 +55,7 @@ function makeLayoutBudgetInput(
     rightPanelWidth: state.rightPanelWidth,
     explorerWidth: state.explorerWidth,
     inputBarWidth: state.inputBarWidth,
+    inputBarAuto: state.inputBarAuto,
     protectedPanel,
   };
 }
@@ -103,7 +104,9 @@ export function AppRoot() {
     explorerWidth,
     setExplorerWidth,
     inputBarWidth,
+    inputBarAuto,
     setInputBarWidth,
+    resetInputBarWidth,
   } = useAppStore();
 
   // 启动/刷新时：会话列表加载完成后，加载当前活跃会话的消息；
@@ -132,11 +135,13 @@ export function AppRoot() {
       rightPanelWidth,
       explorerWidth,
       inputBarWidth,
+      inputBarAuto,
     }),
     [
       activeNav,
       explorerOpen,
       explorerWidth,
+      inputBarAuto,
       inputBarWidth,
       leftPanelOpen,
       leftPanelWidth,
@@ -364,18 +369,32 @@ export function AppRoot() {
         </div>
         <div className="main-area" id="mainArea" style={{ minWidth: 0 }}>
           <div id="chatFlex" style={{ flex: 1, position: "relative", display: showChatShell ? "flex" : "none", minHeight: 0, overflow: "hidden" }}>
-            <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: CHAT_COLUMN_MIN_WIDTH, overflow: "hidden", background: "var(--bg)" }}>
+            <div
+              id="chatColumn"
+              data-chat-width={resolvedLayout.chatColumnWidth}
+              style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: CHAT_COLUMN_MIN_WIDTH, overflow: "hidden", background: "var(--bg)" }}
+            >
               <ChatArea />
               <div className="inputbar-resize-wrap" style={{ display: "flex", alignItems: "stretch" }}>
-                <div style={{ width: resolvedLayout.inputBarWidth, maxWidth: "100%", minWidth: INPUT_BAR_MIN_WIDTH, flexShrink: 0 }}>
+                <div
+                  id="inputBarHost"
+                  data-auto={inputBarAuto ? "true" : "false"}
+                  style={{
+                    width: resolvedLayout.inputBarWidth,
+                    maxWidth: "calc(100% - 12px)",
+                    minWidth: INPUT_BAR_MIN_WIDTH,
+                    flexShrink: 0,
+                  }}
+                >
                   <PlanBanner />
                   <InputBar />
                 </div>
                 <div
                   className="inputbar-resizer"
                   onMouseDown={inputBarResize.onMouseDown}
+                  onDoubleClick={resetInputBarWidth}
                   style={{ cursor: "col-resize" }}
-                  title="拖拽调整输入栏宽度"
+                  title="拖拽调整输入栏宽度；双击恢复随窗口自适应"
                 />
               </div>
             </div>

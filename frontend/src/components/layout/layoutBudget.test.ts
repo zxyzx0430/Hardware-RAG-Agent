@@ -13,7 +13,7 @@ import {
   type LayoutBudgetInput,
   type LayoutPanel,
 } from "./layoutBudget";
-import { EXPLORER_MIN_WIDTH, RIGHT_PANEL_MIN_WIDTH } from "../../stores/appStore/persistence";
+import { EXPLORER_MIN_WIDTH, INPUT_BAR_MAX_WIDTH, RIGHT_PANEL_MIN_WIDTH } from "../../stores/appStore/persistence";
 
 const allPanelsOpen: LayoutBudgetInput = {
   viewportWidth: 1536,
@@ -183,6 +183,63 @@ describe("layout width budget", () => {
       explorerOpen: true,
       overflow: false,
     });
+  });
+
+  it("auto-fits the composer to the chat column and clamps manual widths", () => {
+    const preferred = {
+      ...allPanelsOpen,
+      leftPanelWidth: 280,
+      rightPanelWidth: 340,
+      explorerWidth: 280,
+      inputBarWidth: 720,
+    };
+    const cases: Array<[number, number]> = [
+      [1710, 714],
+      [1440, 492],
+      [1280, 568],
+      [1024, 656],
+    ];
+
+    for (const [viewportWidth, chatColumnWidth] of cases) {
+      const resolved = resolveLayout({ ...preferred, viewportWidth, inputBarAuto: true });
+      expect(resolved.chatColumnWidth, `viewport=${viewportWidth}`).toBe(chatColumnWidth);
+      expect(resolved.inputBarWidth, `viewport=${viewportWidth}`).toBe(
+        Math.min(INPUT_BAR_MAX_WIDTH, chatColumnWidth - 12),
+      );
+    }
+
+    const manual = resolveLayout({
+      ...preferred,
+      viewportWidth: 1024,
+      inputBarAuto: false,
+      inputBarWidth: 900,
+    });
+    expect(manual.inputBarWidth).toBe(Math.min(INPUT_BAR_MAX_WIDTH, manual.chatColumnWidth - 12));
+
+    const manualNarrow = resolveLayout({
+      ...preferred,
+      viewportWidth: 1710,
+      inputBarAuto: false,
+      inputBarWidth: 520,
+    });
+    expect(manualNarrow.inputBarWidth).toBe(520);
+  });
+
+  it("keeps the chat column at its minimum when the left panel is dragged to the budget max", () => {
+    const base = {
+      ...allPanelsOpen,
+      viewportWidth: 1710,
+      leftPanelWidth: 280,
+      rightPanelWidth: 340,
+      explorerWidth: 280,
+      inputBarAuto: true,
+    };
+    const layout = resolveLayout(base);
+    const maxLeft = base.viewportWidth - getResizeReservedWidth("left", layout);
+
+    const dragged = resolveLayout({ ...base, leftPanelWidth: maxLeft });
+    expect(dragged.leftPanelWidth).toBeLessThanOrEqual(500);
+    expect(dragged.chatColumnWidth).toBeGreaterThanOrEqual(CHAT_COLUMN_MIN_WIDTH);
   });
 
   it("reserves only the current visible slots for each resize handle", () => {

@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { useLogStore } from "./useLogStore";
 import { useToastStore } from "./useToastStore";
-import { apiPost, apiGet, apiPut, apiPatch, apiDelete } from "../api/client";
+import { apiPost, apiGet, apiPut, apiPatch, apiDelete, setSessionToken } from "../api/client";
 
 interface Skill { name: string; desc: string; enabled: boolean; group?: string; }
 interface MCPServer { id: string; name: string; command: string; status: string; tools: number; }
@@ -342,7 +342,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
                 setup_code: get().setupCode.trim(),
               });
               if (data?.session_token) {
-                sessionStorage.setItem("session_token", data.session_token);
+                setSessionToken(data.session_token);
                 useLogStore.getState().log("ok", "settings", `API Key 已加密存储并刷新 session_token`);
               }
               return;
@@ -358,7 +358,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
               setup_code: get().setupCode.trim(),
             });
             if (data?.session_token) {
-              sessionStorage.setItem("session_token", data.session_token);
+              setSessionToken(data.session_token);
               useLogStore.getState().log("ok", "settings", `API Key 已加密存储并获取 session_token`);
             }
           } catch {
@@ -368,8 +368,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
                 provider: id, api_key: provider.apiKey,
               });
               if (loginData?.session_token) {
-                sessionStorage.setItem("session_token", loginData.session_token);
-                useLogStore.getState().log("ok", "settings", `会话已恢复（login 成功），session_token 已写入 localStorage`);
+                setSessionToken(loginData.session_token);
+                useLogStore.getState().log("ok", "settings", `会话已恢复（login 成功），session_token 已写入 sessionStorage`);
                 // 拿到 token 后再补一次 store-key 以更新元数据
                 apiPost("auth/store-key", {
                   provider: id, api_key: provider.apiKey, base_url: provider.baseUrl,

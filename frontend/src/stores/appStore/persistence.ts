@@ -13,6 +13,7 @@ export const OPEN_FILES_KEY = "hwrag_open_files";
 export const FILE_VERSIONS_KEY = "hwrag_explorer_file_versions";
 export const ACTIVE_FILE_ID_KEY = "hwrag_active_file_id";
 export const INPUT_BAR_WIDTH_KEY = "hwrag_input_bar_width";
+export const INPUT_BAR_AUTO_KEY = "hwrag_input_bar_auto";
 
 export const EXPLORER_EXPANDED_PREFIX = "hwrag_explorer_expanded_";
 export const EXPLORER_SELECTED_PREFIX = "hwrag_explorer_selected_";
@@ -87,6 +88,15 @@ export function loadInputBarWidth(): number {
 
 export function saveInputBarWidth(width: number): void {
   saveNumber(INPUT_BAR_WIDTH_KEY, width);
+}
+
+/** Auto mode keeps the composer as wide as the chat column (within min/max). */
+export function loadInputBarAuto(): boolean {
+  return loadBoolean(INPUT_BAR_AUTO_KEY) ?? true;
+}
+
+export function saveInputBarAuto(auto: boolean): void {
+  saveBoolean(INPUT_BAR_AUTO_KEY, auto);
 }
 
 export function loadBoolean(key: string): boolean | null {

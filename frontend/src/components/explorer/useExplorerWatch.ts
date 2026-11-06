@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { useLogStore } from "../../stores/useLogStore";
-import { getAuthHeaders } from "../../api/client";
+import { AUTH_TOKEN_CHANGED_EVENT, getAuthHeaders, getSessionToken } from "../../api/client";
 
 export interface WatchEvent {
   type: "change" | "create" | "delete" | "rename" | "heartbeat";
@@ -10,11 +10,20 @@ export interface WatchEvent {
   is_directory?: boolean;
 }
 
+/** Marker error: the watcher needs a login/session token before it can connect. */
+export class WatchAuthRequiredError extends Error {
+  constructor(message = "SSE 401: Unauthorized") {
+    super(message);
+    this.name = "WatchAuthRequiredError";
+  }
+}
+
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 // Exponential backoff reconnect: 1s, 2s, 4s, 8s, 16s, 30s (capped), max 10 attempts.
 const MAX_RETRIES = 10;
 const MAX_BACKOFF_MS = 30_000;
 const BASE_BACKOFF_MS = 1000;
+const AUTH_POLL_MS = 2000;
 
 function backoffDelay(attempt: number): number {
   return Math.min(BASE_BACKOFF_MS * 2 ** attempt, MAX_BACKOFF_MS);
@@ -43,16 +52,19 @@ export function useExplorerWatch(
   onEvent?: (event: WatchEvent) => void,
   onError?: (err: Error) => void,
   onStatusChange?: (connected: boolean) => void,
+  onAuthRequired?: () => void,
 ) {
   const onEventRef = useRef(onEvent);
   const onErrorRef = useRef(onError);
   const onStatusRef = useRef(onStatusChange);
+  const onAuthRequiredRef = useRef(onAuthRequired);
 
   useEffect(() => {
     onEventRef.current = onEvent;
     onErrorRef.current = onError;
     onStatusRef.current = onStatusChange;
-  }, [onEvent, onError, onStatusChange]);
+    onAuthRequiredRef.current = onAuthRequired;
+  }, [onEvent, onError, onStatusChange, onAuthRequired]);
 
   useEffect(() => {
     if (!rootPath) return;
@@ -63,6 +75,12 @@ export function useExplorerWatch(
     let idleTimer: ReturnType<typeof setTimeout> | null = null;
     let attemptController: AbortController | null = null;
     let idleAborted = false;
+    // Auth retry state: after a 401 wait for a new session token instead of
+    // burning the retry budget and surfacing a toast per attempt.
+    let knownToken = getSessionToken();
+    let waitingForAuth = false;
+    let authNotified = false;
+    let authPollTimer: ReturnType<typeof setInterval> | null = null;
 
     const setStatus = (connected: boolean) => onStatusRef.current?.(connected);
 
@@ -90,6 +108,49 @@ export function useExplorerWatch(
       }, delay);
     };
 
+    const stopAuthWait = () => {
+      waitingForAuth = false;
+      if (authPollTimer) {
+        clearInterval(authPollTimer);
+        authPollTimer = null;
+      }
+    };
+
+    const waitForAuth = () => {
+      waitingForAuth = true;
+      if (!authNotified) {
+        authNotified = true;
+        onAuthRequiredRef.current?.();
+      }
+      if (authPollTimer) return;
+      // Fallback for login flows that write sessionStorage without using
+      // setSessionToken(); the custom event handles the normal path instantly.
+      authPollTimer = setInterval(() => {
+        const token = getSessionToken();
+        if (token && token !== knownToken) {
+          knownToken = token;
+          stopAuthWait();
+          authNotified = false;
+          retryCount = 0;
+          void connect();
+        }
+      }, AUTH_POLL_MS);
+    };
+
+    const tryTokenReconnect = () => {
+      const token = getSessionToken();
+      if (!token || token === knownToken) return;
+      knownToken = token;
+      if (!waitingForAuth) return;
+      stopAuthWait();
+      authNotified = false;
+      retryCount = 0;
+      void connect();
+    };
+
+    const onAuthTokenChanged = () => tryTokenReconnect();
+    window.addEventListener(AUTH_TOKEN_CHANGED_EVENT, onAuthTokenChanged);
+
     const connect = async () => {
       idleAborted = false;
       attemptController = new AbortController();
@@ -97,7 +158,12 @@ export function useExplorerWatch(
       try {
         const url = `/api/explorer/watch?path=${encodeURIComponent(rootPath)}`;
         const res = await fetch(url, { headers: getAuthHeaders(), signal: controller.signal });
-        if (!res.ok) throw new Error(`SSE ${res.status}: ${res.statusText}`);
+        if (!res.ok) {
+          if (res.status === 401 || res.status === 403) {
+            throw new WatchAuthRequiredError(`SSE ${res.status}: ${res.statusText || "Unauthorized"}`);
+          }
+          throw new Error(`SSE ${res.status}: ${res.statusText}`);
+        }
         if (!res.body) throw new Error("No response body");
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
@@ -105,6 +171,9 @@ export function useExplorerWatch(
         resetIdleTimer();
         // Connection established: reset retry counter and notify connected.
         retryCount = 0;
+        knownToken = getSessionToken();
+        authNotified = false;
+        stopAuthWait();
         setStatus(true);
         while (!controller.signal.aborted) {
           const { done, value } = await reader.read();
@@ -129,6 +198,11 @@ export function useExplorerWatch(
         if (!stopped) scheduleReconnect();
       } catch (err) {
         if (stopped) return; // manual teardown: no reconnect, no error toast
+        if (err instanceof WatchAuthRequiredError) {
+          useLogStore.getState().log("warn", "sse", `explorer/watch requires auth: ${err.message}`);
+          waitForAuth();
+          return;
+        }
         if (idleAborted) {
           // Idle timeout: reconnect silently without surfacing an error.
           idleAborted = false;
@@ -149,6 +223,8 @@ export function useExplorerWatch(
 
     return () => {
       stopped = true;
+      window.removeEventListener(AUTH_TOKEN_CHANGED_EVENT, onAuthTokenChanged);
+      stopAuthWait();
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (idleTimer) clearTimeout(idleTimer);
       attemptController?.abort();

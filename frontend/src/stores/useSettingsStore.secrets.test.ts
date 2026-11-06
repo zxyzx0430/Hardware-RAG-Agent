@@ -13,6 +13,7 @@ vi.mock("../api/client", () => ({
   apiPut: vi.fn(),
   apiPatch: vi.fn(),
   apiDelete: vi.fn(),
+  setSessionToken: vi.fn(),
 }));
 
 vi.mock("./useLogStore", () => ({

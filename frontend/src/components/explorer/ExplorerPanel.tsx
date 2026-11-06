@@ -126,6 +126,7 @@ export function ExplorerPanel() {
   const [loadingDirPaths, setLoadingDirPaths] = useState<Set<string>>(new Set());
   const [dirErrors, setDirErrors] = useState<Map<string, string>>(new Map());
   const [watchConnected, setWatchConnected] = useState(false);
+  const [watchAuthRequired, setWatchAuthRequired] = useState(false);
   const [matchCount, setMatchCount] = useState(0);
   // Tree pane width (px) — draggable divider, persisted to localStorage
   const [treePaneWidth, setTreePaneWidth] = useState<number>(() => {
@@ -425,8 +426,21 @@ export function ExplorerPanel() {
     rootPath,
     handleWatchEvent,
     (err) => showError(t("watchError", "文件监听异常") + ": " + err.message),
-    setWatchConnected,
+    (connected) => {
+      setWatchConnected(connected);
+      if (connected) setWatchAuthRequired(false);
+    },
+    () => {
+      setWatchAuthRequired(true);
+      useToastStore.getState().showWarning(
+        t("watchAuthRequired", "请先登录后再查看文件变更；登录成功后会自动重连。"),
+      );
+    },
   );
+
+  useEffect(() => {
+    setWatchAuthRequired(false);
+  }, [rootPath]);
 
   // mount: restore tree from persisted rootPath
   useEffect(() => {
@@ -610,12 +624,23 @@ export function ExplorerPanel() {
           <button type="button" className="explorer-toolbar-btn" onClick={collapseAll} disabled={!tree} title={t("collapseAll", "折叠所有")}>⊖</button>
           <button type="button" className="explorer-toolbar-btn" onClick={refreshTree} disabled={!tree || loading} title={t("refreshTree", "刷新文件树")}>🔄</button>
           {rootPath && (
-            <span
-              className={`explorer-watch-dot ${watchConnected ? "on" : "off"}`}
-              title={watchConnected ? t("watchConnected", "监听已连接") : t("watchDisconnected", "监听未连接")}
-            >
-              {watchConnected ? "●" : "○"}
-            </span>
+            watchAuthRequired ? (
+              <button
+                type="button"
+                className="explorer-watch-auth"
+                title={t("watchAuthRequired", "请先登录后再查看文件变更；登录成功后会自动重连。")}
+                onClick={() => useAppStore.getState().setActiveNav("settings")}
+              >
+                {t("watchAuthRequiredShort", "请先登录")}
+              </button>
+            ) : (
+              <span
+                className={`explorer-watch-dot ${watchConnected ? "on" : "off"}`}
+                title={watchConnected ? t("watchConnected", "监听已连接") : t("watchDisconnected", "监听未连接")}
+              >
+                {watchConnected ? "●" : "○"}
+              </span>
+            )
           )}
         </div>
       )}
