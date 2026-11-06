@@ -1,6 +1,15 @@
 # 项目现状
 
-> 更新日期：2026-11-04。这里记录当前状态，不充当开发路线图。日期 1–3、Skills/记忆/MCP 和 RAG P0 属于 `codex/day1-3-baseline` 历史版本；测试结果分别注明所依据的隔离快照。提交与推送状态以 Git 记录为准；不将功能实现或软件测试混称为全面验收。
+> 更新日期：2026-11-06。这里记录当前状态，不充当开发路线图。日期 1–3、Skills/记忆/MCP 和 RAG P0 属于 `codex/day1-3-baseline` 历史版本；测试结果分别注明所依据的隔离快照。提交与推送状态以 Git 记录为准；不将功能实现或软件测试混称为全面验收。
+
+## 2026-11-06 Plan Mode 与 Todo v1
+
+本轮在 `feat/plan-todo-integration` 集成 Todo 持久化与只读计划模式：`todo_write` 改为写已有 `todos` 表，新增读取/清空接口并在系统提示中注入小预算的当前清单；计划使用新 `plans` 表按会话保存版本，新增 `submit_plan` 工具、批准/拒绝接口和 `plan_update` SSE。计划模式是请求级 `permission_mode="plan"`，不写入设置；工具暴露和执行入口都按只读白名单过滤，MCP、写文件、命令、烧录和技能安装被拒绝。批准计划后由前端发起普通 `/chat`（`approved_plan_id`），后端注入“批准不等于授权”的计划上下文、把步骤 seed 为初始任务清单，并仍按原权限执行每次工具调用。
+
+- 后端定向：WP1 Todo 43 + 126 passed；WP2 Plan 与关联组 132 passed；`--ignore=tests/rag_eval` 全量 **1784 passed / 68 skipped / 0 failed**（595.15 秒，exit 0）。含 `rag_eval` 的首轮为 1833 passed / 68 skipped / 6 failed，6 项为测试夹具缺少 `permission_mode`，修复后该文件 6 passed；含 `rag_eval` 的完整复跑在 eval 阶段停滞，未写成通过。
+- 前端：目标 29 passed；全量 51 files / 351 passed；`tsc`、`npm run build` 通过；eslint 0 error / 13 条既有 warning。
+- 浏览器：seed 计划/任务后验证计划横幅、计划面板、任务清单、批准、清空、刷新恢复和会话隔离；`/api/chat` 在浏览器路由层返回 503 以隔离真实模型；计划模式请求体实测 `permission_mode="plan"`。证据在 `E:/DevCaches/Temp/plan-todo-browser/evidence/`。
+- 未验证：真实模型生成计划、真实模型执行已批准计划、真实硬件/串口/烧录。P0 的 Run 所有权和后台自动执行仍未做，批准后的执行仍由前端发起。
 
 ## 2026-11-05 合并后完整后端门禁
 
