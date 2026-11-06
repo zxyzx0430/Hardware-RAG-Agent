@@ -27,6 +27,12 @@ class ToolContext:
     skills_allowed_tools: frozenset[str] = field(default_factory=frozenset)
     kb_scope: tuple[str, ...] | None = None
     request_tools: dict[str, Any] = field(default_factory=dict, repr=False)
+    # Plan-mode cumulative tool-output budget (see tool_output_budget.py).
+    # One instance per request context; lazily created on first tool result.
+    plan_tool_output_budget: Any = field(default=None, repr=False, compare=False)
+    # Resolved model token limit for this request; scales the plan budget down
+    # for small-window models (0 means unknown / use the default budget).
+    context_token_limit: int = 0
     mcp_authorization: Any = field(default=None, repr=False)
     rag_source_registry: Any = field(default=None, repr=False, compare=False)
     tool_observation_scope: Any = field(default=None, repr=False, compare=False)

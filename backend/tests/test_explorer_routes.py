@@ -836,3 +836,27 @@ def test_watcher_uses_the_event_names_expected_by_the_editor(workspace) -> None:
         "src_path": str(root / "old.py"),
         "dest_path": str(root / "new.py"),
     }
+
+
+def test_watch_accepts_the_bearer_header_and_requires_an_open_root(workspace) -> None:
+    client, root, _ = workspace
+
+    # The same Authorization header used by the fetch-based SSE client is the
+    # only auth input; an unopened root is rejected with an actionable code.
+    response = client.get(
+        "/api/explorer/watch", params={"path": str(root)}, headers=auth_headers(),
+    )
+
+    assert response.status_code == 403
+    body = response.json()
+    assert body["error"]["code"] == "EXPLORER_ROOT_NOT_AUTHORIZED"
+    assert "重新打开" in body["error"]["message"]
+
+
+def test_watch_without_bearer_header_is_401(workspace) -> None:
+    client, root, _ = workspace
+
+    response = client.get("/api/explorer/watch", params={"path": str(root)})
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "AUTH_REQUIRED"

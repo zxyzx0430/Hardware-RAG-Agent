@@ -464,10 +464,13 @@ def context_limit_event(exc: ContextLimitError) -> str:
 
     return sse_event("error", {
         "code": "CONTEXT_LIMIT",
+        "retryable": False,
         "message": (
-            f"上下文超出限制（{exc.cumulative} > {exc.limit}），"
-            "本轮请求已停止（CONTEXT_LIMIT）。请缩短对话历史或开启新会话后重试。"
+            f"上下文超出可用上限（{exc.cumulative} > {exc.limit} tokens），"
+            "本轮请求已停止。直接重试会再次超限；请开启新会话，"
+            "或缩小扫描/对话范围后重新提问。"
         ),
+        "detail": "已执行的工具输出也计入上下文；重复发送同一请求无法恢复。",
     })
 
 

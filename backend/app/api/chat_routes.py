@@ -1381,6 +1381,8 @@ async def _run_agent_stream(
         raise RuntimeError("Selected skill instructions could not be loaded")
     effective_payload = _payload_with_request_snapshot(payload, snapshot)
     snapshot = _ensure_request_tool_context(snapshot, effective_payload, session_id)
+    if snapshot.tool_context is not None:
+        snapshot.tool_context.context_token_limit = context_budget.token_limit
     effective_payload = _payload_with_request_snapshot(payload, snapshot)
     agent = await _build_agent_for_payload(
         effective_payload, creds, resolved_memory, request_snapshot=snapshot,
@@ -2181,17 +2183,20 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
                             agent_exc.cumulative,
                             agent_exc.limit,
                         )
-                        yield sse_event("error", {
-                            "code": ChatErrorCode.CONTEXT_LIMIT,
-                            "message": (
-                                "上下文超过当前模型可处理上限，本轮请求已停止。"
-                                "请缩短对话历史或开启新会话后重试。"
-                            ),
-                            "detail": (
-                                f"累计上下文估算为 {agent_exc.cumulative} tokens，"
-                                f"限制为 {agent_exc.limit} tokens。"
-                            ),
-                        })
+                        effective_window = None
+                        try:
+                            from src.agent.context_guard import resolve_context_budget
+
+                            effective_window = resolve_context_budget(
+                                model,
+                                _session_context_window(payload.session_id),
+                                payload.max_tokens,
+                            ).effective_window
+                        except Exception:
+                            effective_window = None
+                        yield sse_event("error", _context_limit_payload(
+                            agent_exc, model=model, effective_window=effective_window,
+                        ))
                         yield sse_event("done", {"success": False, "completed": False})
                         return
                     if isinstance(agent_exc, _WriterLifecycleUnavailableError):
@@ -2212,6 +2217,26 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
                             "code": error_code,
                             "message": error_message,
                             "detail": error_detail,
+                        })
+                        yield sse_event("done", {"success": False, "completed": False})
+                        return
+                    from src.agent.compact.writer_lifecycle import WriterQuarantinedError
+
+                    if isinstance(agent_exc, WriterQuarantinedError):
+                        logger.warning(
+                            "agent writer quarantined; request stopped before graph execution"
+                        )
+                        yield sse_event("error", {
+                            "code": "AGENT_WRITER_QUARANTINED",
+                            "retryable": False,
+                            "message": (
+                                "该会话的写入保护已隔离，本轮请求未启动。"
+                                "请开启新会话后重试。"
+                            ),
+                            "detail": (
+                                "上一次 Agent 执行中断，写入状态无法确认；"
+                                "服务重启也会清除隔离，其他会话不受影响。"
+                            ),
                         })
                         yield sse_event("done", {"success": False, "completed": False})
                         return
@@ -2839,7 +2864,7 @@ async def _resume_event_generator_from_ctx(ctx: ResumeContext):
                 yield sse_event("done", {"success": True, "usage": None})
     except Exception as exc:
         _clear_pending_request_snapshot(ctx.req.payload.session_id)
-        yield _resume_error_event(exc)
+        yield _resume_error_event(exc, model=ctx.model)
         yield sse_event("done", {"success": False, "completed": False})
     else:
         if not saw_confirmation:
@@ -2956,7 +2981,32 @@ async def _resume_event_generator(
         yield sse
 
 
-def _resume_error_event(exc: Exception) -> str:
+def _context_limit_payload(
+    exc: Any,
+    *,
+    model: str | None = None,
+    effective_window: int | None = None,
+) -> dict:
+    """Build a specific, non-retryable CONTEXT_LIMIT error payload."""
+    model_label = f"模型 {model} 的" if model else "当前模型的"
+    window_detail = (
+        f"，模型窗口 {effective_window} tokens" if effective_window else ""
+    )
+    return {
+        "code": ChatErrorCode.CONTEXT_LIMIT,
+        "retryable": False,
+        "message": (
+            f"上下文超过{model_label}可处理上限（{exc.limit} tokens），本轮已停止。"
+            "直接重试会再次超限；请开启新会话，或缩小扫描/对话范围后重新提问。"
+        ),
+        "detail": (
+            f"本轮累计估算 {exc.cumulative} tokens{window_detail}；"
+            "已执行的工具输出也计入上下文。"
+        ),
+    }
+
+
+def _resume_error_event(exc: Exception, *, model: str | None = None) -> str:
     """Build the error SSE event for a failed resume."""
     from src.agent.exceptions import ContextLimitError
 
@@ -2971,17 +3021,7 @@ def _resume_error_event(exc: Exception) -> str:
             exc.cumulative,
             exc.limit,
         )
-        return sse_event("error", {
-            "code": ChatErrorCode.CONTEXT_LIMIT,
-            "message": (
-                "上下文超过当前模型可处理上限，本轮请求已停止。"
-                "请缩短对话历史或开启新会话后重试。"
-            ),
-            "detail": (
-                f"累计上下文估算为 {exc.cumulative} tokens，"
-                f"限制为 {exc.limit} tokens。"
-            ),
-        })
+        return sse_event("error", _context_limit_payload(exc, model=model))
     logger.exception("Agent resume failed")
     return sse_event("error", {"code": "AGENT_RESUME_FAILED", "message": str(exc)[:200]})
 
