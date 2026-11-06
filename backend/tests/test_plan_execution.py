@@ -191,6 +191,68 @@ def test_apply_plan_mode_rebuilds_request_lookup():
     assert ctx.skills_allowed_tools == frozenset(names)
 
 
+def test_payload_with_snapshot_restores_approved_plan_id():
+    snapshot = chat_routes.AgentRequestSnapshot(
+        approved_plan_id="pl_1", approved_plan_text="approved block",
+    )
+    payload = _payload()
+
+    restored = chat_routes._payload_with_request_snapshot(payload, snapshot)
+
+    assert restored.approved_plan_id == "pl_1"
+
+
+def test_apply_plan_mode_injects_context_into_submit_plan():
+    from src.agent.tools.groups.file_ops.read_file import ReadFileTool
+
+    ctx = ToolContext(permission_mode="plan", session_id="s1")
+    snapshot = SimpleNamespace(permission_mode="plan", tool_context=ctx)
+
+    _, tools = chat_routes._apply_plan_mode_tools(snapshot, [ReadFileTool()])
+    submit = next(tool for tool in tools if tool.name == "submit_plan")
+
+    assert getattr(submit, "_ctx", None) is ctx
+
+
+@pytest.mark.asyncio
+async def test_build_agent_payload_plan_mode_filters_and_binds(monkeypatch):
+    from dataclasses import replace
+
+    captured = {}
+
+    async def fake_create(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(chat_routes, "create_hardware_agent", fake_create)
+    payload = _payload(permission_mode="plan", session_id="s1", use_agent=True)
+    snapshot = chat_routes._request_snapshot_from_payload(payload, "")
+    snapshot = replace(
+        snapshot,
+        permission_mode="plan",
+        session_id="s1",
+        business_session_id="s1",
+        session_delete_epoch="e1",
+        mcp_snapshot_bound=True,
+        tool_context=ToolContext(permission_mode="plan", session_id="s1"),
+    )
+
+    await chat_routes._build_agent_for_payload(
+        payload, {"model": "x", "api_key": "k", "base_url": "u"},
+        request_snapshot=snapshot,
+    )
+
+    tools = captured["tools"]
+    names = {tool.name for tool in tools}
+    submit = next(tool for tool in tools if tool.name == "submit_plan")
+
+    assert "write_file" not in names
+    assert names >= {"read_file", "submit_plan"}
+    assert getattr(submit, "_ctx", None) is snapshot.tool_context
+    assert captured["enable_hitl"] is True
+    assert captured["plan_mode"] is True
+
+
 def test_apply_plan_mode_is_a_noop_outside_plan_mode():
     from src.agent.tools.groups.file_ops.read_file import ReadFileTool
 

@@ -1632,6 +1632,10 @@ def _apply_plan_mode_tools(snapshot: AgentRequestSnapshot, tools: list) -> tuple
     if snapshot.permission_mode != "plan":
         return False, tools
     filtered = _filter_plan_mode_tools(tools)
+    # The appended SubmitPlanTool is created after build_tool_specs injected
+    # _ctx, so bind the request context explicitly before the graph runs.
+    for tool in filtered:
+        setattr(tool, "_ctx", snapshot.tool_context)
     replace_request_tools(snapshot.tool_context, filtered)
     return True, filtered
 
