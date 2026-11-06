@@ -118,6 +118,70 @@ def test_client_message_id_cannot_move_between_sessions(client: TestClient) -> N
     assert messages[0]["content"] == "原问题"
 
 
+def test_plan_approval_message_never_overwrites_session_title(
+    client: TestClient,
+) -> None:
+    original = "帮我在这块 ESP32-S3 上把 UART 日志跑通"
+    client.post(
+        "/api/sessions/session-1/messages",
+        json={"id": "task-1", "role": "user", "content": original},
+    )
+    title_after_task = client.get("/api/sessions/session-1").json()["data"]["title"]
+    assert title_after_task == original
+
+    client.post(
+        "/api/sessions/session-1/messages",
+        json={
+            "id": "approval-1",
+            "role": "user",
+            "content": "按照已批准的计划开始执行。",
+        },
+    )
+    assert client.get("/api/sessions/session-1").json()["data"]["title"] == original
+
+    # Later real user messages must not rename an already meaningful session.
+    client.post(
+        "/api/sessions/session-1/messages",
+        json={"id": "task-2", "role": "user", "content": "补充：顺便检查引脚冲突"},
+    )
+    assert client.get("/api/sessions/session-1").json()["data"]["title"] == original
+
+
+def test_plan_approval_as_first_message_keeps_placeholder_title(
+    client: TestClient,
+) -> None:
+    client.patch("/api/sessions/session-2", json={"title": "新对话"})
+
+    client.post(
+        "/api/sessions/session-2/messages",
+        json={
+            "id": "approval-only",
+            "role": "user",
+            "content": "按照已批准的计划开始执行。",
+        },
+    )
+
+    assert client.get("/api/sessions/session-2").json()["data"]["title"] == "新对话"
+
+
+def test_delete_session_never_creates_the_async_checkpointer(
+    client: TestClient, monkeypatch,
+) -> None:
+    import src.agent.agent_factory as agent_factory
+
+    deleted: list[str] = []
+    monkeypatch.setattr(
+        agent_factory, "delete_thread_checkpoint_direct",
+        lambda thread_id: deleted.append(thread_id) or True,
+    )
+    monkeypatch.setattr(agent_factory, "_global_checkpointer", None)
+
+    assert client.delete("/api/sessions/session-1").status_code == 200
+
+    assert deleted == ["session-1"]
+    assert agent_factory._global_checkpointer is None
+
+
 def test_message_post_without_client_id_keeps_legacy_behavior(client: TestClient) -> None:
     response = client.post(
         "/api/sessions/session-1/messages",

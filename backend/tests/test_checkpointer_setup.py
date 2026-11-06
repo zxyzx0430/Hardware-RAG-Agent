@@ -7,6 +7,11 @@ every guarded checkpoint reset rejected the real server's saver with
 so nothing caught it.
 """
 
+import asyncio
+import sqlite3
+import threading
+from types import SimpleNamespace
+
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
@@ -72,3 +77,79 @@ async def test_memory_checkpointer_mode_never_touches_sqlite(monkeypatch):
     checkpointer = await agent_factory._get_checkpointer()
 
     assert type(checkpointer) is InMemorySaver
+
+
+async def test_checkpointer_bound_to_closed_loop_is_rebuilt():
+    """A saver created on a throwaway loop must not poison the process."""
+    created: dict = {}
+
+    def worker() -> None:
+        async def initialize() -> None:
+            created["checkpointer"] = await agent_factory._get_checkpointer()
+
+        asyncio.run(initialize())
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    thread.join(timeout=30)
+    assert not thread.is_alive()
+
+    stale = created["checkpointer"]
+    assert stale.loop.is_closed()
+    assert agent_factory._global_checkpointer is stale
+
+    rebuilt = await agent_factory._get_checkpointer()
+
+    assert rebuilt is not stale
+    assert rebuilt.loop is asyncio.get_running_loop()
+    assert rebuilt.is_setup is True
+    assert agent_factory._global_checkpointer is rebuilt
+
+
+async def test_checkpointer_bound_to_other_live_loop_fails_closed(monkeypatch):
+    other_loop = asyncio.new_event_loop()
+    try:
+        monkeypatch.setattr(
+            agent_factory, "_global_checkpointer",
+            SimpleNamespace(loop=other_loop),
+        )
+        with pytest.raises(RuntimeError, match="different event loop"):
+            await agent_factory._get_checkpointer()
+    finally:
+        other_loop.close()
+
+
+async def test_direct_checkpoint_delete_never_publishes_a_saver(
+    monkeypatch, tmp_path,
+):
+    db_path = tmp_path / "checkpoints.sqlite"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        "CREATE TABLE checkpoints (thread_id TEXT);"
+        "CREATE TABLE writes (thread_id TEXT);"
+        "INSERT INTO checkpoints VALUES ('t1');"
+        "INSERT INTO checkpoints VALUES ('t2');"
+        "INSERT INTO writes VALUES ('t1');"
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(agent_factory, "_SQLITE_CHECKPOINT_PATH", db_path)
+    monkeypatch.setattr(agent_factory, "_read_checkpointer_type", lambda: "sqlite")
+    monkeypatch.setattr(agent_factory, "_global_checkpointer", None)
+
+    assert agent_factory.delete_thread_checkpoint_direct("t1") is True
+    assert agent_factory._global_checkpointer is None
+
+    conn = sqlite3.connect(db_path)
+    try:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM checkpoints WHERE thread_id = 't1'"
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM writes WHERE thread_id = 't1'"
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM checkpoints WHERE thread_id = 't2'"
+        ).fetchone()[0] == 1
+    finally:
+        conn.close()

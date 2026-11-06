@@ -20,6 +20,10 @@ from pydantic import BaseModel, Field
 from src.agent.core.toolkit.tool_spec import RiskLevel, ToolSpec
 from src.agent.exceptions import ToolContext
 from src.agent.path_guard import resolve_agent_path, validate_path, is_path_allowed_for_tree
+from src.agent.tools.groups.file_ops._scan_policy import (
+    explicit_ignored_segments,
+    is_default_ignored_dir,
+)
 
 # ═══════════════════════════════════════════
 # Named constants
@@ -27,11 +31,10 @@ from src.agent.path_guard import resolve_agent_path, validate_path, is_path_allo
 
 _DEFAULT_SEARCH_ROOT: str = "."
 _DEFAULT_MAX_RESULTS: int = 100
-_TRUNCATED_SUFFIX: str = "... (truncated)"
-_IGNORED_DIRS: frozenset[str] = frozenset({
-    "__pycache__", ".git", "node_modules", ".venv", "venv",
-    ".idea", ".vscode", ".claude", "dist", "build",
-})
+_PLAN_MODE_MAX_RESULTS: int = 50
+_MAX_OUTPUT_CHARS: int = 16_000
+_APPROX_MATCH_CHARS: int = 40
+_PLAN_PERMISSION_MODE: str = "plan"
 
 
 # ═══════════════════════════════════════════
@@ -42,6 +45,10 @@ class GlobArgs(BaseModel):
     pattern: str = Field(description="glob 模式，如 '*.py' 或 '**/*.ts'")
     path: str = Field(default=_DEFAULT_SEARCH_ROOT, description="搜索根目录（建议传绝对路径）")
     max_results: int = Field(default=_DEFAULT_MAX_RESULTS, description="最多返回文件数")
+    include_ignored: bool = Field(
+        default=False,
+        description="为 true 时同时匹配依赖/构建/缓存目录（node_modules、.venv、.git 等）",
+    )
 
 
 class GlobOutput(BaseModel):
@@ -57,6 +64,10 @@ class GlobTool(ToolSpec):
         "用 glob 模式匹配文件路径（如 '*.py'、'**/*.ts'），返回文件路径+修改时间，"
         "按修改时间倒序（最新在前）。"
         "已知文件名模式时用本工具；探索未知目录结构请用 list_files。"
+        "默认跳过依赖/构建/缓存目录（node_modules、.venv、venv、.git、.pio、"
+        ".platformio、dist、build、__pycache__、.pytest_cache 等）；"
+        "模式中显式写出这些目录（如 '**/node_modules/**'）时按显式请求处理，"
+        "也可传 include_ignored=true。计划模式最多返回 50 条，普通模式 100 条、约 16k 字符。"
         "敏感路径（.git/.env/*.key/*.pem）会被拦截。"
     )
     args_schema: type = GlobArgs
@@ -78,43 +89,83 @@ class GlobTool(ToolSpec):
         if not pattern:
             return _error("pattern is required")
         max_results = int(args.get("max_results", _DEFAULT_MAX_RESULTS))
-        return await _run_glob(path, pattern, max_results)
+        if getattr(ctx, "permission_mode", "") == _PLAN_PERMISSION_MODE:
+            max_results = min(max_results, _PLAN_MODE_MAX_RESULTS)
+        return await _run_glob(
+            path,
+            pattern,
+            max_results,
+            include_ignored=bool(args.get("include_ignored", False)),
+        )
 
 
-async def _run_glob(root: str, pattern: str, max_results: int) -> dict:
+async def _run_glob(
+    root: str,
+    pattern: str,
+    max_results: int,
+    *,
+    include_ignored: bool = False,
+) -> dict:
     """Run sync glob in a worker thread, return envelope dict."""
-    matches, truncated = await asyncio.to_thread(_glob_sync, root, pattern, max_results)
+    matches, truncated = await asyncio.to_thread(
+        _glob_sync, root, pattern, max_results, include_ignored,
+    )
     return {"matches": matches, "truncated": truncated, "count": len(matches)}
 
 
-def _glob_sync(root: str, pattern: str, max_results: int) -> tuple[list[dict], bool]:
+def _glob_sync(
+    root: str,
+    pattern: str,
+    max_results: int,
+    include_ignored: bool = False,
+) -> tuple[list[dict], bool]:
     """Match glob pattern under root, sort by mtime desc, truncate."""
     root_path = Path(root)
     if not root_path.exists():
         return [], False
+    allowed_ignored = explicit_ignored_segments(pattern)
     raw = list(root_path.glob(pattern))
     files = [p for p in raw if not _is_dir(p)]
-    files = [p for p in files if not _is_ignored(p, root_path)]
+    files = [
+        p for p in files
+        if include_ignored or not _is_ignored(p, root_path, allowed_ignored)
+    ]
     files = [p for p in files if _has_mtime(p)]
     files = [p for p in files if is_path_allowed_for_tree(str(p))]
     files.sort(key=_get_mtime, reverse=True)
     return _truncate_matches(files, max_results)
 
 
-def _is_ignored(path: Path, root: Path) -> bool:
-    """True when any relative component is a dependency/VCS directory."""
+def _is_ignored(
+    path: Path,
+    root: Path,
+    allowed_ignored: frozenset[str] = frozenset(),
+) -> bool:
+    """True when a relative component is a default-ignored directory.
+
+    Components the pattern names literally (``node_modules``) are exempt.
+    """
     try:
         parts = path.relative_to(root).parts
     except ValueError:
         parts = path.parts
-    return any(part in _IGNORED_DIRS for part in parts)
+    return any(
+        is_default_ignored_dir(part) and part not in allowed_ignored
+        for part in parts
+    )
 
 
 def _truncate_matches(files: list[Path], max_results: int) -> tuple[list[dict], bool]:
-    """Convert paths to dicts, truncate to max_results."""
-    truncated = len(files) > max_results
-    sliced = files[:max_results]
-    return [_to_match(p) for p in sliced], truncated
+    """Convert paths to dicts, truncate to max_results and the output budget."""
+    matches: list[dict] = []
+    chars = 0
+    for p in files:
+        if len(matches) >= max_results or chars >= _MAX_OUTPUT_CHARS:
+            return matches, True
+        match = _to_match(p)
+        matches.append(match)
+        chars += len(match["path"]) + _APPROX_MATCH_CHARS
+    return matches, False
 
 
 def _to_match(p: Path) -> dict:
