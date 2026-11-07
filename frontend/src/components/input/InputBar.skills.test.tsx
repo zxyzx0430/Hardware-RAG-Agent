@@ -11,14 +11,18 @@ const { chatState, appState, settingsState, sessionState, warningMock } = vi.hoi
   },
   appState: { quotedMsg: null as null, setQuotedMsg: vi.fn(), templatePanelOpen: false, setTemplatePanelOpen: vi.fn() },
   settingsState: { providers: [], chatProviderId: "", chatModel: "model", setChatModel: vi.fn(), permissionMode: "default", updateSetting: vi.fn() },
-  sessionState: { sessions: [{ id: "session-a", model: "model" }], updateSessionMeta: vi.fn() },
+  sessionState: { sessions: [{ id: "session-a", model: "model" }], updateSessionMeta: vi.fn(), setContextWindow: vi.fn() },
   warningMock: vi.fn(),
 }));
 
 vi.mock("../../stores/useChatStore", () => ({ useChatStore: () => chatState }));
 vi.mock("../../stores/useAppStore", () => ({ useAppStore: Object.assign(() => appState, { getState: () => appState }) }));
 vi.mock("../../stores/useSettingsStore", () => ({ useSettingsStore: () => settingsState }));
-vi.mock("../../stores/useSessionStore", () => ({ useSessionStore: () => sessionState }));
+vi.mock("../../stores/useSessionStore", () => ({
+  useSessionStore: () => sessionState,
+  CONTEXT_WINDOW_256K: 262144,
+  CONTEXT_WINDOW_1M: 1048576,
+}));
 vi.mock("../../stores/useToastStore", () => ({ useToastStore: { getState: () => ({ showWarning: warningMock }) } }));
 vi.mock("../../stores/useLogStore", () => ({ useLogStore: { getState: () => ({ log: vi.fn() }) } }));
 vi.mock("../../i18n", () => ({ useI18n: () => ({ t: (key: string) => key, lang: "zh" }) }));

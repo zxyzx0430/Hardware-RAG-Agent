@@ -2,7 +2,7 @@ import { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import { useAppStore } from "../../stores/useAppStore";
 import { useSettingsStore } from "../../stores/useSettingsStore";
 import { useChatStore } from "../../stores/useChatStore";
-import { useSessionStore, CONTEXT_WINDOW_256K } from "../../stores/useSessionStore";
+import { useSessionStore, CONTEXT_WINDOW_256K, CONTEXT_WINDOW_1M } from "../../stores/useSessionStore";
 import { useLogStore } from "../../stores/useLogStore";
 import { useModalStore } from "../../stores/useModalStore";
 import { useI18n } from "../../i18n";
@@ -561,12 +561,16 @@ export function SettingsPage() {
                     onChange={(e) => setContextWindow(Number(e.target.value))}
                     style={{ marginBottom: 8 }}
                   >
+                    <option value={65536}>64K</option>
+                    <option value={131072}>128K</option>
                     <option value={CONTEXT_WINDOW_256K}>256K</option>
+                    <option value={524288}>512K</option>
+                    <option value={CONTEXT_WINDOW_1M}>1M</option>
                   </select>
                   <div style={{ fontSize: 12, color: 'var(--muted-fg)' }}>
                     {lang === 'zh'
-                      ? '上下文窗口决定 AI 能记住的对话长度，上限为 256K。若当前对话超出所选窗口，系统会自动压缩历史。'
-                      : 'Context window determines how much conversation the AI can remember. The maximum is 256K. If the current conversation exceeds the selected window, the system will auto-compress history.'}
+                      ? '上下文窗口决定 AI 能记住的对话长度，上限为 1M。系统提示、工具 schema、输出和对话内容都占用同一窗口；超出所选窗口时系统会自动压缩历史。'
+                      : 'Context window determines how much conversation the AI can remember. The maximum is 1M. System prompts, tool schemas, output and conversation share the same window; the system compacts history when it is exceeded.'}
                   </div>
                 </div>
 

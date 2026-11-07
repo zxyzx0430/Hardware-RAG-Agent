@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const CONTEXT_WINDOW_CAP = 262144;
+const CONTEXT_WINDOW_CAP = 1048576;
+const DEFAULT_WINDOW = 262144;
 
 const mocks = vi.hoisted(() => {
   const apiGet = vi.fn();
@@ -133,12 +134,12 @@ function makeSession(overrides: Record<string, unknown> = {}) {
     project: "",
     pinned: false,
     msgCount: 0,
-    contextWindow: CONTEXT_WINDOW_CAP,
+    contextWindow: DEFAULT_WINDOW,
     ...overrides,
   };
 }
 
-describe("session context window hard cap", () => {
+describe("session context window up to 1M", () => {
   beforeEach(() => {
     vi.resetModules();
     localStorage.clear();
@@ -153,15 +154,19 @@ describe("session context window hard cap", () => {
     cleanupRenderedPage = null;
   });
 
-  it("clamps legacy 1M local session data during hydration", async () => {
-    localStorage.setItem("hwrag_sessions", JSON.stringify([makeSession({ contextWindow: 1048576 })]));
+  it("keeps a 1M window during hydration and clamps above 1M", async () => {
+    localStorage.setItem("hwrag_sessions", JSON.stringify([
+      makeSession({ contextWindow: 1048576 }),
+      makeSession({ id: "oversized", contextWindow: 2097152 }),
+    ]));
 
     const store = await importSessionStore();
 
     expect(store.getState().sessions[0].contextWindow).toBe(CONTEXT_WINDOW_CAP);
+    expect(store.getState().sessions[1].contextWindow).toBe(CONTEXT_WINDOW_CAP);
   });
 
-  it("clamps oversized API values before storing or sending them back", async () => {
+  it("stores and sends API window values up to 1M", async () => {
     mocks.apiGet.mockResolvedValueOnce({
       sessions: [{
         id: "context-window-session",
@@ -182,28 +187,33 @@ describe("session context window hard cap", () => {
       context_window: CONTEXT_WINDOW_CAP,
     });
 
+    store.getState().setContextWindow(2097152);
+    expect(mocks.apiPatch).toHaveBeenLastCalledWith("sessions/context-window-session", {
+      context_window: CONTEXT_WINDOW_CAP,
+    });
+
     store.getState().setContextWindow(32768);
     expect(mocks.apiPatch).toHaveBeenLastCalledWith("sessions/context-window-session", {
       context_window: 32768,
     });
   });
 
-  it("creates new sessions at the 256K cap", async () => {
+  it("creates new sessions at the default 256K window", async () => {
     const store = await importSessionStore();
     const sessionId = await store.getState().newSession();
 
     expect(mocks.apiPost).toHaveBeenCalledWith("sessions", expect.objectContaining({
-      context_window: CONTEXT_WINDOW_CAP,
+      context_window: DEFAULT_WINDOW,
     }));
     expect(sessionId).toBe("server-context-window-session");
-    expect(store.getState().sessions[0].contextWindow).toBe(CONTEXT_WINDOW_CAP);
+    expect(store.getState().sessions[0].contextWindow).toBe(DEFAULT_WINDOW);
   });
 
-  it("does not expose a 1M option in SettingsPage", async () => {
-    localStorage.setItem("hwrag_sessions", JSON.stringify([makeSession({ contextWindow: 1048576 })]));
+  it("exposes 64K through 1M in SettingsPage", async () => {
+    localStorage.setItem("hwrag_sessions", JSON.stringify([makeSession()]));
     const store = await importSessionStore();
     mocks.chatState.activeSessionId = "context-window-session";
-    store.setState({ sessions: [makeSession({ contextWindow: CONTEXT_WINDOW_CAP })] });
+    store.setState({ sessions: [makeSession()] });
 
     const React = await import("react");
     const { cleanup, render, screen } = await import("@testing-library/react");
@@ -212,11 +222,11 @@ describe("session context window hard cap", () => {
     render(React.createElement(SettingsPage));
 
     const select = screen.getAllByRole("combobox").find((element) =>
-      Array.from((element as HTMLSelectElement).options).some((option) => option.value === String(CONTEXT_WINDOW_CAP)),
+      Array.from((element as HTMLSelectElement).options).some((option) => option.value === String(DEFAULT_WINDOW)),
     ) as HTMLSelectElement | undefined;
     expect(select).toBeDefined();
-    expect(Array.from(select!.options).map((option) => option.textContent)).toEqual(["256K"]);
-    expect(screen.queryByRole("option", { name: "1M" })).toBeNull();
-    expect(screen.queryByText(/1M/)).toBeNull();
+    expect(Array.from(select!.options).map((option) => option.textContent))
+      .toEqual(["64K", "128K", "256K", "512K", "1M"]);
+    expect(screen.getByRole("option", { name: "1M" })).toBeTruthy();
   });
 });

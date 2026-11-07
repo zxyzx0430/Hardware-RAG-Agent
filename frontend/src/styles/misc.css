@@ -373,6 +373,14 @@
   padding: 4px 8px; border-radius: var(--radius-sm); border: 1px solid var(--border);
   background: var(--bg); font-size: 11px; cursor: pointer; transition: 0.15s;
 }
+.context-selector {
+  appearance: none;
+  padding: 4px 8px; border-radius: var(--radius-sm); border: 1px solid var(--border);
+  background: var(--bg); color: var(--fg); font-size: 11px; cursor: pointer;
+  flex: 0 0 auto; min-width: max-content;
+}
+.context-selector:hover { background: var(--muted); }
+.context-selector:disabled { opacity: 0.5; cursor: default; }
 .permission-selector:hover { background: var(--muted); }
 .permission-selector svg:first-child { color: var(--primary); }
 .permission-selector .permission-label { }

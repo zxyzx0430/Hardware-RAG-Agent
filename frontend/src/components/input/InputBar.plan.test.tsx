@@ -26,6 +26,7 @@ const { chatState, appState, settingsState, sessionState } = vi.hoisted(() => ({
   sessionState: {
     sessions: [{ id: "session-a", model: "model" }],
     updateSessionMeta: vi.fn(),
+    setContextWindow: vi.fn(),
   },
 }));
 
@@ -34,7 +35,11 @@ vi.mock("../../stores/useAppStore", () => ({
   useAppStore: Object.assign(() => appState, { getState: () => appState }),
 }));
 vi.mock("../../stores/useSettingsStore", () => ({ useSettingsStore: () => settingsState }));
-vi.mock("../../stores/useSessionStore", () => ({ useSessionStore: () => sessionState }));
+vi.mock("../../stores/useSessionStore", () => ({
+  useSessionStore: () => sessionState,
+  CONTEXT_WINDOW_256K: 262144,
+  CONTEXT_WINDOW_1M: 1048576,
+}));
 vi.mock("../../stores/useToastStore", () => ({
   useToastStore: { getState: () => ({ showWarning: vi.fn() }) },
 }));

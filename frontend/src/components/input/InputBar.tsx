@@ -5,7 +5,7 @@ import { useLogStore } from "../../stores/useLogStore";
 import { useSettingsStore } from "../../stores/useSettingsStore";
 import { useAppStore } from "../../stores/useAppStore";
 import { useToastStore } from "../../stores/useToastStore";
-import { useSessionStore } from "../../stores/useSessionStore";
+import { useSessionStore, CONTEXT_WINDOW_256K, CONTEXT_WINDOW_1M } from "../../stores/useSessionStore";
 import { useSkillsStore } from "../../stores/useSkillsStore";
 import { TemplatePanel } from "../shared/TemplatePanel";
 import { SkillModeSelector } from "./SkillModeSelector";
@@ -44,6 +44,11 @@ function mergeUniqueAttachments(current: Attachment[], incoming: Attachment[]): 
   }
   return merged;
 }
+
+function formatContextWindow(value: number): string {
+  if (value >= CONTEXT_WINDOW_1M) return "1M";
+  return `${Math.round(value / 1024)}K`;
+}
 export function InputBar() {
   const { t, lang } = useI18n();
   const [showModelDropdown, setShowModelDropdown] = useState(false);
@@ -65,7 +70,7 @@ export function InputBar() {
 
   const { sendMessage, stopStreaming, isStreaming, activeSessionId, drafts, setDraft, clearDraft, sessionAttachments, setSessionAttachments, clearSessionAttachments, planMode, setPlanMode } = useChatStore();
   const { providers, chatProviderId, chatModel, setChatModel, permissionMode, updateSetting } = useSettingsStore();
-  const { sessions, updateSessionMeta } = useSessionStore();
+  const { sessions, updateSessionMeta, setContextWindow } = useSessionStore();
   // 输入框文本从 store 草稿派生，切换会话自动响应
   const text = drafts[activeSessionId] || "";
   // 附件按 session 隔离，切换会话时互不干扰
@@ -73,6 +78,13 @@ export function InputBar() {
   // 模型优先从当前会话读取（各对话独立），回退到全局设置
   const currentSession = sessions.find((s) => s.id === activeSessionId);
   const model = currentSession?.model || chatModel;
+  const contextWindow = currentSession?.contextWindow ?? CONTEXT_WINDOW_256K;
+  const contextWindowOptions = useMemo(
+    () => Array.from(new Set([
+      65536, 131072, CONTEXT_WINDOW_256K, 524288, CONTEXT_WINDOW_1M, contextWindow,
+    ])).sort((a, b) => a - b),
+    [contextWindow],
+  );
   const { quotedMsg, setQuotedMsg, templatePanelOpen, setTemplatePanelOpen } = useAppStore();
 
   // Keep ref in sync with attachments state for reading inside async callbacks
@@ -454,6 +466,20 @@ export function InputBar() {
                   <polyline points="6 9 12 15 18 9" />
                 </svg>
               </div>
+
+              <select
+                className="context-selector"
+                id="contextWindowSelector"
+                title={lang === "zh" ? "上下文窗口" : "Context window"}
+                aria-label={lang === "zh" ? "上下文窗口" : "Context window"}
+                value={contextWindow}
+                onChange={(e) => setContextWindow(Number(e.target.value))}
+                disabled={!activeSessionId}
+              >
+                {contextWindowOptions.map((value) => (
+                  <option key={value} value={value}>{formatContextWindow(value)}</option>
+                ))}
+              </select>
 
               <div
                 className="permission-selector"

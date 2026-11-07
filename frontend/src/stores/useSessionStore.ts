@@ -22,7 +22,7 @@ function normalizeContextWindow(value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
     return DEFAULT_CONTEXT_WINDOW;
   }
-  return Math.min(value, DEFAULT_CONTEXT_WINDOW);
+  return Math.min(value, CONTEXT_WINDOW_1M);
 }
 
 /** One day in milliseconds — used for session time bucketing. */
