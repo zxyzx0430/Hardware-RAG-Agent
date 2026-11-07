@@ -129,7 +129,11 @@ class LLMClient:
                     raise LLMError("Context budget unavailable for nontext content")
             from src.agent.request_budget import estimate_wire_tokens
 
-            return estimate_wire_tokens(messages)
+            serialized = json.dumps(
+                messages, ensure_ascii=False, allow_nan=False,
+                separators=(",", ":"),
+            )
+            return estimate_wire_tokens(serialized)
         except (TypeError, ValueError, UnicodeError, RecursionError) as exc:
             raise LLMError("Context budget unavailable: unsupported message encoding") from exc
 

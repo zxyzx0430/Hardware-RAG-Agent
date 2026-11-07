@@ -52,7 +52,7 @@ async def test_ordinary_summary_keeps_complete_early_text(monkeypatch, mode):
     client, create = _ordinary_client()
     constraint = " DO_NOT_FLASH ESP32-S3 3.3V /protected-path; ask before connecting."
     history = [ChatMessage("user" if i % 2 == 0 else "assistant",
-                           f"record-{i}:" + "x" * 620 + constraint) for i in range(20)]
+                           f"record-{i}:" + "x" * 1300 + constraint) for i in range(20)]
     before = copy.deepcopy(history)
     summary = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=constraint))],
                               model="gpt-4o-mini", usage=None)
@@ -78,7 +78,7 @@ async def test_ordinary_summary_failure_never_sends_partial_context(monkeypatch,
 
     monkeypatch.setitem(MODEL_CONTEXT_WINDOWS, "gpt-4o-mini", 12000)
     client, create = _ordinary_client()
-    history = [ChatMessage("user", f"record-{i}:" + "x" * 620 + " DO_NOT_FLASH")
+    history = [ChatMessage("user", f"record-{i}:" + "x" * 1300 + " DO_NOT_FLASH")
                for i in range(200 if fault == "prefix_budget" else 20)]
     before = copy.deepcopy(history)
     if fault in ("error", "timeout", "cancel"):
@@ -103,7 +103,7 @@ async def test_ordinary_summary_expansion_is_rechecked(monkeypatch, mode):
     history = [ChatMessage("user", "old record " + "x" * 1000) for _ in range(3)]
     create.return_value.choices[0].message.content = "s" * 7000
     with pytest.raises(LLMError):
-        await _ordinary_call(client, mode, user_message="u" * 9000, history=history)
+        await _ordinary_call(client, mode, user_message="u" * 18000, history=history)
     assert create.await_count == 1
     assert len(create.call_args.kwargs["messages"][-1]["content"]) < 32768
 
@@ -149,7 +149,7 @@ async def test_ordinary_request_uses_runtime_model_and_credentials(monkeypatch, 
     client, global_create = _ordinary_client()
     runtime, create = _ordinary_client()
     client.max_tokens = 100000 if large_output else 512
-    history = None if large_output else [ChatMessage("user", f"record-{i}:" + "x" * 620 + " DO_NOT_FLASH") for i in range(20)]
+    history = None if large_output else [ChatMessage("user", f"record-{i}:" + "x" * 1300 + " DO_NOT_FLASH") for i in range(20)]
     if mode == "stream":
         answer = _ordinary_stream()
     else:
@@ -188,7 +188,7 @@ async def test_ordinary_wire_budget_includes_framing_and_uncapped_output(monkeyp
     mode = "chat" if transport == "chat" else "stream"
     if mode == "stream":
         create.return_value = _ordinary_stream()
-    text = "u" * {"small": 100, "costly": 5000, "framing": 11240}[payload]
+    text = "u" * {"small": 100, "costly": 10000, "framing": 22000}[payload]
     refuses = payload == "framing" or (transport == "uncapped_stream" and payload == "costly")
     if refuses:
         with pytest.raises(LLMError):
@@ -213,7 +213,7 @@ async def test_ordinary_summary_preserves_duplicates_and_roles(monkeypatch, mode
 
     monkeypatch.setitem(MODEL_CONTEXT_WINDOWS, "gpt-4o-mini", 12000)
     client, create = _ordinary_client()
-    content = "x" * 620 + " DO_NOT_FLASH /protected-path"
+    content = "x" * 1300 + " DO_NOT_FLASH /protected-path"
     history = [ChatMessage("user" if i % 2 == 0 else "assistant",
                            [{"type": "text", "text": content}] if blocks else content) for i in range(20)]
     before = copy.deepcopy(history)
