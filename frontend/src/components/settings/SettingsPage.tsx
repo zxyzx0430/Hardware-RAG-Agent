@@ -49,7 +49,7 @@ export function SettingsPage() {
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const setContextWindow = useSessionStore((s) => s.setContextWindow);
   const currentContextWindow = useSessionStore((s) =>
-    s.sessions.find((x) => x.id === activeSessionId)?.contextWindow ?? CONTEXT_WINDOW_256K
+    s.sessions.find((x) => x.id === activeSessionId)?.contextWindow ?? CONTEXT_WINDOW_1M
   );
   const [tab, setTab] = useState<(typeof TAB_IDS)[number]>("api");
   const [logRefreshKey, setLogRefreshKey] = useState(0);

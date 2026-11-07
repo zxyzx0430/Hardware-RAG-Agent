@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const CONTEXT_WINDOW_CAP = 1048576;
-const DEFAULT_WINDOW = 262144;
+const DEFAULT_WINDOW = 1048576;
 
 const mocks = vi.hoisted(() => {
   const apiGet = vi.fn();
@@ -198,7 +198,7 @@ describe("session context window up to 1M", () => {
     });
   });
 
-  it("creates new sessions at the default 256K window", async () => {
+  it("creates new sessions at the default 1M window", async () => {
     const store = await importSessionStore();
     const sessionId = await store.getState().newSession();
 

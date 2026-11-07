@@ -25,7 +25,7 @@ router = APIRouter(prefix="/api/agent-sandbox", tags=["agent-sandbox"])
 
 POLICY_KEY: str = "permissionMode"
 DEFAULT_POLICY: str = "default"
-VALID_POLICIES: set[str] = {"bypassPermissions", "default", "acceptEdits"}
+VALID_POLICIES: set[str] = {"bypassPermissions", "default", "acceptEdits", "yolo"}
 DEFAULT_LIMIT: int = 100
 MAX_LIMIT: int = 500
 

@@ -16,7 +16,7 @@ const DEFAULT_MODEL = "";
 /** Session context window limit plus the legacy preset value (tokens). */
 export const CONTEXT_WINDOW_256K = 262144;
 export const CONTEXT_WINDOW_1M = 1048576;
-const DEFAULT_CONTEXT_WINDOW = CONTEXT_WINDOW_256K;
+const DEFAULT_CONTEXT_WINDOW = CONTEXT_WINDOW_1M;
 
 function normalizeContextWindow(value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {

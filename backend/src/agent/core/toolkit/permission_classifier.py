@@ -36,6 +36,9 @@ DENY: str = "deny"
 BYPASS_MODE: str = "bypassPermissions"
 DEFAULT_MODE: str = "default"
 ACCEPT_EDITS_MODE: str = "acceptEdits"
+# Explicit no-confirmation mode exposed as "YOLO" in the client. Unlike
+# bypassPermissions it also allows HIGH-risk and ALWAYS-confirmation tools.
+YOLO_MODE: str = "yolo"
 
 # Tools whose MEDIUM-risk branch needs path_guard validation on `path`.
 _FILE_WRITE_TOOLS: frozenset[str] = frozenset({"write_file", "edit_file"})
@@ -76,6 +79,8 @@ class PermissionClassifier:
         """Return allow/ask/deny for a tool call. Pure, no side effects."""
         if getattr(ctx, "permission_mode", "default") == PLAN_MODE:
             return ALLOW if is_allowed_in_plan_mode(spec.name, args) else DENY
+        if getattr(ctx, "permission_mode", "default") == YOLO_MODE:
+            return ALLOW
         if spec.mcp_info is not None:
             return ASK
         if spec.requires_confirmation == ConfirmationRule.ALWAYS:

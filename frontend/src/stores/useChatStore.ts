@@ -3120,15 +3120,9 @@ export const useChatStore = create<ChatState>((set, get) => {
         return;
       }
     }
-    const skillsMode = skills?.mode ?? "off";
-    const skillIds = skillsMode === "manual"
-      ? [...new Set((skills?.skillIds ?? []).filter((id) => typeof id === "string" && id))].slice(0, 3)
-      : [];
-    if (skillsMode === "manual" && skillIds.length === 0) {
-      useToastStore.getState().showWarning("手动 Skills 模式至少需要一个技能");
-      if (initialComposerSnapshot) queueMicrotask(() => restoreInitialComposers([initialComposerSnapshot]));
-      return;
-    }
+    // Skills are discovered and loaded automatically; the input bar no longer
+    // exposes a manual per-chat selection.
+    const skillsMode = "auto";
     if (initialSessionSend) {
       initialSessionSendInProgress = true;
       try {
@@ -3284,7 +3278,6 @@ export const useChatStore = create<ChatState>((set, get) => {
       // Agent mode (v1-T6): enable LangGraph ReAct Agent by default
       use_agent: true,
       skills_mode: skillsMode,
-      ...(skillsMode === "manual" ? { skill_ids: skillIds } : {}),
       permission_mode: planMode ? "plan" : permissionMode,
       ...(options?.approvedPlanId ? { approved_plan_id: options.approvedPlanId } : {}),
       tool_keys: {

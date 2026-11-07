@@ -51,6 +51,13 @@ function openPermissionDropdown() {
   fireEvent.click(document.getElementById("permissionSelector")!);
 }
 
+function clickPermission(label: string) {
+  const option = screen.getAllByText(label).find(
+    (element) => element.closest("#permissionDropdown"),
+  );
+  fireEvent.click(option!.closest("button")!);
+}
+
 beforeEach(() => {
   chatState.planMode = false;
   chatState.setPlanMode.mockReset();
@@ -65,27 +72,47 @@ describe("InputBar plan mode", () => {
     render(<InputBar />);
     openPermissionDropdown();
 
-    fireEvent.click(screen.getByRole("button", { name: "permissionPlan" }));
+    clickPermission("plan");
 
     expect(chatState.setPlanMode).toHaveBeenCalledWith(true);
     expect(settingsState.updateSetting).not.toHaveBeenCalled();
     expect(chatState.setPlanMode).toHaveBeenCalledTimes(1);
   });
 
-  it("selecting a normal mode clears plan mode and persists the mode", () => {
+  it("manual clears plan mode and persists the ask mode", () => {
     render(<InputBar />);
     openPermissionDropdown();
 
-    fireEvent.click(screen.getByRole("button", { name: "permissionAsk" }));
+    clickPermission("manual");
 
     expect(chatState.setPlanMode).toHaveBeenCalledWith(false);
     expect(settingsState.updateSetting).toHaveBeenCalledWith("permissionMode", "default");
+  });
+
+  it("auto persists the acceptEdits mode", () => {
+    render(<InputBar />);
+    openPermissionDropdown();
+
+    clickPermission("auto");
+
+    expect(chatState.setPlanMode).toHaveBeenCalledWith(false);
+    expect(settingsState.updateSetting).toHaveBeenCalledWith("permissionMode", "acceptEdits");
+  });
+
+  it("YOLO persists the no-confirmation mode", () => {
+    render(<InputBar />);
+    openPermissionDropdown();
+
+    clickPermission("YOLO");
+
+    expect(chatState.setPlanMode).toHaveBeenCalledWith(false);
+    expect(settingsState.updateSetting).toHaveBeenCalledWith("permissionMode", "yolo");
   });
 
   it("shows the plan label when plan mode is active", () => {
     chatState.planMode = true;
     render(<InputBar />);
 
-    expect(document.getElementById("permissionLabel")?.textContent).toBe("permissionPlan");
+    expect(document.getElementById("permissionLabel")?.textContent).toBe("plan");
   });
 });

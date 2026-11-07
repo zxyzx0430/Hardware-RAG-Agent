@@ -1,4 +1,4 @@
-"""permissionMode is persisted only in the three app-wide modes."""
+"""permissionMode is persisted only in the app-wide modes."""
 
 import pytest
 from fastapi import FastAPI
@@ -37,7 +37,7 @@ def _stored_mode(client) -> str | None:
     return client.get("/api/settings").json()["data"]["settings"].get("permissionMode")
 
 
-@pytest.mark.parametrize("mode", ["bypassPermissions", "default", "acceptEdits"])
+@pytest.mark.parametrize("mode", ["bypassPermissions", "default", "acceptEdits", "yolo"])
 def test_supported_permission_modes_are_persisted(settings_client, mode):
     response = settings_client.put("/api/settings", json={"permissionMode": mode})
 

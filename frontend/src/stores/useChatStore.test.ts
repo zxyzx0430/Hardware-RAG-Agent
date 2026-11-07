@@ -496,7 +496,7 @@ describe("useChatStore", () => {
     });
 
     store.getState().sendMessage("你好");
-    expect(apiSSEBodies[0]).toMatchObject({ skills_mode: "off" });
+    expect(apiSSEBodies[0]).toMatchObject({ skills_mode: "auto" });
     expect((apiSSEBodies[0] as Record<string, unknown>).skill_ids).toBeUndefined();
     expect(store.getState().isStreaming).toBe(true);
     expect(store.getState().streamingSessionId).toBe("s1");
@@ -572,7 +572,7 @@ describe("useChatStore", () => {
     expect(apiSSEPaths).toEqual(["chat"]);
   });
 
-  it("把手动 Skills 快照放进聊天请求并原样带入 HITL 续跑", async () => {
+  it("always requests automatic Skills discovery and keeps it through HITL resume", async () => {
     const store = await importStore();
     store.setState({ messages: [], sessionMessages: {}, activeSessionId: "s1", isStreaming: false });
 
@@ -581,20 +581,22 @@ describe("useChatStore", () => {
       skillIds: ["review", "datasheet", "review", "checklist", "ignored"],
     });
     const request = apiSSEBodies[0] as Record<string, unknown>;
-    expect(request.skills_mode).toBe("manual");
-    expect(request.skill_ids).toEqual(["review", "datasheet", "checklist"]);
+    expect(request.skills_mode).toBe("auto");
+    expect(request.skill_ids).toBeUndefined();
     expect(store.getState()._lastAgentPayload).toMatchObject({
-      skills_mode: "manual",
-      skill_ids: ["review", "datasheet", "checklist"],
+      skills_mode: "auto",
     });
+    expect(store.getState()._lastAgentPayload).not.toHaveProperty("skill_ids");
 
     capturedCallbacks!.onEvent({ type: "tool_confirm_required", calls: [], count: 0 });
     store.getState().resumeAgent("allow");
     expect(apiSSEPaths).toEqual(["chat", "agent-sandbox/resume"]);
     expect(apiSSEBodies[1]).toMatchObject({
       decision: "allow",
-      payload: { skills_mode: "manual", skill_ids: ["review", "datasheet", "checklist"] },
+      payload: { skills_mode: "auto" },
     });
+    expect((apiSSEBodies[1] as { payload: Record<string, unknown> }).payload)
+      .not.toHaveProperty("skill_ids");
   });
 
   it("error 事件触发 stopStreaming 并在消息中追加错误", async () => {

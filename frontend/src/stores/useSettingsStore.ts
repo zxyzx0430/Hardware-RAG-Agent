@@ -60,8 +60,8 @@ interface SettingsState {
   agentChunkerDefaultBaseUrl: string;
   agentChunkerDefaultApiKey: string;
   defaultContextWindow: number;
-  /** Agent permission mode: bypassPermissions=default bypass, default=ask each tool, acceptEdits=auto-accept edits */
-  permissionMode: "bypassPermissions" | "default" | "acceptEdits";
+  /** Agent permission mode: yolo=no prompts, bypassPermissions=safe auto, default=ask, acceptEdits=auto edits */
+  permissionMode: "bypassPermissions" | "default" | "acceptEdits" | "yolo";
   /** One-time console code required when the backend has no stored provider. */
   setupCode: string;
 
@@ -163,7 +163,7 @@ const DEFAULTS = {
   agentChunkerDefaultBaseUrl: "",
   agentChunkerDefaultApiKey: "",
   defaultContextWindow: 0,
-  permissionMode: "default" as "bypassPermissions" | "default" | "acceptEdits",
+  permissionMode: "default" as "bypassPermissions" | "default" | "acceptEdits" | "yolo",
   setupCode: "",
 };
 

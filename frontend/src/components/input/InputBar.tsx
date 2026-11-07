@@ -5,16 +5,55 @@ import { useLogStore } from "../../stores/useLogStore";
 import { useSettingsStore } from "../../stores/useSettingsStore";
 import { useAppStore } from "../../stores/useAppStore";
 import { useToastStore } from "../../stores/useToastStore";
-import { useSessionStore, CONTEXT_WINDOW_256K, CONTEXT_WINDOW_1M } from "../../stores/useSessionStore";
+import { useSessionStore } from "../../stores/useSessionStore";
 import { useSkillsStore } from "../../stores/useSkillsStore";
 import { TemplatePanel } from "../shared/TemplatePanel";
-import { SkillModeSelector } from "./SkillModeSelector";
 import { useI18n } from "../../i18n";
 import { buildModelGroups, filterModelGroups } from "../../utils/modelOptions";
 import type { Attachment } from "../../types/api";
 
-type PermissionMode = "bypassPermissions" | "default" | "acceptEdits";
-const PERMISSION_MODE_ORDER: PermissionMode[] = ["bypassPermissions", "default", "acceptEdits"];
+type PermissionChoice = "manual" | "auto" | "plan" | "yolo";
+
+interface PermissionOption {
+  id: PermissionChoice;
+  label: string;
+  description: { zh: string; en: string };
+}
+
+const PERMISSION_OPTIONS: PermissionOption[] = [
+  {
+    id: "manual",
+    label: "manual",
+    description: {
+      zh: "每个中高风险操作都先问你",
+      en: "Ask before every medium/high-risk action",
+    },
+  },
+  {
+    id: "auto",
+    label: "auto",
+    description: {
+      zh: "文件修改自动放行，危险操作仍询问",
+      en: "Auto-approve edits; still ask for dangerous actions",
+    },
+  },
+  {
+    id: "plan",
+    label: "plan",
+    description: {
+      zh: "只读调研并给出计划，不改文件、不执行命令",
+      en: "Read-only research and a plan; no writes or commands",
+    },
+  },
+  {
+    id: "yolo",
+    label: "YOLO",
+    description: {
+      zh: "全部放行，不再询问（谨慎使用）",
+      en: "Allow everything without asking (use with care)",
+    },
+  },
+];
 
 const MIN_INPUT_HEIGHT = 80;
 const MAX_INPUT_HEIGHT = 320;
@@ -44,11 +83,6 @@ function mergeUniqueAttachments(current: Attachment[], incoming: Attachment[]): 
   }
   return merged;
 }
-
-function formatContextWindow(value: number): string {
-  if (value >= CONTEXT_WINDOW_1M) return "1M";
-  return `${Math.round(value / 1024)}K`;
-}
 export function InputBar() {
   const { t, lang } = useI18n();
   const [showModelDropdown, setShowModelDropdown] = useState(false);
@@ -70,7 +104,7 @@ export function InputBar() {
 
   const { sendMessage, stopStreaming, isStreaming, activeSessionId, drafts, setDraft, clearDraft, sessionAttachments, setSessionAttachments, clearSessionAttachments, planMode, setPlanMode } = useChatStore();
   const { providers, chatProviderId, chatModel, setChatModel, permissionMode, updateSetting } = useSettingsStore();
-  const { sessions, updateSessionMeta, setContextWindow } = useSessionStore();
+  const { sessions, updateSessionMeta } = useSessionStore();
   // 输入框文本从 store 草稿派生，切换会话自动响应
   const text = drafts[activeSessionId] || "";
   // 附件按 session 隔离，切换会话时互不干扰
@@ -78,13 +112,6 @@ export function InputBar() {
   // 模型优先从当前会话读取（各对话独立），回退到全局设置
   const currentSession = sessions.find((s) => s.id === activeSessionId);
   const model = currentSession?.model || chatModel;
-  const contextWindow = currentSession?.contextWindow ?? CONTEXT_WINDOW_256K;
-  const contextWindowOptions = useMemo(
-    () => Array.from(new Set([
-      65536, 131072, CONTEXT_WINDOW_256K, 524288, CONTEXT_WINDOW_1M, contextWindow,
-    ])).sort((a, b) => a - b),
-    [contextWindow],
-  );
   const { quotedMsg, setQuotedMsg, templatePanelOpen, setTemplatePanelOpen } = useAppStore();
 
   // Keep ref in sync with attachments state for reading inside async callbacks
@@ -104,10 +131,27 @@ export function InputBar() {
   const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number } | null>(null);
   const [permissionDropdownPos, setPermissionDropdownPos] = useState<{ top: number; left: number } | null>(null);
 
-  const permissionLabels: Record<PermissionMode, string> = {
-    bypassPermissions: t('permissionBypass'),
-    default: t('permissionAsk'),
-    acceptEdits: t('permissionAuto'),
+  const selectedPermission: PermissionChoice = planMode
+    ? "plan"
+    : permissionMode === "bypassPermissions" || permissionMode === "yolo"
+      ? "yolo"
+      : permissionMode === "acceptEdits"
+        ? "auto"
+        : "manual";
+  const permissionLabel = PERMISSION_OPTIONS.find(
+    (option) => option.id === selectedPermission,
+  )?.label ?? "manual";
+  const choosePermission = (choice: PermissionChoice) => {
+    if (choice === "plan") {
+      // Plan mode is request-scoped; the persisted permission mode stays untouched.
+      setPlanMode(true);
+      return;
+    }
+    setPlanMode(false);
+    updateSetting(
+      "permissionMode",
+      choice === "yolo" ? "yolo" : choice === "auto" ? "acceptEdits" : "default",
+    );
   };
 
   useEffect(() => {
@@ -467,20 +511,6 @@ export function InputBar() {
                 </svg>
               </div>
 
-              <select
-                className="context-selector"
-                id="contextWindowSelector"
-                title={lang === "zh" ? "上下文窗口" : "Context window"}
-                aria-label={lang === "zh" ? "上下文窗口" : "Context window"}
-                value={contextWindow}
-                onChange={(e) => setContextWindow(Number(e.target.value))}
-                disabled={!activeSessionId}
-              >
-                {contextWindowOptions.map((value) => (
-                  <option key={value} value={value}>{formatContextWindow(value)}</option>
-                ))}
-              </select>
-
               <div
                 className="permission-selector"
                 id="permissionSelector"
@@ -490,12 +520,11 @@ export function InputBar() {
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
                 </svg>
-                <span className="permission-label" id="permissionLabel">{planMode ? t('permissionPlan') : permissionLabels[permissionMode]}</span>
+                <span className="permission-label" id="permissionLabel">{permissionLabel}</span>
                 <svg className="permission-chevron" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <polyline points="6 9 12 15 18 9" />
                 </svg>
               </div>
-              <SkillModeSelector sessionId={activeSessionId} lang={lang} />
             </div>
 
             <div className="input-right">
@@ -612,32 +641,22 @@ export function InputBar() {
             onClick={(e) => e.stopPropagation()}
             onMouseDown={(e) => e.stopPropagation()}
           >
-            {PERMISSION_MODE_ORDER.map((mode) => (
+            {PERMISSION_OPTIONS.map((option) => (
               <button
-                key={mode}
-                className={`permission-option${!planMode && permissionMode === mode ? " selected" : ""}`}
+                key={option.id}
+                className={`permission-option${selectedPermission === option.id ? " selected" : ""}`}
                 onClick={(e) => {
                   e.stopPropagation();
-                  setPlanMode(false);
-                  updateSetting("permissionMode", mode);
+                  choosePermission(option.id);
                   setShowPermissionDropdown(false);
                 }}
               >
-                {permissionLabels[mode]}
+                <span className="permission-option-label">{option.label}</span>
+                <span className="permission-option-desc">
+                  {lang === "zh" ? option.description.zh : option.description.en}
+                </span>
               </button>
             ))}
-            <div className="permission-divider" />
-            <button
-              className={`permission-option${planMode ? " selected" : ""}`}
-              onClick={(e) => {
-                e.stopPropagation();
-                // Plan mode is request-scoped; the persisted permission mode stays untouched.
-                setPlanMode(true);
-                setShowPermissionDropdown(false);
-              }}
-            >
-              {t('permissionPlan')}
-            </button>
           </div>
         </div>,
         document.body,

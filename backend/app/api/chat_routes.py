@@ -850,7 +850,7 @@ class ChatRequest(BaseModel):
     # Agent path opt-in (spec §10.1): when True + model supports tools + langgraph available,
     # the request flows through the ReAct agent instead of the single-shot LLM stream.
     use_agent: bool = False
-    permission_mode: Literal["bypassPermissions", "default", "acceptEdits", "plan"] = "default"
+    permission_mode: Literal["bypassPermissions", "default", "acceptEdits", "yolo", "plan"] = "default"
     approved_plan_id: Optional[str] = Field(default=None, max_length=128)
     tool_keys: dict[str, str] = {}  # per-request tool credentials, e.g. {"tavily": "..."}
     skills_mode: Literal["off", "auto", "manual"] = "off"

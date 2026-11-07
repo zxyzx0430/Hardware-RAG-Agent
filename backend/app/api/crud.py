@@ -1487,7 +1487,7 @@ ALLOWED_SETTINGS_KEYS = {
 
 # permissionMode is persisted only in these three app-wide modes. "plan" is a
 # request-level mode and must never become a stored setting.
-PERSISTED_PERMISSION_MODES = frozenset({"bypassPermissions", "default", "acceptEdits"})
+PERSISTED_PERMISSION_MODES = frozenset({"bypassPermissions", "default", "acceptEdits", "yolo"})
 
 
 @db_router.get("/settings")
@@ -1544,7 +1544,7 @@ def update_settings(payload: dict, db: DBSession = Depends(get_db), user: dict =
         if not isinstance(mode, str) or mode not in PERSISTED_PERMISSION_MODES:
             raise _fail(
                 "INVALID_PERMISSION_MODE",
-                "permissionMode must be one of bypassPermissions, default, acceptEdits.",
+                "permissionMode must be one of bypassPermissions, default, acceptEdits, yolo.",
                 status_code=422,
             )
     for key in ("topK", "relevanceThreshold"):
