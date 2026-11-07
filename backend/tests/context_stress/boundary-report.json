@@ -1,0 +1,683 @@
+{
+  "chars_per_token": 2.0,
+  "windows": [
+    {
+      "window": 131072,
+      "token_limit": 101376,
+      "guard": [
+        {
+          "ratio": 0.5,
+          "window": 131072,
+          "token_limit": 101376,
+          "target_tokens": 50688,
+          "actual_tokens": 50688,
+          "actual_ratio": 0.5,
+          "over_limit": false,
+          "event": null
+        },
+        {
+          "ratio": 0.9,
+          "window": 131072,
+          "token_limit": 101376,
+          "target_tokens": 91238,
+          "actual_tokens": 91238,
+          "actual_ratio": 0.9,
+          "over_limit": false,
+          "event": null
+        },
+        {
+          "ratio": 0.99,
+          "window": 131072,
+          "token_limit": 101376,
+          "target_tokens": 100362,
+          "actual_tokens": 100362,
+          "actual_ratio": 0.99,
+          "over_limit": false,
+          "event": null
+        },
+        {
+          "ratio": 0.999,
+          "window": 131072,
+          "token_limit": 101376,
+          "target_tokens": 101274,
+          "actual_tokens": 101274,
+          "actual_ratio": 0.999,
+          "over_limit": false,
+          "event": null
+        },
+        {
+          "ratio": 1.0,
+          "window": 131072,
+          "token_limit": 101376,
+          "target_tokens": 101376,
+          "actual_tokens": 101376,
+          "actual_ratio": 1.0,
+          "over_limit": true,
+          "event": "CONTEXT_LIMIT"
+        },
+        {
+          "ratio": 1.001,
+          "window": 131072,
+          "token_limit": 101376,
+          "target_tokens": 101477,
+          "actual_tokens": 101477,
+          "actual_ratio": 1.001,
+          "over_limit": true,
+          "event": "CONTEXT_LIMIT"
+        },
+        {
+          "ratio": 1.1,
+          "window": 131072,
+          "token_limit": 101376,
+          "target_tokens": 111513,
+          "actual_tokens": 111513,
+          "actual_ratio": 1.1,
+          "over_limit": true,
+          "event": "CONTEXT_LIMIT"
+        },
+        {
+          "ratio": 1.3,
+          "window": 131072,
+          "token_limit": 101376,
+          "target_tokens": 131788,
+          "actual_tokens": 131788,
+          "actual_ratio": 1.3,
+          "over_limit": true,
+          "event": "CONTEXT_LIMIT"
+        }
+      ],
+      "estimate": [
+        {
+          "ratio": 0.5,
+          "token_limit": 101376,
+          "estimated_tokens": 50688,
+          "actual_ratio": 0.5,
+          "over_limit": false
+        },
+        {
+          "ratio": 0.9,
+          "token_limit": 101376,
+          "estimated_tokens": 91238,
+          "actual_ratio": 0.9,
+          "over_limit": false
+        },
+        {
+          "ratio": 0.99,
+          "token_limit": 101376,
+          "estimated_tokens": 100362,
+          "actual_ratio": 0.99,
+          "over_limit": false
+        },
+        {
+          "ratio": 0.999,
+          "token_limit": 101376,
+          "estimated_tokens": 101274,
+          "actual_ratio": 0.999,
+          "over_limit": false
+        },
+        {
+          "ratio": 1.0,
+          "token_limit": 101376,
+          "estimated_tokens": 101376,
+          "actual_ratio": 1.0,
+          "over_limit": true
+        },
+        {
+          "ratio": 1.001,
+          "token_limit": 101376,
+          "estimated_tokens": 101477,
+          "actual_ratio": 1.001,
+          "over_limit": true
+        },
+        {
+          "ratio": 1.1,
+          "token_limit": 101376,
+          "estimated_tokens": 111513,
+          "actual_ratio": 1.1,
+          "over_limit": true
+        },
+        {
+          "ratio": 1.3,
+          "token_limit": 101376,
+          "estimated_tokens": 131788,
+          "actual_ratio": 1.3,
+          "over_limit": true
+        }
+      ]
+    },
+    {
+      "window": 200000,
+      "token_limit": 156518,
+      "guard": [
+        {
+          "ratio": 0.5,
+          "window": 200000,
+          "token_limit": 156518,
+          "target_tokens": 78259,
+          "actual_tokens": 78259,
+          "actual_ratio": 0.5,
+          "over_limit": false,
+          "event": null
+        },
+        {
+          "ratio": 0.9,
+          "window": 200000,
+          "token_limit": 156518,
+          "target_tokens": 140866,
+          "actual_tokens": 140866,
+          "actual_ratio": 0.9,
+          "over_limit": false,
+          "event": null
+        },
+        {
+          "ratio": 0.99,
+          "window": 200000,
+          "token_limit": 156518,
+          "target_tokens": 154952,
+          "actual_tokens": 154952,
+          "actual_ratio": 0.99,
+          "over_limit": false,
+          "event": null
+        },
+        {
+          "ratio": 0.999,
+          "window": 200000,
+          "token_limit": 156518,
+          "target_tokens": 156361,
+          "actual_tokens": 156361,
+          "actual_ratio": 0.999,
+          "over_limit": false,
+          "event": null
+        },
+        {
+          "ratio": 1.0,
+          "window": 200000,
+          "token_limit": 156518,
+          "target_tokens": 156518,
+          "actual_tokens": 156518,
+          "actual_ratio": 1.0,
+          "over_limit": true,
+          "event": "CONTEXT_LIMIT"
+        },
+        {
+          "ratio": 1.001,
+          "window": 200000,
+          "token_limit": 156518,
+          "target_tokens": 156674,
+          "actual_tokens": 156674,
+          "actual_ratio": 1.001,
+          "over_limit": true,
+          "event": "CONTEXT_LIMIT"
+        },
+        {
+          "ratio": 1.1,
+          "window": 200000,
+          "token_limit": 156518,
+          "target_tokens": 172169,
+          "actual_tokens": 172169,
+          "actual_ratio": 1.1,
+          "over_limit": true,
+          "event": "CONTEXT_LIMIT"
+        },
+        {
+          "ratio": 1.3,
+          "window": 200000,
+          "token_limit": 156518,
+          "target_tokens": 203473,
+          "actual_tokens": 203473,
+          "actual_ratio": 1.3,
+          "over_limit": true,
+          "event": "CONTEXT_LIMIT"
+        }
+      ],
+      "estimate": [
+        {
+          "ratio": 0.5,
+          "token_limit": 156518,
+          "estimated_tokens": 78259,
+          "actual_ratio": 0.5,
+          "over_limit": false
+        },
+        {
+          "ratio": 0.9,
+          "token_limit": 156518,
+          "estimated_tokens": 140866,
+          "actual_ratio": 0.9,
+          "over_limit": false
+        },
+        {
+          "ratio": 0.99,
+          "token_limit": 156518,
+          "estimated_tokens": 154952,
+          "actual_ratio": 0.99,
+          "over_limit": false
+        },
+        {
+          "ratio": 0.999,
+          "token_limit": 156518,
+          "estimated_tokens": 156361,
+          "actual_ratio": 0.999,
+          "over_limit": false
+        },
+        {
+          "ratio": 1.0,
+          "token_limit": 156518,
+          "estimated_tokens": 156518,
+          "actual_ratio": 1.0,
+          "over_limit": true
+        },
+        {
+          "ratio": 1.001,
+          "token_limit": 156518,
+          "estimated_tokens": 156674,
+          "actual_ratio": 1.001,
+          "over_limit": true
+        },
+        {
+          "ratio": 1.1,
+          "token_limit": 156518,
+          "estimated_tokens": 172169,
+          "actual_ratio": 1.1,
+          "over_limit": true
+        },
+        {
+          "ratio": 1.3,
+          "token_limit": 156518,
+          "estimated_tokens": 203473,
+          "actual_ratio": 1.3,
+          "over_limit": true
+        }
+      ]
+    },
+    {
+      "window": 206233,
+      "token_limit": 161504,
+      "guard": [
+        {
+          "ratio": 0.5,
+          "window": 206233,
+          "token_limit": 161504,
+          "target_tokens": 80752,
+          "actual_tokens": 80752,
+          "actual_ratio": 0.5,
+          "over_limit": false,
+          "event": null
+        },
+        {
+          "ratio": 0.9,
+          "window": 206233,
+          "token_limit": 161504,
+          "target_tokens": 145353,
+          "actual_tokens": 145353,
+          "actual_ratio": 0.9,
+          "over_limit": false,
+          "event": null
+        },
+        {
+          "ratio": 0.99,
+          "window": 206233,
+          "token_limit": 161504,
+          "target_tokens": 159888,
+          "actual_tokens": 159888,
+          "actual_ratio": 0.99,
+          "over_limit": false,
+          "event": null
+        },
+        {
+          "ratio": 0.999,
+          "window": 206233,
+          "token_limit": 161504,
+          "target_tokens": 161342,
+          "actual_tokens": 161342,
+          "actual_ratio": 0.999,
+          "over_limit": false,
+          "event": null
+        },
+        {
+          "ratio": 1.0,
+          "window": 206233,
+          "token_limit": 161504,
+          "target_tokens": 161504,
+          "actual_tokens": 161504,
+          "actual_ratio": 1.0,
+          "over_limit": true,
+          "event": "CONTEXT_LIMIT"
+        },
+        {
+          "ratio": 1.001,
+          "window": 206233,
+          "token_limit": 161504,
+          "target_tokens": 161665,
+          "actual_tokens": 161665,
+          "actual_ratio": 1.001,
+          "over_limit": true,
+          "event": "CONTEXT_LIMIT"
+        },
+        {
+          "ratio": 1.1,
+          "window": 206233,
+          "token_limit": 161504,
+          "target_tokens": 177654,
+          "actual_tokens": 177654,
+          "actual_ratio": 1.1,
+          "over_limit": true,
+          "event": "CONTEXT_LIMIT"
+        },
+        {
+          "ratio": 1.3,
+          "window": 206233,
+          "token_limit": 161504,
+          "target_tokens": 209955,
+          "actual_tokens": 209955,
+          "actual_ratio": 1.3,
+          "over_limit": true,
+          "event": "CONTEXT_LIMIT"
+        }
+      ],
+      "estimate": [
+        {
+          "ratio": 0.5,
+          "token_limit": 161504,
+          "estimated_tokens": 80752,
+          "actual_ratio": 0.5,
+          "over_limit": false
+        },
+        {
+          "ratio": 0.9,
+          "token_limit": 161504,
+          "estimated_tokens": 145353,
+          "actual_ratio": 0.9,
+          "over_limit": false
+        },
+        {
+          "ratio": 0.99,
+          "token_limit": 161504,
+          "estimated_tokens": 159888,
+          "actual_ratio": 0.99,
+          "over_limit": false
+        },
+        {
+          "ratio": 0.999,
+          "token_limit": 161504,
+          "estimated_tokens": 161342,
+          "actual_ratio": 0.999,
+          "over_limit": false
+        },
+        {
+          "ratio": 1.0,
+          "token_limit": 161504,
+          "estimated_tokens": 161504,
+          "actual_ratio": 1.0,
+          "over_limit": true
+        },
+        {
+          "ratio": 1.001,
+          "token_limit": 161504,
+          "estimated_tokens": 161665,
+          "actual_ratio": 1.001,
+          "over_limit": true
+        },
+        {
+          "ratio": 1.1,
+          "token_limit": 161504,
+          "estimated_tokens": 177654,
+          "actual_ratio": 1.1,
+          "over_limit": true
+        },
+        {
+          "ratio": 1.3,
+          "token_limit": 161504,
+          "estimated_tokens": 209955,
+          "actual_ratio": 1.3,
+          "over_limit": true
+        }
+      ]
+    },
+    {
+      "window": 262144,
+      "token_limit": 206233,
+      "guard": [
+        {
+          "ratio": 0.5,
+          "window": 262144,
+          "token_limit": 206233,
+          "target_tokens": 103116,
+          "actual_tokens": 103116,
+          "actual_ratio": 0.5,
+          "over_limit": false,
+          "event": null
+        },
+        {
+          "ratio": 0.9,
+          "window": 262144,
+          "token_limit": 206233,
+          "target_tokens": 185609,
+          "actual_tokens": 185609,
+          "actual_ratio": 0.9,
+          "over_limit": false,
+          "event": null
+        },
+        {
+          "ratio": 0.99,
+          "window": 262144,
+          "token_limit": 206233,
+          "target_tokens": 204170,
+          "actual_tokens": 204170,
+          "actual_ratio": 0.99,
+          "over_limit": false,
+          "event": null
+        },
+        {
+          "ratio": 0.999,
+          "window": 262144,
+          "token_limit": 206233,
+          "target_tokens": 206026,
+          "actual_tokens": 206026,
+          "actual_ratio": 0.999,
+          "over_limit": false,
+          "event": null
+        },
+        {
+          "ratio": 1.0,
+          "window": 262144,
+          "token_limit": 206233,
+          "target_tokens": 206233,
+          "actual_tokens": 206233,
+          "actual_ratio": 1.0,
+          "over_limit": true,
+          "event": "CONTEXT_LIMIT"
+        },
+        {
+          "ratio": 1.001,
+          "window": 262144,
+          "token_limit": 206233,
+          "target_tokens": 206439,
+          "actual_tokens": 206439,
+          "actual_ratio": 1.001,
+          "over_limit": true,
+          "event": "CONTEXT_LIMIT"
+        },
+        {
+          "ratio": 1.1,
+          "window": 262144,
+          "token_limit": 206233,
+          "target_tokens": 226856,
+          "actual_tokens": 226856,
+          "actual_ratio": 1.1,
+          "over_limit": true,
+          "event": "CONTEXT_LIMIT"
+        },
+        {
+          "ratio": 1.3,
+          "window": 262144,
+          "token_limit": 206233,
+          "target_tokens": 268102,
+          "actual_tokens": 268102,
+          "actual_ratio": 1.3,
+          "over_limit": true,
+          "event": "CONTEXT_LIMIT"
+        }
+      ],
+      "estimate": [
+        {
+          "ratio": 0.5,
+          "token_limit": 206233,
+          "estimated_tokens": 103116,
+          "actual_ratio": 0.5,
+          "over_limit": false
+        },
+        {
+          "ratio": 0.9,
+          "token_limit": 206233,
+          "estimated_tokens": 185609,
+          "actual_ratio": 0.9,
+          "over_limit": false
+        },
+        {
+          "ratio": 0.99,
+          "token_limit": 206233,
+          "estimated_tokens": 204170,
+          "actual_ratio": 0.99,
+          "over_limit": false
+        },
+        {
+          "ratio": 0.999,
+          "token_limit": 206233,
+          "estimated_tokens": 206026,
+          "actual_ratio": 0.999,
+          "over_limit": false
+        },
+        {
+          "ratio": 1.0,
+          "token_limit": 206233,
+          "estimated_tokens": 206233,
+          "actual_ratio": 1.0,
+          "over_limit": true
+        },
+        {
+          "ratio": 1.001,
+          "token_limit": 206233,
+          "estimated_tokens": 206439,
+          "actual_ratio": 1.001,
+          "over_limit": true
+        },
+        {
+          "ratio": 1.1,
+          "token_limit": 206233,
+          "estimated_tokens": 226856,
+          "actual_ratio": 1.1,
+          "over_limit": true
+        },
+        {
+          "ratio": 1.3,
+          "token_limit": 206233,
+          "estimated_tokens": 268102,
+          "actual_ratio": 1.3,
+          "over_limit": true
+        }
+      ]
+    }
+  ],
+  "wire": [
+    {
+      "ratio": 0.5,
+      "window": 200000,
+      "output_reserve": 8192,
+      "payload_bytes": 91552,
+      "refused": false,
+      "expected_refused": false
+    },
+    {
+      "ratio": 0.9,
+      "window": 200000,
+      "output_reserve": 8192,
+      "payload_bytes": 171552,
+      "refused": false,
+      "expected_refused": false
+    },
+    {
+      "ratio": 0.99,
+      "window": 200000,
+      "output_reserve": 8192,
+      "payload_bytes": 189552,
+      "refused": false,
+      "expected_refused": false
+    },
+    {
+      "ratio": 0.999,
+      "window": 200000,
+      "output_reserve": 8192,
+      "payload_bytes": 191352,
+      "refused": false,
+      "expected_refused": false
+    },
+    {
+      "ratio": 1.0,
+      "window": 200000,
+      "output_reserve": 8192,
+      "payload_bytes": 191552,
+      "refused": false,
+      "expected_refused": false
+    },
+    {
+      "ratio": 1.001,
+      "window": 200000,
+      "output_reserve": 8192,
+      "payload_bytes": 191751,
+      "refused": true,
+      "expected_refused": true
+    },
+    {
+      "ratio": 1.1,
+      "window": 200000,
+      "output_reserve": 8192,
+      "payload_bytes": 211552,
+      "refused": true,
+      "expected_refused": true
+    }
+  ],
+  "tool_fill": [
+    {
+      "window": 131072,
+      "token_limit": 101376,
+      "calls": 11,
+      "before_overflow": 103752,
+      "before_ratio": 1.0234,
+      "after_overflow": 113166,
+      "after_ratio": 1.1163,
+      "event": "CONTEXT_LIMIT"
+    },
+    {
+      "window": 200000,
+      "token_limit": 156518,
+      "calls": 17,
+      "before_overflow": 160344,
+      "before_ratio": 1.0244,
+      "after_overflow": 169758,
+      "after_ratio": 1.0846,
+      "event": "CONTEXT_LIMIT"
+    },
+    {
+      "window": 206233,
+      "token_limit": 161504,
+      "calls": 18,
+      "before_overflow": 169776,
+      "before_ratio": 1.0512,
+      "after_overflow": 179190,
+      "after_ratio": 1.1095,
+      "event": "CONTEXT_LIMIT"
+    },
+    {
+      "window": 262144,
+      "token_limit": 206233,
+      "calls": 22,
+      "before_overflow": 207504,
+      "before_ratio": 1.0062,
+      "after_overflow": 216918,
+      "after_ratio": 1.0518,
+      "event": "CONTEXT_LIMIT"
+    }
+  ],
+  "failures": [],
+  "elapsed_seconds": 11.2
+}

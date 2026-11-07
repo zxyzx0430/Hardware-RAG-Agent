@@ -2177,25 +2177,31 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
                 except Exception as agent_exc:
                     if isinstance(agent_exc, _RequestSnapshotEpochError):
                         raise
+                    if isinstance(agent_exc, AgentRequestBudgetError):
+                        logger.warning(
+                            "agent_request_budget_refused: %s", agent_exc,
+                        )
+                        yield sse_event("error", _request_budget_payload(
+                            agent_exc,
+                            model=model,
+                            effective_window=_effective_window_for_request(
+                                payload, model,
+                            ),
+                        ))
+                        yield sse_event("done", {"success": False, "completed": False})
+                        return
                     if isinstance(agent_exc, ContextLimitError):
                         logger.warning(
                             "context_limit_exceeded tokens=%s limit=%s; stopping request",
                             agent_exc.cumulative,
                             agent_exc.limit,
                         )
-                        effective_window = None
-                        try:
-                            from src.agent.context_guard import resolve_context_budget
-
-                            effective_window = resolve_context_budget(
-                                model,
-                                _session_context_window(payload.session_id),
-                                payload.max_tokens,
-                            ).effective_window
-                        except Exception:
-                            effective_window = None
                         yield sse_event("error", _context_limit_payload(
-                            agent_exc, model=model, effective_window=effective_window,
+                            agent_exc,
+                            model=model,
+                            effective_window=_effective_window_for_request(
+                                payload, model,
+                            ),
                         ))
                         yield sse_event("done", {"success": False, "completed": False})
                         return
@@ -3006,6 +3012,43 @@ def _context_limit_payload(
     }
 
 
+def _effective_window_for_request(
+    payload: ChatRequest, model: str | None,
+) -> int | None:
+    try:
+        from src.agent.context_guard import resolve_context_budget
+
+        return resolve_context_budget(
+            model,
+            _session_context_window(payload.session_id),
+            payload.max_tokens,
+        ).effective_window
+    except Exception:
+        return None
+
+
+def _request_budget_payload(
+    exc: AgentRequestBudgetError,
+    *,
+    model: str | None = None,
+    effective_window: int | None = None,
+) -> dict:
+    """Map a pre-send budget refusal to the non-retryable CONTEXT_LIMIT code."""
+    model_label = f"模型 {model} 的" if model else "当前模型的"
+    window_detail = (
+        f"，模型窗口 {effective_window} tokens" if effective_window else ""
+    )
+    return {
+        "code": ChatErrorCode.CONTEXT_LIMIT,
+        "retryable": False,
+        "message": (
+            f"上下文超过{model_label}可处理上限，本轮请求已停止。"
+            "直接重试会再次超限；请开启新会话，或缩小扫描/对话范围后重新提问。"
+        ),
+        "detail": f"预发送预算校验未通过{window_detail}：{str(exc)[:240]}",
+    }
+
+
 def _resume_error_event(exc: Exception, *, model: str | None = None) -> str:
     """Build the error SSE event for a failed resume."""
     from src.agent.exceptions import ContextLimitError
@@ -3015,6 +3058,8 @@ def _resume_error_event(exc: Exception, *, model: str | None = None) -> str:
             "code": "HITL_REQUEST_SNAPSHOT_UNAVAILABLE",
             "message": "原请求快照已失效，请重新发送本轮请求。",
         })
+    if isinstance(exc, AgentRequestBudgetError):
+        return sse_event("error", _request_budget_payload(exc, model=model))
     if isinstance(exc, ContextLimitError):
         logger.warning(
             "context_limit_exceeded tokens=%s limit=%s during resume; stopping request",
