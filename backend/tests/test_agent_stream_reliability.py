@@ -159,3 +159,14 @@ def test_system_prompt_sets_general_answer_completeness_and_permission_boundarie
     assert "实际盘点到的文件名" in prompt
     assert "不绕过权限门控" in prompt
     assert "本提示词不保证答案正确" in prompt
+
+
+def test_system_prompt_requires_markdown_for_tool_progress_narration():
+    prompt = build_system_prompt()
+
+    assert "工具循环中的进度叙述" in prompt
+    assert "每完成一个关键步骤就立即用一两句话" in prompt
+    assert "进度说明本身也用 Markdown" in prompt
+    assert "文件路径、命令、函数名、字段名用 `行内代码`" in prompt
+    assert "不要使用标题、表格或 fenced code block" in prompt
+    assert "最终回答与前面的进度说明用空行分隔" in prompt
