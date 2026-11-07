@@ -1387,7 +1387,7 @@ def _projected_request_fits(
             resolution_payload,
             required_payload,
         )
-        wire_bytes = client._message_input_bytes([
+        wire_tokens = client._message_input_tokens([
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
         ])
@@ -1397,7 +1397,7 @@ def _projected_request_fits(
     return (current_model == budget.model
             and current_window == budget.context_window_tokens
             and current_reserve == budget.output_reserve_tokens
-            and wire_bytes + 256 + budget.output_reserve_tokens <= budget.context_window_tokens)
+            and wire_tokens + 256 + budget.output_reserve_tokens <= budget.context_window_tokens)
 
 
 def _build_prompt(
@@ -1453,10 +1453,10 @@ def _request_fits(
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
-        wire_bytes = client._message_input_bytes(messages)
+        wire_tokens = client._message_input_tokens(messages)
     except Exception:
         return False
-    return wire_bytes + 256 + budget.output_reserve_tokens <= budget.context_window_tokens
+    return wire_tokens + 256 + budget.output_reserve_tokens <= budget.context_window_tokens
 
 
 def _validate_response(
