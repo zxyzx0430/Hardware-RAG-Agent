@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
-MAX_APPROVED_PLAN_CHARS = 4096
-MAX_STEP_DETAIL_CHARS = 300
-MAX_SUMMARY_CHARS = 800
+MAX_APPROVED_PLAN_CHARS = 65_536
+MAX_STEP_DETAIL_CHARS = 1_000
+MAX_SUMMARY_CHARS = 2_000
 
 
 _PLAN_MODE_PROMPT = """## Plan mode (read-only)
 You are in plan mode. Only read-only research tools are available. Do not write files, run commands, install or import skills, flash hardware, or write memory/todos.
-Research the request enough to make a concrete plan. For a multi-step task that would write files, run commands, build, or touch hardware, call `submit_plan` exactly once when ready. For a simple question, answer directly; do not force a plan.
+Research the request enough to make a concrete plan. Your deliverable for any multi-step task that would write files, run commands, build, or touch hardware is a `submit_plan` tool call, not a prose plan. Do NOT write the plan steps as a normal assistant message and do NOT ask your questions only in text. Call `submit_plan` exactly once when you have enough evidence, and put every unresolved question in its `open_questions` field. Only answer directly for a simple informational question that needs no changes; do not force a plan for that.
 After `submit_plan` succeeds, stop and wait for the user's decision. A plan is a proposal, not a permission grant: the user must approve a specific version before execution, and every tool call still follows the normal permission policy.
 
 ### Scanning discipline
@@ -19,7 +19,8 @@ After `submit_plan` succeeds, stop and wait for the user's decision. A plan is a
 - `list_files`/`glob`/`grep` skip dependency, build and cache directories by default (`node_modules`, `.venv`, `venv`, `.git`, `.pio`, `.platformio`, `dist`, `build`, `__pycache__`, `.pytest_cache`, ...). Keep those defaults unless the user explicitly asked to inspect one of those directories.
 - Do not read whole large files. Locate the relevant section with `grep`, then read a small `offset`/`limit` window; plan mode caps each read at 3000 characters.
 - A plan-mode turn has a bounded tool-output budget (~48000 estimated tokens across all tool calls). If a scan is large or the budget is nearly used, stop and submit a plan: put missing information in `open_questions` and name the directory or file the user should narrow down, instead of repeating broad scans.
-- Never retry a failed broad scan with the same scope; narrow it or ask the user."""
+- Never retry a failed broad scan with the same scope; narrow it or ask the user in `open_questions`.
+- Once you can name the files, ordered steps and verification for the task, call `submit_plan`; do not keep scanning for completeness."""
 
 
 def build_plan_mode_prompt() -> str:
@@ -75,12 +76,17 @@ def build_approved_plan_prompt(plan: dict[str, Any]) -> str:
     """Return the approved-plan block, explicitly not a permission grant."""
     version = plan.get("version", 1)
     body = format_plan_for_prompt(plan)
+    file_line = (
+        f"\nA durable copy is saved at: {plan['file_path']}"
+        if plan.get("file_path") else ""
+    )
     return (
         f"## User-approved plan (v{version})\n"
         "The user approved this plan for the current session. Follow its steps in order, "
         "adapting only when evidence requires it.\n"
         "This approval is NOT a permission grant: file writes, commands, MCP, builds, and "
         "flashing still follow the normal permission policy.\n"
+        f"{file_line}\n"
         "<approved_plan>\n"
         f"{body}\n"
         "</approved_plan>"

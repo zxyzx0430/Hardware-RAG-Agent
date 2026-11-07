@@ -26,7 +26,10 @@ def _payload(title="Plan A", summary="Do the thing", steps=None):
 
 
 @pytest.fixture()
-def factory(monkeypatch):
+def factory(tmp_path, monkeypatch):
+    import app.db.plan_store as plan_store_module
+
+    monkeypatch.setattr(plan_store_module, "PLAN_FILE_DIR", tmp_path / "plans")
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
@@ -56,6 +59,24 @@ def test_create_version_and_latest(factory):
     assert plan["steps"][0]["title"] == "Inspect docs"
     assert plan["created_at"].endswith("Z")
     assert plan_store.latest("s1")["id"] == plan["id"]
+
+
+def test_create_version_writes_markdown_guidance_file(factory):
+    plan = plan_store.create_version("s1", _payload(), "r1")
+
+    path = plan["file_path"]
+    with open(path, encoding="utf-8") as handle:
+        content = handle.read()
+    assert "Plan A" in content
+    assert "Inspect docs" in content
+    assert "Read the manual" in content
+    assert "Board revision may differ" in content
+    with open(path.rsplit("plan-v", 1)[0] + "latest.md", encoding="utf-8") as handle:
+        assert handle.read() == content
+
+    plan_store.approve("s1", plan["id"])
+    with open(path, encoding="utf-8") as handle:
+        assert "Status: approved" in handle.read()
 
 
 def test_new_version_supersedes_pending(factory):

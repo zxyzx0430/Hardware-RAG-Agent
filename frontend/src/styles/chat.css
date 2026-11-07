@@ -357,7 +357,22 @@
 }
 .tool-diff-btn:hover { opacity: 0.85; }
 
-/* ConfirmDialog (v2-T4 HITL) */
+/* ConfirmDialog (v2-T4 HITL) — bottom sheet */
+.confirm-sheet-overlay {
+  position: fixed; inset: 0; z-index: 9999;
+  display: flex; align-items: flex-end; justify-content: center;
+  background: rgba(0, 0, 0, 0.32);
+}
+.confirm-dialog.confirm-sheet {
+  width: min(720px, 100vw); max-height: 80vh;
+  border-radius: 16px 16px 0 0; border-bottom: none;
+  box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.18);
+  animation: confirm-sheet-in 0.18s ease-out;
+}
+@keyframes confirm-sheet-in {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
 .confirm-dialog {
   width: 520px; max-width: 92vw; max-height: 80vh;
   border-radius: var(--radius-lg); border: 1px solid var(--border);
@@ -1201,3 +1216,59 @@
 .plan-banner-btn.danger { color: var(--danger); border-color: color-mix(in oklab, var(--danger), var(--border) 55%); }
 .plan-banner-btn.danger:hover:not(:disabled) { background: var(--danger-soft); }
 .plan-banner-btn:disabled { opacity: 0.55; cursor: default; }
+
+/* ── Plan card inside the conversation ── */
+.plan-chat-card {
+  align-self: stretch;
+  margin: 4px 0 8px;
+  padding: 14px 16px;
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in oklab, var(--primary), var(--border) 55%);
+  background: color-mix(in oklab, var(--accent), var(--card) 82%);
+  box-shadow: var(--shadow-sm);
+}
+.plan-chat-head {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+}
+.plan-chat-version { font-size: 11px; color: var(--muted-fg); }
+.plan-chat-view {
+  margin-left: auto; font-size: 11px; color: var(--primary);
+  background: transparent; border: none; cursor: pointer; padding: 2px 4px;
+}
+.plan-chat-view:hover { text-decoration: underline; }
+.plan-chat-title { margin: 0 0 6px; font-size: 15px; font-weight: 650; color: var(--fg); }
+.plan-chat-summary { margin: 0 0 10px; font-size: 12.5px; line-height: 1.55; color: var(--muted-fg); }
+.plan-chat-steps {
+  margin: 0 0 10px; padding-left: 0; list-style: none;
+  max-height: 220px; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.plan-chat-steps li { display: flex; gap: 8px; font-size: 12.5px; color: var(--fg); }
+.plan-chat-step-number { color: var(--muted-fg); font-variant-numeric: tabular-nums; }
+.plan-chat-file {
+  margin: 0 0 10px; font-size: 11px; color: var(--muted-fg);
+  word-break: break-all;
+}
+.plan-chat-file code {
+  font-family: var(--font-mono); font-size: 11px;
+  background: var(--muted); padding: 1px 5px; border-radius: var(--radius-sm);
+}
+.plan-chat-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.plan-chat-btn {
+  padding: 6px 14px; border-radius: var(--radius-md);
+  border: 1px solid var(--border); background: var(--card); color: var(--fg);
+  font-size: 12px; font-weight: 500; cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.plan-chat-btn:hover:not(:disabled) { background: var(--muted); }
+.plan-chat-btn.primary {
+  background: var(--primary); border-color: var(--primary); color: var(--primary-fg);
+}
+.plan-chat-btn.primary:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--primary), black 8%);
+}
+.plan-chat-btn.danger {
+  color: var(--danger); border-color: color-mix(in oklab, var(--danger), var(--border) 55%);
+}
+.plan-chat-btn.danger:hover:not(:disabled) { background: var(--danger-soft); }
+.plan-chat-btn:disabled { opacity: 0.55; cursor: default; }

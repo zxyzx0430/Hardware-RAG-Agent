@@ -105,7 +105,9 @@ async def handle_auto_resume(
         decision = evaluate_pending(pending, permission_mode)
         if decision == DECISION_ASK:
             await _mark_writer_paused(agent, config, pending)
-            yield build_confirm_required_event(pending)
+            from src.agent.hitl_permission import ask_pending_calls
+            ask_calls = ask_pending_calls(pending, permission_mode) or pending
+            yield build_confirm_required_event(ask_calls)
             return
         if decision == DECISION_DENY:
             deny_message = PLAN_MODE_DENY_MESSAGE if permission_mode == PLAN_MODE else DENY_MESSAGE

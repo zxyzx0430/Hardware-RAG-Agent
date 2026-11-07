@@ -15,6 +15,7 @@ import { UserMessageRow } from "./UserMessageRow";
 import { AssistantMessageRow } from "./AssistantMessageRow";
 import { LoadingState } from "./LoadingState";
 import { EmptyState } from "./EmptyState";
+import { PlanChatCard } from "../plan/PlanChatCard";
 
 // 模块级常量：历史消息传这些稳定引用，避免 memo 浅比较失效。
 // 流式 props（streamingSteps 等）每 token 都变，若传给所有消息会导致所有 memo 失效。
@@ -519,6 +520,8 @@ export function ChatArea() {
           />
         );
       })}
+
+      <PlanChatCard />
 
       {pendingSaveStatus && (
         <div

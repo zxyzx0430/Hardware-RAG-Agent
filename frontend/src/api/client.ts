@@ -411,9 +411,14 @@ function buildSseUrl(path: string, method: "GET" | "POST", afterSeq: number): st
 }
 
 function buildSseError(status: number, statusText: string, body: unknown): ApiError {
-  const envelope = body && typeof body === "object"
-    ? ((body as { error?: unknown }).error ?? body)
-    : null;
+  // FastAPI HTTPException bodies wrap the contract as {"detail": {...}}.
+  const root = body && typeof body === "object" ? (body as Record<string, unknown>) : null;
+  const detail = root && root.detail && typeof root.detail === "object"
+    ? (root.detail as Record<string, unknown>)
+    : root;
+  const envelope = detail && detail.error && typeof detail.error === "object"
+    ? detail.error
+    : detail;
   const code = envelope && typeof envelope === "object" && typeof (envelope as { code?: unknown }).code === "string"
     ? (envelope as { code: string }).code
     : (status === 401 || status === 403 ? "AUTH_REQUIRED" : `HTTP_${status}`);

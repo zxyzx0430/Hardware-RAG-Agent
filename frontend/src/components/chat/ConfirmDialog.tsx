@@ -111,8 +111,8 @@ export default function ConfirmDialog() {
   };
 
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="confirm-dialog-title">
-      <div className="confirm-dialog" ref={dialogRef}>
+    <div className="confirm-sheet-overlay" role="dialog" aria-modal="true" aria-labelledby="confirm-dialog-title">
+      <div className="confirm-dialog confirm-sheet" ref={dialogRef}>
         <div className="confirm-dialog-header">
           <span id="confirm-dialog-title" className="confirm-dialog-title">
             工具调用确认

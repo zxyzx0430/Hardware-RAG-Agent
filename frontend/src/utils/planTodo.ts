@@ -75,6 +75,9 @@ export function normalizePlan(raw: unknown): Plan | null {
     ...(typeof record.execution_note === "string" && record.execution_note
       ? { execution_note: record.execution_note }
       : {}),
+    ...(typeof record.file_path === "string" && record.file_path
+      ? { file_path: record.file_path }
+      : {}),
     created_at: typeof record.created_at === "string" ? record.created_at : "",
     decided_at: typeof record.decided_at === "string" ? record.decided_at : null,
   };

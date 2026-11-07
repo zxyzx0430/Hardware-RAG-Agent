@@ -12,7 +12,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import uuid
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import delete, func, select, text, update
@@ -23,6 +25,9 @@ from app.db.models import Plan
 from app.db.time_utils import to_utc_iso_z, utc_now
 
 logger = logging.getLogger(__name__)
+
+PLAN_FILE_DIR = Path(database.DB_PATH).parent / "plans"
+_PLAN_FILE_NAME = re.compile(r"[^A-Za-z0-9_.-]+")
 
 MAX_PLAN_STEPS = 12
 MAX_TITLE_CHARS = 200
@@ -172,6 +177,59 @@ def _execution_state(row: Plan) -> tuple[str, str | None]:
         return EXECUTION_STARTED, None
 
 
+def _plan_file_path(session_id: str, version: int) -> str:
+    safe_session = _PLAN_FILE_NAME.sub("_", session_id)[:80] or "session"
+    return str(PLAN_FILE_DIR / safe_session / f"plan-v{version}.md")
+
+
+def _render_plan_markdown(plan: dict[str, Any]) -> str:
+    lines = [
+        f"# {plan['title']}",
+        "",
+        f"- Version: v{plan['version']}",
+        f"- Status: {plan['status']}",
+        f"- Created: {plan.get('created_at') or ''}",
+        "",
+        "## Summary",
+        plan.get("summary") or "",
+        "",
+        "## Steps",
+    ]
+    for index, step in enumerate(plan.get("steps") or [], start=1):
+        lines.append(f"{index}. **{step.get('title', '')}**")
+        detail = str(step.get("detail") or "").strip()
+        if detail:
+            lines.append(f"   {detail}")
+        verification = str(step.get("verification") or "").strip()
+        if verification:
+            lines.append(f"   Verification: {verification}")
+    for heading, key in (("Risks", "risks"), ("Open questions", "open_questions")):
+        values = plan.get(key) or []
+        if values:
+            lines.extend(["", f"## {heading}"])
+            lines.extend(f"- {value}" for value in values)
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _write_plan_file(plan: dict[str, Any]) -> None:
+    """Best-effort durable Markdown copy; the database stays authoritative."""
+    try:
+        path = Path(plan["file_path"])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        content = _render_plan_markdown(plan)
+        tmp = path.with_suffix(".md.tmp")
+        tmp.write_text(content, encoding="utf-8")
+        tmp.replace(path)
+        latest = path.parent / "latest.md"
+        latest_tmp = latest.with_suffix(".md.tmp")
+        latest_tmp.write_text(content, encoding="utf-8")
+        latest_tmp.replace(latest)
+    except (OSError, KeyError, TypeError, ValueError):
+        logger.warning(
+            "plan markdown write failed plan=%s", plan.get("id"), exc_info=True,
+        )
+
+
 def _plan_dict(row: Plan) -> dict[str, Any]:
     execution_state, execution_note = _execution_state(row)
     return {
@@ -188,6 +246,7 @@ def _plan_dict(row: Plan) -> dict[str, Any]:
         "executed_run_id": row.executed_run_id,
         "execution_state": execution_state,
         "execution_note": execution_note,
+        "file_path": _plan_file_path(row.session_id, row.version),
         "created_at": to_utc_iso_z(row.created_at),
         "decided_at": to_utc_iso_z(row.decided_at) or None,
     }
@@ -209,6 +268,7 @@ def _plan_meta(row: Plan) -> dict[str, Any]:
         "version": row.version,
         "status": row.status,
         "title": row.title,
+        "file_path": _plan_file_path(row.session_id, row.version),
         "created_at": to_utc_iso_z(row.created_at),
         "decided_at": to_utc_iso_z(row.decided_at) or None,
         "executed_run_id": row.executed_run_id,
@@ -292,7 +352,9 @@ def _create_once(session_id: str, normalized: dict[str, Any], run_id: str | None
         row = _new_plan_row(session_id, _next_version(session, session_id), normalized, run_id, now)
         session.add(row)
         session.commit()
-        return _plan_dict(row)
+        plan = _plan_dict(row)
+        _write_plan_file(plan)
+        return plan
 
 
 def get(plan_id: str) -> dict[str, Any] | None:
@@ -337,6 +399,7 @@ def _decide(session_id: str, plan_id: str, status: str) -> dict[str, Any]:
     plan = get(plan_id)
     if plan is None:
         raise PlanStateError("plan not found")
+    _write_plan_file(plan)
     return plan
 
 

@@ -27,6 +27,8 @@ export interface Plan {
   /** Optional: absent on older backends; UI must fall back to approved/executed display. */
   execution_state?: PlanExecutionState;
   execution_note?: string | null;
+  /** Durable Markdown guidance file written by the backend. */
+  file_path?: string | null;
   created_at: string;
   decided_at?: string | null;
 }
@@ -37,6 +39,7 @@ export interface PlanMeta {
   version: number;
   status: PlanStatus;
   title: string;
+  file_path?: string | null;
   created_at: string;
   decided_at?: string | null;
   executed_run_id?: string | null;

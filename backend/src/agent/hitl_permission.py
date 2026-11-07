@@ -37,6 +37,19 @@ def evaluate_pending(pending: list[dict], permission_mode: str) -> str:
     return DECISION_ASK if has_ask else DECISION_ALLOW
 
 
+def ask_pending_calls(pending: list[dict], permission_mode: str) -> list[dict]:
+    """Return only the calls that actually need a user decision."""
+    from src.agent.core.toolkit.permission_classifier import PermissionClassifier
+    from src.agent.exceptions import ToolContext
+    from src.agent.request_context import active_tool_context
+    classifier = PermissionClassifier()
+    ctx = active_tool_context() or ToolContext(permission_mode=permission_mode)
+    return [
+        tc for tc in pending
+        if _classify_one_call(classifier, tc, ctx) == DECISION_ASK
+    ]
+
+
 def _classify_one_call(classifier: Any, tc: dict, ctx: Any) -> str:
     """Classify a single pending tool_call. Unknown tools are denied."""
     from src.agent.core.toolkit.tool_router import _TOOL_REGISTRY

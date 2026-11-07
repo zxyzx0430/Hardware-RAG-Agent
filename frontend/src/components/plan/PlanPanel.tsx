@@ -90,6 +90,7 @@ export function PlanPanel() {
         {plan.created_at ? <div>{t('planCreatedAt')}: {plan.created_at}</div> : null}
         {plan.decided_at ? <div>{t('planDecidedAt')}: {plan.decided_at}</div> : null}
         {plan.executed_run_id ? <div>{t('planExecutedRun')}: {plan.executed_run_id}</div> : null}
+        {plan.file_path ? <div>{t('planFile', '计划文件')}: {plan.file_path}</div> : null}
       </div>
     </div>
   );

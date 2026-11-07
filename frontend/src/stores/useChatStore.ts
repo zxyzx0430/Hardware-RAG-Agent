@@ -338,6 +338,9 @@ interface ResumeTerminalState {
 // Supplementary replay streams are per session; never run two at once.
 const _runReplayInFlight = new Set<string>();
 const _runReattachInFlight = new Set<string>();
+// One automatic "submit the plan" follow-up per session when plan mode ends
+// with research but without a submitted plan.
+const _planAutoRetryUsed = new Set<string>();
 
 export interface ChatSkillsRequest {
   mode: NonNullable<ChatRequest["skills_mode"]>;
@@ -1373,6 +1376,7 @@ function _applyChatEvent(event: ChatSSEEvent, requestSessionId: string, terminal
       }
 
       case "plan_update": {
+        _planAutoRetryUsed.delete(sid);
         return planUpdateState(s, sid, sse.plan ?? null);
       }
 
@@ -1430,6 +1434,8 @@ function _applyChatEvent(event: ChatSSEEvent, requestSessionId: string, terminal
 function _finalizeChatStream(sessionId: string, terminal: ChatTerminalState, startTime: number): void {
   if (terminal.finalized) return;
   terminal.finalized = true;
+  const finishedSteps = useChatStore.getState().streamingSteps;
+  const wasPlanMode = useChatStore.getState().planMode;
 
   if (terminal.outcome === "error") {
     if (!useChatStore.getState().streamingError) {
@@ -1550,6 +1556,29 @@ function _finalizeChatStream(sessionId: string, terminal: ChatTerminalState, sta
       };
     }
   });
+
+  // If plan mode produced research but no plan, ask once for submit_plan.
+  const afterState = useChatStore.getState();
+  const planForRun = afterState.sessionPlans[sessionId] ?? null;
+  const runForPlan = afterState.activeRuns[sessionId] ?? getActiveRun(sessionId);
+  const planThisRun = Boolean(planForRun && runForPlan && planForRun.run_id === runForPlan.runId);
+  const toolCallCount = finishedSteps.filter((step) => step.type === "tool").length;
+  if (
+    wasPlanMode
+    && terminal.outcome === "success"
+    && afterState.activeSessionId === sessionId
+    && !planThisRun
+    && toolCallCount >= 3
+    && !_planAutoRetryUsed.has(sessionId)
+  ) {
+    _planAutoRetryUsed.add(sessionId);
+    useToastStore.getState().showInfo("模型没有提交计划，正在让它补交…");
+    setTimeout(() => {
+      void useChatStore.getState().sendMessage(
+        "请把上面的调研结论用 submit_plan 提交成正式计划，未确认项放进 open_questions，不要再输出正文计划。",
+      );
+    }, 0);
+  }
 
   // Recovery: a paused run stays resumable; any other terminal outcome is done.
   const record = useChatStore.getState().activeRuns[sessionId] ?? getActiveRun(sessionId);

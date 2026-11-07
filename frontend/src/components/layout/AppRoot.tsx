@@ -24,7 +24,6 @@ import { LeftPanel } from "./LeftPanel";
 import { TopBar } from "../topbar/TopBar";
 import { ChatArea } from "../chat/ChatArea";
 import { InputBar } from "../input/InputBar";
-import { PlanBanner } from "../plan/PlanBanner";
 import { RightPanel } from "./RightPanel";
 import { ExplorerPanel } from "../explorer";
 import { SettingsPage } from "../settings/SettingsPage";
@@ -386,7 +385,6 @@ export function AppRoot() {
                     flexShrink: 0,
                   }}
                 >
-                  <PlanBanner />
                   <InputBar />
                 </div>
                 <div
