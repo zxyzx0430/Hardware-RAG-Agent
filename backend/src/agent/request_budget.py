@@ -211,6 +211,17 @@ def _validate_text_payload(payload: dict) -> None:
             raise AgentRequestBudgetError("Agent context budget unavailable for opaque content")
 
 
+# A local tokenizer estimate can differ from a provider tokenizer. Keep a
+# 10 % margin instead of treating UTF-8 bytes as tokens (which wasted ~75 %
+# of a 200k window for ASCII text).
+WIRE_TOKEN_SAFETY = 1.1
+
+
+def estimate_wire_tokens(value: Any) -> int:
+    """Token estimate with the wire safety margin applied."""
+    return int(estimate_payload_tokens(value) * WIRE_TOKEN_SAFETY) + 1
+
+
 def validate_agent_request_budget(payload: dict) -> None:
     """Validate the actual model, all visible input and the wire output cap.
 
@@ -252,8 +263,7 @@ def validate_agent_request_budget(payload: dict) -> None:
             key: value for key, value in payload.items()
             if key not in ("extra_headers", "extra_query", "timeout")
         })
-        cost = len(json.dumps(accounted, ensure_ascii=False, separators=(",", ":"),
-                              allow_nan=False).encode("utf-8"))
+        cost = estimate_wire_tokens(accounted)
     except (TypeError, ValueError, UnicodeError, RecursionError):
         raise AgentRequestBudgetError("Agent context budget unavailable: unsupported encoding") from None
     if cost + 256 + reserve > window:

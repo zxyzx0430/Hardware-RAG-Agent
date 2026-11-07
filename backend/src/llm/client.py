@@ -116,8 +116,8 @@ class LLMClient:
         return selected, window, min(self.max_tokens, maximum)
 
     @staticmethod
-    def _message_input_bytes(messages) -> int:
-        """Conservative text-wire units, not an exact provider tokenizer."""
+    def _message_input_tokens(messages) -> int:
+        """Conservative token estimate with the shared wire safety margin."""
         try:
             for message in messages:
                 content = message["content"]
@@ -127,15 +127,16 @@ class LLMClient:
                         raise LLMError("Context budget unavailable for opaque multimodal content")
                 elif type(content) is not str:
                     raise LLMError("Context budget unavailable for nontext content")
-            return len(json.dumps(messages, ensure_ascii=False, separators=(",", ":"),
-                                  allow_nan=False).encode("utf-8"))
+            from src.agent.request_budget import estimate_wire_tokens
+
+            return estimate_wire_tokens(messages)
         except (TypeError, ValueError, UnicodeError, RecursionError) as exc:
             raise LLMError("Context budget unavailable: unsupported message encoding") from exc
 
     def _check_request_budget(self, messages, model=None, *, output_reserve=None) -> None:
         _, window, capped_output = self._request_limits(model)
         reserve = capped_output if output_reserve is None else output_reserve
-        if self._message_input_bytes(messages) + 256 + reserve > window:
+        if self._message_input_tokens(messages) + 256 + reserve > window:
             raise LLMError("Context budget exceeded; original history retained")
 
     async def _summarize_messages(self, messages: list[dict], *, model=None, runtime_client=None) -> str:
@@ -157,7 +158,7 @@ class LLMClient:
                 {"role": "user", "content": prompt}]
         summary_cap = min(300, output_cap)
         self._check_request_budget(wire, selected, output_reserve=summary_cap)
-        if self._message_input_bytes(wire) + 256 + summary_cap > 32768:
+        if self._message_input_tokens(wire) + 256 + summary_cap > 32768:
             raise LLMError("Context summary input exceeds the bounded request limit")
         try:
             response = await asyncio.wait_for((runtime_client or self.client).chat.completions.create(
@@ -188,11 +189,11 @@ class LLMClient:
         self._check_request_budget(leading + current, model, output_reserve=reserve)
         records = [{"role": message.role, "content": message.content} for message in (history or [])]
         full = leading + records + current
-        if self._message_input_bytes(full) + 256 + reserve <= window:
+        if self._message_input_tokens(full) + 256 + reserve <= window:
             return deepcopy(full), []
         # Reserve real space before choosing the recent suffix. The final
         # derived text is checked again; a too-large summary is never sliced.
-        available = window - reserve - 256 - self._message_input_bytes(leading + current)
+        available = window - reserve - 256 - self._message_input_tokens(leading + current)
         summary_room = min(8192, available // 3)
         if summary_room < 256:
             raise LLMError("Context budget cannot retain a safe summary")
@@ -200,7 +201,7 @@ class LLMClient:
         suffix, cut = [], len(records)
         for index in range(len(records) - 1, -1, -1):
             candidate = [records[index]] + suffix
-            if self._message_input_bytes(leading + [placeholder] + candidate + current) + 256 + reserve > window:
+            if self._message_input_tokens(leading + [placeholder] + candidate + current) + 256 + reserve > window:
                 break
             suffix, cut = candidate, index
         if not cut:

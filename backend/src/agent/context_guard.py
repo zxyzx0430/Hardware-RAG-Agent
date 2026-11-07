@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 # asyncio task → contextvar naturally isolates the count without locks.
 _CUMULATIVE_TOKENS: ContextVar[int] = ContextVar("agent_cumulative_tokens", default=0)
 
-AGENT_CONTEXT_WINDOW_CAP = 262_144
+AGENT_CONTEXT_WINDOW_CAP = 1_048_576
 # Reserve fixed room for provider message wrappers, tool-call JSON, and framing
 # that the local text estimator does not include in message contents.
 AGENT_PROTOCOL_FRAMING_TOKEN_RESERVE = 256

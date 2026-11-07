@@ -72,10 +72,9 @@ def _guard_provider_payload(
 ) -> None:
     """Reject requests whose complete JSON body exceeds the shared context budget.
 
-    UTF-8 JSON bytes are used as a conservative upper-bound proxy for token
-    count, not as a claim of provider tokenizer precision. The centralized
-    resolver supplies the registered model/output limits, 256K cap, framing
-    reserve, and shared input threshold.
+    The body is measured with the local tokenizer rather than raw UTF-8 bytes;
+    bytes-as-tokens previously stopped a 200k window at roughly a quarter of
+    its real capacity. The shared budget's 0.8 ratio remains the safety margin.
     """
     if type(payload) is not dict or any(type(key) is not str for key in payload):
         _fail_closed_context_guard()
@@ -112,16 +111,18 @@ def _guard_provider_payload(
             output_limits.append(value)
     requested_max_tokens = max(output_limits) if output_limits else None
 
-    serialized = _serialize_provider_payload(wire_payload)
+    _serialize_provider_payload(wire_payload)  # fail closed on unsupported shapes
     budget = resolve_context_budget(
         model,
         context_window_override,
         requested_max_tokens,
     )
-    payload_size_bytes = len(serialized)
-    if payload_size_bytes > budget.token_limit:
+    from src.agent.request_budget import estimate_payload_tokens
+
+    payload_tokens = estimate_payload_tokens(wire_payload)
+    if payload_tokens > budget.token_limit:
         raise ContextLimitError(
-            cumulative=payload_size_bytes,
+            cumulative=payload_tokens,
             limit=budget.token_limit,
         )
 

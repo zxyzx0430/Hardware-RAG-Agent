@@ -17,13 +17,10 @@ from app.db.models import Session as SessionModel
 from src.agent import context_guard
 from src.agent.context_guard import resolve_context_budget
 from src.agent.exceptions import ContextLimitError
-from src.agent.reasoning_chat import (
-    ReasoningChatOpenAI,
-    _serialize_provider_payload,
-)
+from src.agent.reasoning_chat import ReasoningChatOpenAI
 
 
-AGENT_CONTEXT_WINDOW_CAP = 262_144
+AGENT_CONTEXT_WINDOW_CAP = 1_048_576
 ONE_MILLION_TOKENS = 1_048_576
 
 
@@ -105,24 +102,18 @@ def test_final_wire_payload_guard_enforces_cap_before_provider_call(monkeypatch)
         context_window_override=ONE_MILLION_TOKENS,
         requested_max_tokens=4_096,
     )
-    uncapped_model_limit = int(
-        (
-            ONE_MILLION_TOKENS
-            - 4_096
-            - context_guard.AGENT_PROTOCOL_FRAMING_TOKEN_RESERVE
-        )
-        * context_guard.MAX_TOKEN_RATIO
-    )
+    from src.agent.request_budget import estimate_wire_tokens
+
+    # The wire gate is token-based: the payload must estimate past the window.
     wire_payload = {
         "model": "synthetic-1m-model",
         "max_tokens": 4_096,
         "messages": [
-            {"role": "user", "content": "x" * (budget.token_limit + 1_024)}
+            {"role": "user", "content": "x" * (ONE_MILLION_TOKENS * 2)}
         ],
     }
-    payload_size = len(_serialize_provider_payload(wire_payload))
-    assert payload_size > budget.token_limit
-    assert payload_size <= uncapped_model_limit
+    assert estimate_wire_tokens(wire_payload) + 256 + 4_096 > ONE_MILLION_TOKENS
+    assert budget.token_limit < ONE_MILLION_TOKENS
 
     base_payload_calls: list[dict] = []
 

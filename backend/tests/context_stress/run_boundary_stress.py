@@ -30,11 +30,12 @@ from src.agent.exceptions import ContextLimitError  # noqa: E402
 from src.agent.request_budget import (  # noqa: E402
     AgentRequestBudgetError,
     estimate_payload_tokens,
+    estimate_wire_tokens,
     validate_agent_request_budget,
 )
 from src.llm.client import LLMClient  # noqa: E402
 
-WINDOWS = [131_072, 200_000, 206_233, 262_144]
+WINDOWS = [131_072, 200_000, 206_233, 262_144, 1_048_576]
 GUARD_RATIOS = [0.5, 0.9, 0.99, 0.999, 1.0, 1.001, 1.1, 1.3]
 WIRE_MODEL = "claude-3-5-sonnet"  # registered 200k window
 WIRE_RATIOS = [0.5, 0.9, 0.99, 0.999, 1.0, 1.001, 1.1]
@@ -54,15 +55,13 @@ def _text_for_tokens(target: int, chars_per_token: float) -> str:
     return "a" * max(1, int(target * chars_per_token))
 
 
-def _text_for_wire_cost(target_bytes: int) -> str:
-    # A JSON string costs roughly four bytes per text token; calibrate the
-    # serialized payload instead of trusting the ratio for the exact gate.
-    low, high = 0, target_bytes
+def _text_for_wire_tokens(target_tokens: int) -> str:
+    # Binary-search text length so the wire token estimate lands on the target.
+    low, high = 0, max(target_tokens * 8, 1)
     while low < high:
         mid = (low + high + 1) // 2
         payload = {"model": WIRE_MODEL, "messages": [{"role": "user", "content": "a" * mid}]}
-        cost = len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
-        if cost <= target_bytes:
+        if estimate_wire_tokens(payload) <= target_tokens:
             low = mid
         else:
             high = mid - 1
@@ -122,10 +121,10 @@ def _wire_probe(ratio: float) -> dict:
     budget = resolve_context_budget(WIRE_MODEL)
     window = budget.effective_window
     reserve = budget.output_tokens
-    target_cost = int((window * ratio) - 256 - reserve)
-    text = _text_for_wire_cost(max(1, target_cost))
+    target_tokens = int((window - 256 - reserve) * ratio)
+    text = _text_for_wire_tokens(max(1, target_tokens))
     payload = {"model": WIRE_MODEL, "messages": [{"role": "user", "content": text}]}
-    cost = len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    cost = estimate_wire_tokens(payload)
     refused = False
     try:
         validate_agent_request_budget(payload)
@@ -135,7 +134,7 @@ def _wire_probe(ratio: float) -> dict:
         "ratio": ratio,
         "window": window,
         "output_reserve": reserve,
-        "payload_bytes": cost,
+        "estimated_tokens": cost,
         "refused": refused,
         "expected_refused": cost + 256 + reserve > window,
     }
