@@ -3,6 +3,7 @@ import type { ActivityBlock as ActivityBlockData, ActivityStep } from "../../typ
 import { useI18n } from "../../i18n";
 import { formatDuration } from "../../utils/format";
 import { useAppStore } from "../../stores/useAppStore";
+import { MarkdownRenderer } from "../shared/MarkdownRenderer";
 import { isSkillToolName, isValidSkillId, isValidSkillResourcePath, type SkillToolName } from "../../utils/skillTrace";
 
 const ACTIVITY_TIMER_INTERVAL_MS = 100;
@@ -65,7 +66,7 @@ const ActivityBlock = memo(function ActivityBlock({ activity, msgId, startTime }
               if (step.type === 'thinking') {
                 return (
                   <div className="activity-chain-node" key={stepKey}>
-                    <ThinkingStep step={step} />
+                    <ThinkingStep step={step} streaming={isRunning} />
                     {!isLast ? <div className="activity-chain-line" /> : null}
                   </div>
                 );
@@ -88,7 +89,7 @@ const ActivityBlock = memo(function ActivityBlock({ activity, msgId, startTime }
 
 export default ActivityBlock;
 
-const ThinkingStep = memo(function ThinkingStep({ step }: { step: ActivityStep }) {
+const ThinkingStep = memo(function ThinkingStep({ step, streaming }: { step: ActivityStep; streaming: boolean }) {
   const isReasoning = step.source === 'reasoning';
   const label = isReasoning ? 'thinking' : step.source === 'rag' ? '知识库检索' : '思考中';
   // Never auto-open; user must click to expand.
@@ -110,7 +111,7 @@ const ThinkingStep = memo(function ThinkingStep({ step }: { step: ActivityStep }
       </button>
       {open ? (
         <div className="thinking-body">
-          <p>{step.content}</p>
+          <MarkdownRenderer content={step.content || ''} streaming={streaming} />
         </div>
       ) : null}
     </div>

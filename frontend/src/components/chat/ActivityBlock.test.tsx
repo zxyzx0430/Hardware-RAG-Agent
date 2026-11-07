@@ -257,3 +257,85 @@ describe("ActivityBlock Skill trace rendering", () => {
     expect(container.textContent).toContain("reasoning text remains visible");
   });
 });
+
+describe("ActivityBlock reasoning Markdown rendering", () => {
+  const MARKDOWN_THINKING = [
+    "## 分析",
+    "",
+    "先检查 **引脚复用**，再确认 `PA9` 的时钟。",
+    "",
+    "- 第一点",
+    "- 第二点",
+  ].join("\n");
+
+  function makeThinkingActivity(
+    status: ActivityBlockData["status"],
+    content = MARKDOWN_THINKING,
+  ): ActivityBlockData {
+    return {
+      durationMs: 3,
+      status,
+      steps: [{ id: "reasoning", type: "thinking", source: "reasoning", content }],
+    } as ActivityBlockData;
+  }
+
+  function renderThinking(status: ActivityBlockData["status"], content?: string) {
+    const rendered = render(
+      <ActivityBlock activity={makeThinkingActivity(status, content)} msgId="thinking-message" />,
+    );
+    const { container } = rendered;
+    if (!container.querySelector(".activity-steps")) {
+      fireEvent.click(container.querySelector(".activity-header")!);
+    }
+    const previewNode = container.querySelector(".thinking-header-label");
+    const previewText = previewNode?.textContent ?? "";
+    const previewHasStrong = previewNode?.querySelector("strong") != null;
+    fireEvent.click(container.querySelector(".thinking-header")!);
+    return { ...rendered, previewText, previewHasStrong };
+  }
+
+  it("renders completed reasoning as Markdown instead of literal text", () => {
+    const { container } = renderThinking("done");
+    const body = container.querySelector(".thinking-body")!;
+
+    expect(body.querySelector("h2")?.textContent).toBe("分析");
+    expect(body.querySelector("strong")?.textContent).toBe("引脚复用");
+    expect(body.querySelector("code.inline-code")?.textContent).toBe("PA9");
+    expect(Array.from(body.querySelectorAll("li")).map((li) => li.textContent)).toEqual([
+      "第一点",
+      "第二点",
+    ]);
+    expect(body.textContent).not.toContain("**引脚复用**");
+    expect(body.querySelector(".markdown-body.streaming")).toBeNull();
+    expect(body.querySelector(".streaming-cursor")).toBeNull();
+  });
+
+  it("keeps the collapsed preview as plain text", () => {
+    const { previewText, previewHasStrong } = renderThinking("done");
+
+    expect(previewText).toContain("**引脚复用**");
+    expect(previewHasStrong).toBe(false);
+  });
+
+  it("renders streaming reasoning as Markdown with a streaming cursor", () => {
+    const { container } = renderThinking("running");
+    const body = container.querySelector(".thinking-body")!;
+
+    expect(body.querySelector(".markdown-body.streaming")).not.toBeNull();
+    expect(body.querySelector(".streaming-cursor")).not.toBeNull();
+    expect(body.querySelector("strong")?.textContent).toBe("引脚复用");
+    expect(body.querySelector("code.inline-code")?.textContent).toBe("PA9");
+    expect(body.querySelectorAll("li")).toHaveLength(2);
+  });
+
+  it("renders a fenced code block inside streaming reasoning", () => {
+    const code = "```c\nint main(void) {\n  return 0;\n}\n```";
+    const { container } = renderThinking("running", `准备验证：\n\n${code}`);
+    const body = container.querySelector(".thinking-body")!;
+
+    expect(body.querySelector(".code-block-shell pre code")?.textContent).toContain(
+      "int main(void)",
+    );
+    expect(body.textContent).not.toContain("```");
+  });
+});

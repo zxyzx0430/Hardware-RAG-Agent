@@ -301,10 +301,38 @@
   padding: 10px 14px; border-top: 1px solid var(--border);
   background: var(--thinking-body-bg);
 }
-.thinking-body p {
-  font-size: 12px; font-family: var(--font-mono); line-height: 1.7;
-  color: var(--muted-fg); white-space: pre-wrap;
+/* Markdown inside thinking: same visual language as the answer, slightly denser.
+   Font family/white-space are inherited from .markdown-body rather than the old
+   pre-wrap mono paragraph so lists, code and headings lay out like the answer. */
+.thinking-body .markdown-body {
+  font-size: 12px; line-height: 1.65; color: var(--muted-fg);
 }
+.thinking-body .markdown-body p { margin: 0 0 6px; }
+.thinking-body .markdown-body p:last-child { margin-bottom: 0; }
+.thinking-body .markdown-body h1,
+.thinking-body .markdown-body h2,
+.thinking-body .markdown-body h3,
+.thinking-body .markdown-body h4,
+.thinking-body .markdown-body h5,
+.thinking-body .markdown-body h6 { margin: 10px 0 4px; }
+.thinking-body .markdown-body h1 { font-size: 1.3em; }
+.thinking-body .markdown-body h2 { font-size: 1.18em; border-bottom: 0; padding-bottom: 0; }
+.thinking-body .markdown-body h3,
+.thinking-body .markdown-body h4,
+.thinking-body .markdown-body h5,
+.thinking-body .markdown-body h6 { font-size: 1.06em; }
+.thinking-body .markdown-body ul,
+.thinking-body .markdown-body ol { margin: 4px 0; padding-left: 20px; }
+.thinking-body .markdown-body li { margin: 2px 0; }
+.thinking-body .markdown-body blockquote { margin: 6px 0; padding: 4px 10px; }
+.thinking-body .markdown-body hr { margin: 10px 0; }
+.thinking-body .markdown-body .table-wrapper { margin: 6px 0; }
+.thinking-body .markdown-body .inline-code,
+.thinking-body .markdown-body code:not([class*="language-"]):not(.code-block-shell code) {
+  padding: 1px 4px; font-size: 0.92em;
+}
+.thinking-body .code-block-shell { margin: 6px 0; }
+.thinking-body .code-block-shell pre { max-width: 100%; overflow-x: auto; }
 
 /* Tool step */
 .tool-row {
