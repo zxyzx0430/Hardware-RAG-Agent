@@ -165,8 +165,10 @@ def test_system_prompt_requires_markdown_for_tool_progress_narration():
     prompt = build_system_prompt()
 
     assert "工具循环中的进度叙述" in prompt
-    assert "每完成一个关键步骤就立即用一两句话" in prompt
-    assert "进度说明本身也用 Markdown" in prompt
-    assert "文件路径、命令、函数名、字段名用 `行内代码`" in prompt
-    assert "不要使用标题、表格或 fenced code block" in prompt
-    assert "最终回答与前面的进度说明用空行分隔" in prompt
+    assert "边做边说" in prompt
+    assert "1–3 条简短要点" in prompt
+    assert "简单调用之间一句话带过即可" in prompt
+    assert "关键文件、命令、函数、字段用行内代码" in prompt
+    assert "不要写成长段落，也不要用标题或 fenced code block" in prompt
+    assert "标题、表格和代码块留给最终回答" in prompt
+    assert "进度叙述不要重复最终答案" in prompt
