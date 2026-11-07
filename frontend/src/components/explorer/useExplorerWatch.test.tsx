@@ -5,9 +5,9 @@ import { useExplorerWatch } from "./useExplorerWatch";
 
 vi.mock("../../api/client", () => ({
   AUTH_TOKEN_CHANGED_EVENT: "hwrag:auth-token-changed",
-  getSessionToken: () => sessionStorage.getItem("session_token"),
+  getSessionToken: () => localStorage.getItem("session_token"),
   getAuthHeaders: () => {
-    const token = sessionStorage.getItem("session_token");
+    const token = localStorage.getItem("session_token");
     return token ? { Authorization: `Bearer ${token}` } : {};
   },
 }));
@@ -41,6 +41,7 @@ function installFetch(unauthorizedFirst: boolean): FetchCall[] {
 }
 
 beforeEach(() => {
+  localStorage.clear();
   sessionStorage.clear();
   fetchMock.mockReset();
 });
@@ -48,6 +49,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  localStorage.clear();
   sessionStorage.clear();
 });
 
@@ -68,7 +70,7 @@ describe("useExplorerWatch auth handling", () => {
     expect(onError).not.toHaveBeenCalled();
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
-    sessionStorage.setItem("session_token", "token-1");
+    localStorage.setItem("session_token", "token-1");
     act(() => {
       window.dispatchEvent(new Event(AUTH_TOKEN_CHANGED_EVENT));
     });
@@ -110,7 +112,7 @@ describe("useExplorerWatch auth handling", () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
 
     // The token arrives before the request that lacks it fails.
-    sessionStorage.setItem("session_token", "token-race");
+    localStorage.setItem("session_token", "token-race");
     act(() => {
       window.dispatchEvent(new Event(AUTH_TOKEN_CHANGED_EVENT));
     });

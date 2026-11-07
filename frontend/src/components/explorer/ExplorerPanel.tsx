@@ -96,7 +96,7 @@ function formatError(prefix: string, err: unknown): string {
  *  that is an expected state, not an error worth a toast at startup. */
 function isMissingAuthorizationError(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err);
-  return /security check failed|not been explicitly opened|outside authorized directories/i.test(message);
+  return /security check failed|not been explicitly opened|outside authorized directories|Explorer requires a session|Explorer session is invalid or expired/i.test(message);
 }
 
 export function ExplorerPanel() {

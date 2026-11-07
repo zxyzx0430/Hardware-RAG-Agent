@@ -214,6 +214,37 @@ class LoginRequest(BaseModel):
     provider: str = ""
     api_key: str
 
+class LocalSessionRequest(BaseModel):
+    provider: str = ""
+
+# The server listens on loopback only, so a browser on this machine is in the
+# same trust domain as the user who configured the provider key. Issuing a
+# session token here keeps the API key out of browser storage while every API
+# call still carries a real, revocable token.
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+@router.post("/local-session")
+async def local_session(req: LocalSessionRequest, request: Request):
+    """Issue a session token to a browser on this machine."""
+    client_host = (request.client.host if request.client else "") or ""
+    if client_host not in _LOOPBACK_HOSTS:
+        raise HTTPException(403, detail={"success": False, "error": {"code": "FORBIDDEN", "message": "local session is loopback-only"}})
+    with _store_lock:
+        store = _load_store()
+        providers = store.get("providers", {})
+        if not providers:
+            raise HTTPException(409, detail={"success": False, "error": {"code": "PROVIDER_REQUIRED", "message": "尚未配置 API Key"}})
+        provider = req.provider if req.provider in providers else next(iter(providers))
+        token = secrets.token_hex(32)
+        store["sessions"][token] = {
+            "provider": provider,
+            "created_at": datetime.now().isoformat(),
+            "expires_at": (datetime.now() + timedelta(days=30)).isoformat(),
+        }
+        _save_store(store)
+    logger.info("本地会话已签发: provider=%s", provider)
+    return {"success": True, "data": {"session_token": token, "provider": provider}}
+
 @router.post("/store-key")
 async def store_key(req: StoreKeyRequest, authorization: Optional[str] = Header(default=None)):
     """存储 API Key，返回 session_token。

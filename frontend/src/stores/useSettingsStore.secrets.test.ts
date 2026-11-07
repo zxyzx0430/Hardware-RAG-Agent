@@ -13,6 +13,7 @@ vi.mock("../api/client", () => ({
   apiPut: vi.fn(),
   apiPatch: vi.fn(),
   apiDelete: vi.fn(),
+  getSessionToken: () => null,
   setSessionToken: vi.fn(),
 }));
 
@@ -32,7 +33,7 @@ describe("settings secret persistence", () => {
     apiGetMock.mockResolvedValue({ settings: {} });
   });
 
-  it("does not write provider api keys or session tokens to localStorage", async () => {
+  it("does not write provider api keys to the persisted settings blob", async () => {
     const { useSettingsStore } = await import("./useSettingsStore");
 
     useSettingsStore
@@ -42,6 +43,5 @@ describe("settings secret persistence", () => {
     const raw = localStorage.getItem("hwrag_settings") || "";
     expect(raw).not.toContain("sk-super-secret");
     expect(raw).not.toContain('"apiKey":"sk-');
-    expect(localStorage.getItem("session_token")).toBeNull();
   });
 });

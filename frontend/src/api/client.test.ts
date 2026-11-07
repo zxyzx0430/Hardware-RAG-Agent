@@ -173,6 +173,7 @@ describe('apiSSE connection loss', () => {
 
 describe('session token broadcast', () => {
   beforeEach(() => {
+    localStorage.clear();
     sessionStorage.clear();
   });
 
@@ -183,11 +184,11 @@ describe('session token broadcast', () => {
 
     try {
       setSessionToken('token-1');
-      expect(sessionStorage.getItem('session_token')).toBe('token-1');
+      expect(localStorage.getItem('session_token')).toBe('token-1');
       expect(listener).toHaveBeenCalledTimes(1);
 
       setSessionToken(null);
-      expect(sessionStorage.getItem('session_token')).toBeNull();
+      expect(localStorage.getItem('session_token')).toBeNull();
       expect(listener).toHaveBeenCalledTimes(2);
     } finally {
       window.removeEventListener(AUTH_TOKEN_CHANGED_EVENT, listener);

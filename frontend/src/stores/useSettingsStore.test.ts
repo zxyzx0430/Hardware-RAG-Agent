@@ -14,6 +14,7 @@ vi.mock("../api/client", () => ({
   apiPost: apiPostMock,
   apiPatch: vi.fn(),
   apiDelete: vi.fn(),
+  getSessionToken: () => null,
   setSessionToken: vi.fn(),
 }));
 

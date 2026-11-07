@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { useLogStore } from "./useLogStore";
 import { useToastStore } from "./useToastStore";
-import { apiPost, apiGet, apiPut, apiPatch, apiDelete, setSessionToken } from "../api/client";
+import { apiPost, apiGet, apiPut, apiPatch, apiDelete, getSessionToken, setSessionToken } from "../api/client";
 
 interface Skill { name: string; desc: string; enabled: boolean; group?: string; }
 interface MCPServer { id: string; name: string; command: string; status: string; tools: number; }
@@ -119,7 +119,7 @@ type RetrievalSettingStatus = "idle" | "saving" | "synced" | "local_only" | "rea
 
 // 需要持久化的字段
 // 非密钥字段才写入 localStorage。Provider apiKey、搜索/图像/嵌入 Key 与
-// session_token 只保留在内存或 sessionStorage，避免 XSS 直接读取。
+// session_token 是本地服务端的可吊销会话凭证，持久化在 localStorage 以便新标签页恢复。
 const PERSIST_KEYS: (keyof SettingsState)[] = [
   "providers", "chatProviderId", "chatModel", "imageProviderId", "imageModel",
   "visionProviderId", "visionModel",
@@ -333,7 +333,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         // 流程：store-key → 401 时 fallback 到 /api/auth/login 恢复会话。
         // login 用 provider+api_key 换 session_token（要求 key 与后端已存储的匹配）。
         const persistKey = async () => {
-          const hasSessionToken = !!sessionStorage.getItem("session_token");
+          const hasSessionToken = !!getSessionToken();
           if (hasSessionToken) {
             // 已登录 → 直接 store-key（可能更新 base_url 等元数据）
             try {
@@ -369,7 +369,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
               });
               if (loginData?.session_token) {
                 setSessionToken(loginData.session_token);
-                useLogStore.getState().log("ok", "settings", `会话已恢复（login 成功），session_token 已写入 sessionStorage`);
+                useLogStore.getState().log("ok", "settings", `会话已恢复（login 成功），session_token 已保存`);
                 // 拿到 token 后再补一次 store-key 以更新元数据
                 apiPost("auth/store-key", {
                   provider: id, api_key: provider.apiKey, base_url: provider.baseUrl,

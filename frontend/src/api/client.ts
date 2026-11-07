@@ -26,6 +26,29 @@ export class ApiError extends Error {
 
 // ─── Auth Headers ────────────────────────────────────────────
 export const AUTH_TOKEN_CHANGED_EVENT = "hwrag:auth-token-changed";
+const SESSION_TOKEN_KEY = "session_token";
+
+/**
+ * The session token is a 30-day revocable credential for this local server,
+ * not the provider API key. Persisting it keeps new tabs and browser
+ * restarts signed in; a stale token is refreshed from the saved key.
+ */
+function readStoredSessionToken(): string | null {
+  try {
+    const persistent = localStorage.getItem(SESSION_TOKEN_KEY);
+    if (persistent) return persistent;
+    // Migrate a token left behind by builds that used sessionStorage.
+    const legacy = sessionStorage.getItem(SESSION_TOKEN_KEY);
+    if (legacy) {
+      localStorage.setItem(SESSION_TOKEN_KEY, legacy);
+      sessionStorage.removeItem(SESSION_TOKEN_KEY);
+      return legacy;
+    }
+  } catch {
+    // Storage can be unavailable in private mode; callers then run tokenless.
+  }
+  return null;
+}
 
 /**
  * Store or clear the session token and notify long-lived consumers (file
@@ -33,8 +56,12 @@ export const AUTH_TOKEN_CHANGED_EVENT = "hwrag:auth-token-changed";
  */
 export function setSessionToken(token: string | null): void {
   try {
-    if (token) sessionStorage.setItem("session_token", token);
-    else sessionStorage.removeItem("session_token");
+    if (token) {
+      localStorage.setItem(SESSION_TOKEN_KEY, token);
+    } else {
+      localStorage.removeItem(SESSION_TOKEN_KEY);
+    }
+    sessionStorage.removeItem(SESSION_TOKEN_KEY);
   } catch {
     // Storage may be unavailable in private mode; the in-memory callers can
     // still proceed, and the next request simply lacks a token.
@@ -45,11 +72,7 @@ export function setSessionToken(token: string | null): void {
 }
 
 export function getSessionToken(): string | null {
-  try {
-    return sessionStorage.getItem("session_token");
-  } catch {
-    return null;
-  }
+  return readStoredSessionToken();
 }
 
 export function getAuthHeaders(): Record<string, string> {
@@ -57,13 +80,78 @@ export function getAuthHeaders(): Record<string, string> {
   const creds = resolveChatCreds();
   const headers: Record<string, string> = {};
   if (creds.apiKey) headers["X-API-Key"] = creds.apiKey;
-  // session_token 存于 sessionStorage，用于本地会话鉴权。
+  // session_token 持久化在 localStorage：它是本地服务端的可吊销会话凭证，
+  // 不是服务商 API Key；新标签页/重启后无需重新认证。
   const sessionToken = getSessionToken();
   if (sessionToken) headers["Authorization"] = `Bearer ${sessionToken}`;
   if (creds.model) headers["X-Model"] = creds.model;
   if (creds.providerId) headers["X-Provider"] = creds.providerId;
   if (creds.baseUrl) headers["X-Base-URL"] = creds.baseUrl;
   return headers;
+}
+
+let validatedSessionToken: string | null = null;
+let sessionRecovery: Promise<boolean> | null = null;
+
+/**
+ * Make sure the local session token is usable.
+ *
+ * The provider API key is already the credential for this local server, so a
+ * missing or stale token is exchanged for a fresh one with the saved key
+ * instead of asking the user to log in again.
+ */
+export function ensureAuthSession(force = false): Promise<boolean> {
+  const token = getSessionToken();
+  if (!force && token && validatedSessionToken === token) return Promise.resolve(true);
+  if (sessionRecovery) return sessionRecovery;
+  sessionRecovery = (async () => {
+    if (!force && token) {
+      try {
+        await apiGet("auth/keys");
+        validatedSessionToken = token;
+        return true;
+      } catch {
+        // Stale or expired token: fall through to the key exchange.
+      }
+    }
+    const creds = useSettingsStore.getState().resolveChatCreds();
+    if (creds.apiKey) {
+      try {
+        const data = await apiPost<{ session_token?: string }>("auth/login", {
+          provider: creds.providerId,
+          api_key: creds.apiKey,
+        });
+        if (data?.session_token) {
+          setSessionToken(data.session_token);
+          validatedSessionToken = data.session_token;
+          getLog()("info", "auth", "已用本地 API Key 自动恢复会话");
+          return true;
+        }
+      } catch (err) {
+        getLog()("warn", "auth", `自动恢复会话失败: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    // The key is deliberately not kept in browser storage after setup, so a
+    // local browser cannot re-derive the token from it. Ask the local server
+    // for a token instead; this endpoint only answers loopback clients.
+    try {
+      const local = await apiPost<{ session_token?: string }>("auth/local-session", {
+        provider: creds.providerId,
+      });
+      if (local?.session_token) {
+        setSessionToken(local.session_token);
+        validatedSessionToken = local.session_token;
+        getLog()("info", "auth", "已从本机会话引导获取 token");
+        return true;
+      }
+    } catch (err) {
+      getLog()("warn", "auth", `本机会话引导失败: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return false;
+  })().finally(() => {
+    sessionRecovery = null;
+  });
+  return sessionRecovery;
 }
 
 // ─── Response Unwrapping ─────────────────────────────────────
@@ -396,6 +484,7 @@ export async function apiSSE(
   let doneReceived = false;
   let consecutiveFailures = 0;
   let attempt = 0;
+  let authRetried = false;
   let userAborted = false;
   let activeConnection: AbortController | null = null;
 
@@ -447,7 +536,14 @@ export async function apiSSE(
           ...(requestMethod === "POST" ? { body: JSON.stringify(body) } : {}),
           signal: connection.signal,
         });
-        if (!res.ok) throw await readSseHttpError(res);
+        if (!res.ok) {
+          const sseError = await readSseHttpError(res);
+          if (!authRetried && (res.status === 401 || res.status === 403)) {
+            authRetried = true;
+            if (await ensureAuthSession(true)) continue;
+          }
+          throw sseError;
+        }
 
         const headerRunId = res.headers?.get("X-Run-Id") ?? res.headers?.get("x-run-id");
         if (headerRunId && !runId) {

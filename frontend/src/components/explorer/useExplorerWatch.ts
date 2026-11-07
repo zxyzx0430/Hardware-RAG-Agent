@@ -149,8 +149,8 @@ export function useExplorerWatch(
         onAuthRequiredRef.current?.();
       }
       if (authPollTimer) return;
-      // Fallback for login flows that write sessionStorage without using
-      // setSessionToken(); the custom event handles the normal path instantly.
+      // Fallback for login flows that write browser storage without emitting
+      // the token-change event; the event handles the normal path instantly.
       authPollTimer = setInterval(() => {
         const token = getSessionToken();
         if (token && token !== knownToken) {
