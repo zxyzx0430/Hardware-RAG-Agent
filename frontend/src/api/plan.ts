@@ -58,3 +58,19 @@ export async function approveSessionPlan(sessionId: string, planId: string): Pro
 export async function rejectSessionPlan(sessionId: string, planId: string): Promise<Plan> {
   return decidePlan(sessionId, planId, "reject");
 }
+
+/**
+ * POST /api/sessions/{id}/agent-plan-mode — set or clear the Agent's persisted
+ * plan-mode request. Clearing is the user's explicit override.
+ */
+export async function setAgentPlanMode(
+  sessionId: string,
+  enabled: boolean,
+): Promise<boolean> {
+  const raw = await apiPost<unknown>(
+    `sessions/${encodeURIComponent(sessionId)}/agent-plan-mode`,
+    { enabled },
+  );
+  const record = asRecord(raw);
+  return record?.plan_mode_requested === true;
+}

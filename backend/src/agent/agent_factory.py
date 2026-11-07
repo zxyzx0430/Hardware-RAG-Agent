@@ -1644,9 +1644,24 @@ def _build_local_file_ops_tools() -> list[BaseTool]:
 
 
 def _build_local_execution_tools() -> list[BaseTool]:
-    """Instantiate all 2 execution tools."""
-    from src.agent.tools.groups.execution import RunCommandTool, TodoWriteTool
-    return [RunCommandTool(), TodoWriteTool()]
+    """Instantiate all execution tools.
+
+    submit_plan is exposed in every mode: a model that calls enter_plan_mode
+    mid-run cannot rebuild the graph's tool list, so the same run must still be
+    able to submit its plan. SubmitPlanTool.execute rejects non-plan callers.
+    """
+    from src.agent.tools.groups.execution import (
+        EnterPlanModeTool,
+        RunCommandTool,
+        SubmitPlanTool,
+        TodoWriteTool,
+    )
+    return [
+        RunCommandTool(),
+        TodoWriteTool(),
+        SubmitPlanTool(),
+        EnterPlanModeTool(),
+    ]
 
 
 def _read_tavily_key(payload: Any) -> str:

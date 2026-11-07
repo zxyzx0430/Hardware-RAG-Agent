@@ -1825,6 +1825,42 @@ def _require_plan_mode_agent(payload: ChatRequest, model: str) -> None:
         )
 
 
+def _agent_plan_mode_requested(session_id: str | None) -> bool:
+    """Read the persisted Agent plan-mode marker; DB failures propagate."""
+    from app.db import agent_mode_store
+
+    return agent_mode_store.plan_mode_requested(session_id)
+
+
+def _clamp_payload_to_agent_plan_mode(payload: ChatRequest) -> ChatRequest:
+    """Force plan mode while the Agent's marker exists (server-side authority)."""
+    if payload.permission_mode == "plan" or not payload.session_id:
+        return payload
+    if not _agent_plan_mode_requested(payload.session_id):
+        return payload
+    logger.info("agent plan mode clamp session=%s", payload.session_id)
+    return payload.model_copy(update={"permission_mode": "plan"})
+
+
+def _clamp_snapshot_to_agent_plan_mode(
+    snapshot: AgentRequestSnapshot,
+    session_id: str | None,
+) -> AgentRequestSnapshot:
+    """Clamp a HITL resume snapshot so an approved write cannot bypass plan."""
+    if snapshot.permission_mode == "plan":
+        return snapshot
+    if not _agent_plan_mode_requested(session_id):
+        return snapshot
+    clamped_context = snapshot.tool_context
+    if clamped_context is not None:
+        # Copy rather than mutate: the pending snapshot may be retried, and a
+        # later user clear must not be defeated by an earlier clamp.
+        clamped_context = replace(clamped_context, permission_mode="plan")
+    return replace(
+        snapshot, permission_mode="plan", tool_context=clamped_context,
+    )
+
+
 def _resolve_approved_plan(payload: ChatRequest, session_id: str, model: str) -> dict | None:
     plan_id = payload.approved_plan_id
     if not plan_id:
@@ -1873,6 +1909,20 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
     base_url = creds["base_url"]
     model = creds["model"]
     provider = creds["provider"]
+    try:
+        payload = _clamp_payload_to_agent_plan_mode(payload)
+    except Exception as exc:
+        logger.warning("agent plan mode marker could not be read")
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "success": False,
+                "error": {
+                    "code": "AGENT_PLAN_MODE_UNAVAILABLE",
+                    "message": "无法确认本会话的计划模式状态，请稍后重试。",
+                },
+            },
+        ) from exc
     _require_plan_mode_agent(payload, model)
     from src.agent.tools.groups.skills.install_tool import parse_explicit_install_intent
 
@@ -2595,6 +2645,22 @@ async def resume_agent(req: ResumeRequest, request: Request, user: dict = Depend
                 },
             },
         )
+    try:
+        request_snapshot = _clamp_snapshot_to_agent_plan_mode(
+            request_snapshot, req.payload.session_id,
+        )
+    except Exception as exc:
+        logger.warning("agent plan mode marker could not be read on resume")
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "success": False,
+                "error": {
+                    "code": "AGENT_PLAN_MODE_UNAVAILABLE",
+                    "message": "无法确认本会话的计划模式状态，请重新发送本轮请求。",
+                },
+            },
+        ) from exc
     effective_payload = _payload_with_request_snapshot(req.payload, request_snapshot)
     effective_req = req.model_copy(update={"payload": effective_payload})
     creds = _resolve_creds(effective_payload, request)

@@ -327,6 +327,8 @@ export function AppRoot() {
     }
     // 会话存在：加载消息（localStorage 缓存先填充，后端数据覆盖）
     void fetchMessages(activeSessionId);
+    // Restore the Agent's persisted plan-mode marker after a refresh.
+    useChatStore.getState().restorePlanModeForSession(activeSessionId);
     // 只在 initialized/sessions/activeSessionId 变化时触发，不依赖 fetchMessages 引用
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionsInitialized, sessions, activeSessionId]);

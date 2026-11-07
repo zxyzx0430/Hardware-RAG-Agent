@@ -56,7 +56,7 @@ import { loadFromStorage, saveToStorage, saveSessionMessages as writeSessionMess
 import { getSessionHistoryMode } from "../utils/rollingHistoryClient";
 import { normalizeTodos } from "../utils/planTodo";
 import { fetchSessionTodos as fetchSessionTodosApi, clearSessionTodos as clearSessionTodosApi } from "../api/todo";
-import { approveSessionPlan, fetchLatestPlan, rejectSessionPlan } from "../api/plan";
+import { approveSessionPlan, fetchLatestPlan, rejectSessionPlan, setAgentPlanMode } from "../api/plan";
 import { planSnapshotState, planUpdateState, todoSnapshotState, todoUpdateState } from "./planTodoState";
 import {
   clearActiveRun,
@@ -222,7 +222,13 @@ interface ChatState {
   // ── Plan mode + server-authoritative todos/plans ──
   /** Request-scoped read-only plan mode. Never written to settings or localStorage. */
   planMode: boolean;
+  /** Per-session mirror; planMode is the active session's value. */
+  planModeBySession: Record<string, boolean>;
   setPlanMode: (value: boolean) => void;
+  /** Clear the Agent's persisted plan-mode request (user override). */
+  leaveAgentPlanMode: () => Promise<boolean>;
+  /** Restore planMode for one session from its persisted marker. */
+  restorePlanModeForSession: (sessionId: string) => void;
   /** Server-authoritative todo snapshot per session (loaded flag separates empty from unloaded). */
   sessionTodos: Record<string, TodoItem[]>;
   sessionTodosLoaded: Record<string, boolean>;
@@ -1086,7 +1092,36 @@ function _sessionStreamingError(state: ChatState, sessionId: string): StreamingE
  * Apply one chat SSE event to the session that owns the run.
  * Shared by the initial POST stream, gap replays and refresh reattachment.
  */
+/** Apply an Agent-initiated permission change to its owning session. */
+function _applyAgentPlanModeEvent(
+  event: Extract<ChatSSEEvent, { type: "permission_mode_changed" }>,
+  sessionId: string,
+): void {
+  const requested = event.permission_mode === "plan";
+  const state = useChatStore.getState();
+  if (requested) {
+    const session = useSessionStore.getState().sessions.find((item) => item.id === sessionId);
+    const alreadyKnown = state.planModeBySession[sessionId] === true
+      || session?.planModeRequested === true;
+    useSessionStore.getState().updateSessionMeta(sessionId, { planModeRequested: true });
+    if (!alreadyKnown && state.activeSessionId === sessionId) {
+      const english = useAppStore.getState().lang === "en";
+      useToastStore.getState().showInfo(english
+        ? "The Agent switched this session to plan mode (read-only)."
+        : "Agent 已进入计划模式（只读），完成调研后会提交计划。");
+    }
+  }
+  useChatStore.setState((s) => ({
+    planModeBySession: { ...s.planModeBySession, [sessionId]: requested },
+    ...(s.activeSessionId === sessionId ? { planMode: requested } : {}),
+  }));
+}
+
 function _applyChatEvent(event: ChatSSEEvent, requestSessionId: string, terminal: ChatTerminalState): void {
+  if (event.type === "permission_mode_changed") {
+    _applyAgentPlanModeEvent(event, requestSessionId);
+    return;
+  }
   if (event.type === "error") {
     terminal.outcome = "error";
     const errPayload = event as { type: "error"; code?: string; message: string; detail?: string };
@@ -1466,7 +1501,8 @@ function _finalizeChatStream(sessionId: string, terminal: ChatTerminalState, sta
   if (terminal.finalized) return;
   terminal.finalized = true;
   const finishedSteps = useChatStore.getState().streamingSteps;
-  const wasPlanMode = useChatStore.getState().planMode;
+  const wasPlanMode = useChatStore.getState().planModeBySession[sessionId]
+    ?? useChatStore.getState().planMode;
 
   if (terminal.outcome === "error") {
     if (!_sessionStreamingError(useChatStore.getState(), sessionId)) {
@@ -1865,6 +1901,10 @@ export const useChatStore = create<ChatState>((set, get) => {
     }
     if (evt.type === "plan_update") {
       set((s) => planUpdateState(s, sid, evt.plan ?? null));
+      return;
+    }
+    if (evt.type === "permission_mode_changed") {
+      _applyAgentPlanModeEvent(evt, sid);
       return;
     }
     if (evt.type === "tool_confirm_required") {
@@ -2330,6 +2370,7 @@ export const useChatStore = create<ChatState>((set, get) => {
   sessionHighlightSourceId: {},
   // Plan mode is request-scoped; todo/plan snapshots are reloaded from the server.
   planMode: false,
+  planModeBySession: {},
   sessionTodos: {},
   sessionTodosLoaded: {},
   sessionTodosRevision: {},
@@ -2399,7 +2440,45 @@ export const useChatStore = create<ChatState>((set, get) => {
     return { sessionAttachments: next };
   }),
 
-  setPlanMode: (planMode) => set({ planMode }),
+  setPlanMode: (planMode) => set((s) => (
+    s.activeSessionId
+      ? {
+          planMode,
+          planModeBySession: { ...s.planModeBySession, [s.activeSessionId]: planMode },
+        }
+      : { planMode }
+  )),
+
+  leaveAgentPlanMode: async () => {
+    const sid = get().activeSessionId;
+    if (!sid) {
+      set({ planMode: false });
+      return true;
+    }
+    try {
+      await setAgentPlanMode(sid, false);
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      getLog()("warn", "chat", `清除计划模式标记失败: ${sid} - ${errMsg}`);
+      useToastStore.getState().showError(`无法退出计划模式：${errMsg}`);
+      return false;
+    }
+    set((s) => ({
+      planMode: false,
+      planModeBySession: { ...s.planModeBySession, [sid]: false },
+    }));
+    useSessionStore.getState().updateSessionMeta(sid, { planModeRequested: false });
+    return true;
+  },
+
+  restorePlanModeForSession: (sessionId) => {
+    if (!sessionId) return;
+    const session = useSessionStore.getState().sessions.find((s) => s.id === sessionId);
+    set((s) => {
+      const mapped = s.planModeBySession[sessionId];
+      return { planMode: mapped ?? (session?.planModeRequested === true) };
+    });
+  },
 
   loadSessionTodos: async (sessionId) => {
     if (!sessionId) return;
@@ -2454,7 +2533,12 @@ export const useChatStore = create<ChatState>((set, get) => {
   approvePlan: async (sessionId, planId) => {
     try {
       const plan = await approveSessionPlan(sessionId, planId);
-      set((s) => ({ ...planSnapshotState(s, sessionId, plan), planMode: false }));
+      set((s) => ({
+        ...planSnapshotState(s, sessionId, plan),
+        planModeBySession: { ...s.planModeBySession, [sessionId]: false },
+        ...(s.activeSessionId === sessionId || !s.activeSessionId ? { planMode: false } : {}),
+      }));
+      useSessionStore.getState().updateSessionMeta(sessionId, { planModeRequested: false });
       return plan;
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
@@ -2469,7 +2553,11 @@ export const useChatStore = create<ChatState>((set, get) => {
       const plan = await rejectSessionPlan(sessionId, planId);
       // Rejecting a proposal must not silently drop the user out of plan mode:
       // they usually want to revise the request and generate a new plan.
-      set((s) => ({ ...planSnapshotState(s, sessionId, plan), planMode: true }));
+      set((s) => ({
+        ...planSnapshotState(s, sessionId, plan),
+        planModeBySession: { ...s.planModeBySession, [sessionId]: true },
+        ...(s.activeSessionId === sessionId || !s.activeSessionId ? { planMode: true } : {}),
+      }));
       const english = useAppStore.getState().lang === "en";
       useToastStore.getState().showInfo(
         english
@@ -2490,7 +2578,11 @@ export const useChatStore = create<ChatState>((set, get) => {
     if (!plan || plan.status !== "approved") return false;
     if (plan.session_id && plan.session_id !== activeSessionId) return false;
     if (isStreaming) return false;
-    set({ planMode: false });
+    const sid = plan.session_id || activeSessionId;
+    set((s) => ({
+      planMode: false,
+      ...(sid ? { planModeBySession: { ...s.planModeBySession, [sid]: false } } : {}),
+    }));
     void get().sendMessage(
       APPROVED_PLAN_EXECUTION_MESSAGE,
       undefined,
@@ -3061,7 +3153,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     const { activeSessionId, messages, sessionMessages, isStreaming,
             streamingSessionId, currentSseRequest, streamingContent,
             streamingSteps, backgroundSseRequests,
-            streamingError, streamingErrorBySession } = get();
+            streamingError, streamingErrorBySession, planModeBySession } = get();
     if (id === activeSessionId) return;
     const nextKbScope = _loadKbScope(id);
     getLog()("info", "chat", `切换会话: ${activeSessionId} → ${id}`);
@@ -3135,11 +3227,15 @@ export const useChatStore = create<ChatState>((set, get) => {
     const nextErrors = { ...streamingErrorBySession };
     if (streamingError && activeSessionId) nextErrors[activeSessionId] = streamingError;
 
+    // Plan mode belongs to the target session: its live value, else the
+    // persisted Agent marker loaded with the session list.
+    const targetSession = useSessionStore.getState().sessions.find((s) => s.id === id);
+    const targetPlanMode = planModeBySession[id]
+      ?? (targetSession?.planModeRequested === true);
+
     set({
       activeSessionId: id,
-      // Plan mode is a per-turn toggle; switching sessions always returns to the
-      // persisted permission mode.
-      planMode: false,
+      planMode: targetPlanMode,
       selectedKbIds: nextKbScope.ids,
       kbScopeIssue: nextKbScope.issue,
       messages: loadedMessages,

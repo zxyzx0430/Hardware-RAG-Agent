@@ -712,6 +712,9 @@ def _sse_indicates_progress(serialized_events: str) -> bool:
         elif event_type == "plan_update":
             if isinstance(payload.get("plan"), dict):
                 return True
+        elif event_type == "permission_mode_changed":
+            if isinstance(payload.get("permission_mode"), str) and payload["permission_mode"]:
+                return True
         elif event_type in {"context_compressing", "tool_confirm_required"}:
             if payload.get("message") or payload.get("calls") or payload.get("count"):
                 return True
@@ -867,7 +870,13 @@ def _emit_tool_call(
     specs = ctx.request_tools.values() if ctx is not None else list_registered_tools()
     spec = next((item for item in specs if item.name == name), None)
     risk_level = spec.risk_level.value if spec is not None else None
-    perm_mode = state.get("permission_mode", "bypassPermissions")
+    # The live context is authoritative: enter_plan_mode mutates it mid-run,
+    # while state["permission_mode"] holds the mode captured at stream start.
+    perm_mode = (
+        getattr(ctx, "permission_mode", None)
+        if ctx is not None
+        else state.get("permission_mode", "bypassPermissions")
+    )
     if perm_mode == "bypassPermissions":
         decision_source = "mode_bypass"
     elif perm_mode == "plan":

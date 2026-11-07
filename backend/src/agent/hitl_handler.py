@@ -25,7 +25,11 @@ from app.api.sse import sse_event
 from src.agent.context_guard import estimate_context_tokens, reset_token_counter
 from src.agent.exceptions import ContextLimitError
 from src.agent.hitl_sse import emit_deny_tool_results
-from src.agent.hitl_permission import evaluate_pending, build_confirm_required_event
+from src.agent.hitl_permission import (
+    evaluate_pending,
+    build_confirm_required_event,
+    is_mixed_enter_plan_batch,
+)
 from src.agent.plan_policy import PLAN_MODE
 
 logger = logging.getLogger(__name__)
@@ -41,10 +45,16 @@ DECISION_DENY: str = "deny"
 USER_DECISION_STOP: str = "stop"
 DENY_MESSAGE: str = "用户拒绝执行此工具"
 PLAN_MODE_DENY_MESSAGE: str = "计划模式只读：请先调用 submit_plan，等用户批准后再执行该工具。"
+MIXED_PLAN_BATCH_MESSAGE: str = (
+    "不能在同一回合同时进入计划模式并执行其它工具；请先单独调用 enter_plan_mode，"
+    "等降级生效后再调用其它工具。"
+)
 
 # Audit decision_source enums (spec industrial-tool-runtime §AuditRecorder).
 SOURCE_USER_DENY: str = "user_deny"
 SOURCE_PATH_DENY: str = "path_deny"
+SOURCE_PLAN_DENY: str = "plan_mode_read_only"
+SOURCE_MIXED_PLAN_DENY: str = "plan_downgrade_batch_denied"
 SOURCE_USER_ALLOW: str = "user_allow"
 
 # Resume command payload used to resume LangGraph after HITL interrupt.
@@ -90,6 +100,17 @@ async def handle_auto_resume(
             return
         tool_name = pending[0].get("name", "?") if pending else "?"
         logger.info("hitl_auto_resume session=%s tool=%s", session_id, tool_name)
+        if is_mixed_enter_plan_batch(pending):
+            # Must run before the MCP confirmation path: that path classifies
+            # each call under the pre-downgrade context and would let a mixed
+            # batch through concurrently.
+            async for sse in _deny_pending_batch(
+                agent, config, pending, call_counter, call_start_time, state,
+                source=SOURCE_MIXED_PLAN_DENY,
+                message=MIXED_PLAN_BATCH_MESSAGE,
+            ):
+                yield sse
+            continue
         ctx = _get_tool_ctx()
         authorization = getattr(ctx, "mcp_authorization", None)
         if authorization is not None:
@@ -110,17 +131,36 @@ async def handle_auto_resume(
             yield build_confirm_required_event(ask_calls)
             return
         if decision == DECISION_DENY:
-            deny_message = PLAN_MODE_DENY_MESSAGE if permission_mode == PLAN_MODE else DENY_MESSAGE
-            await _inject_deny_messages(
-                agent, config, pending, SOURCE_PATH_DENY, message=deny_message,
+            ctx_mode = getattr(_get_tool_ctx(), "permission_mode", permission_mode)
+            deny_message = PLAN_MODE_DENY_MESSAGE if ctx_mode == PLAN_MODE else DENY_MESSAGE
+            deny_source = (
+                SOURCE_PLAN_DENY if ctx_mode == PLAN_MODE else SOURCE_PATH_DENY
             )
-            for sse in emit_deny_tool_results(pending, call_start_time, deny_message):
+            async for sse in _deny_pending_batch(
+                agent, config, pending, call_counter, call_start_time, state,
+                source=deny_source, message=deny_message,
+            ):
                 yield sse
-            resume_cmd = _RESUME_DENY
-        else:
-            resume_cmd = _RESUME_ALLOW
-        async for sse in _iter_agent_sse(agent, resume_cmd, config, call_counter, call_start_time, state):
+            continue
+        async for sse in _iter_agent_sse(agent, _RESUME_ALLOW, config, call_counter, call_start_time, state):
             yield sse
+
+
+async def _deny_pending_batch(
+    agent: Any, config: dict, pending: list[dict],
+    call_counter: Counter, call_start_time: dict, state: dict,
+    *, source: str, message: str,
+) -> AsyncIterator[str]:
+    """Inject denial ToolMessages, stream them, then resume past the tools node."""
+    from src.agent.sse_adapter import _iter_agent_sse
+
+    await _inject_deny_messages(agent, config, pending, source, message=message)
+    for sse in emit_deny_tool_results(pending, call_start_time, message):
+        yield sse
+    async for sse in _iter_agent_sse(
+        agent, _RESUME_DENY, config, call_counter, call_start_time, state,
+    ):
+        yield sse
 
 
 async def resume_agent_after_user(

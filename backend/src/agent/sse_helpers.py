@@ -30,6 +30,9 @@ logger = logging.getLogger(__name__)
 
 # Placeholder step_index for tool_result events (v1 does not track precisely).
 RESULT_STEP_INDEX: int = 0
+# Only this tool may report a model-initiated permission downgrade; an MCP or
+# other tool returning the same payload must not move the client's plan state.
+_ENTER_PLAN_MODE_TOOL: str = "enter_plan_mode"
 # Structured-field keywords that mark a ToolMessage.content as JSON worth recovering.
 _ENVELOPE_MARKERS: tuple[str, ...] = ("target_pane", "results", "success", "metadata")
 
@@ -246,6 +249,12 @@ def convert_tool_message_to_sse(
         accumulate_tokens(result, state)
         state.get("pending_tool_calls", set()).discard(call_id)
     envelope = _ensure_envelope_shape(result, tool_name, duration_ms, call_id)
+    if (
+        state is not None
+        and tool_name == _ENTER_PLAN_MODE_TOOL
+        and _agent_plan_entered(envelope)
+    ):
+        state["permission_mode"] = "plan"
     events = _assemble_tool_result_events(tool_name, call_id, duration_ms, success, envelope)
     # Compact the in-graph ToolMessage so subsequent LLM calls don't ingest
     # megabyte-sized base64 strings.
@@ -304,6 +313,8 @@ def _assemble_tool_result_events(
         events.extend(build_source_events(envelope))
     _maybe_emit_todo_update(events, envelope)
     _maybe_emit_plan_update(events, envelope)
+    if tool_name == _ENTER_PLAN_MODE_TOOL:
+        _maybe_emit_permission_mode_changed(events, envelope)
     events.append(sse_event("tool_result", {
         "call_id": call_id,
         "tool": tool_name,
@@ -379,6 +390,29 @@ def _maybe_emit_plan_update(events: list[str], envelope: dict) -> None:
         data = envelope if "_plan_update" in envelope else {}
     if data.get("_plan_update") and isinstance(data.get("plan"), dict):
         events.append(sse_event("plan_update", {"plan": data["plan"]}))
+
+
+def _envelope_data(envelope: dict) -> dict:
+    """Return the tool result payload, tolerating unwrapped legacy results."""
+    data = envelope.get("data")
+    return data if isinstance(data, dict) else envelope
+
+
+def _agent_plan_entered(envelope: dict) -> bool:
+    return bool(_envelope_data(envelope).get("_agent_plan_entered"))
+
+
+def _maybe_emit_permission_mode_changed(events: list[str], envelope: dict) -> None:
+    """Emit the Agent-initiated plan downgrade as its own SSE event."""
+    data = _envelope_data(envelope)
+    if not data.get("_agent_plan_entered"):
+        return
+    reason = data.get("reason")
+    events.append(sse_event("permission_mode_changed", {
+        "permission_mode": "plan",
+        "source": "agent",
+        "reason": reason if isinstance(reason, str) else "",
+    }))
 
 
 def _valid_skill_trace_id(value: Any) -> bool:

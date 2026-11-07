@@ -141,6 +141,14 @@ export interface PlanUpdateSSEEvent {
   plan: Plan;
 }
 
+/** Agent-initiated permission downgrade (currently only to plan mode). */
+export interface PermissionModeChangedSSEEvent {
+  type: 'permission_mode_changed';
+  permission_mode: 'plan' | string;
+  source?: 'agent' | string;
+  reason?: string;
+}
+
 export interface SourceSSEEvent {
   type: 'source';
   id: string;
@@ -237,6 +245,7 @@ export type ChatSSEEvent = RunEventMeta & (
   | SourceSSEEvent
   | TodoUpdateSSEEvent
   | PlanUpdateSSEEvent
+  | PermissionModeChangedSSEEvent
   | ProgressSSEEvent
   | BuildCompileLogSSEEvent
   | ToolConfirmRequiredSSEEvent
@@ -608,6 +617,8 @@ export interface BackendSession {
   branch_from_message_id?: string | null;
   /** Per-session context window budget (tokens). Default 262144 (256K). */
   context_window?: number;
+  /** True while the Agent's persisted plan-mode request is active. */
+  plan_mode_requested?: boolean;
   /** ISO date string */
   created_at: string;
   /** ISO date string */

@@ -198,7 +198,23 @@ def _cap_agent_session_context_window(value: int) -> int:
     return min(value, AGENT_CONTEXT_WINDOW_CAP)
 
 
-def _serialize_session(s: SessionModel) -> dict:
+def _serialize_session(
+    s: SessionModel,
+    db: DBSession | None = None,
+    plan_mode_requested: bool | None = None,
+) -> dict:
+    if plan_mode_requested is None:
+        try:
+            from app.db import agent_mode_store
+
+            plan_mode_requested = (
+                agent_mode_store.plan_mode_requested_in_db(db, s.id)
+                if db is not None
+                else agent_mode_store.plan_mode_requested(s.id)
+            )
+        except Exception:
+            logger.warning("agent plan mode flag unavailable for %s", s.id)
+            plan_mode_requested = False
     return {
         "id": s.id,
         "title": s.title,
@@ -210,6 +226,7 @@ def _serialize_session(s: SessionModel) -> dict:
         "branch_from_message_id": s.branch_from_message_id,
         "context_window": _cap_agent_session_context_window(s.context_window),
         "version": getattr(s, "version", 0) or 0,
+        "plan_mode_requested": bool(plan_mode_requested),
         "created_at": to_utc_iso_z(s.created_at),
         "updated_at": to_utc_iso_z(s.updated_at),
     }
@@ -438,7 +455,17 @@ def list_sessions(offset: int = 0, limit: int = 50, db: DBSession = Depends(get_
         .limit(min(limit, 200))
         .all()
     )
-    return _ok({"sessions": [_serialize_session(s) for s in sessions]})
+    from app.db import agent_mode_store
+
+    flags = agent_mode_store.plan_mode_requested_flags(
+        [s.id for s in sessions], db=db,
+    )
+    return _ok({
+        "sessions": [
+            _serialize_session(s, db=db, plan_mode_requested=flags.get(s.id, False))
+            for s in sessions
+        ],
+    })
 
 
 @db_router.post("/sessions")
@@ -464,7 +491,7 @@ def create_session(payload: SessionCreate, db: DBSession = Depends(get_db), user
                         require_session_owner(db, payload.id, user)
                     except PermissionError as exc:
                         raise _fail("FORBIDDEN", "无权访问该会话", status_code=403) from exc
-                result = _ok(_serialize_session(existing))
+                result = _ok(_serialize_session(existing, db=db))
                 db.rollback()
                 return result
             sid = payload.id
@@ -556,7 +583,7 @@ def create_session(payload: SessionCreate, db: DBSession = Depends(get_db), user
             # The copied rows and the new session revision commit atomically.
             session.message_revision += 1
 
-        result = _ok(_serialize_session(session))
+        result = _ok(_serialize_session(session, db=db))
         db.commit()
         return result
     except Exception:
@@ -574,7 +601,7 @@ def get_session(session_id: str, db: DBSession = Depends(get_db), user: dict = D
         if not s:
             raise _fail("NOT_FOUND", f"会话不存在: {session_id}", status_code=404)
         return _ok({
-            **_serialize_session(s),
+            **_serialize_session(s, db=db),
             "messages": [
                 {
                     "id": m.id,
@@ -733,7 +760,7 @@ def patch_session(session_id: str, payload: SessionUpdate, db: DBSession = Depen
             raise _fail("NOT_FOUND", f"会话不存在: {session_id}", status_code=404)
         _apply_session_update(s, payload)
         s.updated_at = datetime.datetime.utcnow()
-        result = _ok(_serialize_session(s))
+        result = _ok(_serialize_session(s, db=db))
         db.commit()
         logger.info("会话已 PATCH: id=%s", session_id)
         return result
@@ -808,6 +835,9 @@ def _purge_session_rows(db: DBSession, session_id: str) -> None:
     db.query(SettingsModel).filter(
         SettingsModel.key.startswith(_session_prefix(session_id), autoescape=True),
     ).delete(synchronize_session=False)
+    from app.db import agent_mode_store
+
+    agent_mode_store.clear_plan_mode_requested_in_db(db, session_id)
     # Working memory and its checkpoint snapshots are session-scoped. Project
     # and user memory must survive a session deletion.
     from app.db.memory_store import purge_session_memory

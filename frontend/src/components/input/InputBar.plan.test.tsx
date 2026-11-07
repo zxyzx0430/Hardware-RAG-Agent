@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { InputBar } from "./InputBar";
 
@@ -7,7 +7,7 @@ const { chatState, appState, settingsState, sessionState } = vi.hoisted(() => ({
     sendMessage: vi.fn(), stopStreaming: vi.fn(), isStreaming: false, activeSessionId: "session-a",
     drafts: { "session-a": "" }, setDraft: vi.fn(), clearDraft: vi.fn(),
     sessionAttachments: {}, setSessionAttachments: vi.fn(), clearSessionAttachments: vi.fn(),
-    planMode: false, setPlanMode: vi.fn(),
+    planMode: false, setPlanMode: vi.fn(), leaveAgentPlanMode: vi.fn().mockResolvedValue(true),
   },
   appState: {
     quotedMsg: null,
@@ -61,6 +61,7 @@ function clickPermission(label: string) {
 beforeEach(() => {
   chatState.planMode = false;
   chatState.setPlanMode.mockReset();
+  chatState.leaveAgentPlanMode.mockReset().mockResolvedValue(true);
   settingsState.permissionMode = "default";
   settingsState.updateSetting.mockReset();
 });
@@ -114,5 +115,29 @@ describe("InputBar plan mode", () => {
     render(<InputBar />);
 
     expect(document.getElementById("permissionLabel")?.textContent).toBe("plan");
+  });
+
+  it("clears the Agent plan marker before switching to YOLO", async () => {
+    chatState.planMode = true;
+    render(<InputBar />);
+    openPermissionDropdown();
+
+    clickPermission("YOLO");
+
+    await waitFor(() => expect(chatState.leaveAgentPlanMode).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(settingsState.updateSetting).toHaveBeenCalledWith("permissionMode", "yolo"));
+    expect(chatState.setPlanMode).not.toHaveBeenCalled();
+  });
+
+  it("stays in plan mode when clearing the marker fails", async () => {
+    chatState.planMode = true;
+    chatState.leaveAgentPlanMode.mockResolvedValue(false);
+    render(<InputBar />);
+    openPermissionDropdown();
+
+    clickPermission("manual");
+
+    await waitFor(() => expect(chatState.leaveAgentPlanMode).toHaveBeenCalledTimes(1));
+    expect(settingsState.updateSetting).not.toHaveBeenCalled();
   });
 });

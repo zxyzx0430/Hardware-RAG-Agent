@@ -10,6 +10,8 @@ export interface Session {
   msgCount: number;
   /** Per-session context window budget (tokens). Default 256K = 262144. */
   contextWindow: number;
+  /** True while the Agent's persisted plan-mode request is active. */
+  planModeRequested?: boolean;
   /** 兼容旧数据：原始的 timestamp/group/createTime 字段 */
   timestamp?: string;
   group?: string;

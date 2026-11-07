@@ -102,7 +102,7 @@ export function InputBar() {
   // Guard against double send (e.g. rapid Enter + click)
   const sendingRef = useRef(false);
 
-  const { sendMessage, stopStreaming, isStreaming, activeSessionId, drafts, setDraft, clearDraft, sessionAttachments, setSessionAttachments, clearSessionAttachments, planMode, setPlanMode } = useChatStore();
+  const { sendMessage, stopStreaming, isStreaming, activeSessionId, drafts, setDraft, clearDraft, sessionAttachments, setSessionAttachments, clearSessionAttachments, planMode, setPlanMode, leaveAgentPlanMode } = useChatStore();
   const { providers, chatProviderId, chatModel, setChatModel, permissionMode, updateSetting } = useSettingsStore();
   const { sessions, updateSessionMeta } = useSessionStore();
   // 输入框文本从 store 草稿派生，切换会话自动响应
@@ -147,11 +147,21 @@ export function InputBar() {
       setPlanMode(true);
       return;
     }
-    setPlanMode(false);
-    updateSetting(
+    const applyHigherMode = () => updateSetting(
       "permissionMode",
       choice === "yolo" ? "yolo" : choice === "auto" ? "acceptEdits" : "default",
     );
+    if (planMode) {
+      // Leaving an Agent-initiated plan downgrade is the user's explicit
+      // override: clear the server marker first, or the next request is clamped
+      // back to plan. Keep the plan UI if clearing fails.
+      void leaveAgentPlanMode().then((cleared) => {
+        if (cleared) applyHigherMode();
+      });
+      return;
+    }
+    setPlanMode(false);
+    applyHigherMode();
   };
 
   useEffect(() => {

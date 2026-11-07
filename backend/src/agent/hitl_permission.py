@@ -15,6 +15,22 @@ DECISION_ALLOW: str = "allow"
 DECISION_ASK: str = "ask"
 DECISION_DENY: str = "deny"
 
+ENTER_PLAN_MODE_TOOL_NAME: str = "enter_plan_mode"
+
+
+def is_mixed_enter_plan_batch(pending: list[dict]) -> bool:
+    """True when enter_plan_mode shares an AI message with other tool calls.
+
+    LangGraph runs one message's tool calls concurrently, so a write issued in
+    the same batch could finish before the downgrade mutates the context.
+    Deny the whole batch; the model must call enter_plan_mode alone first.
+    """
+    names = [
+        tc.get("name") for tc in pending
+        if type(tc) is dict and isinstance(tc.get("name"), str)
+    ]
+    return ENTER_PLAN_MODE_TOOL_NAME in names and len(names) > 1
+
 
 def evaluate_pending(pending: list[dict], permission_mode: str) -> str:
     """Return 'ask' / 'allow' / 'deny' via PermissionClassifier for all calls.
@@ -23,6 +39,8 @@ def evaluate_pending(pending: list[dict], permission_mode: str) -> str:
     industrial-tool-runtime PermissionClassifier (spec §HITL 权限中断). The
     classifier reads risk_level from the ToolSpec registered in ToolRouter.
     """
+    if is_mixed_enter_plan_batch(pending):
+        return DECISION_DENY
     from src.agent.core.toolkit.permission_classifier import PermissionClassifier
     from src.agent.exceptions import ToolContext
     from src.agent.request_context import active_tool_context

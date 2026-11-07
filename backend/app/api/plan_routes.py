@@ -1,17 +1,24 @@
-"""Versioned plan endpoints: latest/history, approve and reject."""
+"""Versioned plan endpoints: latest/history, approve/reject and Agent plan mode."""
 
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy.orm import Session as DBSession
 
 from app.api.dependencies import current_user_optional
 from app.api.session_owner import require_session_owner_if_bound
+from app.db import agent_mode_store, plan_store
 from app.db.database import get_db
 from app.db.models import Session as SessionModel
-from app.db import plan_store
 
 router = APIRouter(prefix="/api", tags=["plans"])
+
+
+class AgentPlanModeUpdate(BaseModel):
+    """The user side of the Agent plan-mode marker."""
+
+    enabled: bool
 
 
 def _ok(data: dict) -> dict:
@@ -40,6 +47,9 @@ def _decide(session_id: str, plan_id: str, action: str) -> dict:
         plan = plan_store.approve(session_id, plan_id) if action == "approve" else plan_store.reject(session_id, plan_id)
     except plan_store.PlanStateError as exc:
         raise _fail("PLAN_NOT_PENDING", "计划不存在或不是最新的待批准版本。", 409) from exc
+    if action == "approve":
+        # Approving is the user's explicit exit from plan mode into execution.
+        agent_mode_store.clear_plan_mode_requested(session_id)
     return _ok({"plan": plan})
 
 
@@ -84,3 +94,28 @@ def reject_plan(
 ) -> dict:
     _require_session(db, session_id, user)
     return _decide(session_id, plan_id, "reject")
+
+
+@router.post("/sessions/{session_id}/agent-plan-mode")
+def set_agent_plan_mode(
+    session_id: str,
+    payload: AgentPlanModeUpdate,
+    db: DBSession = Depends(get_db),
+    user: dict = Depends(current_user_optional),
+) -> dict:
+    """Set or clear the Agent's persisted plan-mode request for this session.
+
+    Clearing is the user's explicit override (the only way back to a higher
+    permission mode); setting it only ever means plan/read-only.
+    """
+    _require_session(db, session_id, user)
+    if payload.enabled:
+        agent_mode_store.request_plan_mode_in_db(db, session_id)
+    else:
+        agent_mode_store.clear_plan_mode_requested_in_db(db, session_id)
+    db.commit()
+    return _ok({
+        "plan_mode_requested": agent_mode_store.plan_mode_requested_in_db(
+            db, session_id,
+        ),
+    })
