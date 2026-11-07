@@ -78,7 +78,11 @@ function cycleTab(e: KeyboardEvent, dialog: HTMLElement | null) {
 }
 
 export default function ConfirmDialog() {
-  const pendingConfirm = useChatStore((s) => s.pendingConfirm);
+  // A confirmation belongs to the session whose run is paused; never show it
+  // over another session's conversation.
+  const pendingConfirm = useChatStore((s) =>
+    s.pendingConfirm && s.pendingConfirm.sessionId === s.activeSessionId ? s.pendingConfirm : null,
+  );
   const resumeAgent = useChatStore((s) => s.resumeAgent);
   const dialogRef = useRef<HTMLDivElement>(null);
   const denyBtnRef = useRef<HTMLButtonElement>(null);

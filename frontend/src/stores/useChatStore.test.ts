@@ -125,7 +125,7 @@ async function importStore() {
 describe("useChatStore", () => {
   it("sends the exact pending call ID before clearing the confirmation", async () => {
     const store = await importStore();
-    store.setState({ activeSessionId: "s1", _lastAgentPayload: { messages: [] }, pendingConfirm: { count: 1, calls: [{ name: "mcp__fixture__echo", args: { text: "synthetic" }, call_id: "exact-call", risk_level: "high" }] } });
+    store.setState({ activeSessionId: "s1", _lastAgentPayload: { messages: [] }, pendingConfirm: { count: 1, sessionId: "s1", calls: [{ name: "mcp__fixture__echo", args: { text: "synthetic" }, call_id: "exact-call", risk_level: "high" }] } });
     store.getState().resumeAgent("allow");
     expect(apiSSEBodies.at(-1)).toMatchObject({ decision: "allow", call_id: "exact-call" });
     expect(store.getState().pendingConfirm).toBeNull();
@@ -1119,7 +1119,7 @@ describe("useChatStore", () => {
       activeSessionId: "s1",
       streamingSessionId: "s1",
       isStreaming: false,
-      pendingConfirm: { count: 1, calls: [{ name: "write_file", args: {}, call_id: "stop-call", risk_level: "high" }] },
+      pendingConfirm: { count: 1, sessionId: "s1", calls: [{ name: "write_file", args: {}, call_id: "stop-call", risk_level: "high" }] },
       _lastAgentPayload: { messages: [{ role: "user", content: "停止" }] },
     });
 
@@ -1197,6 +1197,7 @@ describe("useChatStore", () => {
       isStreaming: false,
       pendingConfirm: {
         count: 1,
+        sessionId,
         calls: [{ name: "write_file", args: {}, call_id: "stop-retry-call", risk_level: "high" }],
       },
       _lastAgentPayload: { messages: [{ role: "user", content: userMessage.content }] },
@@ -1387,6 +1388,7 @@ describe("useChatStore", () => {
         isStreaming: false,
         pendingConfirm: {
           count: 1,
+          sessionId,
           calls: [{ name: "write_file", args: { path: "out.txt" }, call_id: "resume-marker-call", risk_level: "high" }],
         },
         _lastAgentPayload: { messages: [{ role: "user", content: "确认前的问题" }] },
@@ -1479,6 +1481,7 @@ describe("useChatStore", () => {
       isStreaming: false,
       pendingConfirm: {
         count: 1,
+        sessionId,
         calls: [{ name: "write_file", args: { path: "out.txt" }, call_id: "refresh-call", risk_level: "high" }],
       },
       _lastAgentPayload: { messages: [{ role: "user", content: "等待确认的问题" }] },

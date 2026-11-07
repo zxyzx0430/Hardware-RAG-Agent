@@ -284,6 +284,7 @@ describe("useChatStore run recovery", () => {
     expect(store.getState().pendingConfirm).toEqual({
       calls: [{ name: "write_file", args: { path: "main.c" }, call_id: "call-1", risk_level: "high" }],
       count: 1,
+      sessionId,
     });
     expect(store.getState()._lastAgentPayload).toBeNull();
 

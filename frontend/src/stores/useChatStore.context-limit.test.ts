@@ -163,7 +163,7 @@ describe("typed 256K context-limit error", () => {
       activeSessionId: sessionId,
       streamingSessionId: sessionId,
       _lastAgentPayload: { messages: [] } as ChatRequest,
-      pendingConfirm: { calls: [confirmCall], count: 1 },
+      pendingConfirm: { calls: [confirmCall], count: 1, sessionId },
     });
 
     const { container } = render(createElement(ChatArea));

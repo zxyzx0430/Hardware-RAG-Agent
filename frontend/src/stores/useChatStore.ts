@@ -181,7 +181,10 @@ interface ChatState {
   streamingStartTime: number | null;
   /** done 事件中携带的 usage 数据，onDone 时写入 Message */
   _pendingUsage: import("../types/session").TokenUsage | null;
-  streamingError: { code: string; message: string; detail: string } | null;
+  /** Error shown for the active session; mirrors streamingErrorBySession[activeSessionId]. */
+  streamingError: StreamingErrorInfo | null;
+  /** Per-session terminal error, so a background run's failure never leaks into another chat. */
+  streamingErrorBySession: Record<string, StreamingErrorInfo>;
   /** Context compression in progress — show "正在压缩上下文..." status banner */
   isCompressing: boolean;
   /** Compression status message from backend */
@@ -304,6 +307,13 @@ interface ChatState {
   hideStats: () => void;
 }
 
+/** A terminal chat error, kept per session. */
+interface StreamingErrorInfo {
+  code: string;
+  message: string;
+  detail: string;
+}
+
 /** HITL pending confirmation payload (v2-T4). */
 interface PendingConfirm {
   calls: Array<{
@@ -313,6 +323,8 @@ interface PendingConfirm {
     risk_level: "low" | "medium" | "high";
   }>;
   count: number;
+  /** Session that owns the paused run; the dialog only shows for it. */
+  sessionId: string;
 }
 
 /** Recovery R1: a run that ended without producing a complete answer. */
@@ -1050,6 +1062,26 @@ function _todoUpdatePatch(state: ChatState, sessionId: string, rawTodos: unknown
   };
 }
 
+/** Store or clear one session's terminal error; the visible field follows the active session. */
+function _withSessionStreamingError(
+  state: ChatState,
+  sessionId: string,
+  error: StreamingErrorInfo | null,
+): Partial<ChatState> {
+  const streamingErrorBySession = { ...state.streamingErrorBySession };
+  if (error) streamingErrorBySession[sessionId] = error;
+  else delete streamingErrorBySession[sessionId];
+  return {
+    streamingErrorBySession,
+    ...(state.activeSessionId === sessionId ? { streamingError: error } : {}),
+  };
+}
+
+function _sessionStreamingError(state: ChatState, sessionId: string): StreamingErrorInfo | null {
+  return state.streamingErrorBySession[sessionId]
+    ?? (state.activeSessionId === sessionId ? state.streamingError : null);
+}
+
 /**
  * Apply one chat SSE event to the session that owns the run.
  * Shared by the initial POST stream, gap replays and refresh reattachment.
@@ -1068,13 +1100,11 @@ function _applyChatEvent(event: ChatSSEEvent, requestSessionId: string, terminal
         : (errPayload.message ?? "未知错误");
     terminal.errorMessage = friendlyMessage;
     getLog()("error", "chat", `SSE 错误: ${friendlyMessage}`);
-    useChatStore.setState({
-      streamingError: {
-        code,
-        message: friendlyMessage,
-        detail: errPayload.detail ?? "",
-      },
-    });
+    useChatStore.setState((s) => _withSessionStreamingError(s, requestSessionId, {
+      code,
+      message: friendlyMessage,
+      detail: errPayload.detail ?? "",
+    }));
     if (code === "INTERRUPTED") {
       _markRunInterrupted(requestSessionId, event.run_id, friendlyMessage);
     }
@@ -1415,11 +1445,12 @@ function _applyChatEvent(event: ChatSSEEvent, requestSessionId: string, terminal
       }
 
       case "tool_confirm_required": {
-        // v2-T4: Agent paused for HITL — show ConfirmDialog
+        // v2-T4: Agent paused for HITL — show ConfirmDialog for this session only
         return {
           pendingConfirm: {
             calls: (sse.calls ?? []) as PendingConfirm["calls"],
             count: sse.count ?? (sse.calls?.length ?? 0),
+            sessionId: sid,
           },
         };
       }
@@ -1438,14 +1469,12 @@ function _finalizeChatStream(sessionId: string, terminal: ChatTerminalState, sta
   const wasPlanMode = useChatStore.getState().planMode;
 
   if (terminal.outcome === "error") {
-    if (!useChatStore.getState().streamingError) {
-      useChatStore.setState({
-        streamingError: {
-          code: "INTERNAL_ERROR",
-          message: terminal.errorMessage,
-          detail: "",
-        },
-      });
+    if (!_sessionStreamingError(useChatStore.getState(), sessionId)) {
+      useChatStore.setState((s) => _withSessionStreamingError(s, sessionId, {
+        code: "INTERNAL_ERROR",
+        message: terminal.errorMessage,
+        detail: "",
+      }));
     }
     const state = useChatStore.getState();
     if (state.isStreaming || state.streamingSessionId || state.currentSseRequest) {
@@ -1517,6 +1546,7 @@ function _finalizeChatStream(sessionId: string, terminal: ChatTerminalState, sta
     // 只有当前活跃会话是请求会话时，才修改 isStreaming/currentSseRequest
     if (isActive) {
       return {
+        ..._withSessionStreamingError(s, sid, null),
         isStreaming: false,
         streamingSessionId: null,
         streamingStartTime: null,
@@ -1540,6 +1570,7 @@ function _finalizeChatStream(sessionId: string, terminal: ChatTerminalState, sta
       // 否则发送按钮会卡在 isStreaming=true 状态（用户切走后又切回的场景）
       const shouldClearStreaming = s.streamingSessionId === sid;
       return {
+        ..._withSessionStreamingError(s, sid, null),
         sessionMessages: updatedSM,
         backgroundSseRequests: newBg,
         ...(shouldClearStreaming ? {
@@ -1604,8 +1635,8 @@ function _failChatStream(sessionId: string, terminal: ChatTerminalState, err: Er
     .test(err.message);
   // A 401/403 must read as an authentication problem (and point at the login
   // hint), not as a generic dropped connection.
-  useChatStore.setState({
-    streamingError: isAuthError
+  useChatStore.setState((s) => ({
+    ..._withSessionStreamingError(s, sessionId, isAuthError
       ? {
           code: "AUTH_FAILED",
           message: "认证失败：请先登录或检查访问令牌后重试。",
@@ -1615,9 +1646,9 @@ function _failChatStream(sessionId: string, terminal: ChatTerminalState, err: Er
           code: "NETWORK_ERROR",
           message: err.message,
           detail: "",
-        },
-    needsApiKey: isAuthError ? true : useChatStore.getState().needsApiKey,
-  });
+        }),
+    needsApiKey: isAuthError ? true : s.needsApiKey,
+  }));
   // SubTask 8.5: 清理 backgroundSseRequests 对应条目（后台流错误也要清理）
   useChatStore.setState((s) => {
     if (!s.backgroundSseRequests.has(sessionId)) return {};
@@ -1837,11 +1868,15 @@ export const useChatStore = create<ChatState>((set, get) => {
       return;
     }
     if (evt.type === "tool_confirm_required") {
-      if (get().activeSessionId === sid) set({ pendingConfirm: { calls: evt.calls, count: evt.count } });
+      set({ pendingConfirm: { calls: evt.calls, count: evt.count, sessionId: sid } });
       return;
     }
-    if (evt.type === "error" && get().streamingSessionId === sid) {
-      set({ streamingError: { code: evt.code ?? "ERROR", message: evt.message, detail: evt.detail ?? "" } });
+    if (evt.type === "error") {
+      set((s) => _withSessionStreamingError(s, sid, {
+        code: evt.code ?? "ERROR",
+        message: evt.message,
+        detail: evt.detail ?? "",
+      }));
     }
   }
 
@@ -2047,9 +2082,16 @@ export const useChatStore = create<ChatState>((set, get) => {
           _lastAgentPayload: outcome === "awaiting_confirmation" ? s._lastAgentPayload : null,
           // A terminal error wins over any confirmation request emitted earlier in this resume.
           ...(outcome === "error" ? { pendingConfirm: null } : {}),
-          streamingError: outcome === "error"
-            ? (s.streamingError ?? { code: "ERROR", message: errorMessage || "Agent 恢复未能完成", detail: "" })
-            : outcome === "success" || outcome === "stopped" ? null : s.streamingError,
+          ...(outcome === "awaiting_confirmation"
+            ? {}
+            : _withSessionStreamingError(
+                s,
+                sid,
+                outcome === "error"
+                  ? (_sessionStreamingError(s, sid)
+                      ?? { code: "ERROR", message: errorMessage || "Agent 恢复未能完成", detail: "" })
+                  : null,
+              )),
         } : {}),
       };
     });
@@ -2166,7 +2208,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         // Rebuild the HITL card from persisted approvals; never invent one.
         const calls = pendingApprovalsToCalls(runState?.pending_approvals);
         if (calls.length > 0) {
-          set({ pendingConfirm: { calls, count: calls.length } });
+          set({ pendingConfirm: { calls, count: calls.length, sessionId } });
         }
         _markRunStatus(sessionId, record.runId, "awaiting_confirmation");
         if (!get().streamingSessionId) set({ streamingSessionId: sessionId });
@@ -2263,6 +2305,7 @@ export const useChatStore = create<ChatState>((set, get) => {
   streamingStartTime: null,
   _pendingUsage: null,
   streamingError: null,
+  streamingErrorBySession: {},
   isCompressing: false,
   compressingMessage: "",
   currentSseRequest: null,
@@ -2475,18 +2518,28 @@ export const useChatStore = create<ChatState>((set, get) => {
     const nextFv = { ...s.sessionFileViewerSource };
     const nextHl = { ...s.sessionHighlightSourceId };
     const nextAtt = { ...s.sessionAttachments };
+    const nextErrors = { ...s.streamingErrorBySession };
     delete nextFv[sessionId];
     delete nextHl[sessionId];
     delete nextAtt[sessionId];
-    return { sessionFileViewerSource: nextFv, sessionHighlightSourceId: nextHl, sessionAttachments: nextAtt };
+    delete nextErrors[sessionId];
+    return {
+      sessionFileViewerSource: nextFv,
+      sessionHighlightSourceId: nextHl,
+      sessionAttachments: nextAtt,
+      streamingErrorBySession: nextErrors,
+      ...(s.pendingConfirm?.sessionId === sessionId ? { pendingConfirm: null } : {}),
+      ...(s.activeSessionId === sessionId ? { streamingError: null } : {}),
+    };
   }),
 
   resumeAgent: (decision) => {
     const payload = get()._lastAgentPayload;
-    const sid = get().streamingSessionId || get().activeSessionId;
+    const confirm = get().pendingConfirm;
+    const sid = confirm?.sessionId || get().streamingSessionId || get().activeSessionId;
     const runRecord = get().activeRuns[sid] ?? getActiveRun(sid);
     const runId = runRecord?.runId;
-    const callId = get().pendingConfirm?.calls[0]?.call_id;
+    const callId = confirm?.calls[0]?.call_id;
     // After a refresh the raw request body is gone; the persisted run and its
     // pending approval are enough for the backend to resume safely.
     if (!payload && !(runId && callId)) {
@@ -2494,19 +2547,19 @@ export const useChatStore = create<ChatState>((set, get) => {
       useToastStore.getState().showWarning("没有可继续的 Agent 会话");
       return;
     }
-    set({
+    set((s) => ({
+      ..._withSessionStreamingError(s, sid, null),
       pendingConfirm: null,
-      streamingError: null,
       isCompressing: false,
       streamingContent: "",
       streamingSteps: [],
       streamingSources: [],
       streamingTodos: [],
-      streamingTodosSeen: { ...get().streamingTodosSeen, [sid]: false },
+      streamingTodosSeen: { ...s.streamingTodosSeen, [sid]: false },
       isStreaming: true,
       streamingSessionId: sid,
       streamingStartTime: Date.now(),
-    });
+    }));
     const controller = new AbortController();
     const resumeSteps: ActivityStep[] = [];
     const resumeTerminal: ResumeTerminalState = { outcome: "running", decision };
@@ -2652,8 +2705,14 @@ export const useChatStore = create<ChatState>((set, get) => {
       let backendMessages = data?.messages || [];
       _rememberConfirmedBackendMessages(sessionId, backendMessages);
 
-      // Do not persist a snapshot while a stream is still changing it.
-      if (get().isStreaming && get().streamingSessionId === sessionId) {
+      // Do not overwrite a live stream's own messages. A stale isStreaming flag
+      // without a controller (for example after a crash) must not block the
+      // backend snapshot from replacing the local cache.
+      const state = get();
+      const liveStreamForSession = state.isStreaming
+        && state.streamingSessionId === sessionId
+        && (state.currentSseRequest !== null || state.backgroundSseRequests.has(sessionId));
+      if (liveStreamForSession) {
         getLog()("info", "chat", `跳过 fetchMessages: 会话 ${sessionId} 正在流式中`);
         return;
       }
@@ -3001,7 +3060,8 @@ export const useChatStore = create<ChatState>((set, get) => {
   setActiveSession: (id) => {
     const { activeSessionId, messages, sessionMessages, isStreaming,
             streamingSessionId, currentSseRequest, streamingContent,
-            streamingSteps, backgroundSseRequests } = get();
+            streamingSteps, backgroundSseRequests,
+            streamingError, streamingErrorBySession } = get();
     if (id === activeSessionId) return;
     const nextKbScope = _loadKbScope(id);
     getLog()("info", "chat", `切换会话: ${activeSessionId} → ${id}`);
@@ -3070,6 +3130,11 @@ export const useChatStore = create<ChatState>((set, get) => {
       getLog()("info", "chat", `切回流式会话 ${id}，恢复 content (${restoredContent.length} chars)`);
     }
 
+    // A terminal error belongs to the session that produced it. Keep the
+    // outgoing session's error with it and show only the target's own error.
+    const nextErrors = { ...streamingErrorBySession };
+    if (streamingError && activeSessionId) nextErrors[activeSessionId] = streamingError;
+
     set({
       activeSessionId: id,
       // Plan mode is a per-turn toggle; switching sessions always returns to the
@@ -3079,6 +3144,8 @@ export const useChatStore = create<ChatState>((set, get) => {
       kbScopeIssue: nextKbScope.issue,
       messages: loadedMessages,
       sessionMessages: updatedSessionMessages,
+      streamingError: nextErrors[id] ?? null,
+      streamingErrorBySession: nextErrors,
       isStreaming: hasBackgroundStream,
       streamingContent: restoredContent,
       streamingSteps: restoredSteps,
@@ -3244,6 +3311,7 @@ export const useChatStore = create<ChatState>((set, get) => {
       const sessionMessages = { ...state.sessionMessages, [activeSessionId]: nextMessages };
       if (state.activeSessionId !== activeSessionId) return { sessionMessages };
       return {
+        ..._withSessionStreamingError(state, activeSessionId, null),
         messages: nextMessages,
         isStreaming: true,
         streamingContent: "",
@@ -3261,7 +3329,6 @@ export const useChatStore = create<ChatState>((set, get) => {
         streamingSessionId: activeSessionId,
         streamingStartTime: Date.now(),
         _pendingUsage: null,
-        streamingError: null,
         sessionMessages,
       };
     });
@@ -3364,10 +3431,14 @@ export const useChatStore = create<ChatState>((set, get) => {
       // 同步异常（如构建请求体失败）也要让用户看到 ErrorBlock，不能只 console.warn
       const errMsg = err instanceof Error ? err.message : String(err);
       getLog()("error", "chat", `sendMessage 异常: ${errMsg}`);
-      set({
+      set((s) => ({
         isStreaming: false,
-        streamingError: { code: "INTERNAL_ERROR", message: errMsg, detail: "" },
-      });
+        ..._withSessionStreamingError(s, activeSessionId, {
+          code: "INTERNAL_ERROR",
+          message: errMsg,
+          detail: "",
+        }),
+      }));
     }
   },
 

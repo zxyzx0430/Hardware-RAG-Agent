@@ -304,6 +304,14 @@ export function AppRoot() {
     if (folded.length > 0) showLayoutFoldNotice();
   };
 
+  // Initialize the session list from this component's store instance. The
+  // session panel does the same, but it can end up bound to a different module
+  // instance (dev-server HMR split); without this the gate below never opens
+  // and the active session's messages are not reloaded after a refresh.
+  useEffect(() => {
+    void useSessionStore.getState().initSessions();
+  }, []);
+
   useEffect(() => {
     if (!sessionsInitialized) return;
     const exists = sessions.some((s) => s.id === activeSessionId);
