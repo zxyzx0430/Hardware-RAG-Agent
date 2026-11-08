@@ -1,4 +1,4 @@
-"""System-prompt blocks for plan mode and approved-plan execution."""
+"""System-prompt blocks for plan authoring, plan mode and approved-plan execution."""
 
 from __future__ import annotations
 
@@ -21,6 +21,18 @@ After `submit_plan` succeeds, stop and wait for the user's decision. A plan is a
 - A plan-mode turn has a bounded tool-output budget (~48000 estimated tokens across all tool calls). If a scan is large or the budget is nearly used, stop and submit a plan: put missing information in `open_questions` and name the directory or file the user should narrow down, instead of repeating broad scans.
 - Never retry a failed broad scan with the same scope; narrow it or ask the user in `open_questions`.
 - Once you can name the files, ordered steps and verification for the task, call `submit_plan`; do not keep scanning for completeness."""
+
+
+_PLAN_AUTHORING_PROMPT = """## Plan authoring (every permission mode)
+When the user asks for a plan, a proposal, a design, or to think it through before changing anything, research with read-only tools first, then call `submit_plan` exactly once with a complete plan. Do not write the plan as a normal assistant message, and put every unresolved question in `open_questions`.
+`submit_plan` works in every permission mode: do NOT call `enter_plan_mode` just to submit a plan. After `submit_plan` succeeds, stop and wait for the user's decision; never start executing on your own.
+If the user only asks a simple informational question, or explicitly tells you to just do the task, answer or proceed without forcing a plan.
+Plan template: `title`; `summary` (conclusion first; Markdown allowed); `steps` (1-12, each with title/detail/verification; detail and verification may use Markdown); `risks`; `open_questions`."""
+
+
+def build_plan_authoring_prompt() -> str:
+    """Return the plan-authoring section appended in every permission mode."""
+    return _PLAN_AUTHORING_PROMPT
 
 
 def build_plan_mode_prompt() -> str:

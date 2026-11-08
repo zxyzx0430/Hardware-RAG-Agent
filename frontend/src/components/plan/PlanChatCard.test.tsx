@@ -60,6 +60,7 @@ describe("PlanChatCard", () => {
     expect(screen.getByRole("button", { name: "取消" })).toBeTruthy();
     expect(screen.getByText(/plan-v1\.md/)).toBeTruthy();
     expect(mocks.appState.setRightPanelOpen).toHaveBeenCalledWith(true);
+    expect(mocks.appState.setRightMode).toHaveBeenCalledWith("content");
     expect(mocks.appState.setRightContentTab).toHaveBeenCalledWith("s1", "plan");
   });
 
@@ -72,12 +73,12 @@ describe("PlanChatCard", () => {
     await waitFor(() => expect(mocks.chatState.executeApprovedPlan).toHaveBeenCalled());
   });
 
-  it("keeps plan mode when asking for more information", () => {
+  it("keeps the current permission mode when asking for more information", () => {
     render(<PlanChatCard />);
 
     fireEvent.click(screen.getByRole("button", { name: "补充信息" }));
 
-    expect(mocks.chatState.setPlanMode).toHaveBeenCalledWith(true);
+    expect(mocks.chatState.setPlanMode).not.toHaveBeenCalled();
     expect(mocks.toastState.showInfo).toHaveBeenCalled();
   });
 

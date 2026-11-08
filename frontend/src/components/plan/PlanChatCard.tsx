@@ -11,7 +11,6 @@ export function PlanChatCard() {
   const approvePlan = useChatStore((s) => s.approvePlan);
   const rejectPlan = useChatStore((s) => s.rejectPlan);
   const executeApprovedPlan = useChatStore((s) => s.executeApprovedPlan);
-  const setPlanMode = useChatStore((s) => s.setPlanMode);
   const setRightPanelOpen = useAppStore((s) => s.setRightPanelOpen);
   const setRightMode = useAppStore((s) => s.setRightMode);
   const setRightContentTab = useAppStore((s) => s.setRightContentTab);
@@ -53,7 +52,6 @@ export function PlanChatCard() {
   };
 
   const supplement = () => {
-    setPlanMode(true);
     useToastStore.getState().showInfo("请补充信息，发送后会生成新的计划版本");
     requestAnimationFrame(() => {
       document.querySelector<HTMLTextAreaElement>('textarea[placeholder*="向硬件文档提问"]')?.focus();

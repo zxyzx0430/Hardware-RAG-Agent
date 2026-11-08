@@ -54,25 +54,46 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("PlanPanel", () => {
-  it("renders the plan title, summary, numbered steps, risks and open questions as text", () => {
+  it("renders the plan as markdown headings, lists and bold step titles", () => {
     const plan = makePlan({ title: "<script>alert(1)</script>" });
     useChatStore.setState({ sessionPlans: { s1: plan } });
 
     const { container } = render(<PlanPanel />);
 
-    expect(screen.getByText("<script>alert(1)</script>")).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 2, name: "<script>alert(1)</script>" })).toBeTruthy();
     expect(container.querySelector("script")).toBeNull();
     expect(screen.getByText(plan.summary)).toBeTruthy();
-    expect(screen.getByText("01")).toBeTruthy();
-    expect(screen.getByText("02")).toBeTruthy();
-    expect(screen.getByText("Inspect datasheet")).toBeTruthy();
-    expect(screen.getByText("Confirm the 7-bit address.")).toBeTruthy();
-    expect(screen.getByText("Address is 0x68")).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 3, name: "步骤" })).toBeTruthy();
+    const steps = container.querySelectorAll(".plan-panel-markdown ol > li");
+    expect(steps).toHaveLength(2);
+    expect(steps[0].textContent).toContain("Inspect datasheet");
+    expect(steps[0].textContent).toContain("Confirm the 7-bit address.");
+    expect(steps[0].textContent).toContain("Address is 0x68");
     expect(screen.getByText("Bus contention with the EEPROM")).toBeTruthy();
     expect(screen.getByText("Is the sensor externally powered?")).toBeTruthy();
     expect(screen.getByText("已批准")).toBeTruthy();
     expect(screen.getAllByText(/v3/).length).toBeGreaterThan(0);
     expect(screen.getByText(/run_42/)).toBeTruthy();
+  });
+
+  it("renders inline formatting, tables and inline code from plan fields", () => {
+    const plan = makePlan({
+      summary: "**结论**：先读 `0x68` 手册。\n\n| 引脚 | 电平 |\n| --- | --- |\n| SDA | 3.3V |",
+      steps: [{
+        title: "Inspect datasheet",
+        detail: "确认地址 `0x68`",
+        verification: "运行 `i2cdetect`",
+      }],
+    });
+    useChatStore.setState({ sessionPlans: { s1: plan } });
+
+    const { container } = render(<PlanPanel />);
+
+    expect(container.querySelector(".plan-panel-markdown h2")).toBeTruthy();
+    expect(container.querySelectorAll(".plan-panel-markdown h3")).toHaveLength(4);
+    expect(container.querySelector(".plan-panel-markdown strong")?.textContent).toBe("结论");
+    expect(container.querySelector(".plan-panel-markdown table")).toBeTruthy();
+    expect(container.querySelectorAll(".plan-panel-markdown code").length).toBeGreaterThanOrEqual(3);
   });
 
   it("shows the backend execution outcome and note when present", () => {

@@ -14,7 +14,7 @@ from app.db.models import Session as SessionModel
 from app.db import plan_store
 from app.db.todo_store import list_todos
 from src.agent.exceptions import ToolContext
-from src.agent.plan_prompt import build_approved_plan_prompt, build_plan_mode_prompt
+from src.agent.plan_prompt import build_approved_plan_prompt
 
 PAYLOAD = {
     "title": "Bring up the board",
@@ -151,14 +151,6 @@ def test_approved_prompt_is_not_a_permission_grant(factory):
     assert "NOT a permission grant" in prompt
     assert "Bring up the board" in prompt
     assert len(prompt) < 5000
-
-
-def test_plan_mode_prompt_is_read_only():
-    prompt = build_plan_mode_prompt()
-
-    assert "read-only" in prompt.lower()
-    assert "submit_plan" in prompt
-    assert "not a permission grant" in prompt.lower()
 
 
 def test_final_filter_keeps_submit_and_drops_writes():

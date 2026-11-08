@@ -482,6 +482,7 @@ const zh: Record<string, string> = {
   planApproving: '批准中…',
   planRejecting: '拒绝中…',
   planSteps: '步骤',
+  planSummary: '摘要',
   planStepVerification: '验证',
   planRisks: '风险',
   planOpenQuestions: '待确认问题',

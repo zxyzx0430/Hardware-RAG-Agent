@@ -1,4 +1,4 @@
-"""SubmitPlanTool: plan-mode-only creation, validation and idempotency."""
+"""SubmitPlanTool: plan creation in every mode, validation and idempotency."""
 
 import pytest
 from sqlalchemy import create_engine, event
@@ -59,13 +59,14 @@ async def test_submit_plan_in_plan_mode(factory):
     assert plan_store.latest("s1")["id"] == result["plan"]["id"]
 
 
+@pytest.mark.parametrize("mode", ["default", "acceptEdits", "yolo", "bypassPermissions", "plan"])
 @pytest.mark.asyncio
-async def test_submit_plan_rejected_outside_plan_mode(factory):
-    result = await SubmitPlanTool().execute(ARGS, _ctx(mode="default"))
+async def test_submit_plan_works_in_every_permission_mode(factory, mode):
+    result = await SubmitPlanTool().execute(ARGS, _ctx(mode=mode, run_id=f"r-{mode}"))
 
-    assert result["_plan_update"] is False
-    assert result["plan"] is None
-    assert plan_store.latest("s1") is None
+    assert result["_plan_update"] is True
+    assert result["plan"]["status"] == "pending"
+    assert plan_store.latest("s1")["id"] == result["plan"]["id"]
 
 
 @pytest.mark.asyncio

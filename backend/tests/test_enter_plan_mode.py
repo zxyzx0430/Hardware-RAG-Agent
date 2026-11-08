@@ -132,16 +132,17 @@ async def test_downgrade_denies_writes_and_keeps_reads_and_plan_submission(facto
 
 
 @pytest.mark.asyncio
-async def test_submit_plan_is_rejected_before_and_works_after_downgrade(factory):
+async def test_submit_plan_works_before_and_after_downgrade(factory):
     ctx = ToolContext(permission_mode="yolo", session_id="s1", run_id="r1")
 
     before = await SubmitPlanTool().execute(ARGS, ctx)
     await EnterPlanModeTool().execute({}, ctx)
     after = await SubmitPlanTool().execute(ARGS, ctx)
 
-    assert before["_plan_update"] is False
+    assert before["_plan_update"] is True
     assert after["_plan_update"] is True
     assert after["plan"]["session_id"] == "s1"
+    assert after["plan"]["id"] == before["plan"]["id"]
 
 
 def test_enter_plan_mode_is_not_exposed_in_plan_mode():

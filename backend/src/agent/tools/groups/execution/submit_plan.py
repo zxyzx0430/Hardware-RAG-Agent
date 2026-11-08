@@ -1,4 +1,4 @@
-"""SubmitPlanTool — submit one versioned plan during read-only plan mode."""
+"""SubmitPlanTool — submit one versioned plan for user approval."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ from pydantic import BaseModel, Field
 
 from src.agent.core.toolkit.tool_spec import RiskLevel, ToolSpec
 from src.agent.exceptions import ToolContext
-from src.agent.plan_policy import PLAN_MODE
 
 logger = logging.getLogger(__name__)
 
@@ -21,15 +20,15 @@ class PlanStepArgs(BaseModel):
     """One ordered plan step."""
 
     title: str = Field(description="步骤标题（一句话）")
-    detail: str = Field(default="", description="可选的执行细节")
-    verification: str = Field(default="", description="可选的验证方式")
+    detail: str = Field(default="", description="可选的执行细节，支持 Markdown")
+    verification: str = Field(default="", description="可选的验证方式，支持 Markdown")
 
 
 class SubmitPlanArgs(BaseModel):
     """Plan payload submitted for user approval."""
 
     title: str = Field(description="计划标题")
-    summary: str = Field(description="计划摘要")
+    summary: str = Field(description="计划摘要，结论先行，支持 Markdown")
     steps: list[PlanStepArgs] = Field(description="有序步骤，1-12 条")
     risks: list[str] = Field(default_factory=list, description="风险列表")
     open_questions: list[str] = Field(default_factory=list, description="待确认问题")
@@ -40,8 +39,8 @@ class SubmitPlanTool(ToolSpec):
 
     name: str = "submit_plan"
     description: str = (
-        "在计划模式中提交一份带步骤的计划，交给用户批准。只允许在 plan mode 调用；"
-        "提交后停止执行，等待用户批准或拒绝。计划不是工具授权。"
+        "提交一份带步骤的计划，交给用户批准。任何权限模式下都可调用，不需要先进入 plan mode；"
+        "提交成功后停止执行，等待用户批准或拒绝。计划不是工具授权。"
     )
     args_schema: type = SubmitPlanArgs
 
@@ -51,8 +50,6 @@ class SubmitPlanTool(ToolSpec):
 
     async def execute(self, args: dict[str, Any], ctx: ToolContext) -> dict:
         """Validate and persist a plan version; never start execution."""
-        if ctx.permission_mode != PLAN_MODE:
-            return _error("submit_plan is only available in plan mode")
         session_id = getattr(ctx, "session_id", "") or _DEFAULT_SESSION_ID
         if session_id == _DEFAULT_SESSION_ID:
             return _error("submit_plan requires a real session")

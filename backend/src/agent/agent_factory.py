@@ -128,6 +128,15 @@ class AgentWriterBinding:
 # Agent construction
 # ═══════════════════════════════════════════
 
+
+def _append_plan_prompts(prompt: str, plan_mode: bool) -> str:
+    """Append plan authoring guidance in every mode; plan rules only in plan mode."""
+    from src.agent.plan_prompt import build_plan_authoring_prompt, build_plan_mode_prompt
+
+    prompt = f"{prompt}\n\n{build_plan_authoring_prompt()}"
+    return f"{prompt}\n\n{build_plan_mode_prompt()}" if plan_mode else prompt
+
+
 async def create_hardware_agent_from_config(config: AgentConfig) -> Any:
     """Build a compiled agent from an AgentConfig.
 
@@ -201,9 +210,7 @@ async def create_hardware_agent_from_config(config: AgentConfig) -> Any:
                 prompt = f"{prompt}\n\n## Hardware profile hint\n{hardware_hint}"
             if not config.plan_mode and todo_block:
                 prompt = f"{prompt}\n\n{todo_block}"
-            if config.plan_mode:
-                from src.agent.plan_prompt import build_plan_mode_prompt
-                prompt = f"{prompt}\n\n{build_plan_mode_prompt()}"
+            prompt = _append_plan_prompts(prompt, config.plan_mode)
             if config.approved_plan_text:
                 prompt = f"{prompt}\n\n{config.approved_plan_text}"
             system_prompt = prompt

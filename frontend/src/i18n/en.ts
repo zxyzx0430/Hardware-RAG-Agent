@@ -482,6 +482,7 @@ const en: Record<string, string> = {
   planApproving: 'Approving…',
   planRejecting: 'Rejecting…',
   planSteps: 'Steps',
+  planSummary: 'Summary',
   planStepVerification: 'Verification',
   planRisks: 'Risks',
   planOpenQuestions: 'Open Questions',

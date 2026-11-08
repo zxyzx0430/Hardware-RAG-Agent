@@ -278,65 +278,55 @@
   font-size: 11px; color: var(--muted-fg);
   font-family: var(--font-mono);
 }
-.plan-panel-title {
-  margin: 0;
-  font-size: 15px; font-weight: 650; line-height: 1.4; color: var(--fg);
+/* Markdown plan body: fixed template hierarchy stays readable in the side panel. */
+.plan-panel-markdown { min-width: 0; }
+.plan-panel-markdown .markdown-body {
+  font-size: 12.5px; line-height: 1.7; color: var(--fg);
 }
-.plan-panel-summary {
-  margin: 0;
-  font-size: 12.5px; line-height: 1.65; color: var(--fg);
-  white-space: pre-wrap;
+.plan-panel-markdown .markdown-body h1 {
+  margin: 0 0 10px; padding: 0; border: 0;
+  font-size: 16px; font-weight: 650; line-height: 1.4;
 }
-.plan-section {
-  display: flex; flex-direction: column; gap: 8px;
-  padding-top: 10px;
+.plan-panel-markdown .markdown-body h2 {
+  margin: 0 0 10px; padding: 0; border: 0;
+  font-size: 15px; font-weight: 650; line-height: 1.4;
+}
+.plan-panel-markdown .markdown-body h3 {
+  margin: 18px 0 8px; padding-top: 10px;
   border-top: 1px solid var(--border);
+  font-size: 13px; font-weight: 650; line-height: 1.4; color: var(--fg);
 }
-.plan-section-title {
-  margin: 0;
-  font-size: 11px; font-weight: 700; letter-spacing: 0.04em;
-  text-transform: uppercase; color: var(--muted-fg);
+.plan-panel-markdown .markdown-body h4 {
+  margin: 12px 0 6px; font-size: 12.5px; font-weight: 650;
 }
-.plan-steps {
-  display: flex; flex-direction: column; gap: 8px;
-  margin: 0; padding: 0; list-style: none;
+.plan-panel-markdown .markdown-body p { margin: 0 0 8px; }
+.plan-panel-markdown .markdown-body ul,
+.plan-panel-markdown .markdown-body ol {
+  margin: 0 0 8px; padding-left: 18px;
 }
-.plan-step {
-  display: flex; align-items: flex-start; gap: 8px;
-  padding: 8px 10px;
-  border-radius: var(--radius);
-  background: var(--card); border: 1px solid var(--border);
+.plan-panel-markdown .markdown-body ul { list-style: disc outside; }
+.plan-panel-markdown .markdown-body ol { list-style: decimal outside; }
+.plan-panel-markdown .markdown-body li::marker { color: var(--muted-fg); }
+.plan-panel-markdown .markdown-body li { margin: 4px 0; }
+.plan-panel-markdown .markdown-body li > p { margin: 0 0 6px; }
+.plan-panel-markdown .markdown-body strong { font-weight: 650; color: var(--fg); }
+.plan-panel-markdown .markdown-body .inline-code,
+.plan-panel-markdown .markdown-body code:not([class*="language-"]) {
+  padding: 1px 5px; border-radius: var(--radius-sm);
+  background: var(--muted); border: 1px solid var(--border);
+  font-size: 0.92em; font-family: var(--font-mono);
 }
-.plan-step-number {
-  display: inline-flex; align-items: center; justify-content: center;
-  min-width: 20px; height: 20px;
-  border-radius: var(--radius-sm);
-  background: var(--muted); color: var(--muted-fg);
-  font-size: 11px; font-weight: 700; font-family: var(--font-mono);
-  flex-shrink: 0;
+.plan-panel-markdown .markdown-body .table-wrapper { overflow-x: auto; margin: 8px 0; }
+.plan-panel-markdown .markdown-body table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+.plan-panel-markdown .markdown-body th,
+.plan-panel-markdown .markdown-body td {
+  padding: 6px 8px; border: 1px solid var(--border); text-align: left;
 }
-.plan-step-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
-.plan-step-title { font-size: 12.5px; font-weight: 600; line-height: 1.45; color: var(--fg); }
-.plan-step-detail {
-  font-size: 12px; line-height: 1.6; color: var(--muted-fg);
-  white-space: pre-wrap;
-}
-.plan-step-verification {
-  font-size: 11.5px; line-height: 1.5; color: var(--fg);
-  padding: 4px 8px;
-  border-radius: var(--radius-sm);
-  background: var(--muted);
-}
-.plan-step-verification-label {
-  display: inline-block;
-  margin-right: 6px;
-  font-size: 10px; font-weight: 700; letter-spacing: 0.04em;
-  text-transform: uppercase; color: var(--muted-fg);
-}
-.plan-list {
-  display: flex; flex-direction: column; gap: 4px;
-  margin: 0; padding-left: 18px;
-  font-size: 12px; line-height: 1.6; color: var(--fg);
+.plan-panel-markdown .markdown-body th { background: var(--muted); font-weight: 650; }
+.plan-panel-markdown .markdown-body blockquote {
+  margin: 8px 0; padding: 6px 12px;
+  border-left: 3px solid var(--primary); background: var(--blockquote-bg);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
 }
 .plan-meta {
   display: flex; flex-direction: column; gap: 3px;
