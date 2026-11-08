@@ -11,6 +11,7 @@ import { renderMessageContent as renderContent } from "../../utils/content";
 import { shouldShowHistoryPagination } from "../../utils/chatHistory";
 import ActivityBlock from "./ActivityBlock";
 import ConfirmDialog from "./ConfirmDialog";
+import RunStatusBar from "./RunStatusBar";
 import { UserMessageRow } from "./UserMessageRow";
 import { AssistantMessageRow } from "./AssistantMessageRow";
 import { LoadingState } from "./LoadingState";
@@ -402,12 +403,27 @@ export function ChatArea() {
     </div>
   ) : null;
 
+  // Visible run lifecycle for the active session; reuses the existing source
+  // panel instead of opening a second conversation.
+  const runStatusBar = (
+    <RunStatusBar
+      sessionId={activeSessionId}
+      onOpenSource={(sourceId, messageId) => {
+        const fallbackId = [...useChatStore.getState().messages]
+          .reverse()
+          .find((message) => message.role === "assistant")?.id ?? "";
+        openSource(sourceId, messageId ?? fallbackId);
+      }}
+    />
+  );
+
   // 防御性处理：流式进行中但 messages 为空时（状态同步异常），显示流式占位
   if (!messages.length) {
     // 加载中（fetchMessages 期间无本地缓存）：显示骨架屏，而非 EmptyState
     if (isLoadingMessages) {
       return (
         <div className="chat-scroll" id="chatScroll" ref={scrollRef} onScroll={handleScroll} style={{ fontSize: chatFontSize }}>
+          {runStatusBar}
           <LoadingState />
         </div>
       );
@@ -415,6 +431,7 @@ export function ChatArea() {
     if (isStreaming && streamingSteps.length > 0) {
       return (
         <div className="chat-scroll" id="chatScroll" ref={scrollRef} onScroll={handleScroll} style={{ fontSize: chatFontSize }}>
+          {runStatusBar}
           {historyPagination}
           <div className="msg-row" id="msg-streaming-placeholder">
             <div className="msg-avatar bot"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6v6H9z"/></svg></div>
@@ -429,12 +446,14 @@ export function ChatArea() {
     if (pagedHistoryStatus?.loading && pagedHistoryStatus.pagesLoaded === 0) {
       return (
         <div className="chat-scroll" id="chatScroll" ref={scrollRef} onScroll={handleScroll} style={{ fontSize: chatFontSize }}>
+          {runStatusBar}
           <LoadingState />
         </div>
       );
     }
     return (
       <div className="chat-scroll" id="chatScroll" ref={scrollRef} onScroll={handleScroll} style={{ fontSize: chatFontSize }}>
+        {runStatusBar}
         {historyPagination}
         <EmptyState />
       </div>
@@ -448,6 +467,7 @@ export function ChatArea() {
 
   return (
     <div className="chat-scroll" id="chatScroll" ref={scrollRef} onScroll={handleScroll} style={{ fontSize: chatFontSize }}>
+      {runStatusBar}
       {historyPagination}
       {/* 分支路径 */}
       {currentSession?.branchFromSessionId && (

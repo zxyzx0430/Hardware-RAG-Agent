@@ -49,7 +49,7 @@
 // 前置条件：补齐 useChatStore 单元测试（streaming / resume / persist 三条主路径）后再动手
 import { create } from "zustand";
 import type { Message, SourceRef, ActivityStep, Session, ContentPart, TodoItem } from "../types/session";
-import type { ChatRequest, ChatSSEEvent, Attachment, BackendMessage, RunStatus } from "../types/api";
+import type { ChatRequest, ChatSSEEvent, Attachment, BackendMessage, RunStateResponse, RunStatus } from "../types/api";
 import type { Plan } from "../types/plan";
 import type { SSEEventMeta } from "../api/client";
 import { loadFromStorage, saveToStorage, saveSessionMessages as writeSessionMessages, loadSessionMessages, removeSessionMessages, migrateMessagesToShards } from "../utils/persistence";
@@ -59,17 +59,23 @@ import { fetchSessionTodos as fetchSessionTodosApi, clearSessionTodos as clearSe
 import { approveSessionPlan, fetchLatestPlan, rejectSessionPlan, setAgentPlanMode } from "../api/plan";
 import { planSnapshotState, planUpdateState, todoSnapshotState, todoUpdateState } from "./planTodoState";
 import {
+  assessInterruptedRun,
   clearActiveRun,
+  fetchActiveRun,
   fetchRunState,
   getActiveRun,
   isTerminalRunStatus,
   loadRunRecords,
   parseRunEventMeta,
   pendingApprovalsToCalls,
+  requestCancelRun,
+  requestResumeRun,
+  runStateRunId,
   setRunStatus,
   startActiveRun,
   updateRunSeq,
   type ActiveRunRecord,
+  type InterruptedRunAssessment,
 } from "../utils/runRecovery";
 import { post, on } from "../utils/broadcast";
 import { useAppStore } from "./useAppStore";
@@ -264,10 +270,20 @@ interface ChatState {
   activeRuns: Record<string, ActiveRunRecord>;
   /** Runs that came back `interrupted`; offer retry/continue instead of fake success. */
   runRecoveryNoticeBySession: Record<string, RunRecoveryNotice>;
+  /** Visible run lifecycle per session (live, restoring, or terminal). */
+  runViewBySession: Record<string, RunView>;
+  /** Bounded per-run event timeline per session (deduplicated by seq). */
+  runTimelineBySession: Record<string, RunTimelineEvent[]>;
   /** Reattach a persisted unfinished run after refresh or session load. */
   reattachRun: (sessionId: string) => Promise<void>;
   /** Dismiss an interrupted-run notice without retrying. */
   clearRunRecoveryNotice: (sessionId: string) => void;
+  /** Ask the backend to cancel the run that owns this session. */
+  cancelActiveRun: (sessionId: string) => Promise<boolean>;
+  /** Ask the backend to resume an interrupted run from its checkpoint. */
+  resumeInterruptedRun: (sessionId: string) => Promise<boolean>;
+  /** Hide the visible run lifecycle bar for this session. */
+  dismissRunView: (sessionId: string) => void;
 
   // ── 来源查看器状态（按 sessionId 隔离，防止跨会话污染）──
   /** key = sessionId, value = {messageId, sourceId} 定位来源（解决 source id 跨消息重复） */
@@ -338,11 +354,58 @@ interface RunRecoveryNotice {
   runId: string;
   status: RunStatus;
   message: string;
+  /** A tool side effect may be unknown after the interruption. */
+  resultUnknown?: boolean;
+  /** The unknown side effect may involve hardware (device state must be checked). */
+  hardwareUnknown?: boolean;
+  /** The run exposes a checkpoint the backend can continue from. */
+  resumable?: boolean;
 }
+
+/** Visible run lifecycle for one session. Terminal views stay until dismissed. */
+export interface RunView {
+  runId: string;
+  status: RunStatus;
+  /** live = streaming now; restoring = reattaching after load; terminal = ended. */
+  phase: "live" | "restoring" | "terminal";
+  startedAt: number | null;
+  finishedAt: number | null;
+  lastEventType: string | null;
+  lastEventSeq: number | null;
+  lastEventAt: number | null;
+  currentTool: string | null;
+  currentStepIndex: number | null;
+  checkpointId: string | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  pendingApprovals: number;
+  resultUnknown: boolean;
+  hardwareUnknown: boolean;
+  resumable: boolean;
+  actionPending: boolean;
+}
+
+/** One compact timeline row for the current run (never one row per text chunk). */
+export interface RunTimelineEvent {
+  seq: number;
+  type: string;
+  at: number;
+  tool?: string;
+  callId?: string;
+  sourceId?: string;
+  sourceTitle?: string;
+  messageId?: string;
+  message?: string;
+  status?: string;
+}
+
+/** Events recorded at most once per contiguous run of identical kinds. */
+const RUN_TIMELINE_MAX = 60;
+const RUN_TEXT_EVENT_TYPES = new Set(["text", "thinking", "compile_log", "progress"]);
 
 /** Mutable terminal state shared by the live stream, replays and reattach. */
 interface ChatTerminalState {
-  outcome: "running" | "error" | "awaiting_confirmation" | "success";
+  outcome: "running" | "error" | "awaiting_confirmation" | "success" | "cancelled";
   errorMessage: string;
   finalized: boolean;
 }
@@ -967,17 +1030,144 @@ function _syncActiveRunState(record: ActiveRunRecord | null, sessionId: string):
   });
 }
 
-function _beginActiveRun(sessionId: string, runId: string): ActiveRunRecord | null {
+/** Latest server run state seen for a session, used to assess interruptions. */
+const _runStateBySession = new Map<string, RunStateResponse | null>();
+/** Runs already observed as terminal; avoids reload loops on repeated loads. */
+const _terminalRunIds = new Set<string>();
+
+function _parseIsoTime(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function _emptyRunView(runId: string, status: RunStatus, phase: RunView["phase"]): RunView {
+  return {
+    runId,
+    status,
+    phase,
+    startedAt: null,
+    finishedAt: null,
+    lastEventType: null,
+    lastEventSeq: null,
+    lastEventAt: null,
+    currentTool: null,
+    currentStepIndex: null,
+    checkpointId: null,
+    errorCode: null,
+    errorMessage: null,
+    pendingApprovals: 0,
+    resultUnknown: false,
+    hardwareUnknown: false,
+    resumable: false,
+    actionPending: false,
+  };
+}
+
+function _patchRunView(sessionId: string, patch: Partial<RunView>): void {
+  useChatStore.setState((state) => {
+    const view = state.runViewBySession[sessionId];
+    if (!view) return {};
+    return {
+      runViewBySession: {
+        ...state.runViewBySession,
+        [sessionId]: { ...view, ...patch },
+      },
+    };
+  });
+}
+
+function _setRunViewTerminal(sessionId: string, status: RunStatus, errorMessage?: string | null): void {
+  useChatStore.setState((state) => {
+    const view = state.runViewBySession[sessionId];
+    if (!view) return {};
+    return {
+      runViewBySession: {
+        ...state.runViewBySession,
+        [sessionId]: {
+          ...view,
+          status,
+          phase: "terminal",
+          finishedAt: view.finishedAt ?? Date.now(),
+          errorMessage: errorMessage ?? view.errorMessage,
+          actionPending: false,
+        },
+      },
+    };
+  });
+}
+
+/** Drop every visible run artifact for a session (new turn or session delete). */
+function _resetRunView(sessionId: string): void {
+  _runStateBySession.delete(sessionId);
+  useChatStore.setState((state) => {
+    const hasView = state.runViewBySession[sessionId] !== undefined;
+    const hasTimeline = state.runTimelineBySession[sessionId] !== undefined;
+    const hasNotice = state.runRecoveryNoticeBySession[sessionId] !== undefined;
+    if (!hasView && !hasTimeline && !hasNotice) return {};
+    const runViewBySession = { ...state.runViewBySession };
+    const runTimelineBySession = { ...state.runTimelineBySession };
+    const runRecoveryNoticeBySession = { ...state.runRecoveryNoticeBySession };
+    delete runViewBySession[sessionId];
+    delete runTimelineBySession[sessionId];
+    delete runRecoveryNoticeBySession[sessionId];
+    return { runViewBySession, runTimelineBySession, runRecoveryNoticeBySession };
+  });
+}
+
+/** "Running" vs a paused approval: both are live for the view. */
+function _isLiveRunStatus(status: RunStatus): boolean {
+  return status === "running" || status === "awaiting_confirmation";
+}
+
+/** The most recent tool step, used to tell whether an interruption left a tool in flight. */
+function _lastToolStepForSession(sessionId: string): { name?: string; status?: string } | null {
+  const state = useChatStore.getState();
+  const steps = state.activeSessionId === sessionId && state.streamingSteps.length > 0
+    ? state.streamingSteps
+    : (state.sessionMessages[sessionId] ?? state.messages).at(-1)?.activity?.steps ?? [];
+  for (let i = steps.length - 1; i >= 0; i--) {
+    if (steps[i].type === "tool") {
+      return { name: steps[i].name, status: steps[i].status };
+    }
+  }
+  return null;
+}
+
+function _lastAssistantMessageId(sessionId: string): string | undefined {
+  const state = useChatStore.getState();
+  const messages = state.activeSessionId === sessionId ? state.messages : (state.sessionMessages[sessionId] ?? []);
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "assistant") return messages[i].id;
+  }
+  return undefined;
+}
+
+function _beginActiveRun(
+  sessionId: string,
+  runId: string,
+  status: RunStatus = "running",
+  startedAt?: number | null,
+): ActiveRunRecord | null {
   if (!sessionId || !runId) return null;
   const existing = useChatStore.getState().activeRuns[sessionId] ?? getActiveRun(sessionId);
-  if (existing?.runId === runId) return existing;
-  const record = startActiveRun(sessionId, runId);
+  const record = existing?.runId === runId ? existing : startActiveRun(sessionId, runId, status);
   useChatStore.setState((state) => {
     const runRecoveryNoticeBySession = { ...state.runRecoveryNoticeBySession };
     delete runRecoveryNoticeBySession[sessionId];
+    const previousView = state.runViewBySession[sessionId];
+    const sameRun = previousView?.runId === runId;
+    const view: RunView = sameRun
+      ? { ...previousView, status, phase: "live", actionPending: false }
+      : _emptyRunView(runId, status, "live");
+    if (startedAt !== undefined && startedAt !== null) view.startedAt = startedAt;
     return {
       activeRuns: { ...state.activeRuns, [sessionId]: record },
       runRecoveryNoticeBySession,
+      runViewBySession: { ...state.runViewBySession, [sessionId]: view },
+      runTimelineBySession: sameRun
+        ? state.runTimelineBySession
+        : { ...state.runTimelineBySession, [sessionId]: [] },
     };
   });
   return record;
@@ -993,27 +1183,255 @@ function _clearRunTracking(sessionId: string): void {
   _syncActiveRunState(null, sessionId);
 }
 
+/** Concrete guidance for an interrupted run; never claims it succeeded. */
+function _interruptedMessage(
+  message: string,
+  assessment: InterruptedRunAssessment,
+): string {
+  if (assessment.resultUnknown || assessment.resumable) return assessment.message;
+  return message || assessment.message;
+}
+
 /** Record an interrupted run once, then stop reattaching it on later loads. */
 function _markRunInterrupted(sessionId: string, runId: string | undefined, message: string): void {
   const state = useChatStore.getState();
   const effectiveRunId = runId
     ?? state.activeRuns[sessionId]?.runId
     ?? getActiveRun(sessionId)?.runId
+    ?? state.runViewBySession[sessionId]?.runId
     ?? "";
+  const assessment = assessInterruptedRun(
+    _runStateBySession.get(sessionId) ?? null,
+    _lastToolStepForSession(sessionId),
+  );
+  const noticeMessage = _interruptedMessage(message, assessment);
   if (effectiveRunId) setRunStatus(sessionId, effectiveRunId, "interrupted");
   clearActiveRun(sessionId);
   useChatStore.setState((s) => {
     const activeRuns = { ...s.activeRuns };
     delete activeRuns[sessionId];
+    const previousView = s.runViewBySession[sessionId];
+    const view: RunView = previousView ?? _emptyRunView(effectiveRunId, "interrupted", "terminal");
     return {
       activeRuns,
       runRecoveryNoticeBySession: {
         ...s.runRecoveryNoticeBySession,
-        [sessionId]: { runId: effectiveRunId, status: "interrupted", message },
+        [sessionId]: {
+          runId: effectiveRunId,
+          status: "interrupted",
+          message: noticeMessage,
+          resultUnknown: assessment.resultUnknown,
+          hardwareUnknown: assessment.hardwareUnknown,
+          resumable: assessment.resumable,
+        },
+      },
+      runViewBySession: {
+        ...s.runViewBySession,
+        [sessionId]: {
+          ...view,
+          status: "interrupted",
+          phase: "terminal",
+          finishedAt: view.finishedAt ?? Date.now(),
+          errorMessage: noticeMessage,
+          resultUnknown: assessment.resultUnknown,
+          hardwareUnknown: assessment.hardwareUnknown,
+          resumable: assessment.resumable,
+          actionPending: false,
+        },
       },
     };
   });
 }
+
+/** Apply a fetched run state to the visible lifecycle bar. */
+function _applyRunStateToView(
+  sessionId: string,
+  runState: RunStateResponse,
+  phase?: RunView["phase"],
+): void {
+  const runId = runStateRunId(runState);
+  if (!runId) return;
+  _runStateBySession.set(sessionId, runState);
+  const assessment = assessInterruptedRun(runState, _lastToolStepForSession(sessionId));
+  const pendingApprovals = (runState.pending_approvals ?? [])
+    .filter((approval) => approval && approval.status === "pending")
+    .length;
+  const effectivePhase = phase
+    ?? (_isLiveRunStatus(runState.status) ? "live" : "terminal");
+  useChatStore.setState((s) => {
+    const previousView = s.runViewBySession[sessionId];
+    const sameRun = previousView?.runId === runId;
+    const view: RunView = {
+      ...(sameRun ? previousView : _emptyRunView(runId, runState.status, effectivePhase)),
+      status: runState.status,
+      phase: effectivePhase,
+      startedAt: _parseIsoTime(runState.started_at) ?? (sameRun ? previousView.startedAt : null),
+      finishedAt: _parseIsoTime(runState.finished_at),
+      lastEventSeq: runState.last_event_seq ?? (sameRun ? previousView.lastEventSeq : null),
+      checkpointId: runState.checkpoint_id ?? null,
+      errorCode: runState.error_code ?? null,
+      errorMessage: runState.error_message ?? (sameRun ? previousView.errorMessage : null),
+      pendingApprovals,
+      resultUnknown: assessment.resultUnknown,
+      hardwareUnknown: assessment.hardwareUnknown,
+      resumable: assessment.resumable,
+      actionPending: false,
+    };
+    if (runState.status === "awaiting_confirmation") view.currentTool = view.currentTool ?? null;
+    const runRecoveryNoticeBySession = { ...s.runRecoveryNoticeBySession };
+    if (runState.status === "interrupted") {
+      const noticeMessage = _interruptedMessage(runState.error_message ?? "", assessment);
+      runRecoveryNoticeBySession[sessionId] = {
+        runId,
+        status: "interrupted",
+        message: noticeMessage,
+        resultUnknown: assessment.resultUnknown,
+        hardwareUnknown: assessment.hardwareUnknown,
+        resumable: assessment.resumable,
+      };
+      view.errorMessage = noticeMessage;
+    }
+    return {
+      runViewBySession: { ...s.runViewBySession, [sessionId]: view },
+      runRecoveryNoticeBySession,
+    };
+  });
+}
+
+/** One compact timeline row for an accepted run event; text streams coalesce. */
+function _timelineEntry(
+  event: ChatSSEEvent,
+  seq: number,
+  sessionId: string,
+): RunTimelineEvent | null {
+  const at = Date.now();
+  switch (event.type) {
+    case "run_started":
+      return { seq, type: "run_started", at };
+    case "thinking":
+      return { seq, type: "thinking", at, message: event.source ?? "llm" };
+    case "text":
+      return { seq, type: "text", at };
+    case "tool_call":
+      return { seq, type: "tool_call", at, tool: event.tool, callId: event.call_id };
+    case "tool_result":
+      return {
+        seq,
+        type: "tool_result",
+        at,
+        tool: event.tool,
+        callId: event.call_id,
+        status: event.success === false ? "error" : "done",
+      };
+    case "tool_confirm_required":
+      return {
+        seq,
+        type: "approval",
+        at,
+        message: String(event.count ?? event.calls?.length ?? 0),
+      };
+    case "source":
+      return {
+        seq,
+        type: "source",
+        at,
+        sourceId: event.id,
+        sourceTitle: event.title,
+        messageId: _lastAssistantMessageId(sessionId),
+      };
+    case "error":
+      return { seq, type: "error", at, message: event.message, status: event.code };
+    case "done":
+      return {
+        seq,
+        type: "done",
+        at,
+        status: event.success === false
+          ? (event.interrupted ? "interrupted" : event.cancelled ? "cancelled" : "failed")
+          : event.awaiting_confirmation ? "awaiting_confirmation" : "completed",
+      };
+    case "compile_log":
+      return { seq, type: "artifact", at, message: event.line?.slice(0, 120) };
+    case "progress":
+      return { seq, type: "progress", at, message: event.message };
+    case "todo_update":
+      return { seq, type: "todo", at, message: String(event.todos?.length ?? 0) };
+    case "plan_update":
+      return { seq, type: "plan", at, message: event.plan?.title ?? "" };
+    case "permission_mode_changed":
+      return { seq, type: "permission", at, message: event.permission_mode };
+    case "context_compressing":
+      return { seq, type: "context", at, message: event.message };
+    default:
+      return null;
+  }
+}
+
+function _appendRunTimeline(sessionId: string, event: ChatSSEEvent, seq: number): void {
+  const entry = _timelineEntry(event, seq, sessionId);
+  if (!entry) return;
+  useChatStore.setState((state) => {
+    const previous = state.runTimelineBySession[sessionId] ?? [];
+    const last = previous[previous.length - 1];
+    let next: RunTimelineEvent[];
+    if (last && last.type === entry.type && RUN_TEXT_EVENT_TYPES.has(entry.type)) {
+      // Streaming text/logs produce one row per chunk; keep one live row so the
+      // timeline stays compact and never renders every token.
+      next = [...previous.slice(0, -1), {
+        ...entry,
+        ...(entry.message !== undefined ? {} : { message: last.message }),
+        ...(entry.tool !== undefined ? {} : { tool: last.tool }),
+      }];
+    } else {
+      next = [...previous, entry];
+    }
+    if (next.length > RUN_TIMELINE_MAX) next = next.slice(next.length - RUN_TIMELINE_MAX);
+    return { runTimelineBySession: { ...state.runTimelineBySession, [sessionId]: next } };
+  });
+}
+
+/** Mirror an accepted event into the visible run lifecycle. */
+function _recordRunEventView(sessionId: string, event: ChatSSEEvent, seq: number): void {
+  const state = useChatStore.getState();
+  const view = state.runViewBySession[sessionId];
+  const runId = event.run_id ?? view?.runId;
+  if (!runId) return;
+  let status: RunStatus | undefined;
+  if (event.type === "tool_confirm_required") status = "awaiting_confirmation";
+  else if (event.type === "done" && event.interrupted) status = "interrupted";
+  else if (event.type === "done" && event.awaiting_confirmation) status = "awaiting_confirmation";
+  const currentTool = event.type === "tool_call"
+    ? event.tool
+    : event.type === "tool_result" && view?.currentTool === event.tool
+      ? null
+      : undefined;
+  const pendingApprovals = event.type === "tool_confirm_required"
+    ? (event.count ?? event.calls?.length ?? 0)
+    : event.type === "done" ? 0 : undefined;
+  useChatStore.setState((s) => {
+    const previous = s.runViewBySession[sessionId];
+    const base: RunView = previous ?? _emptyRunView(runId, status ?? "running", "live");
+    const effectiveStatus = status ?? base.status;
+    return {
+      runViewBySession: {
+        ...s.runViewBySession,
+        [sessionId]: {
+          ...base,
+          runId,
+          startedAt: base.startedAt ?? Date.now(),
+          ...(status ? { status } : {}),
+          phase: _isLiveRunStatus(effectiveStatus) ? "live" : base.phase,
+          lastEventType: event.type,
+          lastEventSeq: seq,
+          lastEventAt: Date.now(),
+          ...(currentTool !== undefined ? { currentTool } : {}),
+          ...(pendingApprovals !== undefined ? { pendingApprovals } : {}),
+        },
+      },
+    };
+  });
+}
+
 
 /**
  * Apply run sequence semantics: drop duplicates, reject stale runs, and ask
@@ -1028,7 +1446,7 @@ function _trackChatRunEvent(
 ): boolean {
   const info = parseRunEventMeta(event, meta);
   if (event.type === "run_started" && info.runId) {
-    _beginActiveRun(sessionId, info.runId);
+    _beginActiveRun(sessionId, info.runId, "running", Date.now());
   }
   if (info.seq === undefined) return true;
 
@@ -1045,7 +1463,11 @@ function _trackChatRunEvent(
     return false; // the replay stream redelivers this sequence in order
   }
   const updated = updateRunSeq(sessionId, runId, info.seq);
-  if (updated) _syncActiveRunState(updated, sessionId);
+  if (updated) {
+    _syncActiveRunState(updated, sessionId);
+    _recordRunEventView(sessionId, event, info.seq);
+    _appendRunTimeline(sessionId, event, info.seq);
+  }
   return true;
 }
 
@@ -1451,8 +1873,13 @@ function _applyChatEvent(event: ChatSSEEvent, requestSessionId: string, terminal
       }
 
       case "done": {
-        if (terminal.outcome !== "error") {
-          if (sse.success === false) {
+        if (terminal.outcome !== "error" && terminal.outcome !== "cancelled") {
+          if (sse.cancelled) {
+            terminal.outcome = "cancelled";
+          } else if (sse.interrupted) {
+            terminal.outcome = "error";
+            terminal.errorMessage = "运行已中断（后端重启或连接中断），可重试或继续";
+          } else if (sse.success === false) {
             terminal.outcome = "error";
           } else if (sse.awaiting_confirmation || sse.completed === false) {
             terminal.outcome = "awaiting_confirmation";
@@ -1460,7 +1887,7 @@ function _applyChatEvent(event: ChatSSEEvent, requestSessionId: string, terminal
             terminal.outcome = "success";
           }
           if (terminal.outcome === "error") {
-            terminal.errorMessage = "回答未能完成";
+            terminal.errorMessage = terminal.errorMessage || "回答未能完成";
           }
         }
         if (!("usage" in sse)) return { isCompressing: false };
@@ -1521,17 +1948,26 @@ function _finalizeChatStream(sessionId: string, terminal: ChatTerminalState, sta
     if (state.isStreaming || state.streamingSessionId || state.currentSseRequest) {
       state.stopStreaming(terminal.errorMessage);
     }
+    const viewStatus = useChatStore.getState().runViewBySession[sessionId]?.status;
     _clearRunTracking(sessionId);
+    _setRunViewTerminal(
+      sessionId,
+      viewStatus === "interrupted" ? "interrupted" : "failed",
+      terminal.errorMessage,
+    );
     return;
   }
 
   const awaitingConfirmation = terminal.outcome === "awaiting_confirmation";
+  const cancelledRun = terminal.outcome === "cancelled";
   const durationMs = Date.now() - startTime;
   const usage = useChatStore.getState()._pendingUsage;
   const finalMsgId = useChatStore.getState().messages[useChatStore.getState().messages.length - 1]?.id ?? '';
   console.info('[ChatStore] stream_done session=%s msg_id=%s', sessionId, finalMsgId);
   if (awaitingConfirmation) {
     getLog()("info", "chat", "Agent 等待工具操作确认");
+  } else if (cancelledRun) {
+    getLog()("info", "chat", "运行已取消");
   } else {
     getLog()("ok", "chat", `回答完成 (${(durationMs / 1000).toFixed(1)}s)${usage ? ` tokens=${usage.totalTokens}` : ''}`);
   }
@@ -1657,6 +2093,23 @@ function _finalizeChatStream(sessionId: string, terminal: ChatTerminalState, sta
   if (record) {
     if (awaitingConfirmation) _markRunStatus(sessionId, record.runId, "awaiting_confirmation");
     else _clearRunTracking(sessionId);
+  }
+  if (awaitingConfirmation) {
+    _patchRunView(sessionId, {
+      status: "awaiting_confirmation",
+      phase: "live",
+      finishedAt: null,
+      pendingApprovals: useChatStore.getState().pendingConfirm?.sessionId === sessionId
+        ? useChatStore.getState().pendingConfirm?.count ?? 0
+        : 0,
+    });
+  } else {
+    const viewStatus = useChatStore.getState().runViewBySession[sessionId]?.status;
+    _setRunViewTerminal(
+      sessionId,
+      viewStatus === "interrupted" ? "interrupted" : cancelledRun ? "cancelled" : "completed",
+      null,
+    );
   }
 
   // 会话元数据仅在 persistLastTurn 确认 CRUD 写入成功后更新。
@@ -2229,23 +2682,73 @@ export const useChatStore = create<ChatState>((set, get) => {
   /** Reattach to a persisted unfinished run after refresh or session load. */
   async function _reattachRun(sessionId: string): Promise<void> {
     if (!sessionId) return;
-    const record = get().activeRuns[sessionId] ?? getActiveRun(sessionId);
-    if (!record?.runId) return;
     if (_runReattachInFlight.has(sessionId)) return;
     const liveState = get();
     if (liveState.isStreaming && liveState.streamingSessionId === sessionId) return;
     if (liveState.backgroundSseRequests.has(sessionId)) return;
 
+    const localRecord = get().activeRuns[sessionId] ?? getActiveRun(sessionId);
     _runReattachInFlight.add(sessionId);
     try {
-      getLog()("info", "chat", `尝试恢复未完成运行: session=${sessionId} run=${record.runId} after=${record.lastEventSeq}`);
-      const runState = await fetchRunState(record.runId);
-      const status = runState?.status ?? record.status;
+      // Ask the server first: the run may have started in another tab while
+      // this one has no local record. Older backends return null and we fall
+      // back to the locally tracked run id.
+      const activeRun = await fetchActiveRun(sessionId);
+      const activeRunId = runStateRunId(activeRun);
+      const runId = activeRunId ?? localRecord?.runId;
+      if (!runId) {
+        _runStateBySession.delete(sessionId);
+        // A resume request may have been accepted while the backend still has
+        // no active run; never leave the bar spinning in "restoring".
+        if (get().runViewBySession[sessionId]?.phase === "restoring") {
+          const notice = get().runRecoveryNoticeBySession[sessionId];
+          if (notice) {
+            _applyRunStateToView(sessionId, {
+              run_id: notice.runId,
+              status: "interrupted",
+              error_message: notice.message,
+            }, "terminal");
+          } else {
+            _setRunViewTerminal(sessionId, "failed", "无法重新连接到这次执行");
+          }
+        }
+        return;
+      }
+      const localMatches = localRecord?.runId === runId;
+      let runState = activeRun;
+      if (!runState && localMatches) {
+        runState = await fetchRunState(runId);
+      }
+      const status = runState?.status ?? (localMatches ? localRecord?.status ?? "running" : "running");
+      if (runState) _runStateBySession.set(sessionId, runState);
+
+      getLog()(
+        "info", "chat",
+        `尝试恢复未完成运行: session=${sessionId} run=${runId} status=${status} after=${localMatches ? localRecord?.lastEventSeq : "server"}`,
+      );
+
+      const mergedState: RunStateResponse = {
+        ...(runState ?? {}),
+        ...(activeRunId ? {} : { run_id: runId }),
+        status,
+      };
+
+      // Show "正在恢复" before any replay starts (only for live runs; terminal
+      // runs jump straight to their final state).
+      if (!isTerminalRunStatus(status)) {
+        _applyRunStateToView(sessionId, mergedState, "restoring");
+      }
 
       if (isTerminalRunStatus(status)) {
         // The run finished while this page was away; the fetched messages are
         // authoritative and there is nothing left to stream.
+        const alreadyReloaded = _terminalRunIds.has(runId);
+        _terminalRunIds.add(runId);
+        _applyRunStateToView(sessionId, mergedState, "terminal");
         _clearRunTracking(sessionId);
+        if (status === "completed" && runState && !alreadyReloaded) {
+          await get().fetchMessages(sessionId);
+        }
         return;
       }
 
@@ -2255,9 +2758,20 @@ export const useChatStore = create<ChatState>((set, get) => {
         if (calls.length > 0) {
           set({ pendingConfirm: { calls, count: calls.length, sessionId } });
         }
-        _markRunStatus(sessionId, record.runId, "awaiting_confirmation");
+        _markRunStatus(sessionId, runId, "awaiting_confirmation");
+        _patchRunView(sessionId, {
+          status: "awaiting_confirmation",
+          phase: "live",
+          pendingApprovals: calls.length,
+        });
         if (!get().streamingSessionId) set({ streamingSessionId: sessionId });
         return;
+      }
+
+      if (status === "interrupted") {
+        // Replay the tail so already-persisted events render once, but the
+        // view and notice never claim the run is still alive.
+        _applyRunStateToView(sessionId, mergedState, "terminal");
       }
 
       const msgs = get().sessionMessages[sessionId]
@@ -2271,6 +2785,21 @@ export const useChatStore = create<ChatState>((set, get) => {
               .map((part) => part.text)
               .join("\n\n")
         : "";
+
+      // Replay from the last applied sequence when this tab tracked the run.
+      // When adopting a server-side run without local bookkeeping, start after
+      // the server sequence if a partial answer is already visible; otherwise
+      // rebuilding from 0 would duplicate text. No local record + no visible
+      // content replays from the beginning so the answer can be rebuilt.
+      const serverSeq = runState?.last_event_seq ?? 0;
+      const afterSeq = localMatches
+        ? localRecord?.lastEventSeq ?? 0
+        : (restoredContent.trim() ? serverSeq : 0);
+      if (!localMatches) {
+        const adopted = startActiveRun(sessionId, runId, status);
+        const synced = afterSeq > 0 ? updateRunSeq(sessionId, runId, afterSeq) ?? adopted : adopted;
+        _syncActiveRunState(synced, sessionId);
+      }
 
       const controller = new AbortController();
       set((s) => {
@@ -2294,14 +2823,14 @@ export const useChatStore = create<ChatState>((set, get) => {
       });
 
       const terminal: ChatTerminalState = { outcome: "running", errorMessage: "回答未能完成", finalized: false };
-      void apiSSE(`runs/${encodeURIComponent(record.runId)}/events`, undefined, {
+      void apiSSE(`runs/${encodeURIComponent(runId)}/events`, undefined, {
         onEvent: (event, meta) => {
           const evt = event as ChatSSEEvent;
-          if (!_trackChatRunEvent(sessionId, evt, meta, (runId, after) => {
-            _replayRunEvents(sessionId, runId, after, "chat");
+          if (!_trackChatRunEvent(sessionId, evt, meta, (trackedRunId, after) => {
+            _replayRunEvents(sessionId, trackedRunId, after, "chat");
           })) return;
           if (evt.type === "tool_confirm_required") {
-            _markRunStatus(sessionId, record.runId, "awaiting_confirmation");
+            _markRunStatus(sessionId, runId, "awaiting_confirmation");
           }
           _applyChatEvent(evt, sessionId, terminal);
         },
@@ -2309,7 +2838,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         onError: (err) => _failChatStream(sessionId, terminal, err),
       }, controller, {
         method: "GET",
-        after: record.lastEventSeq,
+        after: afterSeq,
         reconnect: { maxAttempts: 5 },
       });
     } finally {
@@ -2366,6 +2895,8 @@ export const useChatStore = create<ChatState>((set, get) => {
   // Recovery R1: persisted unfinished runs + interrupted notices.
   activeRuns: loadRunRecords(),
   runRecoveryNoticeBySession: {},
+  runViewBySession: {},
+  runTimelineBySession: {},
   // 草稿按 sessionId 隔离，仅存内存（spec 决策 4：刷新后丢失可接受）
   drafts: {},
   // 输入框附件按 sessionId 隔离，仅存内存（避免切换会话时附件串号）
@@ -2611,24 +3142,40 @@ export const useChatStore = create<ChatState>((set, get) => {
     sessionHighlightSourceId: { ...s.sessionHighlightSourceId, [sessionId]: id },
   })),
 
-  cleanupSessionSourceState: (sessionId) => set((s) => {
-    const nextFv = { ...s.sessionFileViewerSource };
-    const nextHl = { ...s.sessionHighlightSourceId };
-    const nextAtt = { ...s.sessionAttachments };
-    const nextErrors = { ...s.streamingErrorBySession };
-    delete nextFv[sessionId];
-    delete nextHl[sessionId];
-    delete nextAtt[sessionId];
-    delete nextErrors[sessionId];
-    return {
-      sessionFileViewerSource: nextFv,
-      sessionHighlightSourceId: nextHl,
-      sessionAttachments: nextAtt,
-      streamingErrorBySession: nextErrors,
-      ...(s.pendingConfirm?.sessionId === sessionId ? { pendingConfirm: null } : {}),
-      ...(s.activeSessionId === sessionId ? { streamingError: null } : {}),
-    };
-  }),
+  cleanupSessionSourceState: (sessionId) => {
+    clearActiveRun(sessionId);
+    _runStateBySession.delete(sessionId);
+    set((s) => {
+      const nextFv = { ...s.sessionFileViewerSource };
+      const nextHl = { ...s.sessionHighlightSourceId };
+      const nextAtt = { ...s.sessionAttachments };
+      const nextErrors = { ...s.streamingErrorBySession };
+      const nextRuns = { ...s.activeRuns };
+      const nextViews = { ...s.runViewBySession };
+      const nextTimelines = { ...s.runTimelineBySession };
+      const nextNotices = { ...s.runRecoveryNoticeBySession };
+      delete nextFv[sessionId];
+      delete nextHl[sessionId];
+      delete nextAtt[sessionId];
+      delete nextErrors[sessionId];
+      delete nextRuns[sessionId];
+      delete nextViews[sessionId];
+      delete nextTimelines[sessionId];
+      delete nextNotices[sessionId];
+      return {
+        sessionFileViewerSource: nextFv,
+        sessionHighlightSourceId: nextHl,
+        sessionAttachments: nextAtt,
+        streamingErrorBySession: nextErrors,
+        activeRuns: nextRuns,
+        runViewBySession: nextViews,
+        runTimelineBySession: nextTimelines,
+        runRecoveryNoticeBySession: nextNotices,
+        ...(s.pendingConfirm?.sessionId === sessionId ? { pendingConfirm: null } : {}),
+        ...(s.activeSessionId === sessionId ? { streamingError: null } : {}),
+      };
+    });
+  },
 
   resumeAgent: (decision) => {
     const payload = get()._lastAgentPayload;
@@ -2715,6 +3262,118 @@ export const useChatStore = create<ChatState>((set, get) => {
     delete runRecoveryNoticeBySession[sessionId];
     return { runRecoveryNoticeBySession };
   }),
+
+  cancelActiveRun: async (sessionId) => {
+    const state = get();
+    const view = state.runViewBySession[sessionId];
+    const record = state.activeRuns[sessionId] ?? getActiveRun(sessionId);
+    const runId = view?.runId ?? record?.runId;
+    if (!runId || view?.actionPending) return false;
+    if (!view || !_isLiveRunStatus(view.status)) return false;
+    _patchRunView(sessionId, { actionPending: true });
+    try {
+      await requestCancelRun(runId);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      getLog()("warn", "chat", `取消运行失败: ${runId} - ${message}`);
+      _patchRunView(sessionId, { actionPending: false });
+      // The run may have ended between the click and the request; converge on
+      // the backend state instead of guessing.
+      const runState = await fetchRunState(runId);
+      if (runState) {
+        _applyRunStateToView(
+          sessionId,
+          runState,
+          isTerminalRunStatus(runState.status) || runState.status === "interrupted" ? "terminal" : undefined,
+        );
+        if (runState.status === "interrupted") {
+          _markRunInterrupted(sessionId, runId, runState.error_message ?? "");
+        } else if (isTerminalRunStatus(runState.status)) {
+          _clearRunTracking(sessionId);
+        }
+      }
+      useToastStore.getState().showError(`取消运行失败：${message}`);
+      return false;
+    }
+
+    // Accepted: converge locally at once; the user must not wait for the
+    // backend stream to close before the UI reflects the cancel.
+    if (get().streamingSessionId === sessionId) {
+      get().stopStreaming();
+    } else {
+      const background = get().backgroundSseRequests.get(sessionId);
+      if (background) {
+        background.abort();
+        set((s) => {
+          const backgroundSseRequests = new Map(s.backgroundSseRequests);
+          backgroundSseRequests.delete(sessionId);
+          return { backgroundSseRequests };
+        });
+      }
+    }
+    if (get().pendingConfirm?.sessionId === sessionId) set({ pendingConfirm: null });
+    _clearRunTracking(sessionId);
+    _setRunViewTerminal(sessionId, "cancelled", null);
+    useToastStore.getState().showInfo("已请求取消运行");
+    return true;
+  },
+
+  resumeInterruptedRun: async (sessionId) => {
+    const state = get();
+    const view = state.runViewBySession[sessionId];
+    const notice = state.runRecoveryNoticeBySession[sessionId];
+    const record = state.activeRuns[sessionId] ?? getActiveRun(sessionId);
+    const runId = view?.runId ?? notice?.runId ?? record?.runId;
+    if (!runId || view?.actionPending) return false;
+    _patchRunView(sessionId, { actionPending: true });
+    try {
+      await requestResumeRun(runId);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      getLog()("warn", "chat", `恢复运行失败: ${runId} - ${message}`);
+      _patchRunView(sessionId, { actionPending: false });
+      useToastStore.getState().showError(`恢复运行失败：${message}`);
+      return false;
+    }
+
+    set((s) => {
+      const runRecoveryNoticeBySession = { ...s.runRecoveryNoticeBySession };
+      delete runRecoveryNoticeBySession[sessionId];
+      const previous = s.runViewBySession[sessionId];
+      const nextView: RunView = previous
+        ? {
+            ...previous,
+            status: "running",
+            phase: "restoring",
+            finishedAt: null,
+            errorCode: null,
+            errorMessage: null,
+            resultUnknown: false,
+            hardwareUnknown: false,
+            actionPending: false,
+          }
+        : _emptyRunView(runId, "running", "restoring");
+      return {
+        runRecoveryNoticeBySession,
+        runViewBySession: { ...s.runViewBySession, [sessionId]: nextView },
+      };
+    });
+    useToastStore.getState().showInfo("已请求从检查点恢复运行");
+    // Reattach picks the resumed run up; when the backend cannot offer one the
+    // view falls back to the interrupted notice instead of spinning forever.
+    void _reattachRun(sessionId);
+    return true;
+  },
+
+  dismissRunView: (sessionId) => {
+    _resetRunView(sessionId);
+    set((s) => {
+      if (!s.runRecoveryNoticeBySession[sessionId]) return {};
+      const runRecoveryNoticeBySession = { ...s.runRecoveryNoticeBySession };
+      delete runRecoveryNoticeBySession[sessionId];
+      return { runRecoveryNoticeBySession };
+    });
+  },
 
   setMessages: (messages) => {
     const trimmed = trimMessages(messages);
@@ -3415,6 +4074,9 @@ export const useChatStore = create<ChatState>((set, get) => {
       if (state.activeSessionId !== activeSessionId) return { sessionMessages };
       return {
         ..._withSessionStreamingError(state, activeSessionId, null),
+        // A new turn must not be able to decide an approval that belonged to
+        // the previous run.
+        ...(state.pendingConfirm?.sessionId === activeSessionId ? { pendingConfirm: null } : {}),
         messages: nextMessages,
         isStreaming: true,
         streamingContent: "",
@@ -3499,6 +4161,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     set({ _lastAgentPayload: requestBody });
     // A new send supersedes any leftover recovery record for this session.
     _clearRunTracking(requestSessionId);
+    _resetRunView(requestSessionId);
     const terminal: ChatTerminalState = { outcome: "running", errorMessage: "回答未能完成", finalized: false };
 
     let writerBusyRetries = 0;
@@ -3666,6 +4329,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     // refresh. Error stops keep the record because the run may still be alive.
     if (!errorMessage && sidToPersist) {
       _clearRunTracking(sidToPersist);
+      _setRunViewTerminal(sidToPersist, "cancelled", null);
     }
 
     // 流式停止（用户主动或错误）：将最后一轮 user+assistant 消息持久化到后端
