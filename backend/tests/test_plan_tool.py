@@ -70,6 +70,34 @@ async def test_submit_plan_works_in_every_permission_mode(factory, mode):
 
 
 @pytest.mark.asyncio
+async def test_submit_plan_strips_source_citations(factory):
+    result = await SubmitPlanTool().execute({
+        "title": "Bring up[src1]",
+        "summary": "Inspect then execute[src6]",
+        "steps": [{
+            "title": "Inspect[src9]",
+            "detail": "Read the manual[src2]",
+            "verification": "Cite pages[src3]",
+        }],
+        "risks": ["Board revision[src4]"],
+        "open_questions": ["Power source?[src5]"],
+    }, _ctx())
+
+    assert result["_plan_update"] is True
+    plan = result["plan"]
+    assert plan["title"] == "Bring up"
+    assert plan["summary"] == "Inspect then execute"
+    assert plan["steps"][0] == {
+        "title": "Inspect",
+        "detail": "Read the manual",
+        "verification": "Cite pages",
+    }
+    assert plan["risks"] == ["Board revision"]
+    assert plan["open_questions"] == ["Power source?"]
+    assert "[src" not in str(plan_store.latest("s1"))
+
+
+@pytest.mark.asyncio
 async def test_submit_plan_requires_real_session(factory):
     result = await SubmitPlanTool().execute(ARGS, _ctx(session_id="default"))
 

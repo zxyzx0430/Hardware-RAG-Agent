@@ -5,6 +5,7 @@ import { copyToClipboard } from "../../utils/clipboard";
 import { useI18n } from "../../i18n";
 import { useAppStore } from "../../stores/useAppStore";
 import type { SourceRef } from "../../types/session";
+import { sourceDisplayNumber } from "../../utils/sourceRefs";
 
 // 懒加载语法高亮组件，减小首屏 bundle
 const SyntaxHighlighter = lazy(() =>
@@ -275,18 +276,23 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
       a({ href, children }: ComponentProps<"a">) {
         if (href && href.startsWith('#src-')) {
           const n = parseInt(href.slice(5), 10);
+          const sourceId = `src${n}`;
+          const displayNumber = sourceDisplayNumber(sourceId, sources);
           const relClass = srcRelevanceClass(n, sources);
+          const sourceTitle = sources?.find((s) => s.id === sourceId)?.title;
           return (
             <button
               type="button"
               className={`src-cite ${relClass}`}
+              data-source-id={sourceId}
+              aria-label={`来源 ${displayNumber}`}
               onClick={(e) => {
                 e.preventDefault();
-                onSourceClick?.(`src${n}`);
+                onSourceClick?.(sourceId);
               }}
-              title={sources?.find((s) => s.id === `src${n}`)?.title || `来源 src${n}`}
+              title={sourceTitle || `来源 ${displayNumber}`}
             >
-              src{n}
+              [{displayNumber}]
             </button>
           );
         }

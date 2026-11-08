@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from src.agent.core.toolkit.tool_spec import RiskLevel, ToolSpec
 from src.agent.exceptions import ToolContext
+from src.agent.plan_prompt import strip_plan_source_citations
 
 logger = logging.getLogger(__name__)
 
@@ -75,12 +76,18 @@ def _create_plan(session_id: str, args: dict[str, Any], run_id: str | None) -> d
 def _payload(args: dict[str, Any]) -> dict[str, Any]:
     steps = args.get("steps")
     return {
-        "title": args.get("title", ""),
-        "summary": args.get("summary", ""),
+        "title": strip_plan_source_citations(str(args.get("title", ""))),
+        "summary": strip_plan_source_citations(str(args.get("summary", ""))),
         "steps": [_step(item) for item in steps] if isinstance(steps, list) else steps,
-        "risks": args.get("risks", []),
-        "open_questions": args.get("open_questions", []),
+        "risks": _clean_list(args.get("risks", [])),
+        "open_questions": _clean_list(args.get("open_questions", [])),
     }
+
+
+def _clean_list(values: Any) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    return [strip_plan_source_citations(str(value)) for value in values]
 
 
 def _step(item: Any) -> dict[str, Any]:
@@ -89,9 +96,9 @@ def _step(item: Any) -> dict[str, Any]:
     if not isinstance(item, dict):
         return {}
     return {
-        "title": item.get("title", ""),
-        "detail": item.get("detail", ""),
-        "verification": item.get("verification", ""),
+        "title": strip_plan_source_citations(str(item.get("title", ""))),
+        "detail": strip_plan_source_citations(str(item.get("detail", ""))),
+        "verification": strip_plan_source_citations(str(item.get("verification", ""))),
     }
 
 

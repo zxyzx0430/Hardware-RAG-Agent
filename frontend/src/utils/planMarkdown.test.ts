@@ -77,4 +77,27 @@ describe("buildPlanMarkdown", () => {
       "     ```",
     ]);
   });
+
+  it("strips source citations from every plan field", () => {
+    const markdown = buildPlanMarkdown(makePlan({
+      title: "Bring up[src1]",
+      summary: "结论[src6] 推荐值",
+      steps: [{
+        title: "Inspect[src9]",
+        detail: "确认手册[src2]",
+        verification: "运行检查[src3]",
+      }],
+      risks: ["风险[src4]"],
+      open_questions: ["问题[src5]"],
+    }), LABELS);
+
+    expect(markdown).not.toContain("[src");
+    expect(markdown).toContain("Bring up");
+    expect(markdown).toContain("结论 推荐值");
+    expect(markdown).toContain("Inspect");
+    expect(markdown).toContain("确认手册");
+    expect(markdown).toContain("运行检查");
+    expect(markdown).toContain("风险");
+    expect(markdown).toContain("问题");
+  });
 });

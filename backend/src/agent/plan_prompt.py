@@ -2,11 +2,25 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 MAX_APPROVED_PLAN_CHARS = 65_536
 MAX_STEP_DETAIL_CHARS = 1_000
 MAX_SUMMARY_CHARS = 2_000
+
+_SOURCE_CITATION_RE = re.compile(r"\[\^\d+\](?:\(src\d+\))?|\[src\d+\]", re.IGNORECASE)
+
+
+def strip_plan_source_citations(text: str) -> str:
+    """Remove inline source markers from a plan field.
+
+    Plans describe actions, not evidence claims; citations belong in ordinary
+    chat answers. This also cleans older plans written before the prompt rule.
+    """
+    cleaned = _SOURCE_CITATION_RE.sub("", text or "")
+    cleaned = re.sub(r"[ \t]+([，。；：、）])", r"\1", cleaned)
+    return re.sub(r"[ \t]{2,}", " ", cleaned).strip()
 
 
 _PLAN_MODE_PROMPT = """## Plan mode (read-only)
@@ -27,7 +41,8 @@ _PLAN_AUTHORING_PROMPT = """## Plan authoring (every permission mode)
 When the user asks for a plan, a proposal, a design, or to think it through before changing anything, research with read-only tools first, then call `submit_plan` exactly once with a complete plan. Do not write the plan as a normal assistant message, and put every unresolved question in `open_questions`.
 `submit_plan` works in every permission mode: do NOT call `enter_plan_mode` just to submit a plan. After `submit_plan` succeeds, stop and wait for the user's decision; never start executing on your own.
 If the user only asks a simple informational question, or explicitly tells you to just do the task, answer or proceed without forcing a plan.
-Plan template: `title`; `summary` (conclusion first; Markdown allowed); `steps` (1-12, each with title/detail/verification; detail and verification may use Markdown); `risks`; `open_questions`."""
+Plan template: `title`; `summary` (conclusion first; Markdown allowed); `steps` (1-12, each with title/detail/verification; detail and verification may use Markdown); `risks`; `open_questions`.
+Never include `[srcN]` or `[^N]` source citations inside any plan field; citations belong in ordinary chat answers, not in plans."""
 
 
 def build_plan_authoring_prompt() -> str:
@@ -41,7 +56,7 @@ def build_plan_mode_prompt() -> str:
 
 
 def _clip(value: Any, limit: int) -> str:
-    text = str(value or "").strip()
+    text = strip_plan_source_citations(str(value or "").strip())
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 

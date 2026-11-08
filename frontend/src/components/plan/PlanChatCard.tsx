@@ -3,6 +3,7 @@ import { useAppStore } from "../../stores/useAppStore";
 import { useChatStore } from "../../stores/useChatStore";
 import { useToastStore } from "../../stores/useToastStore";
 import { MarkdownRenderer } from "../shared/MarkdownRenderer";
+import { stripPlanSourceCitations } from "../../utils/planMarkdown";
 
 /** Plan card shown inline in the conversation, with the three user actions. */
 export function PlanChatCard() {
@@ -32,6 +33,8 @@ export function PlanChatCard() {
 
   if (!activeSessionId || !plan || (!pending && !approved)) return null;
 
+  const title = stripPlanSourceCitations(plan.title);
+  const summary = stripPlanSourceCitations(plan.summary);
   const disabled = busy !== null || isStreaming;
 
   const viewPlan = () => {
@@ -75,10 +78,10 @@ export function PlanChatCard() {
         <span className="plan-chat-version">计划 v{plan.version}</span>
         <button type="button" className="plan-chat-view" onClick={viewPlan}>在右侧查看</button>
       </div>
-      <h3 className="plan-chat-title">{plan.title}</h3>
-      {plan.summary ? (
+      <h3 className="plan-chat-title">{title}</h3>
+      {summary ? (
         <div className="plan-chat-summary plan-chat-markdown">
-          <MarkdownRenderer content={plan.summary} />
+          <MarkdownRenderer content={summary} />
         </div>
       ) : null}
       {plan.steps.length > 0 ? (
@@ -86,7 +89,7 @@ export function PlanChatCard() {
           {plan.steps.map((step, index) => (
             <li key={`${index}-${step.title}`}>
               <span className="plan-chat-step-number">{index + 1}.</span>
-              <span>{step.title}</span>
+              <span>{stripPlanSourceCitations(step.title)}</span>
             </li>
           ))}
         </ol>

@@ -111,6 +111,24 @@ describe("PlanChatCard", () => {
     expect(container.textContent).not.toContain("```");
   });
 
+  it("does not expose source citations in the plan card", () => {
+    mocks.chatState.sessionPlans = {
+      s1: {
+        ...mocks.plan,
+        title: "Add run report[src1]",
+        summary: "Collect run events.[src6]",
+        steps: [{ title: "Inspect RunStore[src9]" }],
+      },
+    };
+
+    const { container } = render(<PlanChatCard />);
+
+    expect(container.textContent).not.toContain("[src");
+    expect(screen.getByText("Add run report")).toBeTruthy();
+    expect(screen.getByText("Collect run events.")).toBeTruthy();
+    expect(screen.getByText("Inspect RunStore")).toBeTruthy();
+  });
+
   it("rejects the plan when cancelled", async () => {
     render(<PlanChatCard />);
 

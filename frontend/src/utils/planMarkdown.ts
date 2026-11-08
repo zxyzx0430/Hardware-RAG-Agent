@@ -8,6 +8,17 @@ export interface PlanMarkdownLabels {
   openQuestions: string;
 }
 
+const SOURCE_CITATION_RE = /\[\^\d+\](?:\(src\d+\))?|\[src\d+\]/gi;
+
+/** Plans describe actions, not evidence claims; source citations belong in chat. */
+export function stripPlanSourceCitations(text?: string | null): string {
+  return (text ?? "")
+    .replace(SOURCE_CITATION_RE, "")
+    .replace(/[ \t]+([，。；：、）])/g, "$1")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+}
+
 /** Indent every non-empty line so multi-line Markdown stays inside the step. */
 function indentContinuation(text: string, indent: string): string {
   return text
@@ -24,10 +35,13 @@ function renderVerification(verification: string, indent: string, label: string)
 
 function renderStep(step: PlanStep, index: number, labels: PlanMarkdownLabels): string[] {
   const indent = " ".repeat(String(index + 1).length + 2);
-  const lines = [`${index + 1}. **${step.title}**`, ""];
-  if (step.detail) lines.push(indentContinuation(step.detail, indent), "");
-  if (step.verification) {
-    lines.push(...renderVerification(step.verification, indent, labels.verification));
+  const title = stripPlanSourceCitations(step.title);
+  const detail = stripPlanSourceCitations(step.detail);
+  const verification = stripPlanSourceCitations(step.verification);
+  const lines = [`${index + 1}. **${title}**`, ""];
+  if (detail) lines.push(indentContinuation(detail, indent), "");
+  if (verification) {
+    lines.push(...renderVerification(verification, indent, labels.verification));
   }
   return lines;
 }
@@ -38,11 +52,12 @@ function renderHeadingSection(label: string, body: string): string[] {
 
 function renderListSection(label: string, values: string[]): string[] {
   if (values.length === 0) return [];
-  return ["", `### ${label}`, "", ...values.map((value) => `- ${value}`)];
+  return ["", `### ${label}`, "", ...values.map((value) => `- ${stripPlanSourceCitations(value)}`)];
 }
 
 function renderSummary(plan: Plan, labels: PlanMarkdownLabels): string[] {
-  return plan.summary ? renderHeadingSection(labels.summary, plan.summary) : [];
+  const summary = stripPlanSourceCitations(plan.summary);
+  return summary ? renderHeadingSection(labels.summary, summary) : [];
 }
 
 function renderSteps(plan: Plan, labels: PlanMarkdownLabels): string[] {
@@ -54,7 +69,7 @@ function renderSteps(plan: Plan, labels: PlanMarkdownLabels): string[] {
 
 /** Build the fixed plan template the right panel renders as Markdown. */
 export function buildPlanMarkdown(plan: Plan, labels: PlanMarkdownLabels): string {
-  const parts = [`## ${plan.title}`, ...renderSummary(plan, labels), ...renderSteps(plan, labels)];
+  const parts = [`## ${stripPlanSourceCitations(plan.title)}`, ...renderSummary(plan, labels), ...renderSteps(plan, labels)];
   parts.push(...renderListSection(labels.risks, plan.risks));
   parts.push(...renderListSection(labels.openQuestions, plan.open_questions));
   return parts.join("\n").trimEnd();
