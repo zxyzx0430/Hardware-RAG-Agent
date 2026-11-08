@@ -345,6 +345,7 @@ def _entry_base(r: Any, content: str, identity_content: str) -> dict:
         "content": content,
         "_identity_content": identity_content,
         "title": meta.get("title", "未知来源"),
+        "file_type": _infer_file_type(meta),
         "page_start": meta.get("page_start"),
         "page_end": meta.get("page_end"),
         "section_title": meta.get("section_title", ""),
@@ -355,6 +356,31 @@ def _entry_base(r: Any, content: str, identity_content: str) -> dict:
         "kb_name": getattr(r, "kb_name", "") or "",
         "big_chunk_id": meta.get("big_chunk_id", "") or "",
     }
+
+
+_KNOWN_FILE_TYPES = frozenset({
+    "pdf", "md", "txt", "py", "c", "h", "ino", "xlsx", "xls", "csv",
+    "json", "docx", "doc", "html", "htm",
+})
+
+
+def _infer_file_type(meta: dict[str, Any]) -> str:
+    """Best-effort file type: chunk metadata first, then a known title suffix.
+
+    The title fallback accepts only known upload extensions so version-like
+    dots (e.g. "datasheet v1.2") are not mistaken for a file type.
+    """
+    value = meta.get("file_type")
+    if isinstance(value, str):
+        value = value.strip().lower().lstrip(".")
+        if value:
+            return value
+    title = meta.get("title")
+    if isinstance(title, str) and "." in title:
+        suffix = title.rsplit(".", 1)[1].strip().lower()
+        if suffix in _KNOWN_FILE_TYPES:
+            return suffix
+    return ""
 
 
 def _overlay_small_chunk(base: dict, sc: dict, idx: int) -> dict:
@@ -431,10 +457,24 @@ def build_source_event_from_dict(res: dict, i: int) -> dict:
     """
     sid = res.get("id") or f"src{i + 1}"
     score = _clamp_score(res.get("score", 0.0))
+    kb_id = res.get("kb_id", "")
+    if not isinstance(kb_id, str):
+        kb_id = ""
+    doc_id = res.get("doc_id") or (res.get("doc", "") if kb_id else "")
+    if not isinstance(doc_id, str):
+        doc_id = ""
+    file_type = _infer_file_type({
+        "file_type": res.get("file_type"),
+        "title": res.get("title"),
+    })
+    is_pdf = bool(doc_id) and file_type == "pdf"
     return {
         "id": sid,
         "title": res.get("title", "未知来源"),
         "doc": res.get("doc", ""),
+        "doc_id": doc_id,
+        "is_pdf": is_pdf,
+        "mime_type": "application/pdf" if is_pdf else "",
         "page": res.get("chunk_index", 0),  # backward compat (chunk index)
         "chunk_index": res.get("chunk_index", 0),
         "page_start": res.get("page_start"),
@@ -448,7 +488,7 @@ def build_source_event_from_dict(res: dict, i: int) -> dict:
         "relevance_level": _classify_relevance(score),
         "citation": res.get("citation") or _build_citation(res),
         "excerpt": res.get("small_chunk_text", "") or res.get("content", "") or res.get("excerpt", ""),
-        "kb_id": res.get("kb_id", ""),
+        "kb_id": kb_id,
         "kb_name": res.get("kb_name", ""),
         "small_chunk_id": res.get("small_chunk_id", ""),
         "big_chunk_id": res.get("big_chunk_id", ""),
