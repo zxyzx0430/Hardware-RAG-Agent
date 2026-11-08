@@ -1324,3 +1324,174 @@
 }
 .plan-chat-btn.danger:hover:not(:disabled) { background: var(--danger-soft); }
 .plan-chat-btn:disabled { opacity: 0.55; cursor: default; }
+
+/* ── Run lifecycle status bar (P0/P1) ─────────────────────────
+   Compact sticky bar above the conversation. It shows state, run id,
+   current tool, last event and elapsed time, with an optional short
+   event timeline. It must never read like a second chat window. */
+.run-status-bar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  margin: 0 -24px 4px;
+  padding: 7px 24px;
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 11.5px;
+  color: var(--muted-fg);
+}
+.run-status-bar.restoring { border-bottom-color: var(--primary); }
+.run-status-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.run-status-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.run-status-toggle:focus-visible,
+.run-status-action:focus-visible,
+.run-status-dismiss:focus-visible,
+.run-timeline-source:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+.run-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted-fg);
+  flex-shrink: 0;
+}
+.run-status-dot.status-running { background: var(--primary); animation: run-status-pulse 1.6s ease-in-out infinite; }
+.run-status-dot.status-awaiting_confirmation { background: var(--warn); animation: run-status-pulse 1.6s ease-in-out infinite; }
+.run-status-dot.status-completed { background: var(--success); }
+.run-status-dot.status-failed { background: var(--danger); }
+.run-status-dot.status-cancelled { background: var(--muted-fg); }
+.run-status-dot.status-interrupted { background: var(--warn); }
+@keyframes run-status-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.run-status-label { font-weight: 600; color: var(--fg); white-space: nowrap; }
+.run-status-runid {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  opacity: 0.8;
+  white-space: nowrap;
+}
+.run-status-tool,
+.run-status-last {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.run-status-elapsed { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.run-status-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.run-status-action {
+  min-height: 24px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--fg);
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.run-status-action.primary { border-color: var(--primary); color: var(--primary); }
+.run-status-action.danger { border-color: var(--danger); color: var(--danger); }
+.run-status-action:hover:not(:disabled) { background: var(--hover-bg); }
+.run-status-action:disabled { opacity: 0.55; cursor: default; }
+.run-status-dismiss {
+  border: none;
+  background: none;
+  color: var(--muted-fg);
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+}
+.run-status-notice {
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  line-height: 1.45;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.run-status-notice.restoring { color: var(--primary); background: var(--activity-bg); }
+.run-status-notice.unknown { color: var(--danger); background: var(--danger-soft); }
+.run-status-notice.approval { color: var(--warn); background: var(--warn-soft); }
+.run-status-notice.interrupted { color: var(--warn); background: var(--warn-soft); }
+.run-status-notice-detail { opacity: 0.85; }
+.run-status-timeline {
+  border-top: 1px dashed var(--border);
+  padding-top: 4px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+.run-timeline-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.run-timeline-row {
+  display: grid;
+  grid-template-columns: 58px 88px minmax(0, 1fr);
+  gap: 6px;
+  align-items: baseline;
+  padding: 1px 0;
+  font-size: 11px;
+}
+.run-timeline-time { font-variant-numeric: tabular-nums; opacity: 0.75; }
+.run-timeline-label { color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.run-timeline-detail,
+.run-timeline-source {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+.run-timeline-source {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--primary);
+  text-decoration: underline dotted;
+  cursor: pointer;
+  font: inherit;
+}
+.run-timeline-row.type-error .run-timeline-label,
+.run-timeline-row.type-tool_result.status-error .run-timeline-detail { color: var(--danger); }
+.run-timeline-row.type-done.status-completed .run-timeline-detail { color: var(--success); }
+.run-timeline-row.type-done.status-failed .run-timeline-detail { color: var(--danger); }
+.run-timeline-empty { font-size: 11px; opacity: 0.8; padding: 2px 0; }
+@media (max-width: 720px) {
+  .run-status-last { display: none; }
+  .run-status-tool { max-width: 150px; }
+}

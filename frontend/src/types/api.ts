@@ -182,6 +182,11 @@ export interface DoneSSEEvent {
   completed?: boolean;
   /** True when the stream ended while awaiting an explicit tool confirmation. */
   awaiting_confirmation?: boolean;
+  /** Terminal replay flags for a run that never finished normally. */
+  cancelled?: boolean;
+  interrupted?: boolean;
+  /** Backend-provided reason (e.g. "user stopped"). */
+  reason?: string;
   usage?: TokenUsageSSE;
 }
 
@@ -282,7 +287,7 @@ export interface PendingApprovalRecord {
   decided_at?: string | null;
 }
 
-/** Response from GET /api/runs/{run_id}. */
+/** Response from GET /api/runs/{run_id} (and the per-session active-run route). */
 export interface RunStateResponse {
   id?: string;
   run_id?: string;
@@ -292,6 +297,17 @@ export interface RunStateResponse {
   error_code?: string | null;
   error_message?: string | null;
   pending_approvals?: PendingApprovalRecord[];
+  /** ISO timestamps; newer backends expose them for elapsed-time display. */
+  started_at?: string | null;
+  finished_at?: string | null;
+  /** Checkpoint the run can be continued from (interrupted runs). */
+  checkpoint_id?: string | null;
+  /** Backend assessment: the run can be resumed from its checkpoint. */
+  resumable?: boolean;
+  /** Backend assessment: a tool side effect may or may not have happened. */
+  result_unknown?: boolean;
+  /** Last tool/step the backend knows about, when it exposes one. */
+  last_tool?: string | null;
 }
 
 export interface ModelsRequest {
