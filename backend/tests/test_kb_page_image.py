@@ -54,6 +54,8 @@ def page_image_client(tmp_path, monkeypatch):
             KnowledgeDoc(doc_id="orphan-doc", kb_id="kb-gone", title="orphan.pdf", file_type="pdf"),
             KnowledgeDoc(doc_id="corrupt-doc", kb_id="kb-test", title="broken.pdf", file_type="pdf"),
             KnowledgeDoc(doc_id="huge-doc", kb_id="kb-test", title="huge.pdf", file_type="pdf"),
+            KnowledgeDoc(doc_id="weird-doc", kb_id="kb-test", title='..\\evil"name.pdf', file_type="pdf"),
+            KnowledgeDoc(doc_id="unicode-doc", kb_id="kb-test", title="硬件手册.pdf", file_type="pdf"),
         ])
         db.commit()
 
@@ -68,6 +70,8 @@ def page_image_client(tmp_path, monkeypatch):
                 raise
 
     _write_pdf(tmp_path / "pdf-doc.pdf", pages=2)
+    _write_pdf(tmp_path / "weird-doc.pdf", pages=1)
+    _write_pdf(tmp_path / "unicode-doc.pdf", pages=1)
     (tmp_path / "md-doc.md").write_text("# notes", encoding="utf-8")
     (tmp_path / "corrupt-doc.pdf").write_bytes(b"%PDF-1.4\nbroken\n")
 
@@ -157,10 +161,20 @@ def _png_size(content: bytes) -> tuple[int, int]:
     return int.from_bytes(content[16:20], "big"), int.from_bytes(content[20:24], "big")
 
 
+def test_scale_four_is_rendered(page_image_client):
+    response = page_image_client.get(
+        "/api/kb/documents/pdf-doc/page-image",
+        params={"page": 1, "scale": 4.0},
+    )
+
+    assert response.status_code == 200
+    assert _png_size(response.content) == (800, 1200)
+
+
 def test_huge_page_stays_within_render_caps(page_image_client):
     response = page_image_client.get(
         "/api/kb/documents/huge-doc/page-image",
-        params={"page": 1, "scale": 2.0},
+        params={"page": 1, "scale": 4.0},
     )
 
     assert response.status_code == 200
@@ -216,7 +230,7 @@ def test_page_below_one_is_rejected(page_image_client):
 
 def test_scale_outside_allowed_range_is_rejected(page_image_client):
     response = page_image_client.get(
-        "/api/kb/documents/pdf-doc/page-image", params={"page": 1, "scale": 2.5},
+        "/api/kb/documents/pdf-doc/page-image", params={"page": 1, "scale": 4.5},
     )
 
     assert response.status_code == 400
@@ -294,3 +308,71 @@ def test_missing_page_parameter_is_rejected(page_image_client):
     response = page_image_client.get("/api/kb/documents/pdf-doc/page-image")
 
     assert response.status_code == 422
+
+
+def test_file_returns_original_pdf_inline(page_image_client):
+    response = page_image_client.get("/api/kb/documents/pdf-doc/file")
+    expected = (Path(kb_routes.UPLOAD_DIR) / "pdf-doc.pdf").read_bytes()
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/pdf"
+    disposition = response.headers["content-disposition"]
+    assert disposition.startswith("inline;")
+    assert 'filename="manual.pdf"' in disposition
+    assert "max-age" in response.headers["cache-control"]
+    assert response.content == expected
+
+
+def test_file_sanitizes_title_for_content_disposition(page_image_client):
+    response = page_image_client.get("/api/kb/documents/weird-doc/file")
+
+    assert response.status_code == 200
+    disposition = response.headers["content-disposition"]
+    assert "\r" not in disposition and "\n" not in disposition
+    assert 'filename="evil_name.pdf"' in disposition
+
+
+def test_file_supports_unicode_filename(page_image_client):
+    response = page_image_client.get("/api/kb/documents/unicode-doc/file")
+
+    assert response.status_code == 200
+    assert "filename*=utf-8''" in response.headers["content-disposition"]
+
+
+def test_file_rejects_non_pdf(page_image_client):
+    response = page_image_client.get("/api/kb/documents/md-doc/file")
+
+    assert response.status_code == 415
+    assert _error(response)["code"] == "DOCUMENT_NOT_PDF"
+
+
+def test_file_missing_file(page_image_client):
+    response = page_image_client.get("/api/kb/documents/missing-doc/file")
+
+    assert response.status_code == 404
+    assert _error(response)["code"] == "DOCUMENT_FILE_NOT_FOUND"
+
+
+def test_file_unknown_document(page_image_client):
+    response = page_image_client.get("/api/kb/documents/unknown-doc/file")
+
+    assert response.status_code == 404
+    assert _error(response)["code"] == "DOC_NOT_FOUND"
+
+
+def test_file_path_like_doc_id_is_not_resolved(page_image_client):
+    response = kb_routes.get_document_file(
+        doc_id="../../secret", user={"anonymous": True},
+    )
+
+    assert response.status_code == 404
+
+
+def test_file_invalid_bearer_token_is_rejected(page_image_client):
+    response = page_image_client.get(
+        "/api/kb/documents/pdf-doc/file",
+        headers={"Authorization": "Bearer not-a-real-session"},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["detail"]["error"]["code"] == "AUTH_INVALID"

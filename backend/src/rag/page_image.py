@@ -18,7 +18,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 MIN_SCALE = 0.5
-MAX_SCALE = 2.0
+MAX_SCALE = 4.0
 
 # Safety caps for pathological page sizes. Scaling is reduced uniformly so the
 # rendered bitmap never exceeds these bounds.

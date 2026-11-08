@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Request, Query, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from src.config.settings import settings
@@ -1325,9 +1325,10 @@ def get_doc_chunks(doc_id: str):
 
 # ═══════════════════════════════════════════
 # GET /api/kb/documents/{doc_id}/page-image
+# GET /api/kb/documents/{doc_id}/file
 # ═══════════════════════════════════════════
 
-def _page_image_error(
+def _kb_document_error(
     code: str,
     status_code: int,
     message: str,
@@ -1342,11 +1343,69 @@ def _page_image_error(
     )
 
 
+def _resolve_uploaded_pdf(doc_id: str) -> tuple[Path, str] | JSONResponse:
+    """Resolve an uploaded PDF or return the public error response.
+
+    Checks the document and its KB records, rejects non-PDF documents, and
+    confines the resolved path to UPLOAD_DIR. The returned title is the
+    original upload filename.
+    """
+    if not _DOC_ID_RE.fullmatch(doc_id):
+        return _kb_document_error("DOC_NOT_FOUND", 404, "文档不存在")
+    try:
+        with get_db_ctx() as db:
+            record = db.query(KnowledgeDoc).filter(KnowledgeDoc.doc_id == doc_id).first()
+            if not record:
+                return _kb_document_error("DOC_NOT_FOUND", 404, f"文档不存在: {doc_id}")
+            kb_id = record.kb_id
+            file_type = (record.file_type or "").strip().lower().lstrip(".")
+            title = record.title or ""
+            kb_exists = db.query(KnowledgeBase.id).filter(
+                KnowledgeBase.id == kb_id,
+            ).first() is not None
+    except Exception:
+        logger.exception("查询来源文档失败: %s", doc_id)
+        return _kb_document_error("INTERNAL_ERROR", 500, "内部错误")
+    if not kb_exists:
+        return _kb_document_error("KB_NOT_FOUND", 404, f"知识库不存在: {kb_id}")
+    if file_type and file_type != "pdf":
+        return _kb_document_error(
+            "DOCUMENT_NOT_PDF",
+            415,
+            "该来源不是 PDF，无法渲染原始页面",
+            {"file_type": file_type},
+        )
+
+    upload_root = UPLOAD_DIR.resolve()
+    pdf_path = (upload_root / f"{doc_id}.pdf").resolve()
+    if pdf_path.parent != upload_root or not pdf_path.is_file():
+        return _kb_document_error("DOCUMENT_FILE_NOT_FOUND", 404, "文档原文件不存在")
+    try:
+        with pdf_path.open("rb") as handle:
+            header = handle.read(1024)
+    except OSError:
+        return _kb_document_error("DOCUMENT_FILE_NOT_FOUND", 404, "文档原文件不存在")
+    if b"%PDF-" not in header:
+        return _kb_document_error("DOCUMENT_NOT_PDF", 415, "该来源不是 PDF，无法渲染原始页面")
+    return pdf_path, title
+
+
+def _inline_pdf_filename(title: str, doc_id: str) -> str:
+    """Build a safe Content-Disposition filename from the upload title."""
+    name = Path(title).name.strip()
+    name = re.sub(r'[\x00-\x1f\x7f"\\]', "_", name)
+    if not name or name in {".", ".."}:
+        name = f"{doc_id}.pdf"
+    if not name.lower().endswith(".pdf"):
+        name += ".pdf"
+    return name[:200]
+
+
 @router.get("/kb/documents/{doc_id}/page-image")
 def get_document_page_image(
     doc_id: str,
     page: int = Query(..., description="1-based page number"),
-    scale: float = Query(1.0, description="Render scale relative to 72 DPI (0.5-2.0)"),
+    scale: float = Query(1.0, description="Render scale relative to 72 DPI (0.5-4.0)"),
     user: dict = Depends(current_user_optional),
 ):
     """Render one page of an uploaded PDF as PNG for source previews.
@@ -1357,57 +1416,25 @@ def get_document_page_image(
     """
     from src.rag.page_image import MAX_SCALE, MIN_SCALE, PageImageError, render_page_png
 
-    if not _DOC_ID_RE.fullmatch(doc_id):
-        return _page_image_error("DOC_NOT_FOUND", 404, "文档不存在")
     if not math.isfinite(scale) or scale < MIN_SCALE or scale > MAX_SCALE:
-        return _page_image_error(
+        return _kb_document_error(
             "INVALID_SCALE", 400, f"scale 必须在 {MIN_SCALE}-{MAX_SCALE} 之间",
         )
     if page < 1:
-        return _page_image_error("INVALID_PAGE", 400, "page 必须是从 1 开始的页码")
+        return _kb_document_error("INVALID_PAGE", 400, "page 必须是从 1 开始的页码")
 
-    try:
-        with get_db_ctx() as db:
-            record = db.query(KnowledgeDoc).filter(KnowledgeDoc.doc_id == doc_id).first()
-            if not record:
-                return _page_image_error("DOC_NOT_FOUND", 404, f"文档不存在: {doc_id}")
-            kb_id = record.kb_id
-            file_type = (record.file_type or "").strip().lower().lstrip(".")
-            kb_exists = db.query(KnowledgeBase.id).filter(
-                KnowledgeBase.id == kb_id,
-            ).first() is not None
-    except Exception:
-        logger.exception("查询来源文档失败: %s", doc_id)
-        return _page_image_error("INTERNAL_ERROR", 500, "内部错误")
-    if not kb_exists:
-        return _page_image_error("KB_NOT_FOUND", 404, f"知识库不存在: {kb_id}")
-    if file_type and file_type != "pdf":
-        return _page_image_error(
-            "DOCUMENT_NOT_PDF",
-            415,
-            "该来源不是 PDF，无法渲染原始页面",
-            {"file_type": file_type},
-        )
-
-    upload_root = UPLOAD_DIR.resolve()
-    pdf_path = (upload_root / f"{doc_id}.pdf").resolve()
-    if pdf_path.parent != upload_root or not pdf_path.is_file():
-        return _page_image_error("DOCUMENT_FILE_NOT_FOUND", 404, "文档原文件不存在")
-    try:
-        with pdf_path.open("rb") as handle:
-            header = handle.read(1024)
-    except OSError:
-        return _page_image_error("DOCUMENT_FILE_NOT_FOUND", 404, "文档原文件不存在")
-    if b"%PDF-" not in header:
-        return _page_image_error("DOCUMENT_NOT_PDF", 415, "该来源不是 PDF，无法渲染原始页面")
+    resolved = _resolve_uploaded_pdf(doc_id)
+    if isinstance(resolved, JSONResponse):
+        return resolved
+    pdf_path, _title = resolved
 
     try:
         png, cache_hit = render_page_png(doc_id, pdf_path, page, scale)
     except PageImageError as exc:
-        return _page_image_error(exc.code, exc.status_code, exc.message, exc.details)
+        return _kb_document_error(exc.code, exc.status_code, exc.message, exc.details)
     except Exception:
         logger.exception("渲染来源页面失败: %s", doc_id)
-        return _page_image_error("PAGE_RENDER_FAILED", 500, "PDF 页面渲染失败")
+        return _kb_document_error("PAGE_RENDER_FAILED", 500, "PDF 页面渲染失败")
 
     return Response(
         content=png,
@@ -1416,6 +1443,26 @@ def get_document_page_image(
             "Cache-Control": "private, max-age=86400",
             "X-Page-Image-Cache": "hit" if cache_hit else "miss",
         },
+    )
+
+
+@router.get("/kb/documents/{doc_id}/file")
+def get_document_file(
+    doc_id: str,
+    user: dict = Depends(current_user_optional),
+):
+    """Serve the original uploaded PDF inline for the source viewer."""
+    resolved = _resolve_uploaded_pdf(doc_id)
+    if isinstance(resolved, JSONResponse):
+        return resolved
+    pdf_path, title = resolved
+
+    return FileResponse(
+        pdf_path,
+        media_type="application/pdf",
+        filename=_inline_pdf_filename(title, doc_id),
+        content_disposition_type="inline",
+        headers={"Cache-Control": "private, max-age=86400"},
     )
 
 
