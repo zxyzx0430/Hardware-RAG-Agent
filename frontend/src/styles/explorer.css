@@ -1072,18 +1072,23 @@
     content: attr(aria-label);
   }
 
-  /* Keep the tree and editor both usable at the minimum Explorer width. */
+  /* Keep the tree and editor both usable at the minimum Explorer width. The
+     pane is a native vertical resize box, so the split can be rebalanced
+     without JS while its content stays scrollable. */
   .explorer-split {
     flex-direction: column;
   }
 
   .explorer-tree-pane {
     width: 100% !important;
-    max-height: 40%;
-    min-height: 0;
-    flex: 0 1 40%;
+    flex: 0 0 auto;
+    height: 42%;
+    min-height: 140px;
+    max-height: 70%;
     border-right: 0;
     border-bottom: 1px solid var(--border);
+    overflow: auto;
+    resize: vertical;
   }
 
   .explorer-tree-resizer {
@@ -1094,5 +1099,33 @@
     min-width: 0;
     min-height: 0;
     flex: 1 1 60%;
+  }
+}
+
+/* At the 280px default width, five labelled header actions need two rows.
+   Drop to icon-only actions so the header stays at title + actions. */
+@container explorer-panel (max-width: 360px) {
+  .explorer-header-title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .explorer-header-button-label {
+    display: none;
+  }
+
+  .explorer-follow-btn::after,
+  .explorer-collapse-btn::after {
+    content: none;
+  }
+}
+
+/* A narrow-mode drag leaves an inline height on the tree pane. Once the panel
+   is wide enough for the row layout again, that stale height must not keep the
+   tree from filling the split. */
+@container explorer-panel (min-width: 521px) {
+  .explorer-tree-pane {
+    height: 100% !important;
   }
 }

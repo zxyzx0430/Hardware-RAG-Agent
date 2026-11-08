@@ -12,8 +12,10 @@ import {
 import { useToastStore } from "../../stores/useToastStore";
 import {
   CHAT_COLUMN_MIN_WIDTH,
+  EXPLORER_COLLAPSED_STRIP_WIDTH,
   LEFT_PANEL_MAX_WIDTH,
   LEFT_PANEL_MIN_WIDTH,
+  PANEL_RESIZER_WIDTH,
   getResizeReservedWidth,
   resolveLayout,
   type LayoutPanel,
@@ -152,6 +154,22 @@ export function AppRoot() {
   );
   const resolvedLayoutRef = useRef(resolvedLayout);
   resolvedLayoutRef.current = resolvedLayout;
+
+  // Toasts dock at the top-right of the window. In the chat shell the Explorer
+  // is the rightmost column, so keep the toast stack out of its header and
+  // toolbar by publishing the visible Explorer slot width.
+  const toastRightOffset = activeNav === "chat"
+    ? resolvedLayout.explorerOpen
+      ? resolvedLayout.explorerWidth + PANEL_RESIZER_WIDTH
+      : EXPLORER_COLLAPSED_STRIP_WIDTH
+    : 0;
+  useEffect(() => {
+    const root = document.documentElement;
+    root.style.setProperty("--toast-right-offset", `${toastRightOffset}px`);
+    return () => {
+      root.style.removeProperty("--toast-right-offset");
+    };
+  }, [toastRightOffset]);
   const autoCollapsedKeyRef = useRef("");
   const lastFoldNoticeAtRef = useRef(Number.NEGATIVE_INFINITY);
   // Ephemeral drawer state: the right panel is preferred open but does not fit

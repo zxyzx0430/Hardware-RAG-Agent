@@ -14,6 +14,11 @@ export function HamburgerMenu({ onClose }: Props) {
   const { t } = useI18n();
   const [showExportDialog, setShowExportDialog] = useState(false);
 
+  // Label the button with what the click actually does: light → dark → auto → light.
+  const nextThemeMode = themeMode === "light" ? "dark" : themeMode === "dark" ? "auto" : "light";
+  const themeActionLabel =
+    themeMode === "light" ? t("toggleDark") : themeMode === "dark" ? t("followSystem") : t("toggleLight");
+
   useEffect(() => {
     const onDoc = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) onClose();
@@ -27,9 +32,9 @@ export function HamburgerMenu({ onClose }: Props) {
       <div className="dropdown-backdrop" />
       <div className="dropdown-panel" ref={ref} style={{ top: 54, right: 0, width: 224 }}>
         <div className="dropdown-panel-body" style={{ padding: 8 }}>
-          <button className="hamburger-item" onClick={() => { setThemeMode(themeMode === 'dark' ? 'light' : themeMode === 'light' ? 'auto' : 'dark'); onClose(); }}>
+          <button className="hamburger-item" onClick={() => { setThemeMode(nextThemeMode); onClose(); }}>
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
-            <span>{themeMode === 'dark' ? t('toggleLight') : themeMode === 'light' ? t('toggleDark') : t('followSystem')}</span>
+            <span>{themeActionLabel}</span>
           </button>
 
           {/* Export conversation button */}

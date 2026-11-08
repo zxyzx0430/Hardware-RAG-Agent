@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { apiGet } from "../../api/client";
 import { useAppStore } from "../../stores/useAppStore";
 import { useToastStore } from "../../stores/useToastStore";
@@ -195,7 +196,9 @@ export function FolderPickerDialog({ initialPath, onConfirm, onCancel }: FolderP
 
   const breadcrumb = current ? current.split(/[\\/]/).filter(Boolean) : [];
 
-  return (
+  // The dialog is a window-level modal: mount it on document.body so an
+  // ancestor with container-type/containment cannot shrink its containing block.
+  const dialog = (
     <div className="folder-picker-embed" onClick={handleBackdropClick}>
       <div className="folder-picker-embed-inner">
         <div className="folder-picker-header">
@@ -344,4 +347,7 @@ export function FolderPickerDialog({ initialPath, onConfirm, onCancel }: FolderP
       </div>
     </div>
   );
+
+  if (typeof document === "undefined") return dialog;
+  return createPortal(dialog, document.body);
 }
