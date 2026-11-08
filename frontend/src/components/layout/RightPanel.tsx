@@ -5,6 +5,7 @@ import { useAppStore } from "../../stores/useAppStore";
 import { useChatStore } from "../../stores/useChatStore";
 import { useKnowledgeStore } from "../../stores/useKnowledgeStore";
 import type { DocChunk } from "../../stores/useKnowledgeStore";
+import { useToastStore } from "../../stores/useToastStore";
 import { WorkbenchPanel } from "../workbench/WorkbenchPanel";
 import { useI18n } from "../../i18n";
 import type { TodoItem, SourceRef } from "../../types/session";
@@ -498,8 +499,8 @@ const PAGE_ZOOM_MAX = 4;
 const PAGE_ZOOM_STEP = 1.25;
 const PAGE_ZOOM_DEBOUNCE_MS = 250;
 const PAGE_INITIAL_RENDER_SCALE = 1.5;
-// The backend renders between 0.5x and 2x; higher UI zoom reuses the 2x image.
-const PAGE_MAX_RENDER_SCALE = 2;
+// Keep in step with the backend's page-image MAX_SCALE.
+const PAGE_MAX_RENDER_SCALE = 4;
 
 type PageImageStatus = "loading" | "ready" | "refreshing" | "error";
 interface PageImageState {
@@ -535,6 +536,7 @@ function PageImageViewer({ docId, page, pageEnd, title, t, onShowText }: {
   const [renderScale, setRenderScale] = useState(PAGE_INITIAL_RENDER_SCALE);
   const [status, setStatus] = useState<PageImageStatus>(docId && page != null ? "loading" : "error");
   const [image, setImage] = useState<PageImageState | null>(null);
+  const [fileAction, setFileAction] = useState<"open" | "download" | null>(null);
 
   const viewerRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -732,6 +734,41 @@ function PageImageViewer({ docId, page, pageEnd, title, t, onShowText }: {
     dragRef.current = null;
   };
 
+  const runFileAction = async (mode: "open" | "download") => {
+    if (!docId || fileAction) return;
+    setFileAction(mode);
+    try {
+      const res = await fetch(`/api/kb/documents/${encodeURIComponent(docId)}/file`, {
+        headers: getAuthHeaders(),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      if (mode === "open") {
+        window.open(objectUrl, "_blank", "noopener,noreferrer");
+        // Give the new tab time to load the blob before releasing it.
+        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+      } else {
+        const link = document.createElement("a");
+        link.href = objectUrl;
+        link.download = title || `document-${docId}.pdf`;
+        link.rel = "noopener";
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1_000);
+      }
+    } catch {
+      useToastStore.getState().showError(
+        mode === "open"
+          ? t('openPdfFailed', '无法打开原 PDF')
+          : t('downloadPdfFailed', '下载原 PDF 失败'),
+      );
+    } finally {
+      setFileAction(null);
+    }
+  };
+
   const toggleZoom = () => {
     if (zoomRef.current > 1.01) {
       applyZoom(1);
@@ -758,34 +795,65 @@ function PageImageViewer({ docId, page, pageEnd, title, t, onShowText }: {
       onKeyDown={handleKeyDown}
     >
       <div className="source-page-toolbar">
-        <div className="source-page-nav" role="group" aria-label={t('pageNavigation', '页面导航')}>
-          <button
-            type="button"
-            className="source-page-tool"
-            onClick={() => goToPage(currentPage - 1)}
-            disabled={!canPrev}
-            aria-label={t('previousPage', '上一页')}
-            title={t('previousPage', '上一页')}
+        <div className="source-page-toolbar-left">
+          <div className="source-page-nav" role="group" aria-label={t('pageNavigation', '页面导航')}>
+            <button
+              type="button"
+              className="source-page-tool"
+              onClick={() => goToPage(currentPage - 1)}
+              disabled={!canPrev}
+              aria-label={t('previousPage', '上一页')}
+              title={t('previousPage', '上一页')}
+            >
+              ‹
+            </button>
+            <span className="source-page-indicator" aria-live="polite">{pageText}</span>
+            <button
+              type="button"
+              className="source-page-tool"
+              onClick={() => goToPage(currentPage + 1)}
+              disabled={!canNext}
+              aria-label={t('nextPage', '下一页')}
+              title={t('nextPage', '下一页')}
+            >
+              ›
+            </button>
+          </div>
+          <div
+            className="source-page-file-actions"
+            role="group"
+            aria-label={t('pdfFileActions', 'PDF 文件')}
+            aria-busy={fileAction !== null}
           >
-            ‹
-          </button>
-          <span className="source-page-indicator" aria-live="polite">{pageText}</span>
-          <button
-            type="button"
-            className="source-page-tool"
-            onClick={() => goToPage(currentPage + 1)}
-            disabled={!canNext}
-            aria-label={t('nextPage', '下一页')}
-            title={t('nextPage', '下一页')}
-          >
-            ›
-          </button>
+            <button
+              type="button"
+              className="source-page-file-btn"
+              onClick={() => void runFileAction("open")}
+              disabled={!docId || fileAction !== null}
+              aria-label={t('openPdf', '打开原 PDF')}
+              title={t('openPdf', '打开原 PDF')}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 3h7v7" /><path d="M10 14 21 3" /><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5" /></svg>
+              <span>{t('openPdfShort', '打开')}</span>
+            </button>
+            <button
+              type="button"
+              className="source-page-file-btn"
+              onClick={() => void runFileAction("download")}
+              disabled={!docId || fileAction !== null}
+              aria-label={t('downloadPdf', '下载原 PDF')}
+              title={t('downloadPdf', '下载原 PDF')}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 3v12" /><polyline points="7 10 12 15 17 10" /><path d="M5 21h14" /></svg>
+              <span>{t('downloadPdfShort', '下载')}</span>
+            </button>
+          </div>
+          {status === "refreshing" ? (
+            <span className="source-page-quality" role="status">
+              {t('highResLoading', '正在加载高清图…')}
+            </span>
+          ) : null}
         </div>
-        {status === "refreshing" ? (
-          <span className="source-page-quality" role="status">
-            {t('highResLoading', '正在加载高清图…')}
-          </span>
-        ) : null}
         <div className="source-page-zoom" role="group" aria-label={t('zoomControls', '缩放')}>
           <button
             type="button"

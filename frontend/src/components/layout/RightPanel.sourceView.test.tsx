@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RightPanel } from "./RightPanel";
 import { useAppStore } from "../../stores/useAppStore";
 import { useChatStore } from "../../stores/useChatStore";
+import { useToastStore } from "../../stores/useToastStore";
 import type { Message, SourceRef } from "../../types/session";
 
 const { fetchMock, getAuthHeadersMock } = vi.hoisted(() => ({
@@ -112,6 +113,14 @@ function imageResponse() {
     ok: true,
     status: 200,
     blob: async () => new Blob(["page"], { type: "image/png" }),
+  };
+}
+
+function pdfFileResponse() {
+  return {
+    ok: true,
+    status: 200,
+    blob: async () => new Blob(["%PDF-1.7"], { type: "application/pdf" }),
   };
 }
 
@@ -306,6 +315,86 @@ describe("RightPanel source viewer modes", () => {
 
     fireEvent.doubleClick(screen.getByRole("img"));
     expect(screen.getByText("116%")).toBeTruthy();
+  });
+
+  it("requests the 4x render scale for deep zooms", async () => {
+    renderSource(pdfSource);
+    await waitFor(() => expect(screen.getByRole("img")).toBeTruthy());
+
+    fireEvent.wheel(screen.getByRole("region"), { deltaY: -1000, clientX: 10, clientY: 10 });
+    expect(screen.getByText("400%")).toBeTruthy();
+
+    await waitFor(() => {
+      const urls = fetchMock.mock.calls.map(([url]) => String(url));
+      expect(urls.some((url) => url.includes("page=39&scale=4"))).toBe(true);
+    }, { timeout: 2000 });
+  });
+
+  it("opens the original PDF through the file endpoint", async () => {
+    const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      return Promise.resolve(url.includes("/file") ? pdfFileResponse() : imageResponse());
+    });
+
+    renderSource(pdfSource);
+    await waitFor(() => expect(screen.getByRole("img")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "打开原 PDF" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/kb/documents/doc-bme/file",
+        expect.objectContaining({ headers: { Authorization: "Bearer test-token" } }),
+      );
+    });
+    await waitFor(() => {
+      expect(openSpy).toHaveBeenCalledWith("blob:page-image", "_blank", "noopener,noreferrer");
+    });
+
+    openSpy.mockRestore();
+  });
+
+  it("downloads the original PDF with a temporary anchor", async () => {
+    const clickedAnchors: HTMLAnchorElement[] = [];
+    const clickSpy = vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(function (this: HTMLAnchorElement) {
+        clickedAnchors.push(this);
+      });
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      return Promise.resolve(url.includes("/file") ? pdfFileResponse() : imageResponse());
+    });
+
+    renderSource(pdfSource);
+    await waitFor(() => expect(screen.getByRole("img")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "下载原 PDF" }));
+
+    await waitFor(() => expect(clickedAnchors).toHaveLength(1));
+    expect(clickedAnchors[0].download).toBe("BME280 datasheet.pdf");
+    expect(clickedAnchors[0].getAttribute("href")).toBe("blob:page-image");
+
+    clickSpy.mockRestore();
+  });
+
+  it("shows a toast when the original PDF cannot be fetched", async () => {
+    useToastStore.setState({ toasts: [] });
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      return Promise.resolve(
+        url.includes("/file")
+          ? { ok: false, status: 404, blob: async () => new Blob([]) }
+          : imageResponse(),
+      );
+    });
+
+    renderSource(pdfSource);
+    await waitFor(() => expect(screen.getByRole("img")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "打开原 PDF" }));
+
+    await waitFor(() => {
+      expect(useToastStore.getState().toasts.some((toast) => toast.message.includes("无法打开原 PDF"))).toBe(true);
+    });
   });
 
   it("zooms with +/- keys and resets with the fit-width button", async () => {

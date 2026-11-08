@@ -825,6 +825,13 @@ const en: Record<string, string> = {
   zoomOut: 'Zoom out',
   fitWidth: 'Fit width',
   highResLoading: 'Loading high-resolution image…',
+  pdfFileActions: 'PDF file',
+  openPdf: 'Open original PDF',
+  openPdfShort: 'Open',
+  downloadPdf: 'Download original PDF',
+  downloadPdfShort: 'Download',
+  openPdfFailed: 'Could not open the original PDF',
+  downloadPdfFailed: 'Could not download the original PDF',
 
   // Model dropdown
   modelSearchPlaceholder: 'Search models or providers…',
