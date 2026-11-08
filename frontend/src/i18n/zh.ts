@@ -825,6 +825,13 @@ const zh: Record<string, string> = {
   zoomOut: '缩小',
   fitWidth: '适应宽度',
   highResLoading: '正在加载高清图…',
+  pdfFileActions: 'PDF 文件',
+  openPdf: '打开原 PDF',
+  openPdfShort: '打开',
+  downloadPdf: '下载原 PDF',
+  downloadPdfShort: '下载',
+  openPdfFailed: '无法打开原 PDF',
+  downloadPdfFailed: '下载原 PDF 失败',
 
   // Model dropdown
   modelSearchPlaceholder: '搜索模型或服务商…',
