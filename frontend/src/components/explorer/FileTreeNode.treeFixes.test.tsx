@@ -73,7 +73,9 @@ describe("FileTreeNode tree interaction fixes", () => {
     const onRetry = vi.fn();
     renderNode(node, {
       expanded: new Set([node.path]),
-      dirErrors: new Map([[node.path, "PermissionError: permission denied"]]),
+      // Exact message the backend returns for EXPLORER_ACCESS_DENIED; the
+      // API client surfaces only error.message, not the error code.
+      dirErrors: new Map([[node.path, "没有权限读取该文件夹"]]),
       onRetry,
     });
 

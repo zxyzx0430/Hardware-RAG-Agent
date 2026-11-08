@@ -8,7 +8,7 @@ import { t } from "../../i18n";
 const INDENT_PX = 16;
 const ROW_HEIGHT = 28;
 const OVERSCAN_COUNT = 5;
-const PERMISSION_ERROR_PATTERN = /permission denied|access is denied|拒绝访问|无权限|EACCES|EPERM/i;
+const PERMISSION_ERROR_PATTERN = /permission denied|access is denied|拒绝访问|没有权限|无权限|EACCES|EPERM/i;
 
 function formatDirError(message: string): string {
   return PERMISSION_ERROR_PATTERN.test(message)

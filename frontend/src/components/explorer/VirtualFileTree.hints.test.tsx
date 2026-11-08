@@ -35,7 +35,7 @@ function renderTree(overrides: Partial<React.ComponentProps<typeof VirtualFileTr
     renaming: null,
     creating: null,
     dragOverPath: null,
-    dirErrors: new Map([[`${ROOT}/denied`, "PermissionError: permission denied"]]),
+    dirErrors: new Map([[`${ROOT}/denied`, "没有权限读取该文件夹"]]),
     newItemPlaceholder: { file: "New file", folder: "New folder" },
     onToggle: vi.fn(),
     onSelect: vi.fn(),

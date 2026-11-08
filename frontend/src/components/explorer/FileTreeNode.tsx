@@ -8,7 +8,7 @@ const INDENT_PX = 16;
 // Lightweight virtualization: cap rendered children per directory. A "show more"
 // button reveals the rest. Avoids rendering thousands of nodes for huge dirs.
 const MAX_CHILDREN_RENDER = 200;
-const PERMISSION_ERROR_PATTERN = /permission denied|access is denied|拒绝访问|无权限|EACCES|EPERM/i;
+const PERMISSION_ERROR_PATTERN = /permission denied|access is denied|拒绝访问|没有权限|无权限|EACCES|EPERM/i;
 
 function formatDirError(message: string): string {
   return PERMISSION_ERROR_PATTERN.test(message)
