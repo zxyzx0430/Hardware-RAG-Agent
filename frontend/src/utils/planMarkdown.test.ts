@@ -58,4 +58,23 @@ describe("buildPlanMarkdown", () => {
 
     expect(markdown).toContain("10. **Step 10**\n\n    Detail 10");
   });
+
+  it("indents multi-line verification under its step", () => {
+    const markdown = buildPlanMarkdown(makePlan({
+      steps: [{
+        title: "Inspect",
+        detail: "",
+        verification: "运行检查\n```bash\ni2cdetect -y 1\n```",
+      }],
+    }), LABELS);
+    const lines = markdown.split("\n");
+    const start = lines.findIndex((line) => line.includes("- **验证**: 运行检查"));
+
+    expect(lines.slice(start, start + 4)).toEqual([
+      "   - **验证**: 运行检查",
+      "     ```bash",
+      "     i2cdetect -y 1",
+      "     ```",
+    ]);
+  });
 });

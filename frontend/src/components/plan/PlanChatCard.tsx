@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useAppStore } from "../../stores/useAppStore";
 import { useChatStore } from "../../stores/useChatStore";
 import { useToastStore } from "../../stores/useToastStore";
+import { MarkdownRenderer } from "../shared/MarkdownRenderer";
 
 /** Plan card shown inline in the conversation, with the three user actions. */
 export function PlanChatCard() {
@@ -75,7 +76,11 @@ export function PlanChatCard() {
         <button type="button" className="plan-chat-view" onClick={viewPlan}>在右侧查看</button>
       </div>
       <h3 className="plan-chat-title">{plan.title}</h3>
-      {plan.summary ? <p className="plan-chat-summary">{plan.summary}</p> : null}
+      {plan.summary ? (
+        <div className="plan-chat-summary plan-chat-markdown">
+          <MarkdownRenderer content={plan.summary} />
+        </div>
+      ) : null}
       {plan.steps.length > 0 ? (
         <ol className="plan-chat-steps">
           {plan.steps.map((step, index) => (

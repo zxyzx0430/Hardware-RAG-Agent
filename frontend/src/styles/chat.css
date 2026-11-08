@@ -1266,6 +1266,30 @@
 .plan-chat-view:hover { text-decoration: underline; }
 .plan-chat-title { margin: 0 0 6px; font-size: 15px; font-weight: 650; color: var(--fg); }
 .plan-chat-summary { margin: 0 0 10px; font-size: 12.5px; line-height: 1.55; color: var(--muted-fg); }
+.plan-chat-markdown { max-height: 220px; overflow-y: auto; }
+.plan-chat-markdown .markdown-body { font-size: 12.5px; line-height: 1.55; color: var(--muted-fg); }
+.plan-chat-markdown .markdown-body p { margin: 0 0 6px; }
+.plan-chat-markdown .markdown-body h1,
+.plan-chat-markdown .markdown-body h2,
+.plan-chat-markdown .markdown-body h3,
+.plan-chat-markdown .markdown-body h4 {
+  margin: 0 0 6px; padding: 0; border: 0;
+  font-size: 13px; font-weight: 650; line-height: 1.4; color: var(--fg);
+}
+.plan-chat-markdown .markdown-body ul,
+.plan-chat-markdown .markdown-body ol {
+  margin: 0 0 6px; padding-left: 18px;
+}
+.plan-chat-markdown .markdown-body ul { list-style: disc outside; }
+.plan-chat-markdown .markdown-body ol { list-style: decimal outside; }
+.plan-chat-markdown .markdown-body li { margin: 2px 0; }
+.plan-chat-markdown .markdown-body .table-wrapper { overflow-x: auto; margin: 6px 0; }
+.plan-chat-markdown .markdown-body table { font-size: 11px; }
+.plan-chat-markdown .markdown-body th,
+.plan-chat-markdown .markdown-body td {
+  padding: 4px 6px; border: 1px solid var(--border); text-align: left;
+}
+.plan-chat-markdown .markdown-body pre { margin: 6px 0; }
 .plan-chat-steps {
   margin: 0 0 10px; padding-left: 0; list-style: none;
   max-height: 220px; overflow-y: auto;

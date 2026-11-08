@@ -16,12 +16,18 @@ function indentContinuation(text: string, indent: string): string {
     .join("\n");
 }
 
+function renderVerification(verification: string, indent: string, label: string): string[] {
+  const [first = "", ...rest] = verification.split("\n");
+  const continuation = rest.map((line) => (line ? `${indent}  ${line}` : ""));
+  return [`${indent}- **${label}**: ${first}`, ...continuation, ""];
+}
+
 function renderStep(step: PlanStep, index: number, labels: PlanMarkdownLabels): string[] {
   const indent = " ".repeat(String(index + 1).length + 2);
   const lines = [`${index + 1}. **${step.title}**`, ""];
   if (step.detail) lines.push(indentContinuation(step.detail, indent), "");
   if (step.verification) {
-    lines.push(`${indent}- **${labels.verification}**: ${step.verification}`, "");
+    lines.push(...renderVerification(step.verification, indent, labels.verification));
   }
   return lines;
 }

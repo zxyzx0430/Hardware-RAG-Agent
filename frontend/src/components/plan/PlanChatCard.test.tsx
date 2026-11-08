@@ -37,15 +37,21 @@ const mocks = vi.hoisted(() => {
 vi.mock("../../stores/useChatStore", () => ({
   useChatStore: (selector: (state: typeof mocks.chatState) => unknown) => selector(mocks.chatState),
 }));
-vi.mock("../../stores/useAppStore", () => ({
-  useAppStore: (selector: (state: typeof mocks.appState) => unknown) => selector(mocks.appState),
-}));
+vi.mock("../../stores/useAppStore", () => {
+  const state = () => ({ ...mocks.appState, lang: "zh", themeMode: "light" });
+  const useAppStore = Object.assign(
+    (selector: (value: ReturnType<typeof state>) => unknown) => selector(state()),
+    { getState: state, subscribe: () => () => {} },
+  );
+  return { useAppStore };
+});
 vi.mock("../../stores/useToastStore", () => ({
   useToastStore: { getState: () => mocks.toastState },
 }));
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.chatState.sessionPlans = { s1: mocks.plan };
 });
 
 afterEach(cleanup);
@@ -80,6 +86,29 @@ describe("PlanChatCard", () => {
 
     expect(mocks.chatState.setPlanMode).not.toHaveBeenCalled();
     expect(mocks.toastState.showInfo).toHaveBeenCalled();
+  });
+
+  it("renders summary markdown without leaking source syntax", () => {
+    const summary = [
+      "**结论**：先读 `0x68`。",
+      "",
+      "| 引脚 | 电平 |",
+      "| --- | --- |",
+      "| SDA | 3.3V |",
+      "",
+      "```bash",
+      "i2cdetect -y 1",
+      "```",
+    ].join("\n");
+    mocks.chatState.sessionPlans = { s1: { ...mocks.plan, summary } };
+
+    const { container } = render(<PlanChatCard />);
+
+    expect(container.querySelector(".plan-chat-markdown strong")?.textContent).toBe("结论");
+    expect(container.querySelector(".plan-chat-markdown table")).toBeTruthy();
+    expect(container.querySelector(".plan-chat-markdown pre")).toBeTruthy();
+    expect(container.textContent).not.toContain("**");
+    expect(container.textContent).not.toContain("```");
   });
 
   it("rejects the plan when cancelled", async () => {
