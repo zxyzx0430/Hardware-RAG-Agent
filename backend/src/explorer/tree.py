@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from src.explorer.security import is_denied_component
+from src.explorer.security import ExplorerAccessDeniedError, is_denied_component
 
 
 def build_tree(path: Path) -> dict[str, Any]:
@@ -57,8 +57,8 @@ def _tree_node(path: Path) -> dict[str, Any]:
 def _sorted_children(path: Path) -> list[Path]:
     try:
         children = [child for child in path.iterdir() if _is_visible_name(child)]
-    except PermissionError:
-        return []
+    except PermissionError as exc:
+        raise ExplorerAccessDeniedError("directory contents could not be listed") from exc
     children.sort(key=lambda c: (not c.is_dir(), c.name.lower()))
     return children
 

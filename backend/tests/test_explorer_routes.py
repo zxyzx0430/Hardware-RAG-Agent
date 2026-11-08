@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import os
+import stat
 import subprocess
+import types
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier
@@ -860,3 +862,218 @@ def test_watch_without_bearer_header_is_401(workspace) -> None:
 
     assert response.status_code == 401
     assert response.json()["error"]["code"] == "AUTH_REQUIRED"
+
+
+def test_duplicate_create_returns_one_readable_conflict_message(workspace) -> None:
+    client, root, _ = workspace
+    target = root / "big-3mb.txt"
+    target.write_text("existing", encoding="utf-8")
+    client.post("/api/explorer/open", headers=auth_headers(), json={"path": str(root)})
+
+    response = client.post(
+        "/api/explorer/create",
+        headers=auth_headers(),
+        json={"path": str(target), "type": "file"},
+    )
+
+    assert response.status_code == 409
+    error = response.json()["error"]
+    assert error["code"] == "EXPLORER_ALREADY_EXISTS"
+    assert "已存在" in error["message"]
+    assert "already exists" not in error["message"]
+    assert error["message"].count("big-3mb.txt") == 1
+
+
+def test_read_only_save_returns_access_denied_without_temp_path(workspace, monkeypatch) -> None:
+    client, root, _ = workspace
+    target = root / "readonly.txt"
+    target.write_text("original", encoding="utf-8")
+    client.post("/api/explorer/open", headers=auth_headers(), json={"path": str(root)})
+    version = client.get(
+        "/api/explorer/read", headers=auth_headers(), params={"path": str(target)}
+    ).json()["version"]
+
+    def deny_replace(source, destination):
+        raise PermissionError(13, "Access is denied", str(source), None, str(destination))
+
+    from src.explorer import files as explorer_files
+
+    monkeypatch.setattr(explorer_files.os, "replace", deny_replace)
+
+    response = client.post(
+        "/api/explorer/write",
+        headers=auth_headers(),
+        json={"path": str(target), "content": "changed", "expected_version": version},
+    )
+
+    assert response.status_code == 403
+    error = response.json()["error"]
+    assert error["code"] == "EXPLORER_ACCESS_DENIED"
+    assert "只读" in error["message"] or "权限" in error["message"]
+    assert "WinError" not in error["message"]
+    assert ".tmp" not in error["message"]
+    assert str(root) not in error["message"]
+    assert error["details"] is None
+    assert target.read_text(encoding="utf-8") == "original"
+    assert list(root.glob(".*.tmp")) == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows read-only attribute behavior")
+def test_windows_read_only_file_save_returns_access_denied(workspace) -> None:
+    client, root, _ = workspace
+    target = root / "readonly.txt"
+    target.write_text("original", encoding="utf-8")
+    client.post("/api/explorer/open", headers=auth_headers(), json={"path": str(root)})
+    version = client.get(
+        "/api/explorer/read", headers=auth_headers(), params={"path": str(target)}
+    ).json()["version"]
+    os.chmod(target, stat.S_IREAD)
+    try:
+        response = client.post(
+            "/api/explorer/write",
+            headers=auth_headers(),
+            json={"path": str(target), "content": "changed", "expected_version": version},
+        )
+    finally:
+        os.chmod(target, stat.S_IWRITE | stat.S_IREAD)
+
+    assert response.status_code == 403
+    error = response.json()["error"]
+    assert error["code"] == "EXPLORER_ACCESS_DENIED"
+    assert "WinError" not in error["message"]
+    assert ".tmp" not in error["message"]
+    assert target.read_text(encoding="utf-8") == "original"
+    assert list(root.glob(".*.tmp")) == []
+
+
+def test_missing_file_returns_not_found_instead_of_security_error(workspace) -> None:
+    client, root, _ = workspace
+    client.post("/api/explorer/open", headers=auth_headers(), json={"path": str(root)})
+
+    response = client.get(
+        "/api/explorer/read",
+        headers=auth_headers(),
+        params={"path": str(root / "already-deleted.txt")},
+    )
+
+    assert response.status_code == 404
+    error = response.json()["error"]
+    assert error["code"] == "EXPLORER_NOT_FOUND"
+    assert "不存在" in error["message"]
+    assert "security check" not in error["message"]
+
+
+def test_open_missing_folder_returns_not_found(workspace) -> None:
+    client, root, _ = workspace
+
+    response = client.post(
+        "/api/explorer/open",
+        headers=auth_headers(),
+        json={"path": str(root / "missing-folder")},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "EXPLORER_NOT_FOUND"
+
+
+def test_unreadable_directory_reports_access_denied_instead_of_empty_list(
+    workspace, monkeypatch
+) -> None:
+    client, root, _ = workspace
+    denied = root / "denied-dir"
+    denied.mkdir()
+    client.post("/api/explorer/open", headers=auth_headers(), json={"path": str(root)})
+    path_type = type(root)
+    original_iterdir = path_type.iterdir
+
+    def deny_unreadable_directory(path: Path):
+        if path == denied:
+            raise PermissionError(13, "Access is denied")
+        return original_iterdir(path)
+
+    monkeypatch.setattr(path_type, "iterdir", deny_unreadable_directory)
+
+    response = client.get(
+        "/api/explorer/dir", headers=auth_headers(), params={"path": str(denied)}
+    )
+
+    assert response.status_code == 403
+    error = response.json()["error"]
+    assert error["code"] == "EXPLORER_ACCESS_DENIED"
+    assert "权限" in error["message"]
+    assert error["details"] is None
+
+
+def test_unreadable_file_reports_access_denied(workspace, monkeypatch) -> None:
+    client, root, _ = workspace
+    target = root / "denied.txt"
+    target.write_text("secret", encoding="utf-8")
+    client.post("/api/explorer/open", headers=auth_headers(), json={"path": str(root)})
+    path_type = type(root)
+    original_read_bytes = path_type.read_bytes
+
+    def deny_read_bytes(path: Path):
+        if path == target:
+            raise PermissionError(13, "Access is denied")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(path_type, "read_bytes", deny_read_bytes)
+
+    response = client.get(
+        "/api/explorer/read", headers=auth_headers(), params={"path": str(target)}
+    )
+
+    assert response.status_code == 403
+    error = response.json()["error"]
+    assert error["code"] == "EXPLORER_ACCESS_DENIED"
+    assert "WinError" not in error["message"]
+    assert str(root) not in error["message"]
+
+
+def test_reveal_builds_the_os_command_without_launching_a_window(
+    workspace, monkeypatch
+) -> None:
+    client, root, _ = workspace
+    target = root / "main.py"
+    target.write_text("print('reveal')\n", encoding="utf-8")
+    client.post("/api/explorer/open", headers=auth_headers(), json={"path": str(root)})
+    calls: list[list[str]] = []
+
+    fake_subprocess = types.SimpleNamespace(Popen=lambda args: calls.append(args))
+    monkeypatch.setattr(explorer_routes, "subprocess", fake_subprocess)
+
+    response = client.post(
+        "/api/explorer/reveal", headers=auth_headers(), json={"path": str(target)}
+    )
+    missing = client.post(
+        "/api/explorer/reveal",
+        headers=auth_headers(),
+        json={"path": str(root / "missing.txt")},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["path"] == str(target)
+    assert len(calls) == 1
+    assert str(target) in calls[0]
+    assert calls[0][0] in {"explorer", "open", "xdg-open"}
+    assert missing.status_code == 404
+    assert missing.json()["error"]["code"] == "EXPLORER_NOT_FOUND"
+    assert len(calls) == 1
+
+
+@pytest.mark.skipif(os.name != "nt", reason="case-insensitive filesystem behavior")
+def test_case_only_rename_is_allowed(workspace) -> None:
+    client, root, _ = workspace
+    original = root / "Case.txt"
+    original.write_text("case payload", encoding="utf-8")
+    client.post("/api/explorer/open", headers=auth_headers(), json={"path": str(root)})
+
+    response = client.post(
+        "/api/explorer/rename",
+        headers=auth_headers(),
+        json={"path": str(original), "new_name": "case.txt"},
+    )
+
+    assert response.status_code == 200
+    assert [path.name for path in root.iterdir()] == ["case.txt"]
+    assert (root / "case.txt").read_text(encoding="utf-8") == "case payload"

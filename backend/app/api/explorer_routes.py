@@ -18,6 +18,7 @@ from app.api.auth import get_provider_key_by_session
 from src.explorer.files import (
     copy_node,
     create_node,
+    ExplorerWriteError,
     FileVersionConflictError,
     move_node,
     read_file_response,
@@ -27,6 +28,8 @@ from src.explorer.files import (
 from src.explorer.trash import ExplorerTrashError, list_trash, move_to_trash, restore_from_trash
 from src.explorer.search import search_content
 from src.explorer.security import (
+    ExplorerAccessDeniedError,
+    ExplorerNotFoundError,
     ExplorerSecurityError,
     authorize_root,
     authorized_root_for,
@@ -286,13 +289,15 @@ async def explorer_open(
         root = authorize_root(req.path, session_id)
         tree = await asyncio.to_thread(build_tree, root)
         return {"tree": [tree]}
+    except ExplorerNotFoundError:
+        return _error_response("文件夹不存在", None, 404, "EXPLORER_NOT_FOUND")
+    except ExplorerAccessDeniedError:
+        return _error_response("没有权限读取该文件夹", None, 403, "EXPLORER_ACCESS_DENIED")
     except ExplorerSecurityError as exc:
         return _error_response("security check failed", str(exc), 403, "FORBIDDEN")
-    except FileNotFoundError as exc:
-        return _error_response("directory not found", str(exc), 404)
-    except Exception as exc:
+    except Exception:
         logger.exception("explorer_open failed")
-        return _error_response("open failed", str(exc), 500)
+        return _error_response("打开文件夹时发生内部错误", None, 500, "EXPLORER_INTERNAL_ERROR")
 
 
 @router.get("/explorer/dir")
@@ -304,14 +309,18 @@ async def explorer_dir(
     try:
         real = validate_path(path, allow_file=False, session_id=session_id)
         if not real.is_dir():
-            return _error_response("not a directory", str(real), 400)
+            return _error_response("路径不是文件夹", None, 400)
         children = await asyncio.to_thread(build_tree_for_dir, real)
         return {"success": True, "data": {"children": children}}
+    except ExplorerNotFoundError:
+        return _error_response("文件夹不存在", None, 404, "EXPLORER_NOT_FOUND")
+    except ExplorerAccessDeniedError:
+        return _error_response("没有权限读取该文件夹", None, 403, "EXPLORER_ACCESS_DENIED")
     except ExplorerSecurityError as exc:
         return _error_response("security check failed", str(exc), 403, "FORBIDDEN")
-    except Exception as exc:
+    except Exception:
         logger.exception("explorer_dir failed")
-        return _error_response("dir load failed", str(exc), 500)
+        return _error_response("读取文件夹时发生内部错误", None, 500, "EXPLORER_INTERNAL_ERROR")
 
 
 @router.get("/explorer/read")
@@ -323,13 +332,17 @@ async def explorer_read(
     try:
         real = validate_path(path, allow_dir=False, session_id=session_id)
         if not real.is_file():
-            return _error_response("not a file", str(real), 400)
+            return _error_response("路径不是文件", None, 400)
         return _to_response(read_file_response(real))
+    except ExplorerNotFoundError:
+        return _error_response("文件不存在", None, 404, "EXPLORER_NOT_FOUND")
+    except ExplorerAccessDeniedError:
+        return _error_response("没有权限读取该文件", None, 403, "EXPLORER_ACCESS_DENIED")
     except ExplorerSecurityError as exc:
         return _error_response("security check failed", str(exc), 403, "FORBIDDEN")
-    except Exception as exc:
+    except Exception:
         logger.exception("explorer_read failed")
-        return _error_response("read failed", str(exc), 500)
+        return _error_response("读取文件时发生内部错误", None, 500, "EXPLORER_INTERNAL_ERROR")
 
 
 @router.get("/explorer/diff")
@@ -341,18 +354,22 @@ async def explorer_diff(
     try:
         real = validate_path(path, allow_dir=False, session_id=session_id)
         if not real.is_file():
-            return _error_response("not a file", str(real), 400)
+            return _error_response("路径不是文件", None, 400)
         read_result = read_file_response(real)
         if "_status" in read_result:
             return _to_response(read_result)
         if not read_result.get("is_text"):
             return _error_response("binary file", "diff not supported for binary files", 400)
         file_text = read_result.get("content", "")
+    except ExplorerNotFoundError:
+        return _error_response("文件不存在", None, 404, "EXPLORER_NOT_FOUND")
+    except ExplorerAccessDeniedError:
+        return _error_response("没有权限读取该文件", None, 403, "EXPLORER_ACCESS_DENIED")
     except ExplorerSecurityError as exc:
         return _error_response("security check failed", str(exc), 403, "FORBIDDEN")
-    except Exception as exc:
+    except Exception:
         logger.exception("explorer_diff failed")
-        return _error_response("diff failed", str(exc), 500)
+        return _error_response("读取文件差异时发生内部错误", None, 500, "EXPLORER_INTERNAL_ERROR")
 
     try:
         head_content, ok = await asyncio.to_thread(_git_head_content, real)
@@ -392,13 +409,24 @@ async def explorer_write(
         )
         version = write_text_file(real, req.content, req.expected_version)
         return {"success": True, "data": {"path": str(real), "version": version}}
-    except FileVersionConflictError as exc:
-        return _error_response("file changed on disk", str(exc), 409, "VERSION_CONFLICT")
+    except FileVersionConflictError:
+        return _error_response(
+            "文件已在磁盘上被修改，请重新打开后再保存", None, 409, "VERSION_CONFLICT"
+        )
+    except ExplorerAccessDeniedError:
+        return _error_response(
+            "没有权限写入该文件（可能为只读或正被其他程序占用）", None, 403, "EXPLORER_ACCESS_DENIED"
+        )
+    except ExplorerWriteError:
+        logger.exception("explorer_write failed")
+        return _error_response("写入文件时发生内部错误", None, 500, "EXPLORER_INTERNAL_ERROR")
+    except ExplorerNotFoundError:
+        return _error_response("文件不存在", None, 404, "EXPLORER_NOT_FOUND")
     except ExplorerSecurityError as exc:
         return _error_response("security check failed", str(exc), 403, "FORBIDDEN")
-    except Exception as exc:
+    except Exception:
         logger.exception("explorer_write failed")
-        return _error_response("write failed", str(exc), 500)
+        return _error_response("写入文件时发生内部错误", None, 500, "EXPLORER_INTERNAL_ERROR")
 
 
 @router.post("/explorer/create")
@@ -411,13 +439,21 @@ async def explorer_create(
         real = _ensure_authorized(Path(req.path), session_id)
         create_node(real, req.type, session_id=session_id)
         return {"success": True, "data": {"path": str(real), "type": req.type}}
+    except ExplorerAccessDeniedError:
+        return _error_response(
+            "没有权限在此位置创建文件或文件夹", None, 403, "EXPLORER_ACCESS_DENIED"
+        )
     except ExplorerSecurityError as exc:
         return _error_response("security check failed", str(exc), 403, "FORBIDDEN")
     except FileExistsError as exc:
-        return _error_response("already exists", str(exc), 409)
-    except Exception as exc:
+        return _error_response(f"同名文件或文件夹已存在：{exc}", None, 409, "EXPLORER_ALREADY_EXISTS")
+    except FileVersionConflictError:
+        return _error_response(
+            f"同名文件或文件夹已存在：{real.name}", None, 409, "EXPLORER_ALREADY_EXISTS"
+        )
+    except Exception:
         logger.exception("explorer_create failed")
-        return _error_response("create failed", str(exc), 500)
+        return _error_response("创建文件或文件夹时发生内部错误", None, 500, "EXPLORER_INTERNAL_ERROR")
 
 
 @router.post("/explorer/rename")
@@ -430,13 +466,21 @@ async def explorer_rename(
         real = validate_path(req.path, session_id=session_id)
         new_path = rename_node(real, req.new_name, session_id=session_id)
         return {"success": True, "data": {"path": str(new_path)}}
+    except ExplorerAccessDeniedError:
+        return _error_response(
+            "没有权限重命名该文件或文件夹", None, 403, "EXPLORER_ACCESS_DENIED"
+        )
+    except ExplorerNotFoundError:
+        return _error_response("文件或文件夹不存在", None, 404, "EXPLORER_NOT_FOUND")
     except ExplorerSecurityError as exc:
         return _error_response("security check failed", str(exc), 403, "FORBIDDEN")
     except FileExistsError as exc:
-        return _error_response("target already exists", str(exc), 409)
-    except Exception as exc:
+        return _error_response(f"同名文件或文件夹已存在：{exc}", None, 409, "EXPLORER_ALREADY_EXISTS")
+    except ValueError:
+        return _error_response("文件名无效", None, 400, "EXPLORER_INVALID_NAME")
+    except Exception:
         logger.exception("explorer_rename failed")
-        return _error_response("rename failed", str(exc), 500)
+        return _error_response("重命名时发生内部错误", None, 500, "EXPLORER_INTERNAL_ERROR")
 
 
 @router.post("/explorer/delete")
@@ -450,15 +494,21 @@ async def explorer_delete(
         root = authorized_root_for(real, session_id)
         trash_id = await asyncio.to_thread(move_to_trash, real, root)
         return {"success": True, "data": {"path": str(real), "trash_id": trash_id}}
+    except ExplorerAccessDeniedError:
+        return _error_response(
+            "没有权限删除该文件或文件夹", None, 403, "EXPLORER_ACCESS_DENIED"
+        )
+    except ExplorerNotFoundError:
+        return _error_response("文件或文件夹不存在", None, 404, "EXPLORER_NOT_FOUND")
     except ExplorerSecurityError as exc:
         return _error_response("security check failed", str(exc), 403, "FORBIDDEN")
     except ExplorerTrashError as exc:
         return _error_response("delete could not be moved to recycle area", str(exc), 400, "TRASH_ERROR")
     except FileExistsError as exc:
         return _error_response("recycle item already exists", str(exc), 409)
-    except Exception as exc:
+    except Exception:
         logger.exception("explorer_delete failed")
-        return _error_response("delete failed", str(exc), 500)
+        return _error_response("删除时发生内部错误", None, 500, "EXPLORER_INTERNAL_ERROR")
 
 
 @router.get("/explorer/trash")
@@ -527,13 +577,19 @@ async def explorer_move(
         )
         new_path = move_node(src, target_dir, session_id=session_id)
         return {"success": True, "data": {"path": str(new_path)}}
+    except ExplorerAccessDeniedError:
+        return _error_response(
+            "没有权限移动该文件或文件夹", None, 403, "EXPLORER_ACCESS_DENIED"
+        )
+    except ExplorerNotFoundError:
+        return _error_response("文件或文件夹不存在", None, 404, "EXPLORER_NOT_FOUND")
     except ExplorerSecurityError as exc:
         return _error_response("security check failed", str(exc), 403, "FORBIDDEN")
     except FileExistsError as exc:
-        return _error_response("target already exists", str(exc), 409)
-    except Exception as exc:
+        return _error_response(f"目标位置已有同名文件或文件夹：{exc}", None, 409, "EXPLORER_ALREADY_EXISTS")
+    except Exception:
         logger.exception("explorer_move failed")
-        return _error_response("move failed", str(exc), 500)
+        return _error_response("移动时发生内部错误", None, 500, "EXPLORER_INTERNAL_ERROR")
 
 
 @router.post("/explorer/copy")
@@ -549,13 +605,19 @@ async def explorer_copy(
         )
         new_path = copy_node(src, target_dir, session_id=session_id)
         return {"success": True, "data": {"path": str(new_path)}}
+    except ExplorerAccessDeniedError:
+        return _error_response(
+            "没有权限复制该文件或文件夹", None, 403, "EXPLORER_ACCESS_DENIED"
+        )
+    except ExplorerNotFoundError:
+        return _error_response("文件或文件夹不存在", None, 404, "EXPLORER_NOT_FOUND")
     except ExplorerSecurityError as exc:
         return _error_response("security check failed", str(exc), 403, "FORBIDDEN")
     except FileExistsError as exc:
-        return _error_response("target already exists", str(exc), 409)
-    except Exception as exc:
+        return _error_response(f"目标位置已有同名文件或文件夹：{exc}", None, 409, "EXPLORER_ALREADY_EXISTS")
+    except Exception:
         logger.exception("explorer_copy failed")
-        return _error_response("copy failed", str(exc), 500)
+        return _error_response("复制时发生内部错误", None, 500, "EXPLORER_INTERNAL_ERROR")
 
 
 @router.post("/explorer/search")
@@ -577,9 +639,9 @@ async def explorer_search(
         return _error_response("security check failed", str(exc), 403, "FORBIDDEN")
     except asyncio.TimeoutError:
         return _error_response("search timeout", "exceeded 30 seconds", 504)
-    except Exception as exc:
+    except Exception:
         logger.exception("explorer_search failed")
-        return _error_response("search failed", str(exc), 500)
+        return _error_response("搜索时发生内部错误", None, 500, "EXPLORER_INTERNAL_ERROR")
 
 
 @router.post("/explorer/reveal")
@@ -599,11 +661,17 @@ async def explorer_reveal(
         else:
             subprocess.Popen(["xdg-open", str(real.parent)])
         return {"success": True, "data": {"path": str(real)}}
+    except ExplorerNotFoundError:
+        return _error_response("文件或文件夹不存在", None, 404, "EXPLORER_NOT_FOUND")
+    except ExplorerAccessDeniedError:
+        return _error_response(
+            "没有权限访问该文件或文件夹", None, 403, "EXPLORER_ACCESS_DENIED"
+        )
     except ExplorerSecurityError as exc:
         return _error_response("security check failed", str(exc), 403, "FORBIDDEN")
-    except Exception as exc:
+    except Exception:
         logger.exception("explorer_reveal failed")
-        return _error_response("reveal failed", str(exc), 500)
+        return _error_response("系统文件管理器未能打开", None, 500, "EXPLORER_INTERNAL_ERROR")
 
 
 # ═══════════════════════════════════════════
