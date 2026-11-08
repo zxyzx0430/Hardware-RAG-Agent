@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useToastStore } from "../../stores/useToastStore";
 import { useModalStore } from "../../stores/useModalStore";
+import { useAppStore } from "../../stores/useAppStore";
 import { apiPost } from "../../api/client";
 import { ContextMenu } from "../shared/ContextMenu";
 import type { MenuItem } from "../shared/ContextMenu";
@@ -12,7 +13,6 @@ import {
   fileNameFromPath,
   relativePath,
   highlightTree,
-  countMatches,
   type FileNode,
 } from "./treeUtils";
 import { copyToClipboard } from "../../utils/clipboard";
@@ -64,6 +64,20 @@ interface ClipboardOp {
   op: "copy" | "cut";
   paths: string[];
 }
+
+interface ExplorerSearchHit {
+  path: string;
+  name: string;
+  line_number: number;
+  line_text: string;
+  match_count: number;
+}
+
+interface ExplorerSearchResponse {
+  results: ExplorerSearchHit[];
+}
+
+type SearchState = "idle" | "loading" | "ready" | "error";
 
 function joinPath(parent: string, child: string): string {
   const separator = parent.endsWith("/") || parent.endsWith("\\") ? "" : "/";
@@ -132,6 +146,15 @@ export function FileTree({
   const [dragOverPath, setDragOverPath] = useState<string | null>(null);
   const [draggingPaths, setDraggingPaths] = useState<Set<string>>(new Set());
   const [focusedPath, setFocusedPath] = useState<string | undefined>(undefined);
+  // Project-wide content search (backend /api/explorer/search) runs alongside
+  // the in-memory name filter so files under unloaded lazy directories are
+  // still discoverable.
+  const [searchHits, setSearchHits] = useState<ExplorerSearchHit[] | null>(null);
+  const [searchState, setSearchState] = useState<SearchState>("idle");
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [searchRetry, setSearchRetry] = useState(0);
+  const searchRequestIdRef = useRef(0);
+  const autoLoadRequestedRef = useRef(new Set<string>());
   const dragSourceRef = useRef<string[]>([]);
   const anchorRef = useRef<string | null>(null);
   const clipboardRef = useRef<ClipboardOp | null>(null);
@@ -146,6 +169,69 @@ export function FileTree({
   useEffect(() => { expandedRef.current = expanded; }, [expanded]);
   useEffect(() => { loadingDirPathsRef.current = loadingDirPaths; }, [loadingDirPaths]);
   const { t } = useI18n();
+  const trimmedQuery = searchQuery.trim();
+
+  // Project-wide content search, debounced while the user types. A request
+  // counter discards responses that belong to an older query.
+  useEffect(() => {
+    if (!trimmedQuery || !rootPath) {
+      searchRequestIdRef.current += 1;
+      setSearchHits(null);
+      setSearchState("idle");
+      setSearchError(null);
+      return;
+    }
+    const requestId = ++searchRequestIdRef.current;
+    setSearchHits(null);
+    setSearchState("loading");
+    setSearchError(null);
+    const timer = setTimeout(() => {
+      void (async () => {
+        try {
+          const res = await apiPost<ExplorerSearchResponse>(
+            "explorer/search",
+            { root_path: rootPath, query: trimmedQuery, max_results: 100 },
+            35_000,
+          );
+          if (requestId !== searchRequestIdRef.current) return;
+          setSearchHits(res?.results ?? []);
+          setSearchState("ready");
+        } catch (err) {
+          if (requestId !== searchRequestIdRef.current) return;
+          setSearchError(err instanceof Error ? err.message : String(err));
+          setSearchState("error");
+        }
+      })();
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [trimmedQuery, rootPath, searchRetry]);
+
+  // "Expand all" (and restored expansion state) marks lazy directories as
+  // expanded without loading them. Load every expanded-but-unloaded directory
+  // so its children actually appear instead of requiring a second click.
+  useEffect(() => {
+    const targets: string[] = [];
+    const walk = (node: FileNode) => {
+      if (node.type !== "directory") return;
+      if (
+        expanded.has(node.path) &&
+        node.lazy &&
+        !loadingDirPaths.has(node.path) &&
+        !dirErrors.has(node.path) &&
+        !autoLoadRequestedRef.current.has(node.path)
+      ) {
+        targets.push(node.path);
+      }
+      node.children?.forEach(walk);
+    };
+    walk(tree);
+    for (const path of targets) {
+      autoLoadRequestedRef.current.add(path);
+      void onLoadNodeChildren(path)
+        .catch(() => { /* failure is surfaced through dirErrors */ })
+        .finally(() => autoLoadRequestedRef.current.delete(path));
+    }
+  }, [tree, expanded, loadingDirPaths, dirErrors, onLoadNodeChildren]);
 
   const showError = useCallback((message: string) => {
     useToastStore.getState().showError(message);
@@ -399,12 +485,32 @@ export function FileTree({
     return items;
   }, [selectedPaths, t, handlePaste, setClipboard, copyPath, copyRelativePath, handleReveal, handleDelete]);
 
-  const filteredTree = useMemo(() => filterTree(tree, searchQuery.trim()), [tree, searchQuery]);
+  const filteredTree = useMemo(() => filterTree(tree, trimmedQuery), [tree, trimmedQuery]);
   const highlightedTree = useMemo(() => {
     if (!filteredTree) return null;
-    return highlightTree(filteredTree, searchQuery.trim());
-  }, [filteredTree, searchQuery]);
-  const matchCount = useMemo(() => countMatches(highlightedTree ?? tree, searchQuery.trim()), [highlightedTree, tree, searchQuery]);
+    return highlightTree(filteredTree, trimmedQuery);
+  }, [filteredTree, trimmedQuery]);
+  // Toolbar count: distinct files matched by name (loaded tree) plus content
+  // matches found anywhere under the project root.
+  const contentMatchedFileCount = useMemo(() => {
+    const paths = new Set<string>();
+    for (const hit of searchHits ?? []) paths.add(hit.path.replace(/\\/g, "/").toLowerCase());
+    return paths.size;
+  }, [searchHits]);
+  const totalMatchCount = useMemo(() => {
+    if (!trimmedQuery) return 0;
+    const paths = new Set<string>();
+    const collect = (node: FileNode) => {
+      if (node.type === "file") {
+        paths.add(node.path.replace(/\\/g, "/").toLowerCase());
+        return;
+      }
+      node.children?.forEach(collect);
+    };
+    if (highlightedTree) collect(highlightedTree);
+    for (const hit of searchHits ?? []) paths.add(hit.path.replace(/\\/g, "/").toLowerCase());
+    return paths.size;
+  }, [highlightedTree, searchHits, trimmedQuery]);
   const visibleCount = useMemo(() => (highlightedTree ? countVisibleNodes(highlightedTree, expanded) : 0), [highlightedTree, expanded]);
   // Hysteresis: only switch virtual/normal when crossing the wide band, not on every
   // small change around a single threshold. Prevents tree flicker/jitter.
@@ -421,10 +527,14 @@ export function FileTree({
     [highlightedTree, expanded],
   );
 
-  // Report match count and auto-expand directories that contain matches.
+  // Report the combined result count (name + content matches).
   useEffect(() => {
-    onMatchCountChange?.(matchCount);
-    if (!searchQuery.trim() || !highlightedTree) return;
+    onMatchCountChange?.(totalMatchCount);
+  }, [onMatchCountChange, totalMatchCount]);
+
+  // Auto-expand directories that contain name matches.
+  useEffect(() => {
+    if (!trimmedQuery || !highlightedTree) return;
     const toExpand = new Set<string>();
     const walk = (node: FileNode): boolean => {
       if (node.type !== "directory") return false;
@@ -441,8 +551,7 @@ export function FileTree({
       for (const p of toExpand) merged.add(p);
       return merged;
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchQuery, highlightedTree, onMatchCountChange, matchCount]);
+  }, [trimmedQuery, highlightedTree, setExpanded]);
 
   const newItemPlaceholder = useMemo(
     () => ({ file: t("newFileName", "新建文件"), folder: t("newFolderName", "新建文件夹") }),
@@ -588,10 +697,6 @@ export function FileTree({
     };
   }, []);
 
-  if (!highlightedTree) {
-    return <div className="explorer-tree-empty">{t("noMatchResult", "未找到匹配结果")}</div>;
-  }
-
   const commonNodeProps = {
     expanded,
     selectedPaths,
@@ -614,6 +719,63 @@ export function FileTree({
     ...dragHandlers,
   };
 
+  // Project content matches are rendered above the name-filtered tree so they
+  // stay visible even when the tree itself has no matching loaded node.
+  const searchResultsSection = trimmedQuery ? (
+    <div className="explorer-content-search" style={{ borderBottom: "1px solid var(--border)", paddingBottom: 2 }}>
+      <div style={{ padding: "4px 12px", color: "var(--muted-fg)", fontSize: 12 }}>
+        {searchState === "loading" || searchState === "idle"
+          ? t("searchingProject", "正在搜索项目内容…")
+          : `${t("contentSearchResults", "内容匹配（全项目）")} · ${contentMatchedFileCount}`}
+      </div>
+      {searchState === "error" && (
+        <div className="explorer-tree-error-hint">
+          <span title={searchError ?? undefined}>{t("searchFailed", "搜索失败")}: {searchError}</span>
+          <button type="button" className="explorer-tree-retry-btn" onClick={() => setSearchRetry((n) => n + 1)}>
+            {t("retry", "重试")}
+          </button>
+        </div>
+      )}
+      {searchState === "ready" && (searchHits?.length ?? 0) === 0 && (
+        <div className="explorer-tree-empty-hint">{t("noSearchMatch", "未找到匹配结果")}</div>
+      )}
+      {searchState === "ready" && (searchHits?.length ?? 0) > 0 && (
+        <div style={{ maxHeight: 168, overflow: "auto" }}>
+          {(searchHits ?? []).map((hit) => (
+            <button
+              key={`${hit.path}:${hit.line_number}`}
+              type="button"
+              title={`${hit.path}:${hit.line_number}`}
+              onClick={() => {
+                setSelectedPaths(new Set([hit.path]));
+                void useAppStore.getState().openFile(hit.path);
+              }}
+              style={{
+                display: "block",
+                width: "100%",
+                padding: "3px 12px",
+                border: "none",
+                background: "transparent",
+                color: "inherit",
+                font: "inherit",
+                fontSize: 12,
+                textAlign: "left",
+                cursor: "pointer",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              <span style={{ color: "var(--primary)" }}>{relativePath(rootPath, hit.path)}</span>
+              <span style={{ color: "var(--muted-fg)" }}>:{hit.line_number}</span>
+              <span style={{ color: "var(--muted-fg)", marginLeft: 8 }}>{hit.line_text.trim()}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  ) : null;
+
   return (
     <div
       className="explorer-tree"
@@ -628,19 +790,29 @@ export function FileTree({
         }
       }}
     >
-      {useVirtual ? (
-        <VirtualFileTree
-          tree={highlightedTree}
-          {...commonNodeProps}
-          onListRef={(ref) => { virtualListRef.current = ref; }}
-        />
+      {searchResultsSection}
+      {trimmedQuery && highlightedTree && (
+        <div style={{ padding: "4px 12px", color: "var(--muted-fg)", fontSize: 11 }}>
+          {t("nameMatchesLoaded", "名称匹配（已加载目录）")}
+        </div>
+      )}
+      {highlightedTree ? (
+        useVirtual ? (
+          <VirtualFileTree
+            tree={highlightedTree}
+            {...commonNodeProps}
+            onListRef={(ref) => { virtualListRef.current = ref; }}
+          />
+        ) : (
+          <FileTreeNode
+            node={highlightedTree}
+            depth={0}
+            siblings={[highlightedTree]}
+            {...commonNodeProps}
+          />
+        )
       ) : (
-        <FileTreeNode
-          node={highlightedTree}
-          depth={0}
-          siblings={[highlightedTree]}
-          {...commonNodeProps}
-        />
+        <div className="explorer-tree-empty">{t("noNameMatchLoaded", "已加载目录中无名称匹配")}</div>
       )}
       {menu && (
         <ContextMenu
