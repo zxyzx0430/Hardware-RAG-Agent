@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import MonacoEditor from "@monaco-editor/react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import MonacoEditor, { type OnMount } from "@monaco-editor/react";
 import { useAppStore } from "../../stores/useAppStore";
 import { useToastStore } from "../../stores/useToastStore";
 import { useI18n } from "../../i18n";
@@ -49,6 +49,7 @@ export function EditorPanel() {
   const [contextMenu, setContextMenu] = useState<ContextMenuPos | null>(null);
   const [tabOrder, setTabOrder] = useState<string[]>([]);
   const [dragId, setDragId] = useState<string | null>(null);
+  const tabsRef = useRef<HTMLDivElement>(null);
 
   const showError = useCallback((message: string) => {
     useToastStore.getState().showError(message);
@@ -110,6 +111,19 @@ export function EditorPanel() {
   const handleSave = useCallback(async () => {
     if (activeFile) await saveFile(activeFile.id);
   }, [activeFile, saveFile]);
+
+  // Monaco owns the keyboard while the editor has focus and does not let
+  // Ctrl/Cmd+S bubble to the window listener below, so bind it on the editor
+  // itself. The ref keeps the command pointing at the latest active file.
+  const handleSaveRef = useRef<() => Promise<void>>(async () => {});
+  useEffect(() => {
+    handleSaveRef.current = handleSave;
+  }, [handleSave]);
+  const handleEditorMount: OnMount = useCallback((editor, monaco) => {
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
+      void handleSaveRef.current();
+    });
+  }, []);
 
   const handleClose = useCallback(
     async (id: string) => {
@@ -322,6 +336,30 @@ export function EditorPanel() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [handleSave]);
 
+  // Keep the active tab visible when several files are open. scrollIntoView
+  // alone can stop short of the tab strip because the action buttons trail the
+  // tabs in the same scroll container, so correct the remaining delta and run
+  // once more after layout settles.
+  useLayoutEffect(() => {
+    if (!activeFileId) return;
+    const reveal = () => {
+      const strip = tabsRef.current;
+      const activeTab = strip?.querySelector<HTMLElement>(".editor-tab.active");
+      if (!strip || !activeTab) return;
+      activeTab.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+      const stripRect = strip.getBoundingClientRect();
+      const tabRect = activeTab.getBoundingClientRect();
+      if (tabRect.left < stripRect.left) {
+        strip.scrollLeft -= Math.ceil(stripRect.left - tabRect.left);
+      } else if (tabRect.right > stripRect.right) {
+        strip.scrollLeft += Math.ceil(tabRect.right - stripRect.right);
+      }
+    };
+    reveal();
+    const frame = requestAnimationFrame(reveal);
+    return () => cancelAnimationFrame(frame);
+  }, [activeFileId, orderedFiles.length]);
+
   // Restore content for files recovered from localStorage without content.
   useRestoreFileContents(openFiles, setFileContent);
 
@@ -347,7 +385,7 @@ export function EditorPanel() {
 
   return (
     <div className="editor-panel">
-      <div className="editor-tabs" onWheel={handleTabsWheel}>
+      <div className="editor-tabs" onWheel={handleTabsWheel} ref={tabsRef}>
         {orderedFiles.map((file) => (
           <EditorTabItem
             key={file.id}
@@ -396,6 +434,7 @@ export function EditorPanel() {
             value={activeFile.content ?? ""}
             theme={editorTheme}
             height="100%"
+            onMount={handleEditorMount}
             options={{
               readOnly: false,
               minimap: { enabled: false },
