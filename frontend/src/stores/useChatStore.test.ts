@@ -42,6 +42,34 @@ let capturedCallbacks: {
   onError?: (err: Error) => void;
 } | null = null;
 
+/** Run writer-busy retry timers immediately and record their delays. */
+function interceptWriterBusyDelays(): { delays: number[]; restore: () => void } {
+  const original = window.setTimeout;
+  const delays: number[] = [];
+  const busyDelays = new Set([1000, 2000, 3000]);
+  window.setTimeout = ((fn: TimerHandler, delay?: number, ...args: unknown[]) => {
+    if (typeof fn === "function" && typeof delay === "number" && busyDelays.has(delay)) {
+      delays.push(delay);
+      fn();
+      return 0 as unknown as number;
+    }
+    return original(fn, delay, ...args);
+  }) as typeof window.setTimeout;
+  return {
+    delays,
+    restore: () => { window.setTimeout = original; },
+  };
+}
+
+function writerBusyEvent(): ChatSSEEvent {
+  return {
+    type: "error",
+    code: "AGENT_WRITER_BUSY",
+    retryable: true,
+    message: "上一轮仍在结束中，请稍后重试。",
+  } as ChatSSEEvent;
+}
+
 vi.mock("../api/client", () => ({
   apiSSE: vi.fn((path, body, callbacks) => {
     apiSSEPaths.push(path);
@@ -599,41 +627,69 @@ describe("useChatStore", () => {
       .not.toHaveProperty("skill_ids");
   });
 
-  it("上一轮仍在结束时自动重试一次且不清空消息", async () => {
-    const store = await importStore();
-    store.setState({
-      messages: [],
-      sessionMessages: {},
-      activeSessionId: "s1",
-      isStreaming: false,
-    });
+  it("上一轮仍在结束时自动重试三次且不清空消息", async () => {
+    const interception = interceptWriterBusyDelays();
+    try {
+      const store = await importStore();
+      store.setState({
+        messages: [],
+        sessionMessages: {},
+        activeSessionId: "s1",
+        isStreaming: false,
+      });
 
-    store.getState().sendMessage("重试这一轮");
-    expect(apiSSEPaths).toEqual(["chat"]);
-    capturedCallbacks!.onEvent({
-      type: "error",
-      code: "AGENT_WRITER_BUSY",
-      retryable: true,
-      message: "上一轮仍在结束中，请稍后重试。",
-    } as ChatSSEEvent);
-    capturedCallbacks!.onDone!();
+      store.getState().sendMessage("重试这一轮");
+      expect(apiSSEPaths).toEqual(["chat"]);
 
-    expect(store.getState().isStreaming).toBe(true);
-    expect(store.getState().messages[1].content).not.toContain("仍在结束");
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        capturedCallbacks!.onEvent(writerBusyEvent());
+        capturedCallbacks!.onDone!();
+        expect(store.getState().isStreaming).toBe(true);
+        expect(store.getState().messages[1].content).not.toContain("仍在结束");
+      }
 
-    await vi.waitFor(() => expect(apiSSEPaths).toEqual(["chat", "chat"]), {
-      timeout: 2500,
-    });
+      expect(apiSSEPaths).toHaveLength(4);
+      expect(interception.delays).toEqual([1000, 2000, 3000]);
 
-    capturedCallbacks!.onEvent({ type: "text", content: "重试成功" });
-    capturedCallbacks!.onEvent({
-      type: "done", success: true, completed: true,
-    } as ChatSSEEvent);
-    capturedCallbacks!.onDone!();
+      capturedCallbacks!.onEvent({ type: "text", content: "重试成功" });
+      capturedCallbacks!.onEvent({
+        type: "done", success: true, completed: true,
+      } as ChatSSEEvent);
+      capturedCallbacks!.onDone!();
 
-    expect(store.getState().messages[0].content).toBe("重试这一轮");
-    expect(store.getState().messages[1].content).toBe("重试成功");
-    expect(store.getState().isStreaming).toBe(false);
+      expect(store.getState().messages[0].content).toBe("重试这一轮");
+      expect(store.getState().messages[1].content).toBe("重试成功");
+      expect(store.getState().isStreaming).toBe(false);
+    } finally {
+      interception.restore();
+    }
+  });
+
+  it("自动重试三次后仍忙才显示可手动重试的错误", async () => {
+    const interception = interceptWriterBusyDelays();
+    try {
+      const store = await importStore();
+      store.setState({
+        messages: [],
+        sessionMessages: {},
+        activeSessionId: "s1",
+        isStreaming: false,
+      });
+
+      store.getState().sendMessage("一直忙");
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        capturedCallbacks!.onEvent(writerBusyEvent());
+        capturedCallbacks!.onDone!();
+      }
+
+      expect(apiSSEPaths).toHaveLength(4);
+      expect(interception.delays).toEqual([1000, 2000, 3000]);
+      expect(store.getState().isStreaming).toBe(false);
+      expect(store.getState().messages[0].content).toBe("一直忙");
+      expect(store.getState().messages[1].content).toContain("上一轮仍在结束中");
+    } finally {
+      interception.restore();
+    }
   });
 
   it("error 事件触发 stopStreaming 并在消息中追加错误", async () => {

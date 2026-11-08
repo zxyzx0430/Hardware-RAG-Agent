@@ -48,6 +48,11 @@ def _finish(registry, lease, scope):
     )
 
 
+def test_recovery_window_covers_stopped_run_teardown():
+    assert chat_routes._WRITER_RECOVERY_WAIT_S >= 10.0
+    assert 0.1 <= chat_routes._WRITER_RECOVERY_POLL_S <= 0.2
+
+
 def test_quarantined_owner_reset_only_touches_that_session():
     scope_a = _scope("s-a")
     scope_b = _scope("s-b", saver=scope_a.saver)

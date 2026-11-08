@@ -360,9 +360,10 @@ const _runReattachInFlight = new Set<string>();
 // with research but without a submitted plan.
 const _planAutoRetryUsed = new Set<string>();
 // A stopped or refreshed request may still be releasing its writer lease on
-// the backend. Retry the same turn once without dropping the draft or messages.
-const _WRITER_BUSY_MAX_AUTO_RETRIES = 1;
-const _WRITER_BUSY_RETRY_DELAY_MS = 700;
+// the backend. Retry the same turn a few times with short backoff before
+// showing an error, without dropping the draft or messages.
+const _WRITER_BUSY_MAX_AUTO_RETRIES = 3;
+const _WRITER_BUSY_RETRY_DELAYS_MS = [1000, 2000, 3000] as const;
 
 export interface ChatSkillsRequest {
   mode: NonNullable<ChatRequest["skills_mode"]>;
@@ -3541,7 +3542,12 @@ export const useChatStore = create<ChatState>((set, get) => {
             const stillWanted = get().streamingSessionId === requestSessionId
               || get().backgroundSseRequests.has(requestSessionId);
             if (!stillWanted) return;
-            getLog()("warn", "chat", "上一轮仍在结束中，自动重试一次");
+            const retryDelay = _WRITER_BUSY_RETRY_DELAYS_MS[writerBusyRetries - 1]
+              ?? _WRITER_BUSY_RETRY_DELAYS_MS[_WRITER_BUSY_RETRY_DELAYS_MS.length - 1];
+            getLog()(
+              "warn", "chat",
+              `上一轮仍在结束中，自动重试 ${writerBusyRetries}/${_WRITER_BUSY_MAX_AUTO_RETRIES}`,
+            );
             window.setTimeout(() => {
               const stillStreaming = get().streamingSessionId === requestSessionId
                 || get().backgroundSseRequests.has(requestSessionId);
@@ -3549,7 +3555,7 @@ export const useChatStore = create<ChatState>((set, get) => {
               terminal.outcome = "running";
               terminal.errorMessage = "回答未能完成";
               startAgentStream();
-            }, _WRITER_BUSY_RETRY_DELAY_MS);
+            }, retryDelay);
             return;
           }
           _finalizeChatStream(requestSessionId, terminal, startTime);

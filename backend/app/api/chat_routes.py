@@ -277,9 +277,10 @@ def _build_request_writer_binding(
 
 
 # A stopped request may still be joining its native run when the user resends.
-# Wait briefly for that owner to clear instead of failing the new request.
-_WRITER_RECOVERY_WAIT_S = 2.0
-_WRITER_RECOVERY_POLL_S = 0.1
+# Wait long enough for the abandoned run to release instead of failing the new
+# request; only a genuinely active run should surface as retryable busy.
+_WRITER_RECOVERY_WAIT_S = 10.0
+_WRITER_RECOVERY_POLL_S = 0.15
 
 
 def _reset_session_writer_state(binding: Any, owner_key: str, lease: Any = None) -> bool:
