@@ -817,6 +817,14 @@ const en: Record<string, string> = {
   viewTextExcerpt: 'View text excerpt',
   clickToZoom: 'Click to zoom in',
   clickToFit: 'Click to fit',
+  pageNavigation: 'Page navigation',
+  previousPage: 'Previous page',
+  nextPage: 'Next page',
+  zoomControls: 'Zoom',
+  zoomIn: 'Zoom in',
+  zoomOut: 'Zoom out',
+  fitWidth: 'Fit width',
+  highResLoading: 'Loading high-resolution image…',
 
   // Model dropdown
   modelSearchPlaceholder: 'Search models or providers…',

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo } from "react";
 import type { ReactNode, CSSProperties } from "react";
 import MonacoEditor from "@monaco-editor/react";
 import { useAppStore } from "../../stores/useAppStore";
@@ -390,34 +390,23 @@ function SourceExcerptViewer({ viewed, editorTheme, pageLabel, displayScore, onB
 
   // Until the backend ships doc_id on every source, `doc` may already hold it.
   const docId = viewed.doc_id || viewed.doc || "";
-  const pageNumber = viewed.page_start ?? null;
+  const pageStart = viewed.page_start ?? null;
+  const pageEnd = viewed.page_end ?? pageStart;
 
   return (
     <div className="source-fv-root">
-      <div className="source-fv-header">
-        <button className="source-fv-back" onClick={onBack}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15 18 9 12 15 6"/></svg> {t('backToSources', '返回来源引用')}
+      <div className="source-fv-header source-fv-header-compact">
+        <button
+          className="source-fv-back source-fv-back-icon"
+          onClick={onBack}
+          aria-label={t('backToSources', '返回来源引用')}
+          title={t('backToSources', '返回来源引用')}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15 18 9 12 15 6"/></svg>
         </button>
         <div className="source-fv-heading">
           <span className="source-fv-breadcrumb">{t('sources')}</span>
           <span className="source-fv-title" title={viewed.title}>{viewed.title}</span>
-        </div>
-      </div>
-      <div className="source-fv-scroll">
-        {viewed.section_title ? <div className="source-fv-section">{viewed.section_title}</div> : null}
-        <div className="source-fv-meta">
-          {viewed.kb_name ? <span className="fv-kb-badge">{viewed.kb_name}</span> : null}
-          {viewed.source_url ? (
-            <a className="source-url-link" href={viewed.source_url} target="_blank" rel="noopener noreferrer" title={viewed.source_url}>
-              {viewed.source_url.length > 55 ? `${viewed.source_url.slice(0, 55)}...` : viewed.source_url}
-            </a>
-          ) : null}
-          {viewed.source_url ? <span className="fv-sep">·</span> : null}
-          <span>{pageLabel}</span>
-          <span className="fv-sep">·</span>
-          <span>{t('relevance')} {displayScore}%</span>
-          {viewed.category ? <span className="fv-sep">·</span> : null}
-          {viewed.category ? <span className="fv-category">{viewed.category}</span> : null}
         </div>
         {isPdf ? (
           <div className="source-view-tabs" role="tablist" aria-label={t('sourceViewMode', '来源视图')}>
@@ -441,6 +430,24 @@ function SourceExcerptViewer({ viewed, editorTheme, pageLabel, displayScore, onB
             </button>
           </div>
         ) : null}
+      </div>
+      <div className="source-fv-meta source-fv-meta-compact">
+        {viewed.section_title ? <span className="source-fv-section-inline">{viewed.section_title}</span> : null}
+        {viewed.section_title ? <span className="fv-sep">·</span> : null}
+        {viewed.kb_name ? <span className="fv-kb-badge">{viewed.kb_name}</span> : null}
+        {viewed.source_url ? (
+          <a className="source-url-link" href={viewed.source_url} target="_blank" rel="noopener noreferrer" title={viewed.source_url}>
+            {viewed.source_url.length > 40 ? `${viewed.source_url.slice(0, 40)}...` : viewed.source_url}
+          </a>
+        ) : null}
+        {viewed.source_url ? <span className="fv-sep">·</span> : null}
+        <span>{pageLabel}</span>
+        <span className="fv-sep">·</span>
+        <span>{t('relevance')} {displayScore}%</span>
+        {viewed.category ? <span className="fv-sep">·</span> : null}
+        {viewed.category ? <span className="fv-category">{viewed.category}</span> : null}
+      </div>
+      <div className="source-fv-body">
         {isCode ? (
           <div className="source-fv-content source-fv-code" style={{ position: "relative" }}>
             {!editorReady ? (
@@ -470,7 +477,8 @@ function SourceExcerptViewer({ viewed, editorTheme, pageLabel, displayScore, onB
         ) : isPdf && viewMode === 'original' ? (
           <PageImageViewer
             docId={docId}
-            page={pageNumber}
+            page={pageStart}
+            pageEnd={pageEnd}
             title={viewed.title}
             t={t}
             onShowText={() => setViewMode('text')}
@@ -485,31 +493,103 @@ function SourceExcerptViewer({ viewed, editorTheme, pageLabel, displayScore, onB
   );
 }
 
-function PageImageViewer({ docId, page, title, t, onShowText }: {
+const PAGE_ZOOM_MIN = 0.5;
+const PAGE_ZOOM_MAX = 4;
+const PAGE_ZOOM_STEP = 1.25;
+const PAGE_ZOOM_DEBOUNCE_MS = 250;
+const PAGE_INITIAL_RENDER_SCALE = 1.5;
+// The backend renders between 0.5x and 2x; higher UI zoom reuses the 2x image.
+const PAGE_MAX_RENDER_SCALE = 2;
+
+type PageImageStatus = "loading" | "ready" | "refreshing" | "error";
+interface PageImageState {
+  url: string;
+  page: number;
+}
+
+function clampPageZoom(value: number): number {
+  return Math.min(PAGE_ZOOM_MAX, Math.max(PAGE_ZOOM_MIN, value));
+}
+
+/** Pick the render scale that keeps the raster sharp at the current UI zoom. */
+function renderScaleForZoom(zoom: number): number {
+  const raw = Math.min(
+    PAGE_MAX_RENDER_SCALE,
+    Math.max(PAGE_ZOOM_MIN, zoom * PAGE_INITIAL_RENDER_SCALE),
+  );
+  return Math.round(raw * 4) / 4;
+}
+
+function PageImageViewer({ docId, page, pageEnd, title, t, onShowText }: {
   docId: string;
   page: number | null;
+  pageEnd: number | null;
   title: string;
   t: (key: string, fallback?: string) => string;
   onShowText: () => void;
 }) {
-  const [status, setStatus] = useState<"loading" | "ready" | "error">(docId && page != null ? "loading" : "error");
-  const [imageUrl, setImageUrl] = useState<string | null>(null);
-  const [zoomed, setZoomed] = useState(false);
+  const rangeStart = page ?? null;
+  const rangeEnd = rangeStart != null && pageEnd != null ? Math.max(pageEnd, rangeStart) : rangeStart;
+  const [currentPage, setCurrentPage] = useState(page ?? 1);
+  const [zoom, setZoom] = useState(1);
+  const [renderScale, setRenderScale] = useState(PAGE_INITIAL_RENDER_SCALE);
+  const [status, setStatus] = useState<PageImageStatus>(docId && page != null ? "loading" : "error");
+  const [image, setImage] = useState<PageImageState | null>(null);
+
+  const viewerRef = useRef<HTMLDivElement | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const zoomRef = useRef(1);
+  const lastZoomRef = useRef(2);
+  const imageRef = useRef<PageImageState | null>(null);
+  const anchorRef = useRef<{ x: number; y: number; clientX: number; clientY: number } | null>(null);
+  const dragRef = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
+  const cacheRef = useRef<Map<string, string>>(new Map());
+  zoomRef.current = zoom;
+
+  // Reset page and zoom when the source (or its page anchor) changes.
+  useEffect(() => {
+    setCurrentPage(page ?? 1);
+    zoomRef.current = 1;
+    lastZoomRef.current = 2;
+    setZoom(1);
+    setRenderScale(PAGE_INITIAL_RENDER_SCALE);
+    anchorRef.current = null;
+  }, [docId, page]);
+
+  useEffect(() => () => {
+    for (const url of cacheRef.current.values()) URL.revokeObjectURL(url);
+    cacheRef.current.clear();
+  }, []);
+
+  // Fetch a higher-resolution raster after zooming settles, not on every tick.
+  useEffect(() => {
+    const target = renderScaleForZoom(zoom);
+    if (target === renderScale) return;
+    const timer = window.setTimeout(() => setRenderScale(target), PAGE_ZOOM_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [zoom, renderScale]);
 
   useEffect(() => {
-    if (!docId || page == null) {
+    if (!docId || currentPage == null) {
       setStatus("error");
-      setImageUrl(null);
       return;
     }
+    const key = `${docId}|${currentPage}|${renderScale}`;
+    const cached = cacheRef.current.get(key);
+    if (cached) {
+      imageRef.current = { url: cached, page: currentPage };
+      setImage(imageRef.current);
+      setStatus("ready");
+      return;
+    }
+    const keepCurrent = imageRef.current?.page === currentPage;
+    setStatus(keepCurrent ? "refreshing" : "loading");
+    const controller = new AbortController();
     let cancelled = false;
-    let objectUrl: string | null = null;
-    setStatus("loading");
-    setImageUrl(null);
-    setZoomed(false);
-    const query = new URLSearchParams({ page: String(page), scale: "1.5" });
+    const query = new URLSearchParams({ page: String(currentPage), scale: String(renderScale) });
     fetch(`/api/kb/documents/${encodeURIComponent(docId)}/page-image?${query.toString()}`, {
       headers: getAuthHeaders(),
+      signal: controller.signal,
     })
       .then((res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -517,53 +597,258 @@ function PageImageViewer({ docId, page, title, t, onShowText }: {
       })
       .then((blob) => {
         if (cancelled) return;
-        objectUrl = URL.createObjectURL(blob);
-        setImageUrl(objectUrl);
+        const url = URL.createObjectURL(blob);
+        cacheRef.current.set(key, url);
+        imageRef.current = { url, page: currentPage };
+        setImage(imageRef.current);
         setStatus("ready");
       })
-      .catch(() => {
-        if (!cancelled) setStatus("error");
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        setStatus(keepCurrent ? "ready" : "error");
       });
     return () => {
       cancelled = true;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
+      controller.abort();
     };
-  }, [docId, page]);
+  }, [docId, currentPage, renderScale]);
 
-  if (status === "loading") {
-    return (
-      <div className="source-fv-content source-page-viewer" aria-busy="true">
-        <div className="source-page-skeleton" role="status" aria-live="polite">
-          <span className="source-page-skeleton-label">{t('originalPageLoading', '正在加载原文页…')}</span>
+  const applyZoom = useCallback((next: number, clientX?: number, clientY?: number) => {
+    const previous = zoomRef.current;
+    const clamped = Math.round(clampPageZoom(next) * 100) / 100;
+    if (Math.abs(clamped - previous) < 0.001) return;
+    const scroll = scrollRef.current;
+    if (scroll && scroll.clientWidth > 0 && scroll.clientHeight > 0) {
+      const rect = scroll.getBoundingClientRect();
+      const x = clientX != null ? clientX - rect.left : scroll.clientWidth / 2;
+      const y = clientY != null ? clientY - rect.top : scroll.clientHeight / 2;
+      const style = getComputedStyle(scroll);
+      const paddingLeft = parseFloat(style.paddingLeft) || 0;
+      const paddingTop = parseFloat(style.paddingTop) || 0;
+      anchorRef.current = {
+        x: (scroll.scrollLeft + x - paddingLeft) / previous,
+        y: (scroll.scrollTop + y - paddingTop) / previous,
+        clientX: x,
+        clientY: y,
+      };
+    }
+    if (clamped > 1) lastZoomRef.current = clamped;
+    zoomRef.current = clamped;
+    setZoom(clamped);
+  }, []);
+
+  // Keep the point under the cursor fixed while the image width changes.
+  useLayoutEffect(() => {
+    const anchor = anchorRef.current;
+    const scroll = scrollRef.current;
+    if (!anchor || !scroll) return;
+    const style = getComputedStyle(scroll);
+    const paddingLeft = parseFloat(style.paddingLeft) || 0;
+    const paddingTop = parseFloat(style.paddingTop) || 0;
+    scroll.scrollLeft = paddingLeft + anchor.x * zoom - anchor.clientX;
+    scroll.scrollTop = paddingTop + anchor.y * zoom - anchor.clientY;
+    anchorRef.current = null;
+  }, [zoom]);
+
+  // Ctrl/Cmd+wheel and trackpad pinch both arrive as wheel events; plain wheel
+  // zooms too, so the page can be inspected without hunting for a modifier.
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer) return;
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      const factor = Math.exp(-event.deltaY * 0.0015);
+      applyZoom(zoomRef.current * factor, event.clientX, event.clientY);
+    };
+    viewer.addEventListener("wheel", onWheel, { passive: false });
+    return () => viewer.removeEventListener("wheel", onWheel);
+  }, [applyZoom]);
+
+  const goToPage = useCallback((next: number) => {
+    if (rangeStart == null || rangeEnd == null) return;
+    const clamped = Math.min(rangeEnd, Math.max(rangeStart, next));
+    if (clamped === currentPage) return;
+    setCurrentPage(clamped);
+    zoomRef.current = 1;
+    setZoom(1);
+    setRenderScale(PAGE_INITIAL_RENDER_SCALE);
+    anchorRef.current = null;
+  }, [currentPage, rangeStart, rangeEnd]);
+
+  const handleKeyDown = (event: React.KeyboardEvent) => {
+    const tag = (event.target as HTMLElement).tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA") return;
+    switch (event.key) {
+      case "+":
+      case "=":
+        event.preventDefault();
+        applyZoom(zoomRef.current * PAGE_ZOOM_STEP);
+        break;
+      case "-":
+      case "_":
+        event.preventDefault();
+        applyZoom(zoomRef.current / PAGE_ZOOM_STEP);
+        break;
+      case "0":
+        event.preventDefault();
+        applyZoom(1);
+        break;
+      case "ArrowLeft":
+        event.preventDefault();
+        goToPage(currentPage - 1);
+        break;
+      case "ArrowRight":
+        event.preventDefault();
+        goToPage(currentPage + 1);
+        break;
+      default:
+        break;
+    }
+  };
+
+  const handlePointerDown = (event: React.PointerEvent) => {
+    if (zoomRef.current <= 1.01 || event.button !== 0) return;
+    const scroll = scrollRef.current;
+    if (!scroll) return;
+    dragRef.current = {
+      x: event.clientX,
+      y: event.clientY,
+      left: scroll.scrollLeft,
+      top: scroll.scrollTop,
+    };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  };
+
+  const handlePointerMove = (event: React.PointerEvent) => {
+    const drag = dragRef.current;
+    const scroll = scrollRef.current;
+    if (!drag || !scroll) return;
+    scroll.scrollLeft = drag.left - (event.clientX - drag.x);
+    scroll.scrollTop = drag.top - (event.clientY - drag.y);
+  };
+
+  const endDrag = () => {
+    dragRef.current = null;
+  };
+
+  const toggleZoom = () => {
+    if (zoomRef.current > 1.01) {
+      applyZoom(1);
+      return;
+    }
+    applyZoom(lastZoomRef.current > 1.01 ? lastZoomRef.current : 2);
+  };
+
+  const canPrev = rangeStart != null && currentPage > rangeStart;
+  const canNext = rangeEnd != null && currentPage < rangeEnd;
+  const percent = Math.round(zoom * 100);
+  const pageText = rangeStart === rangeEnd ? String(currentPage) : `${currentPage} / ${rangeEnd}`;
+  const imageMatchesPage = image != null && image.page === currentPage;
+
+  return (
+    <div
+      ref={viewerRef}
+      className="source-fv-content source-page-viewer"
+      role="region"
+      aria-label={`${title} ${t('originalPage', '原文页')} ${currentPage}`}
+      aria-keyshortcuts="+ - 0 ArrowLeft ArrowRight"
+      aria-busy={status === "loading" || status === "refreshing"}
+      tabIndex={0}
+      onKeyDown={handleKeyDown}
+    >
+      <div className="source-page-toolbar">
+        <div className="source-page-nav" role="group" aria-label={t('pageNavigation', '页面导航')}>
+          <button
+            type="button"
+            className="source-page-tool"
+            onClick={() => goToPage(currentPage - 1)}
+            disabled={!canPrev}
+            aria-label={t('previousPage', '上一页')}
+            title={t('previousPage', '上一页')}
+          >
+            ‹
+          </button>
+          <span className="source-page-indicator" aria-live="polite">{pageText}</span>
+          <button
+            type="button"
+            className="source-page-tool"
+            onClick={() => goToPage(currentPage + 1)}
+            disabled={!canNext}
+            aria-label={t('nextPage', '下一页')}
+            title={t('nextPage', '下一页')}
+          >
+            ›
+          </button>
+        </div>
+        {status === "refreshing" ? (
+          <span className="source-page-quality" role="status">
+            {t('highResLoading', '正在加载高清图…')}
+          </span>
+        ) : null}
+        <div className="source-page-zoom" role="group" aria-label={t('zoomControls', '缩放')}>
+          <button
+            type="button"
+            className="source-page-tool"
+            onClick={() => applyZoom(zoom / PAGE_ZOOM_STEP)}
+            disabled={zoom <= PAGE_ZOOM_MIN}
+            aria-label={t('zoomOut', '缩小')}
+            title={t('zoomOut', '缩小')}
+          >
+            −
+          </button>
+          <output className="source-page-percent" aria-live="polite">{percent}%</output>
+          <button
+            type="button"
+            className="source-page-tool"
+            onClick={() => applyZoom(zoom * PAGE_ZOOM_STEP)}
+            disabled={zoom >= PAGE_ZOOM_MAX}
+            aria-label={t('zoomIn', '放大')}
+            title={t('zoomIn', '放大')}
+          >
+            +
+          </button>
+          <button
+            type="button"
+            className="source-page-fit"
+            onClick={() => applyZoom(1)}
+            disabled={Math.abs(zoom - 1) < 0.001}
+          >
+            {t('fitWidth', '适应宽度')}
+          </button>
         </div>
       </div>
-    );
-  }
-
-  if (status === "error" || !imageUrl) {
-    return (
-      <div className="source-fv-content source-page-viewer">
+      {status === "error" ? (
         <div className="source-page-error" role="alert">
           <p>{t('originalPageUnavailable', '原文页不可用：该来源没有对应页面图像，或页面尚未生成。')}</p>
           <button type="button" className="source-page-text-btn" onClick={onShowText}>
             {t('viewTextExcerpt', '查看文字摘录')}
           </button>
         </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className={`source-fv-content source-page-viewer${zoomed ? ' zoomed' : ''}`}>
-      <div className="source-page-scroll">
-        <img
-          className="source-page-image"
-          src={imageUrl}
-          alt={`${title}${page != null ? ` p.${page}` : ''}`}
-          title={zoomed ? t('clickToFit', '点击还原') : t('clickToZoom', '点击放大')}
-          onClick={() => setZoomed((value) => !value)}
-        />
-      </div>
+      ) : !imageMatchesPage ? (
+        <div className="source-page-skeleton" role="status" aria-live="polite">
+          <span className="source-page-skeleton-label">{t('originalPageLoading', '正在加载原文页…')}</span>
+        </div>
+      ) : (
+        <div
+          ref={scrollRef}
+          className={`source-page-scroll${zoom > 1.01 ? ' pannable' : ''}`}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={endDrag}
+          onPointerLeave={endDrag}
+          onPointerCancel={endDrag}
+          onDoubleClick={toggleZoom}
+        >
+          <img
+            className="source-page-image"
+            src={image.url}
+            alt={`${title} p.${currentPage}`}
+            style={{ width: `${zoom * 100}%` }}
+            draggable={false}
+          />
+        </div>
+      )}
     </div>
   );
 }

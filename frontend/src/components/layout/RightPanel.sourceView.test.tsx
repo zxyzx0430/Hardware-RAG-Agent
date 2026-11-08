@@ -98,6 +98,15 @@ const unknownCodeLanguageSource: SourceRef = {
   messageId: "m1",
 };
 
+const pagedPdfSource: SourceRef = {
+  ...pdfSource,
+  id: "src6",
+  title: "BME280 paged.pdf",
+  doc_id: "doc-paged",
+  page_start: 38,
+  page_end: 40,
+};
+
 function imageResponse() {
   return {
     ok: true,
@@ -182,7 +191,7 @@ describe("RightPanel source viewer modes", () => {
 
     renderSource(pdfSource);
 
-    expect(screen.getByRole("status").textContent).toContain("正在加载原文页");
+    expect(document.querySelector(".source-page-skeleton")?.textContent).toContain("正在加载原文页");
     resolveFetch(imageResponse());
     await waitFor(() => expect(screen.getByRole("img")).toBeTruthy());
   });
@@ -252,5 +261,92 @@ describe("RightPanel source viewer modes", () => {
     const body = document.querySelector(".source-reading-body");
     expect(body?.textContent).toContain("combined humidity, pressure and temperature sensor");
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("uses one compact header row with inline tabs and metadata", async () => {
+    renderSource(pdfSource);
+    await waitFor(() => expect(screen.getByRole("img")).toBeTruthy());
+
+    const header = document.querySelector(".source-fv-header");
+    expect(header?.querySelector(".source-fv-back-icon")?.getAttribute("aria-label")).toBe("返回来源引用");
+    expect(header?.querySelector(".source-fv-breadcrumb")?.textContent).toBe("来源引用");
+    expect(header?.querySelector(".source-fv-title")?.textContent).toBe("BME280 datasheet.pdf");
+    expect(header?.querySelector(".source-view-tabs")).toBeTruthy();
+
+    const meta = document.querySelector(".source-fv-meta-compact");
+    expect(meta?.textContent).toContain("Pressure sensor");
+    expect(meta?.textContent).toContain("Datasheets");
+    expect(meta?.textContent).toContain("第 39");
+    expect(meta?.textContent).toContain("相关度 91%");
+    expect(meta?.textContent).toContain("sensor");
+  });
+
+  it("zooms with the toolbar and requests a higher-resolution raster", async () => {
+    renderSource(pdfSource);
+    await waitFor(() => expect(screen.getByRole("img")).toBeTruthy());
+
+    fireEvent.click(screen.getByRole("button", { name: "放大" }));
+
+    expect(screen.getByText("125%")).toBeTruthy();
+    await waitFor(() => {
+      const urls = fetchMock.mock.calls.map(([url]) => String(url));
+      expect(urls.some((url) => url.includes("page=39&scale=2"))).toBe(true);
+    }, { timeout: 2000 });
+  });
+
+  it("zooms with the wheel and double-click toggles fit and last zoom", async () => {
+    renderSource(pdfSource);
+    await waitFor(() => expect(screen.getByRole("img")).toBeTruthy());
+
+    fireEvent.wheel(screen.getByRole("region"), { deltaY: -100, clientX: 10, clientY: 10 });
+    expect(screen.getByText("116%")).toBeTruthy();
+
+    fireEvent.doubleClick(screen.getByRole("img"));
+    expect(screen.getByText("100%")).toBeTruthy();
+
+    fireEvent.doubleClick(screen.getByRole("img"));
+    expect(screen.getByText("116%")).toBeTruthy();
+  });
+
+  it("zooms with +/- keys and resets with the fit-width button", async () => {
+    renderSource(pdfSource);
+    await waitFor(() => expect(screen.getByRole("img")).toBeTruthy());
+
+    const region = screen.getByRole("region");
+    fireEvent.keyDown(region, { key: "+" });
+    expect(screen.getByText("125%")).toBeTruthy();
+
+    fireEvent.keyDown(region, { key: "-" });
+    expect(screen.getByText("100%")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "放大" }));
+    expect(screen.getByText("125%")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "适应宽度" }));
+    expect(screen.getByText("100%")).toBeTruthy();
+  });
+
+  it("navigates pages inside the source range and resets zoom", async () => {
+    renderSource(pagedPdfSource);
+    await waitFor(() => expect(screen.getByRole("img")).toBeTruthy());
+
+    expect(screen.getByText("38 / 40")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "上一页" }) as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "放大" }));
+    expect(screen.getByText("125%")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+    expect(screen.getByText("39 / 40")).toBeTruthy();
+    expect(screen.getByText("100%")).toBeTruthy();
+    await waitFor(() => {
+      const urls = fetchMock.mock.calls.map(([url]) => String(url));
+      expect(urls.some((url) => url.includes("page=39&scale=1.5"))).toBe(true);
+    });
+    await waitFor(() => expect(screen.getByRole("img")).toBeTruthy());
+
+    fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+    await waitFor(() => expect(screen.getByText("40 / 40")).toBeTruthy());
+    expect((screen.getByRole("button", { name: "下一页" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "上一页" }) as HTMLButtonElement).disabled).toBe(false);
   });
 });

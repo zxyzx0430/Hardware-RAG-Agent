@@ -1,4 +1,4 @@
-/* Source viewer — document reading view and original PDF page.
+/* Source viewer — compact header, document reading view and original PDF page.
    Scoped to RightPanel's SourceExcerptViewer; list/scroll layout lives in
    workbench.css and is intentionally not overridden here. */
 
@@ -10,22 +10,56 @@
   overflow: hidden;
 }
 
-/* ── 原文页 / 文字摘录 switch (PDF sources only) ── */
+/* ── Compact header: back icon, breadcrumb + filename, view switch ── */
+.source-fv-header.source-fv-header-compact {
+  padding: 6px 10px;
+  gap: 6px;
+}
+
+.source-fv-header-compact .source-fv-back-icon {
+  padding: 4px 6px;
+}
+
+.source-fv-header-compact .source-fv-heading {
+  flex: 1;
+  flex-direction: row;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.source-fv-header-compact .source-fv-breadcrumb {
+  flex-shrink: 0;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.source-fv-header-compact .source-fv-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── 原文页 / 文字摘录 switch, inline at the right of the header ── */
 .source-view-tabs {
   display: inline-flex;
-  align-self: flex-start;
+  align-self: center;
   gap: 2px;
-  margin-bottom: 10px;
-  padding: 3px;
+  margin: 0 0 0 auto;
+  padding: 2px;
   border-radius: var(--radius);
   background: var(--muted);
+  flex-shrink: 0;
 }
 
 .source-view-tab {
-  padding: 4px 12px;
+  padding: 2px 8px;
   border-radius: var(--radius-sm);
-  font-size: 12px;
-  line-height: 1.4;
+  font-size: 11px;
+  line-height: 1.5;
   color: var(--muted-fg);
   transition: background 0.15s, color 0.15s;
 }
@@ -39,6 +73,71 @@
   color: var(--fg);
   font-weight: 500;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+/* ── Single-line metadata strip ── */
+.source-fv-meta.source-fv-meta-compact {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 2px;
+  margin: 0;
+  padding: 0 10px 5px;
+  font-size: 10px;
+  line-height: 1.45;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.source-fv-meta-compact .fv-sep {
+  margin: 0 1px;
+  flex-shrink: 0;
+}
+
+.source-fv-meta-compact > span:not(.source-fv-section-inline):not(.fv-sep),
+.source-fv-meta-compact > a {
+  flex-shrink: 0;
+}
+
+.source-fv-meta-compact .fv-kb-badge {
+  max-width: 21%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  padding: 1px 5px;
+}
+
+.source-fv-meta-compact .source-url-link {
+  max-width: 26%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-fv-section-inline {
+  flex: 0 1 auto;
+  min-width: 50px;
+  max-width: 38%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-style: italic;
+  color: var(--muted-fg);
+}
+
+/* ── Body: content takes the remaining height ── */
+.source-fv-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  padding: 0 8px 8px;
+}
+
+.source-fv-body .source-reading-scroll {
+  flex: 1;
+  min-height: 0;
 }
 
 /* ── Reading view: extracted document text, never styled as code ── */
@@ -68,54 +167,134 @@
   position: relative;
 }
 
-/* ── Original PDF page image ── */
+/* ── Original PDF page: toolbar + pannable canvas ── */
 .source-fv-content.source-page-viewer {
   display: flex;
+  flex-direction: column;
   flex: 1;
   min-height: 0;
   overflow: hidden;
   background: var(--bg);
+  outline: none;
+}
+
+.source-page-viewer:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
+
+.source-page-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-height: 26px;
+  padding: 2px 2px 4px;
+  flex-shrink: 0;
+}
+
+.source-page-nav,
+.source-page-zoom {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+.source-page-tool {
+  min-width: 22px;
+  height: 22px;
+  padding: 0 4px;
+  border-radius: var(--radius-sm);
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 1;
+  transition: background 0.15s, color 0.15s;
+}
+
+.source-page-tool:hover:not(:disabled) {
+  background: var(--muted);
+}
+
+.source-page-tool:disabled,
+.source-page-fit:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.source-page-indicator,
+.source-page-percent {
+  min-width: 42px;
+  text-align: center;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted-fg);
+}
+
+.source-page-percent {
+  color: var(--fg);
+}
+
+.source-page-fit {
+  height: 22px;
+  padding: 0 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--fg);
+  white-space: nowrap;
+}
+
+.source-page-fit:hover:not(:disabled) {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.source-page-quality {
+  font-size: 10px;
+  color: var(--muted-fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .source-page-scroll {
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
+  flex: 1;
+  min-height: 0;
   width: 100%;
-  height: 100%;
-  padding: 12px;
+  padding: 8px;
   overflow: auto;
+  border-radius: var(--radius-sm);
+  background: var(--card);
+  touch-action: pan-x pan-y;
+}
+
+.source-page-scroll.pannable {
+  cursor: grab;
+}
+
+.source-page-scroll.pannable:active {
+  cursor: grabbing;
 }
 
 .source-page-image {
   display: block;
-  width: 100%;
-  max-width: 100%;
+  max-width: none;
   height: auto;
   border-radius: 2px;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
-  cursor: zoom-in;
-}
-
-.source-page-viewer.zoomed .source-page-scroll {
-  justify-content: flex-start;
-}
-
-.source-page-viewer.zoomed .source-page-image {
-  width: auto;
-  max-width: none;
-  cursor: zoom-out;
+  user-select: none;
+  -webkit-user-drag: none;
 }
 
 /* ── Page image loading skeleton ── */
 .source-page-skeleton {
   flex: 1;
-  align-self: stretch;
   display: flex;
   align-items: center;
   justify-content: center;
-  margin: 12px;
-  min-height: 200px;
+  margin: 2px;
+  min-height: 120px;
   border-radius: var(--radius);
   color: var(--muted-fg);
   font-size: 12px;
@@ -179,5 +358,17 @@
     padding: 16px 14px 36px;
     font-size: 13.5px;
     line-height: 1.75;
+  }
+
+  .source-fv-header-compact .source-fv-breadcrumb {
+    display: none;
+  }
+
+  .source-page-toolbar {
+    gap: 2px;
+  }
+
+  .source-page-fit {
+    padding: 0 5px;
   }
 }

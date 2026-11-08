@@ -817,6 +817,14 @@ const zh: Record<string, string> = {
   viewTextExcerpt: '查看文字摘录',
   clickToZoom: '点击放大',
   clickToFit: '点击还原',
+  pageNavigation: '页面导航',
+  previousPage: '上一页',
+  nextPage: '下一页',
+  zoomControls: '缩放',
+  zoomIn: '放大',
+  zoomOut: '缩小',
+  fitWidth: '适应宽度',
+  highResLoading: '正在加载高清图…',
 
   // Model dropdown
   modelSearchPlaceholder: '搜索模型或服务商…',
