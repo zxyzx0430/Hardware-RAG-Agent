@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import json
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
@@ -28,6 +29,8 @@ from src.agent import run_events
 
 RUN_ID = "r_p0p1_test"
 SESSION_ID = "session-p0p1"
+OWNER_USER = {"anonymous": False, "provider": "test-provider", "api_key": "owner-key"}
+OTHER_USER = {"anonymous": False, "provider": "test-provider", "api_key": "other-key"}
 
 
 @pytest.fixture()
@@ -138,6 +141,48 @@ def _current_epochs(session_id: str) -> dict[str, str | None]:
         "session_delete": read_session_delete_epoch(session_id),
         "memory_clear": read_memory_clear_epoch(),
     }
+
+
+@pytest.fixture()
+def bound_session():
+    """Create a real owner-bound session in the process test database."""
+    from app.api.session_owner import bind_new_session_owner
+    from app.db.database import SessionLocal
+    from app.db.models import Session as SessionModel, SessionIncarnation, SessionOwnerBinding
+
+    session_id = f"owned-{uuid.uuid4().hex[:10]}"
+    db = SessionLocal()
+    try:
+        session = SessionModel(id=session_id, title="owned")
+        db.add(session)
+        bind_new_session_owner(
+            db, session, OWNER_USER, datetime.datetime.now(datetime.timezone.utc),
+        )
+        db.commit()
+    finally:
+        db.close()
+    try:
+        yield session_id
+    finally:
+        db = SessionLocal()
+        try:
+            binding = (
+                db.query(SessionOwnerBinding)
+                .filter(SessionOwnerBinding.session_id == session_id)
+                .first()
+            )
+            incarnation_id = binding.incarnation_id if binding is not None else None
+            db.query(SessionOwnerBinding).filter(
+                SessionOwnerBinding.session_id == session_id
+            ).delete()
+            if incarnation_id is not None:
+                db.query(SessionIncarnation).filter(
+                    SessionIncarnation.id == incarnation_id
+                ).delete()
+            db.query(SessionModel).filter(SessionModel.id == session_id).delete()
+            db.commit()
+        finally:
+            db.close()
 
 
 def _request(headers: dict[str, str] | None = None, path: str = "/api/runs/x"):
@@ -853,3 +898,109 @@ async def test_restore_request_snapshot_refuses_stale_epochs(
     assert chat_routes._restore_request_snapshot_from_run(
         store, store.get_run(RUN_ID), payload, user={"anonymous": False},
     ) is None
+
+
+# ---------------------------------------------------------------------------
+# Session ownership on run endpoints
+# ---------------------------------------------------------------------------
+
+async def test_active_runs_requires_session_owner_when_bound(
+    runtime_store, bound_session,
+):
+    store = runtime_store
+    _seed_run(store, "r_owned_active", session_id=bound_session)
+    store.append_run_event("r_owned_active", "text", {"type": "text", "content": "x"})
+
+    owner_result = await runs.get_active_runs(bound_session, user=OWNER_USER)
+    assert [run["id"] for run in owner_result["runs"]] == ["r_owned_active"]
+
+    with pytest.raises(HTTPException) as exc_info:
+        await runs.get_active_runs(bound_session, user=OTHER_USER)
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail["error"]["code"] == "FORBIDDEN"
+
+
+async def test_run_endpoints_reject_cross_user_when_session_bound(
+    runtime_store, bound_session,
+):
+    store = runtime_store
+    _seed_run(store, RUN_ID, session_id=bound_session)
+    store.append_run_event(RUN_ID, "text", {"type": "text", "content": "private"})
+
+    with pytest.raises(HTTPException) as exc_info:
+        await runs.get_run(RUN_ID, user=OTHER_USER)
+    assert exc_info.value.status_code == 403
+    assert "private" not in json.dumps(exc_info.value.detail)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await runs.replay_run_events(RUN_ID, _request(), after=None, user=OTHER_USER)
+    assert exc_info.value.status_code == 403
+
+    with pytest.raises(HTTPException) as exc_info:
+        await runs.cancel_run(RUN_ID, user=OTHER_USER)
+    assert exc_info.value.status_code == 403
+    assert store.get_run(RUN_ID)["status"] == run_events.RUN_STATUS_RUNNING
+
+    with pytest.raises(HTTPException) as exc_info:
+        await runs.resume_run(RUN_ID, _request(), body=None, user=OTHER_USER)
+    assert exc_info.value.status_code == 403
+
+    owner_result = await runs.get_run(RUN_ID, user=OWNER_USER)
+    assert owner_result["run"]["id"] == RUN_ID
+
+
+async def test_run_endpoints_keep_legacy_unbound_sessions_open(runtime_store):
+    store = runtime_store
+    _seed_run(
+        store, RUN_ID, status=run_events.RUN_STATUS_COMPLETED,
+        session_id="legacy-unbound-session",
+    )
+    store.append_run_event(RUN_ID, "text", {"type": "text", "content": "legacy"})
+    store.append_run_event(
+        RUN_ID, "done", {"type": "done", "success": True, "completed": True},
+    )
+    _seed_run(store, "r_legacy_active", session_id="legacy-unbound-session")
+
+    result = await runs.get_run(RUN_ID, user=OTHER_USER)
+    assert result["run"]["id"] == RUN_ID
+
+    replay = await runs.replay_run_events(RUN_ID, _request(), after=None, user=OTHER_USER)
+    frames = await _read_frames(replay)
+    assert [payload["type"] for _, payload in frames] == ["text", "done"]
+
+    active = await runs.get_active_runs("legacy-unbound-session", user=OTHER_USER)
+    assert [run["id"] for run in active["runs"]] == ["r_legacy_active"]
+
+
+async def test_run_endpoint_missing_run_stays_404_for_any_user(runtime_store):
+    with pytest.raises(HTTPException) as exc_info:
+        await runs.get_run("r_missing_owner", user=OTHER_USER)
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail["error"]["code"] == "RUN_NOT_FOUND"
+
+
+async def test_agent_sandbox_resume_enforces_run_session_owner(
+    monkeypatch, runtime_store, bound_session,
+):
+    store = runtime_store
+    monkeypatch.setattr(chat_routes, "_AGENT_PATH_AVAILABLE", True)
+    _seed_run(
+        store, RUN_ID, status=run_events.RUN_STATUS_INTERRUPTED,
+        session_id=bound_session,
+    )
+    request = chat_routes.ResumeRequest(
+        payload=_chat_payload(bound_session), decision="deny", run_id=RUN_ID,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await chat_routes.resume_agent(
+            request, _request(path="/api/agent-sandbox/resume"), user=OTHER_USER,
+        )
+    assert exc_info.value.status_code == 403
+
+    # The owner passes the ownership guard and reaches the resume verdict.
+    with pytest.raises(HTTPException) as exc_info:
+        await chat_routes.resume_agent(
+            request, _request(path="/api/agent-sandbox/resume"), user=OWNER_USER,
+        )
+    assert exc_info.value.detail["error"]["code"] == "RESUME_NEEDS_REVIEW"

@@ -31,7 +31,12 @@ except ImportError:  # pragma: no cover - openai optional dependency
     OpenAINotFoundError = None  # type: ignore[assignment]
 from app.api.auth import get_provider_key, resolve_credentials
 from app.api.dependencies import current_user, current_user_optional
-from app.api.runs import classify_run_resume, recover_interrupted_runs, router as runs_router
+from app.api.runs import (
+    authorize_run_session,
+    classify_run_resume,
+    recover_interrupted_runs,
+    router as runs_router,
+)
 from app.api.common import get_db_ctx, make_client
 from app.api.memory_epoch import read_memory_clear_epoch
 from app.api.sse import sse_event
@@ -2909,6 +2914,9 @@ async def resume_agent(req: ResumeRequest, request: Request, user: dict = Depend
         run = _require_resume_run(
             run_store, req.run_id, session_id, req.decision, req.call_id,
         )
+        # A run id alone is not authority: a bound session only lets its owner
+        # resume the paused checkpoint.
+        authorize_run_session(run, user)
         is_restart_resume = run.get("status") == run_events.RUN_STATUS_INTERRUPTED
         if is_restart_resume:
             # Same verdict the run detail endpoint exposes: a run with an

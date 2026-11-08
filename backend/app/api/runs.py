@@ -79,6 +79,42 @@ def _get_run_or_404(store: run_events.RunStore, run_id: str) -> dict[str, Any]:
     return run
 
 
+def _require_session_access(session_id: str, user: dict) -> None:
+    """Enforce an existing owner binding; unbound legacy sessions stay open.
+
+    Runs inherit the ownership of their session. A bound session is only
+    readable/controllable by the same verified principal, so a run id alone is
+    never enough to read or cancel another user's work.
+    """
+    if not isinstance(session_id, str) or not session_id:
+        return
+    from app.api.session_owner import require_session_owner_if_bound
+    from app.db.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        try:
+            require_session_owner_if_bound(db, session_id, user)
+        except PermissionError as exc:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "success": False,
+                    "error": {
+                        "code": "FORBIDDEN",
+                        "message": "无权访问该运行所属会话。",
+                    },
+                },
+            ) from exc
+    finally:
+        db.close()
+
+
+def authorize_run_session(run: dict[str, Any], user: dict) -> None:
+    """Public guard used by the HITL resume route as well."""
+    _require_session_access(run.get("session_id"), user)
+
+
 def _public_run(
     store: run_events.RunStore,
     run: dict[str, Any],
@@ -198,6 +234,7 @@ async def get_run(
 ) -> dict[str, Any]:
     store = _run_store()
     run = _get_run_or_404(store, run_id)
+    authorize_run_session(run, user)
     return {
         "success": True,
         "status": run.get("status"),
@@ -211,6 +248,7 @@ async def get_active_runs(
     user: dict = Depends(current_user),
 ) -> dict[str, Any]:
     """Frontend contract: find the run to reconnect to after a refresh."""
+    _require_session_access(session_id, user)
     store = _run_store()
     runs = store.list_runs(
         session_id=session_id, statuses=_ACTIVE_STATUSES, limit=50,
@@ -232,7 +270,8 @@ async def replay_run_events(
     user: dict = Depends(current_user),
 ) -> StreamingResponse:
     store = _run_store()
-    _get_run_or_404(store, run_id)
+    run = _get_run_or_404(store, run_id)
+    authorize_run_session(run, user)
 
     after_seq = after or 0
     last_event_id = request.headers.get("last-event-id")
@@ -270,6 +309,7 @@ async def cancel_run(
 ) -> dict[str, Any]:
     store = _run_store()
     run = _get_run_or_404(store, run_id)
+    authorize_run_session(run, user)
     if run.get("status") not in run_events.ACTIVE_RUN_STATUSES:
         raise HTTPException(
             status_code=409,
@@ -323,6 +363,7 @@ async def resume_run(
     """
     store = _run_store()
     run = _get_run_or_404(store, run_id)
+    authorize_run_session(run, user)
     if run.get("status") != run_events.RUN_STATUS_INTERRUPTED:
         raise HTTPException(
             status_code=409,
