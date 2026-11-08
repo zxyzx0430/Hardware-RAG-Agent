@@ -386,4 +386,38 @@ describe("AppRoot responsive layout", () => {
     expect(useAppStore.getState()[widthKey]).toBe(expectedWidth);
     fireEvent.mouseUp(document);
   });
+
+  it("restores the left panel when a 900px window widens back to 1440px", () => {
+    setViewportWidth(900);
+    resetLayoutState();
+    render(<AppRoot />);
+
+    expect(useAppStore.getState().leftPanelOpen).toBe(true);
+    expect(document.getElementById("sidebarResizer")?.classList.contains("hidden")).toBe(true);
+
+    setViewportWidth(1440);
+    act(() => window.dispatchEvent(new Event("resize")));
+
+    expect(useAppStore.getState().leftPanelOpen).toBe(true);
+    expect(document.getElementById("sidebarResizer")?.classList.contains("hidden")).toBe(false);
+  });
+
+  it("reserves the visible Explorer slot for top-right toasts", () => {
+    setViewportWidth(1536);
+    resetLayoutState({ explorerOpen: true, explorerWidth: 450 });
+    render(<AppRoot />);
+
+    const explorerHost = document.getElementById("explorerHost")!;
+    const visibleExplorerWidth = Number.parseFloat(explorerHost.style.width);
+    expect(visibleExplorerWidth).toBeGreaterThan(0);
+    expect(document.documentElement.style.getPropertyValue("--toast-right-offset")).toBe(
+      `${visibleExplorerWidth + 4}px`,
+    );
+
+    act(() => useAppStore.getState().setExplorerOpen(false));
+    expect(document.documentElement.style.getPropertyValue("--toast-right-offset")).toBe("24px");
+
+    act(() => useAppStore.getState().setActiveNav("knowledge"));
+    expect(document.documentElement.style.getPropertyValue("--toast-right-offset")).toBe("0px");
+  });
 });

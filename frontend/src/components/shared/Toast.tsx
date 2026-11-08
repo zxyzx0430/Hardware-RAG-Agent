@@ -1,5 +1,6 @@
 // 全局 Toast 容器：固定右上角，用 createPortal 渲染到 document.body，
 // 避免被父级 containment 钳制。z-index 10000 高于 Modal 的 9999。
+// 右侧偏移由 --toast-right-offset 提供：资源管理器展开时避让该面板。
 // 进入动画：从右滑入（CSS transition）。
 import { useEffect, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
@@ -25,7 +26,7 @@ const BORDER_VAR: Record<ToastType, string> = {
 const containerStyle: CSSProperties = {
   position: "fixed",
   top: TOAST_TOP_PX,
-  right: TOAST_RIGHT_PX,
+  right: `calc(${TOAST_RIGHT_PX}px + var(--toast-right-offset, 0px))`,
   zIndex: TOAST_Z_INDEX,
   display: "flex",
   flexDirection: "column",
@@ -91,7 +92,7 @@ export function ToastContainer() {
   const removeToast = useToastStore((s) => s.removeToast);
   if (toasts.length === 0 || typeof document === "undefined") return null;
   return createPortal(
-    <div style={containerStyle}>
+    <div style={containerStyle} data-testid="toast-container">
       {toasts.map((t) => (
         <div key={t.id} style={itemWrapperStyle}>
           <ToastCard toast={t} onClose={() => removeToast(t.id)} />
