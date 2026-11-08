@@ -148,6 +148,41 @@ describe("useExplorerWatch auth handling", () => {
   });
 });
 
+describe("useExplorerWatch heartbeats", () => {
+  it("reconnects when the heartbeat stream goes silent", async () => {
+    let calls = 0;
+    fetchMock.mockImplementation((_url: string, init: RequestInit) => {
+      calls += 1;
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          init.signal?.addEventListener("abort", () => {
+            controller.error(new DOMException("Aborted", "AbortError"));
+          });
+        },
+      });
+      return Promise.resolve({ ok: true, body });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const statuses: boolean[] = [];
+    const { unmount } = renderHook(() => useExplorerWatch(
+      "C:/project",
+      undefined,
+      undefined,
+      (connected) => statuses.push(connected),
+      undefined,
+      undefined,
+      0,
+      20,
+    ));
+
+    await waitFor(() => expect(statuses).toContain(false), { timeout: 1000 });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2), { timeout: 2500 });
+    expect(calls).toBe(2);
+    unmount();
+  });
+});
+
 describe("useExplorerWatch folder grant handling", () => {
   it("waits for a reopen after 403 instead of asking for a login or retrying", async () => {
     let calls = 0;
