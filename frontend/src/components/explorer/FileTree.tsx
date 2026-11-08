@@ -345,15 +345,41 @@ export function FileTree({
       danger: true,
     });
     if (!ok) return;
-    try {
-      for (const p of paths.slice(0, MAX_BATCH)) {
+    // Delete each item independently: a failure halfway through must not leave
+    // already-deleted entries visible in the tree.
+    const targets = paths.slice(0, MAX_BATCH);
+    const deleted: string[] = [];
+    let lastError: unknown = null;
+    for (const p of targets) {
+      try {
         await apiPost("explorer/delete", { path: p });
+        deleted.push(p);
+      } catch (err) {
+        lastError = err;
       }
-      showSuccess(t("movedToTrash", "已移至回收区，可从“已删除”恢复"));
-      setSelectedPaths(new Set());
+    }
+    if (deleted.length > 0) {
+      setSelectedPaths((prev) => {
+        const next = new Set(prev);
+        for (const p of deleted) next.delete(p);
+        return next;
+      });
       refresh();
-    } catch (err) {
-      showError(formatError(t("deleteFailed", "删除失败"), err));
+    }
+    if (deleted.length === targets.length) {
+      showSuccess(t("movedToTrash", "已移至回收区，可从“已删除”恢复"));
+    } else if (deleted.length > 0) {
+      showError(
+        t("deletePartial", "已删除 {deleted}/{total} 项，其余失败")
+          .replace("{deleted}", String(deleted.length))
+          .replace("{total}", String(targets.length))
+          + (lastError ? `: ${formatError(t("deleteFailed", "删除失败"), lastError)}` : ""),
+      );
+    } else {
+      showError(formatError(t("deleteFailed", "删除失败"), lastError));
+    }
+    if (paths.length > targets.length) {
+      showError(t("deleteBatchLimit", "一次最多删除 {n} 项").replace("{n}", String(MAX_BATCH)));
     }
   }, [refresh, setSelectedPaths, showError, showSuccess, t]);
 
