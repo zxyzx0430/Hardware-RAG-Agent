@@ -1,7 +1,6 @@
 import { memo, useCallback } from "react";
 import type { ActivityStep, ContentPart, Message, SourceRef } from "../../types/session";
 import { useBookmarkStore } from "../../stores/useBookmarkStore";
-import { sortSourcesForDisplay } from "../../utils/sourceRefs";
 import { AssistantMessageContent } from "./AssistantMessageContent";
 import ActivityBlock from "./ActivityBlock";
 import ErrorBlock from "./ErrorBlock";
@@ -122,7 +121,7 @@ export const AssistantMessageRow = memo(function AssistantMessageRow(props: Assi
           <div className="source-refs">
             <span className="source-ref-label">{t('sources')}</span>
             <div className="source-refs-row">
-              {sortSourcesForDisplay(msg.sources).map((src, idx) => (
+              {[...msg.sources].sort((a, b) => (b.score ?? 0) - (a.score ?? 0)).map((src, idx) => (
                 <button
                   className={`source-chip${src.relevance_level ? ` rel-${src.relevance_level}` : ''}${highlightSourceId === src.id ? ' highlight' : ''}`}
                   key={src.id}

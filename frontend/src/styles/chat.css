@@ -159,30 +159,32 @@
 .source-chip.rel-medium { border-color: var(--warn); }
 .source-chip.rel-low { border-color: var(--border); }
 
-/* 正文 [srcN] 引用：与底部来源卡片一致的轻量上标编号 */
+/* 正文 [srcN] 引用按钮 */
 .src-cite {
-  display: inline;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   cursor: pointer;
-  padding: 0 1px;
-  margin: 0 1px;
-  font-family: var(--font-body);
+  padding: 1px 5px;
+  margin: 0 2px;
+  font-family: var(--font-mono);
   font-weight: 600;
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1;
   color: var(--primary);
-  background: transparent;
-  border: 0;
-  border-radius: 2px;
-  vertical-align: super;
-  transition: color 0.15s, background 0.15s;
+  background: var(--accent);
+  border: 1px solid var(--primary);
+  border-radius: var(--radius-sm);
+  transition: all 0.15s;
+  vertical-align: middle;
 }
-.src-cite:hover { background: var(--accent); color: var(--primary); text-decoration: none; }
-.src-cite.rel-high { color: var(--success); }
-.src-cite.rel-high:hover { color: var(--success); }
-.src-cite.rel-medium { color: var(--warn); }
-.src-cite.rel-medium:hover { color: var(--warn); }
-.src-cite.rel-low { color: var(--muted-fg); }
-.src-cite.rel-low:hover { color: var(--fg); }
+.src-cite:hover { background: var(--primary); color: var(--primary-fg); text-decoration: none; }
+.src-cite.rel-high { color: var(--success); background: var(--success-soft); border-color: var(--success); }
+.src-cite.rel-high:hover { background: var(--success); color: var(--bg); }
+.src-cite.rel-medium { color: var(--warn); background: var(--warn-soft); border-color: var(--warn); }
+.src-cite.rel-medium:hover { background: var(--warn); color: var(--bg); }
+.src-cite.rel-low { color: var(--muted-fg); background: var(--muted); border-color: var(--border); }
+.src-cite.rel-low:hover { background: var(--muted-fg); color: var(--bg); }
 
 /* 引用计数徽章 */
 .src-count-badge {
