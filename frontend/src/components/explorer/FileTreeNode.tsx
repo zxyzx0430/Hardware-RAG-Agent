@@ -8,6 +8,13 @@ const INDENT_PX = 16;
 // Lightweight virtualization: cap rendered children per directory. A "show more"
 // button reveals the rest. Avoids rendering thousands of nodes for huge dirs.
 const MAX_CHILDREN_RENDER = 200;
+const PERMISSION_ERROR_PATTERN = /permission denied|access is denied|拒绝访问|无权限|EACCES|EPERM/i;
+
+function formatDirError(message: string): string {
+  return PERMISSION_ERROR_PATTERN.test(message)
+    ? t("dirPermissionDenied", "无权限读取该文件夹")
+    : `${t("loadDirFailed", "加载失败")}: ${message}`;
+}
 
 interface TreeNodeProps {
   node: FileNode;
@@ -158,6 +165,14 @@ export function FileTreeNode(props: TreeNodeProps) {
     onDrop(node.path, isDir);
   };
 
+  const handleDragLeave = (e: React.DragEvent) => {
+    // Moving between the chevron/icon/label also fires dragleave on the row;
+    // only clear the highlight when the pointer really left this row.
+    const next = e.relatedTarget as Node | null;
+    if (next && e.currentTarget.contains(next)) return;
+    onDragLeave();
+  };
+
   const isText = !isDir && isTextFile(node.name);
   const nodeClass = buildNodeClass(isDir, isExpanded, isHighlighted, isDragOver, isSelected, isDragging, isFocused, isText);
   const indent = depth * INDENT_PX;
@@ -180,7 +195,7 @@ export function FileTreeNode(props: TreeNodeProps) {
         onDragStart={handleDragStart}
         onDragEnd={onDragEnd}
         onDragOver={handleDragOver}
-        onDragLeave={onDragLeave}
+        onDragLeave={handleDragLeave}
         onDrop={handleDrop}
         data-path={node.path}
         data-depth={depth}
@@ -198,7 +213,7 @@ export function FileTreeNode(props: TreeNodeProps) {
           />
         ) : (
           <>
-            <span className="explorer-tree-label">
+            <span className="explorer-tree-label" title={node.name}>
               {node.matchStart !== undefined && node.matchEnd !== undefined ? (
                 <>
                   {node.name.substring(0, node.matchStart)}
@@ -254,7 +269,7 @@ export function FileTreeNode(props: TreeNodeProps) {
           )}
           {dirError && (
             <div className="explorer-tree-error-hint" style={{ paddingLeft: indent + INDENT_PX }}>
-              <span>{t("loadDirFailed", "加载失败")}: {dirError}</span>
+              <span title={dirError}>{formatDirError(dirError)}</span>
               <button type="button" className="explorer-tree-retry-btn" onClick={() => onRetry?.(node)}>
                 {t("retry", "重试")}
               </button>
