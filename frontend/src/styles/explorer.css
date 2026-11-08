@@ -1120,3 +1120,12 @@
     content: none;
   }
 }
+
+/* A narrow-mode drag leaves an inline height on the tree pane. Once the panel
+   is wide enough for the row layout again, that stale height must not keep the
+   tree from filling the split. */
+@container explorer-panel (min-width: 521px) {
+  .explorer-tree-pane {
+    height: 100% !important;
+  }
+}

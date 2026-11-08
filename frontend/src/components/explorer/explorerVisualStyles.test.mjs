@@ -30,4 +30,10 @@ describe("Explorer visual layout contracts", () => {
     expect(narrow).toMatch(/\.explorer-tree-pane\s*\{[^}]*min-height:\s*140px/s);
     expect(narrow).toMatch(/\.explorer-tree-pane\s*\{[^}]*overflow:\s*auto/s);
   });
+
+  it("drops a narrow-mode inline tree height once the row layout returns", () => {
+    expect(explorerStyles).toMatch(
+      /@container\s+explorer-panel\s*\(min-width:\s*521px\)[\s\S]*?\.explorer-tree-pane\s*\{[^}]*height:\s*100%\s*!important/s,
+    );
+  });
 });
