@@ -25,27 +25,6 @@
 .code-preview-file-tab:hover { color: var(--fg); }
 .code-preview-file-tab.active { background: var(--active-bg); color: var(--fg); }
 
-/* ── Wiring SVG ── */
-.wiring-svg-wrap {
-  flex: 1; display: flex; align-items: flex-start; justify-content: flex-start;
-  overflow: auto; padding: 16px; background: var(--bg); cursor: grab; position: relative;
-}
-.wiring-svg-wrap.dragging { cursor: grabbing; }
-.wiring-svg-wrap svg { transform-origin: 0 0; }
-.wiring-toolbar {
-  display: flex; align-items: center; gap: 6px; padding: 6px 8px;
-  border-bottom: 1px solid var(--border); background: var(--card); flex-shrink: 0;
-}
-.wiring-toolbar button {
-  padding: 2px 8px; border-radius: var(--radius-sm); font-size: 11px;
-  border: 1px solid var(--border); background: var(--card); color: var(--fg);
-  cursor: pointer;
-}
-.wiring-toolbar button:hover { background: var(--muted); }
-.wiring-label {
-  font: 11px/1.4 var(--font-body); fill: var(--fg); pointer-events: none;
-}
-
 /* ── Right Panel — Mode bar + Workbench / Content ── */
 .right-panel-wrap { display: flex; flex-shrink: 0; overflow: hidden; }
 .right-panel { display: flex; flex-direction: column; height: 100%; width: 100%; border-left: 1px solid var(--border); background: var(--card); overflow-y: auto; overflow-x: hidden; }
@@ -170,7 +149,28 @@
   background: linear-gradient(90deg, var(--primary), color-mix(in oklab, var(--primary), white 30%));
   transition: width 0.4s ease;
 }
-.todo-list { display: flex; flex-direction: column; gap: 8px; }
+.todo-list { display: flex; flex-direction: column; gap: 10px; }
+.todo-group { display: flex; flex-direction: column; gap: 6px; }
+.todo-group-label {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 10px; font-weight: 600; letter-spacing: 0.04em;
+  color: var(--muted-fg); text-transform: uppercase;
+}
+.todo-group-count {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 16px; height: 16px; padding: 0 4px;
+  border-radius: 999px; background: var(--muted);
+  font-size: 10px; font-weight: 600; color: var(--muted-fg);
+}
+.todo-priority {
+  flex-shrink: 0; margin-top: 1px;
+  padding: 0 5px; border-radius: 999px;
+  border: 1px solid var(--border);
+  font-size: 10px; line-height: 16px; color: var(--muted-fg);
+}
+.todo-priority.priority-high { color: var(--danger); border-color: color-mix(in oklab, var(--danger), transparent 60%); }
+.todo-priority.priority-medium { color: var(--warn); border-color: color-mix(in oklab, var(--warn), transparent 60%); }
+.todo-priority.priority-low { opacity: 0.75; }
 .todo-item {
   display: flex; align-items: flex-start; gap: 8px;
   padding: 8px 10px; border-radius: var(--radius);
@@ -540,7 +540,7 @@
 
 /* ── Preview Tab ── */
 .preview-iframe { width: 100%; height: 100%; border: none; background: var(--bg); }
-.preview-panel, .wiring-panel { display: flex; flex-direction: column; height: 100%; width: 100%; overflow: hidden; }
+.preview-panel { display: flex; flex-direction: column; height: 100%; width: 100%; overflow: hidden; }
 .preview-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 24px; }
 .preview-empty-icon { width: 48px; height: 48px; border-radius: 50%; background: var(--muted); display: flex; align-items: center; justify-content: center; color: var(--muted-fg); }
 .preview-empty-text { font-size: 12px; color: var(--muted-fg); text-align: center; line-height: 1.5; }
@@ -587,7 +587,3 @@
   white-space: pre;
   overflow: auto;
 }
-
-/* ── SafetyPane: highlight diagnose card for selected pin ── */
-/* State-driven via highlightId (replaces direct el.style.outline mutation). */
-.safety-highlight { outline: 2px solid var(--primary); }

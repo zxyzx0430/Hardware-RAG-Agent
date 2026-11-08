@@ -2,6 +2,39 @@ import { useEffect, useRef, useState } from "react";
 import type { TodoItem } from "../../types/session";
 import { useI18n } from "../../i18n";
 
+const STATUS_ORDER: Record<TodoItem["status"], number> = {
+  in_progress: 0,
+  pending: 1,
+  completed: 2,
+};
+
+const STATUS_LABEL_KEYS: Record<TodoItem["status"], string> = {
+  in_progress: "todoStatusInProgress",
+  pending: "todoStatusPending",
+  completed: "todoStatusCompleted",
+};
+
+const PRIORITY_LABEL_KEYS: Record<NonNullable<TodoItem["priority"]>, string> = {
+  high: "todoPriorityHigh",
+  medium: "todoPriorityMedium",
+  low: "todoPriorityLow",
+};
+
+type TodoGroup = { status: TodoItem["status"]; items: TodoItem[] };
+
+/** Group by status in workflow order; submission order is kept inside a group. */
+function groupTodos(todos: TodoItem[]): TodoGroup[] {
+  const groups = new Map<TodoItem["status"], TodoItem[]>();
+  for (const todo of todos) {
+    const bucket = groups.get(todo.status) ?? [];
+    bucket.push(todo);
+    groups.set(todo.status, bucket);
+  }
+  return [...groups.entries()]
+    .sort(([a], [b]) => STATUS_ORDER[a] - STATUS_ORDER[b])
+    .map(([status, items]) => ({ status, items }));
+}
+
 /** Agent 任务清单卡片：渲染 TodoWriteTool 推送的 todo_update 事件。
  *  同会话新 TODO 由 useChatStore 直接覆盖 message.todos，本组件只做纯展示。
  *  传入 onClear 时显示"清空"按钮（两次点击确认）。 */
@@ -22,7 +55,9 @@ export default function TodoCard({ todos, onClear }: {
   const visibleTodos = todos.filter((todo) => typeof todo.content === "string" && todo.content.trim() !== "");
   if (visibleTodos.length === 0) return null;
   const completed = countCompleted(visibleTodos);
-  const progress = visibleTodos.length ? Math.round((completed / visibleTodos.length) * 100) : 0;
+  const progress = Math.round((completed / visibleTodos.length) * 100);
+  const groups = groupTodos(visibleTodos);
+  let rowIndex = 0;
 
   const handleClear = async () => {
     if (!onClear || clearing) return;
@@ -47,10 +82,10 @@ export default function TodoCard({ todos, onClear }: {
       <div className="todo-card-header">
         <span className="todo-card-title">
           <ListIcon />
-          任务清单
+          {t('todoCardTitle')}
         </span>
         <div className="todo-card-header-right">
-          <span className="todo-card-progress">{completed}/{visibleTodos.length} 完成</span>
+          <span className="todo-card-progress">{completed}/{visibleTodos.length} {t('todoCompletedSuffix')}</span>
           {onClear ? (
             <button
               type="button"
@@ -68,12 +103,17 @@ export default function TodoCard({ todos, onClear }: {
         <div className="todo-progress-fill" style={{ width: `${progress}%` }} />
       </div>
       <div className="todo-list">
-        {visibleTodos.map((todo, idx) => (
-          <TodoItemRow
-            key={todo.id || `todo-${idx}`}
-            todo={todo}
-            index={idx}
-          />
+        {groups.map((group) => (
+          <div className="todo-group" key={group.status}>
+            <div className="todo-group-label">
+              {t(STATUS_LABEL_KEYS[group.status])}
+              <span className="todo-group-count">{group.items.length}</span>
+            </div>
+            {group.items.map((todo) => {
+              const index = rowIndex++;
+              return <TodoItemRow key={todo.id || `todo-${index}`} todo={todo} index={index} t={t} />;
+            })}
+          </div>
         ))}
       </div>
     </div>
@@ -84,7 +124,12 @@ function countCompleted(todos: TodoItem[]): number {
   return todos.filter((t) => t.status === "completed").length;
 }
 
-function TodoItemRow({ todo, index }: { todo: TodoItem; index: number }) {
+function TodoItemRow({ todo, index, t }: {
+  todo: TodoItem;
+  index: number;
+  t: (key: string, fallback?: string) => string;
+}) {
+  const priority = todo.priority ?? "medium";
   return (
     <div className={`todo-item status-${todo.status}`}>
       <span className="todo-number">{String(index + 1).padStart(2, "0")}</span>
@@ -92,6 +137,7 @@ function TodoItemRow({ todo, index }: { todo: TodoItem; index: number }) {
       <span className={`todo-content${todo.status === "completed" ? " done" : ""}`}>
         {todo.content}
       </span>
+      <span className={`todo-priority priority-${priority}`}>{t(PRIORITY_LABEL_KEYS[priority])}</span>
     </div>
   );
 }

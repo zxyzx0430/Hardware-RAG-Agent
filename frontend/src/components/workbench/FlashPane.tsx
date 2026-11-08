@@ -37,36 +37,54 @@ export function FlashPane() {
   const compileControllerRef = useRef<AbortController | null>(null);
   const progressHideTimerRef = useRef<number | null>(null);
   const flashReconnectTargetRef = useRef<{ port: string; baudRate: number } | null>(null);
+  const mountedRef = useRef(true);
+  const scanSeqRef = useRef(0);
+  const busyRef = useRef(false);
+
+  useEffect(() => {
+    busyRef.current = compiling || flashing;
+  }, [compiling, flashing]);
 
   // 组件卸载时中止正在进行的编译/烧录请求，避免后台资源浪费
   useEffect(() => {
+    mountedRef.current = true;
     return () => {
+      mountedRef.current = false;
+      scanSeqRef.current += 1;
       compileControllerRef.current?.abort();
       if (progressHideTimerRef.current !== null) window.clearTimeout(progressHideTimerRef.current);
     };
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const data = await apiGet<{ devices: SerialDevice[] }>("devices");
-        if (!cancelled) {
-          setDevices(data?.devices ?? []);
-          if (data?.devices?.length) {
-            setSelectedPort(data.devices[0].port);
-            useLogStore.getState().log("ok", "flash", `扫描到 ${data.devices.length} 个烧录端口`);
-          }
-        }
-      } catch {
-        if (!cancelled) {
-          setDevices([]);
-          useLogStore.getState().log("error", "flash", "烧录端口扫描失败");
-        }
+  // Scan upload ports; keep the current selection when it still exists.
+  const refreshDevices = useCallback(async () => {
+    const seq = ++scanSeqRef.current;
+    try {
+      const data = await apiGet<{ devices: SerialDevice[] }>("devices");
+      if (!mountedRef.current || seq !== scanSeqRef.current) return;
+      const next = data?.devices ?? [];
+      setDevices(next);
+      // A scan must not move the selected port while a build/flash is running.
+      if (!busyRef.current) {
+        setSelectedPort((current) => next.some((d) => d.port === current)
+          ? current
+          : (next[0]?.port ?? current));
       }
-    })();
-    return () => { cancelled = true; };
+      if (next.length) {
+        useLogStore.getState().log("ok", "flash", `扫描到 ${next.length} 个烧录端口`);
+      } else {
+        useLogStore.getState().log("warn", "flash", "未扫描到烧录端口");
+      }
+    } catch {
+      if (!mountedRef.current || seq !== scanSeqRef.current) return;
+      setDevices([]);
+      useLogStore.getState().log("error", "flash", "烧录端口扫描失败");
+    }
   }, []);
+
+  useEffect(() => {
+    void refreshDevices();
+  }, [refreshDevices]);
 
   // Auto-scroll unified log to bottom on new entries.
   useEffect(() => {
@@ -247,9 +265,8 @@ export function FlashPane() {
   }, []);
 
   const handleRefresh = useCallback(() => {
-    setFlashLog([t('idle')]);
-    setProgress(0);
-  }, []);
+    void refreshDevices();
+  }, [refreshDevices]);
 
   return (
     <div className="flash-panel">
@@ -302,7 +319,7 @@ export function FlashPane() {
           )}
         </datalist>
         <span style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
-          <button className="flash-btn" onClick={handleRefresh} aria-label="刷新" title="刷新"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button>
+          <button className="flash-btn" onClick={handleRefresh} disabled={compiling || flashing} aria-label="刷新" title="刷新"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button>
           <button className="flash-btn" onClick={handleCompile} disabled={compiling || flashing}>{compiling ? t('compilingStatus') : t('compileBtn')}</button>
           <button className="flash-btn" onClick={handleFlash} disabled={compiling || flashing}>{flashing ? t('flashingStatus') : t('flashBtn')}</button>
           {(compiling || flashing) && (

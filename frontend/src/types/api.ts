@@ -115,11 +115,12 @@ export interface ToolResultSSEEvent {
     output?: string;
     error?: string | ToolErrorDetail | null;
     // Backend ToolResultEnvelope wraps render payload inside data; some legacy
-    // tools still put target_pane/render_data at the top level.
-    target_pane?: 'wiring' | 'safety' | 'preview';
+    // tools still put target_pane/render_data at the top level. Unknown panes
+    // are ignored by the workbench bridge.
+    target_pane?: string;
     render_data?: unknown;
     data?: SkillToolResultData & {
-      target_pane?: 'wiring' | 'safety' | 'preview';
+      target_pane?: string;
       render_data?: unknown;
     };
   } | string;
@@ -364,55 +365,6 @@ export type BuildSSEEvent =
   | BuildDoneSSEEvent;
 
 export type UploadSSEEvent = BuildSSEEvent;
-
-export interface WiringRequest {
-  title: string;
-  connections: WiringConnection[];
-  components: WiringComponent[];
-}
-
-export interface WiringExtractResponseData {
-  components: WiringComponent[];
-  connections: WiringConnection[];
-  message?: string;
-}
-
-export interface WiringEndpoint {
-  component: string;
-  pin: string;
-}
-
-export interface WiringConnection {
-  from: WiringEndpoint;
-  to: WiringEndpoint;
-  color?: string;
-  label?: string;
-  /** 连线类型：power=电源, signal=信号, ground=地线 */
-  line_type?: "power" | "signal" | "ground";
-}
-
-/** 旧调用方仍可发送的扁平结构；后端会在 API 边界转成 WiringConnection。 */
-export type LegacyWiringConnectionPayload = {
-  to_component: string;
-  to_pin: string;
-  color?: string;
-  label?: string;
-  note?: string;
-} & (
-  | { from: string; pin: string }
-  | { from_component: string; from_pin: string }
-);
-
-export interface WiringComponent {
-  name: string;
-  type: string;
-  pins: string[];
-}
-
-export interface WiringResponse {
-  svg: string;
-  bom?: { component: string; qty: number }[];
-}
 
 export interface PinAuditRequest {
   chip: string;

@@ -81,7 +81,7 @@ search_docs(query="ADC 输入范围", doc_filter="esp32-s3")
 - 仍失败就如实告知用户，不要无限重试
 
 ## 调用纪律
-- 优先使用高层封装工具（search_docs / audit_pins / wiring / build_firmware / flash_firmware），低层工具（read_file / write_file / run_command）仅在高层工具无法满足时使用
+- 优先使用高层封装工具（search_docs / audit_pins / build_firmware / flash_firmware），低层工具（read_file / write_file / run_command）仅在高层工具无法满足时使用
 - **写文件必须用 write_file / edit_file，不要用 run_command 的 `>` `>>` `tee` `Set-Content` `Out-File` 写文件**。write_file/edit_file 有 diff 预览、git 快照、撤销能力，run_command 写文件用户看不到 diff 预览
 - 代码生成由 Agent LLM 直接输出（不再走 generate_code 工具），生成代码前必须先 search_docs 查相关硬件手册，确保基于真实参数
 - 同一工具 + 同一参数不要连续调用 2 次以上。结果不够就换查询语句或换思路

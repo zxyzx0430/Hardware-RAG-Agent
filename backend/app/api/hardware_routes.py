@@ -1,4 +1,4 @@
-"""Hardware 路由 — /api/devices /diagnose /wiring /audit_pins"""
+"""Hardware 路由 — /api/devices /diagnose /audit_pins"""
 
 import asyncio
 import logging
@@ -6,13 +6,11 @@ import re
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel
 
 from src.config.settings import settings
-from src.hardware.svg_generator import generate_wiring_svg
 from app.api.dependencies import current_user_optional
 from app.api.errors import sanitize_error
-from app.api.locks import wiring_lock
 from app.hardware.audit import audit_pins_core
 from app.hardware.gpio import resolve_gpio, STRAPPING_PINS
 
@@ -147,120 +145,6 @@ async def diagnose_code(payload: DiagnoseRequest, user: dict = Depends(current_u
             "success": False,
             "error": {"code": "DIAGNOSE_FAILED", "message": f"诊断失败: {sanitize_error(str(e))}", "details": sanitize_error(str(e))},
         }
-
-
-# ═══════════════════════════════════════════
-# POST /api/wiring — 接线图
-# ═══════════════════════════════════════════
-
-class WiringEndpoint(BaseModel):
-    """一端连线所指向的器件和器件引脚。"""
-    model_config = {"str_strip_whitespace": True}
-
-    component: str = Field(min_length=1)
-    pin: str = Field(min_length=1)
-
-
-class WiringConnection(BaseModel):
-    """规范化的接线项；API 使用 from/to 两个嵌套端点。"""
-    from_: WiringEndpoint = Field(alias="from")
-    to: WiringEndpoint
-    color: str = "#38bdf8"
-    label: str = ""
-    note: str = ""
-    line_type: Literal["power", "signal", "ground"] = "signal"
-
-    @model_validator(mode="before")
-    @classmethod
-    def normalize_legacy_shape(cls, value):
-        """把旧版扁平字段转换成规范端点，兼容已存在的调用方。"""
-        if not isinstance(value, dict):
-            return value
-
-        normalized = dict(value)
-        from_value = normalized.get("from")
-        if isinstance(from_value, dict) and isinstance(normalized.get("to"), dict):
-            return normalized
-
-        source_component = normalized.get("from_component")
-        if source_component is None and isinstance(from_value, str):
-            source_component = from_value
-        source_pin = normalized.get("from_pin") or normalized.get("pin")
-        if source_component is not None or source_pin is not None or isinstance(from_value, str):
-            normalized["from"] = {"component": source_component, "pin": source_pin}
-            normalized["to"] = {
-                "component": normalized.get("to_component"),
-                "pin": normalized.get("to_pin"),
-            }
-            for key in ("from_component", "from_pin", "pin", "to_component", "to_pin"):
-                normalized.pop(key, None)
-        return normalized
-
-
-class WiringComponent(BaseModel):
-    """接线器件项。pins 为引脚名列表（svg_generator 期望 list）。"""
-    model_config = {"populate_by_name": True}
-
-    id: str = ""
-    name: str
-    type: str = "module"
-    pins: list[str] = Field(default_factory=list)
-
-
-class WiringRequest(BaseModel):
-    """接线图生成请求。title 为 SVG 标题，缺省"接线图"。"""
-    title: str = "接线图"
-    components: list[WiringComponent] = Field(default_factory=list)
-    connections: list[WiringConnection] = Field(default_factory=list)
-
-    @model_validator(mode="after")
-    def validate_connection_endpoints(self):
-        """拒绝指向请求中不存在的器件或引脚的连线。"""
-        component_pins: dict[str, set[str]] = {}
-        for component in self.components:
-            component_pins.setdefault(component.name, set()).update(component.pins)
-
-        for index, connection in enumerate(self.connections):
-            for side, endpoint in (("from", connection.from_), ("to", connection.to)):
-                pins = component_pins.get(endpoint.component)
-                if pins is None:
-                    raise ValueError(
-                        f"connections[{index}].{side}.component is not in components"
-                    )
-                if endpoint.pin not in pins:
-                    raise ValueError(
-                        f"connections[{index}].{side}.pin is not declared by its component"
-                    )
-        return self
-
-
-@router.post("/wiring")
-async def generate_wiring(payload: WiringRequest, user: dict = Depends(current_user_optional)):
-    """生成接线 SVG 图。"""
-    async with wiring_lock:
-        try:
-            svg, bom = generate_wiring_svg(
-                title=payload.title,
-                components=[c.model_dump(by_alias=True) for c in payload.components],
-                connections=[
-                    {
-                        "from_component": connection.from_.component,
-                        "from_pin": connection.from_.pin,
-                        "to_component": connection.to.component,
-                        "to_pin": connection.to.pin,
-                        "color": connection.color,
-                        "label": connection.label,
-                    }
-                    for connection in payload.connections
-                ],
-            )
-            return {"success": True, "data": {"svg": svg, "bom": bom}}
-        except Exception as e:
-            logger.exception("接线图生成失败")
-            return {
-                "success": False,
-                "error": {"code": "WIRING_FAILED", "message": f"接线图生成失败: {sanitize_error(str(e))}", "details": sanitize_error(str(e))},
-            }
 
 
 # ═══════════════════════════════════════════

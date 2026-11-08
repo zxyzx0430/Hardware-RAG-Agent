@@ -42,7 +42,6 @@ from app.api.kb_routes import router as kb_router
 from app.api.hardware_routes import router as hardware_router
 from app.api.build_routes import router as build_router
 from app.api.tool_routes import router as tool_router
-from app.api.wiring_extract import router as wiring_extract_router
 from app.api.auth import router as auth_router
 from app.api.crud import db_router
 from app.api.mcp_routes import router as mcp_router
@@ -389,7 +388,6 @@ def create_app() -> FastAPI:
     app.include_router(hardware_router)
     app.include_router(build_router)
     app.include_router(tool_router)
-    app.include_router(wiring_extract_router)
     app.include_router(auth_router)
     app.include_router(db_router)
     app.include_router(mcp_router)

@@ -1436,7 +1436,7 @@ def _assemble_all_tools(payload: Any) -> list[BaseTool]:
 
 
 def _build_tool_groups(payload: Any = None) -> dict[str, list[BaseTool]]:
-    """Instantiate all 27 tools grouped by their subdirectory.
+    """Instantiate all 25 tools grouped by their subdirectory.
 
     Returns a dict mapping group name → list of BaseTool. Tools that need
     per-request credentials (Tavily / vision / image) read them from payload.
@@ -1463,7 +1463,7 @@ def _build_tool_groups(payload: Any = None) -> dict[str, list[BaseTool]]:
         MemorySearchTool,
     )
     from src.agent.tools.groups.hardware_profile import HardwareProfileTool
-    from src.agent.tools.groups.hardware import AuditPinsTool, WiringTool
+    from src.agent.tools.groups.hardware import AuditPinsTool
     from src.agent.tools.groups.workbench import get_workbench_tools
     from src.agent.tools.groups.code import BuildTool, FlashTool
 
@@ -1494,7 +1494,7 @@ def _build_tool_groups(payload: Any = None) -> dict[str, list[BaseTool]]:
             ViewImageTool(vision_model=vision_model, base_url=vision_base_url, api_key=vision_api_key),
             ImageGenerationTool(image_model=image_model, base_url=image_base_url, api_key=image_api_key),
         ],
-        _TOOL_GROUP_HARDWARE: [AuditPinsTool(), WiringTool(), HardwareProfileTool()],
+        _TOOL_GROUP_HARDWARE: [AuditPinsTool(), HardwareProfileTool()],
         _TOOL_GROUP_WORKBENCH: list(get_workbench_tools()),
         _TOOL_GROUP_CODE: [BuildTool(), FlashTool()],
         _TOOL_GROUP_FILE_OPS: _build_local_file_ops_tools(),
@@ -1503,7 +1503,7 @@ def _build_tool_groups(payload: Any = None) -> dict[str, list[BaseTool]]:
 
 
 def list_tool_metadata() -> list[dict]:
-    """Return metadata for all 27 Agent tools (name/description/group/enabled).
+    """Return metadata for all 25 Agent tools (name/description/group/enabled).
 
     Used by GET /api/tools. `enabled` is read from data/tool_config.json
     (absent file → all enabled). Disabled tools are still listed (with
@@ -1651,7 +1651,8 @@ def _build_local_execution_tools() -> list[BaseTool]:
 
     submit_plan is exposed in every mode: a model that calls enter_plan_mode
     mid-run cannot rebuild the graph's tool list, so the same run must still be
-    able to submit its plan. SubmitPlanTool.execute rejects non-plan callers.
+    able to submit its plan. enter_plan_mode switches ctx.permission_mode to
+    plan, which is the mode SubmitPlanTool.execute accepts.
     """
     from src.agent.tools.groups.execution import (
         EnterPlanModeTool,

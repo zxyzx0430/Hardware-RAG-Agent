@@ -1,4 +1,4 @@
-"""并发锁原语 — 串口与接线图访问互斥。"""
+"""并发锁原语 — 串口访问互斥。"""
 
 import asyncio
 from typing import Optional
@@ -98,7 +98,3 @@ async def disconnect_active_serial(port: str, reason: str) -> bool:
             pass
         unregister_serial(port, ws)
     return True
-
-
-# ─── 接线图锁 ───────────────────────────────────
-wiring_lock = asyncio.Lock()

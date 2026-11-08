@@ -170,6 +170,19 @@ describe("useChatStore todos", () => {
     ]);
   });
 
+  it("starts loading persisted todos immediately on session switch", async () => {
+    sessionState.sessions = [
+      { id: "s1", title: "Session 1", model: "gpt-4o" },
+      { id: "s2", title: "Session 2", model: "gpt-4o" },
+    ];
+    const store = await importStore();
+    store.setState({ activeSessionId: "s1", messages: [], sessionMessages: {} });
+
+    store.getState().setActiveSession("s2");
+
+    expect(fetchTodosMock).toHaveBeenCalledWith("s2");
+  });
+
   it("keeps a loaded empty list empty instead of falling back to message todos", async () => {
     fetchTodosMock.mockResolvedValue({ todos: [], updatedAt: null });
     const store = await importStore();

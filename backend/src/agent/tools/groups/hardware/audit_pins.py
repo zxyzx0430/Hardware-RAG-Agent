@@ -61,8 +61,8 @@ class AuditPinsTool(ToolSpec):
         "支持 ESP32 全系列（S3/C3/C6/S2/H2）+ STM32 系列（F4/F7/H7 调试引脚）。"
         "\n\n与 render_safety_report 的区分："
         "\n- audit_pins：返回审计数据给 LLM，LLM 可基于数据做分析（如建议改用哪个引脚）"
-        "\n- render_safety_report：审计并推送到前端工作台面板展示给用户看"
-        "\n通常先调 audit_pins 检查问题，确认有/无问题后再调 render_safety_report 推给用户。"
+        "\n- render_safety_report：生成面向用户的可读审计报告，结果同样返回给对话/Agent"
+        "\n两者都不再推送到右侧工作台面板；需要可视化示意图时改用 image_generation。"
     )
     args_schema: type = AuditPinsArgs
     output_schema: type[BaseModel] | None = AuditPinsOutput

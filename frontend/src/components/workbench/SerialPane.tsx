@@ -3,7 +3,6 @@ import DOMPurify from "dompurify";
 import { useSerialStore, type AutoConnectRequest } from "../../stores/useSerialStore";
 import { useLogStore } from "../../stores/useLogStore";
 import { useToastStore } from "../../stores/useToastStore";
-import { useModalStore } from "../../stores/useModalStore";
 import { useI18n } from "../../i18n";
 import { apiGet, apiWS } from "../../api/client";
 import { parseAnsiToHtml } from "./parseAnsiToHtml";
@@ -27,7 +26,6 @@ function nowHHMMSSmmm() {
 export function SerialPane() {
   const { t } = useI18n();
   const { connected, port, baudRate, log, autoScroll, dtrActive, rtsActive, filter, lineEnding, autoConnectRequest, setConnected, setPort, setBaudRate, addLog, clearLog, setAutoScroll, toggleDtr, toggleRts, setFilter, setLineEnding, setAutoConnectRequest } = useSerialStore();
-  const { confirmDialog } = useModalStore();
   const [sendText, setSendText] = useState("");
   const [devices, setDevices] = useState<SerialDevice[]>([]);
   const sendInputRef = useRef<HTMLInputElement>(null);
@@ -35,10 +33,15 @@ export function SerialPane() {
   const wsRef = useRef<WebSocket | null>(null);
   const isConnectingRef = useRef(false);
   const autoReconnectTimerRef = useRef<number | null>(null);
+  const mountedRef = useRef(true);
+  const scanSeqRef = useRef(0);
 
   // Unmount cleanup: close WS to prevent port leak
   useEffect(() => {
+    mountedRef.current = true;
     return () => {
+      mountedRef.current = false;
+      scanSeqRef.current += 1;
       if (wsRef.current) {
         wsRef.current.close();
         wsRef.current = null;
@@ -51,45 +54,40 @@ export function SerialPane() {
     };
   }, []);
 
-  // On mount, fetch real device list
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const data = await apiGet<{ devices: SerialDevice[] }>("devices");
-        if (!cancelled) {
-          setDevices(data?.devices ?? []);
-          if (data?.devices?.length) {
-            useLogStore.getState().log("ok", "serial", `扫描到 ${data.devices.length} 个串口设备`);
-          }
-        }
-      } catch {
-        if (cancelled) return;
-        setDevices([]);
+  // Scan real serial devices; keep the current selection when it still exists.
+  const refreshDevices = useCallback(async () => {
+    const seq = ++scanSeqRef.current;
+    try {
+      const data = await apiGet<{ devices: SerialDevice[] }>("devices");
+      if (!mountedRef.current || seq !== scanSeqRef.current) return;
+      const next = data?.devices ?? [];
+      setDevices(next);
+      const state = useSerialStore.getState();
+      // Never change the port while connected or mid-connect; a transient
+      // scan result must not clear a live selection.
+      if (!state.connected && !isConnectingRef.current) {
+        const current = state.port;
+        const nextPort = next.some((d) => d.port === current)
+          ? current
+          : (next[0]?.port ?? current);
+        if (nextPort !== current) setPort(nextPort);
+      }
+      if (next.length) {
+        useLogStore.getState().log("ok", "serial", `扫描到 ${next.length} 个串口设备`);
+      } else {
         useLogStore.getState().log("warn", "serial", "未扫描到串口设备");
       }
-    })();
-    return () => { cancelled = true; };
-  }, []);
+    } catch {
+      if (!mountedRef.current || seq !== scanSeqRef.current) return;
+      setDevices([]);
+      useLogStore.getState().log("warn", "serial", "未扫描到串口设备");
+    }
+  }, [setPort]);
 
-  const seed = async () => {
-    const ok = await confirmDialog({
-      title: '注入演示数据',
-      message: '将向串口日志注入演示数据（非真实串口数据），仅用于预览界面效果。是否继续？',
-    });
-    if (!ok) return;
-    [
-      '[DEMO] 14:32:02.157 AT',
-      '[DEMO] 14:32:02.359 OK',
-      '[DEMO] 14:32:03.112 AT+CWJAP="WiFi-2.4G","password123"',
-      '[DEMO] 14:32:03.583 WIFI CONNECTING',
-      '[DEMO] 14:32:06.902 WIFI CONNECTED',
-      '[DEMO] 14:32:07.015 WIFI GOT IP',
-      '[DEMO] 14:32:07.110 192.168.1.104',
-      '[DEMO] 14:32:08.441 AT+CIPSTART="TCP","api.thingspeak.com",80',
-      '[DEMO] 14:32:08.902 CONNECT',
-    ].forEach(addLog);
-  };
+  // On mount, fetch real device list
+  useEffect(() => {
+    void refreshDevices();
+  }, [refreshDevices]);
 
   const scheduleAutoReconnect = useCallback((request: AutoConnectRequest) => {
     if (request.attempt >= AUTO_RECONNECT_MAX_ATTEMPTS) {
@@ -300,6 +298,7 @@ export function SerialPane() {
           return <option key={d.port} value={d.port} title={`端口：${d.port}｜制造商/驱动：${label}${vidPid ? `｜标识：${vidPid}` : ""}`}>{d.port} — {label}{vidPid}</option>;
         })}</select>
         <select id="serialBaudSelect" value={String(baudRate)} onChange={(e) => setBaudRate(parseInt(e.target.value))}>{BAUD_RATES.map((b) => <option key={b} value={b}>{b}</option>)}</select>
+        <button className="serial-ctrl-btn" onClick={() => void refreshDevices()} title="重新扫描串口设备">{t('scanPort')}</button>
         <button className={`serial-connect-btn ${connected ? "on" : "off"}`} onClick={() => handleConnect()}>{connected ? t('disconnect') : t('connect')}</button>
         <button className="serial-ctrl-btn" onClick={handleToggleDtr} style={dtrActive ? { background: "var(--accent)", color: "var(--primary-fg)" } : undefined}>DTR</button>
         <button className="serial-ctrl-btn" onClick={handleToggleRts} style={rtsActive ? { background: "var(--accent)", color: "var(--primary-fg)" } : undefined}>RTS</button>
@@ -328,12 +327,6 @@ export function SerialPane() {
             size="md"
             title={t('serialConnectHint')}
             icon={<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 2v6M15 2v6M7 8h10v6a5 5 0 0 1-10 0z" /><path d="M12 19v3" strokeLinecap="round" /></svg>}
-            action={!connected && (
-              <button className="serial-clear" onClick={seed} aria-label="注入演示数据" title="注入演示数据（非真实串口数据）" style={{ fontSize: 11, display: "inline-flex", alignItems: "center", gap: 4 }}>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-                注入演示数据
-              </button>
-            )}
           />
         )}
       </div>

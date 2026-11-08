@@ -159,7 +159,6 @@ const en: Record<string, string> = {
   // Right panel tabs
   flash: 'Flash',
   serial: 'Serial',
-  wiring: 'Wiring',
   preview: 'Preview',
   compile: 'Compile',
   flashBtn: 'Flash',
@@ -167,14 +166,10 @@ const en: Record<string, string> = {
   disconnect: 'Disconnect',
   serialMonitor: 'Serial Monitor',
   codePreview: 'Code Preview',
-  wiringDiagram: 'Wiring',
-  safetyGuard: 'Safety Guard',
 
   // Workbench empty states
   previewEmpty1: 'Code preview loads automatically',
   previewEmpty2: 'Replaced when Agent generates code',
-  wiringEmpty1: 'Pin wiring diagram will appear here',
-  wiringEmpty2: 'Auto-rendered when Agent generates wiring',
   serialConnectHint: 'Click "Connect" to open serial port…',
 
   // Serial
@@ -209,25 +204,6 @@ const en: Record<string, string> = {
   allPass: 'All passed',
   hasIssues: 'Issues found',
   hasWarnings: 'Warnings',
-
-  // Safety
-  safetyTitle: 'Hardware Safety Guard',
-  safetyDesc: 'Real-time pin config & electrical parameter monitoring',
-  pinConflict: 'Pin Conflict',
-  voltageMismatch: 'Voltage Mismatch',
-  currentOverload: 'Current Overload',
-  thermalWarning: 'Thermal Warning',
-  safe: 'Safe',
-  warning: 'Warning',
-  danger: 'Danger',
-  noSafetyIssues: 'No safety issues with current config',
-  suggestion: 'Suggestion',
-  pinAllocation: 'Pin Allocation',
-  strappingConflict: 'Strapping Conflict',
-  avoidGpio: 'Avoid using',
-  userAssigned: 'User assigned',
-  strappingPin: 'Strapping Pin',
-  strappingNote: 'Not used in design, note power-on level',
 
   // Common
   noData: 'No Data',
@@ -372,6 +348,7 @@ const en: Record<string, string> = {
   collapsePanel: 'Collapse panel',
   noSourceData: 'No source data',
   noTodos: 'No todos',
+  noTodosDesc: 'The Agent creates a todo list automatically for multi-step tasks.',
   page: 'Page',
   pages: 'Pages',
   chunk: 'Chunk',
@@ -448,10 +425,6 @@ const en: Record<string, string> = {
   noMsgToExport: 'No messages to export',
   deleteFolderConfirm: 'Delete this folder? Bookmarks will move to default.',
 
-  // Wiring
-  reset: 'Reset',
-  bom: 'Bill of Materials (BOM)',
-
   // Session panel - additional
   deleteSessionConfirm: 'Delete this session?',
   newProjectPlaceholder: 'Project Name',
@@ -504,6 +477,14 @@ const en: Record<string, string> = {
   noPlan: 'No plan',
 
   // Todo card - clear action
+  todoCardTitle: 'Task list',
+  todoCompletedSuffix: 'completed',
+  todoStatusInProgress: 'In progress',
+  todoStatusPending: 'Pending',
+  todoStatusCompleted: 'Completed',
+  todoPriorityHigh: 'High',
+  todoPriorityMedium: 'Medium',
+  todoPriorityLow: 'Low',
   todoClear: 'Clear',
   todoClearConfirm: 'Confirm clear?',
   todoClearing: 'Clearing…',
@@ -535,11 +516,6 @@ const en: Record<string, string> = {
 
   // Workbench - additional
   duplicateTab: 'Duplicate Tab',
-  wiringLabel: 'Wiring',
-  bomTitle: 'BOM',
-  componentLabel: 'Component',
-  quantityLabel: 'Qty',
-  verifyingPin: 'Verifying pin config...',
   compileSuccess: 'Compile success (0 errors, 0 warnings)',
   flashComplete: 'Flash complete',
   compilingStatus: 'Compiling...',
@@ -547,15 +523,6 @@ const en: Record<string, string> = {
   compileLabel: 'Compile',
   flashLabel: 'Flash',
   verifyLabel: 'Verify',
-  safetyVerify: 'Verify',
-  safetyVerifying: 'Verifying...',
-  pinSafeOutput: 'Safe (Output mode)',
-  pinSafeInput: 'Safe (Input mode)',
-  strappingPinWarn: 'Strapping pin, pull-up may affect boot',
-  pinSafePwm: 'Safe (PWM output)',
-  legend: 'Legend',
-  gpioDigitalSignal: 'GPIO / Digital signal',
-  analogInput: 'Analog input',
   i2cBus: 'I2C Bus',
   powerRail: 'Power (3V3/5V)',
   tempHumiditySensor: 'Temp & Humidity Sensor',
