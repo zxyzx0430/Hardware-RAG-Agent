@@ -442,6 +442,7 @@
 | `implemented` | `PATCH` | `/api/kb/collections/{kb_id}/rename` | 重命名知识库 | `apiPatch('kb/collections/{id}/rename', ...)` | JSON |
 | `implemented` | `PATCH` | `/api/kb/collections/{kb_id}/config` | 更新 KB 配置（embedding/分块策略） | `apiPatch('kb/collections/{id}/config', ...)` | JSON |
 | `implemented` | `GET` | `/api/kb/documents/{doc_id}/chunks` | 查文档的 chunk 列表 | `apiGet('kb/documents/{doc_id}/chunks')` | JSON |
+| `implemented` | `GET` | `/api/kb/documents/{doc_id}/page-image?page=N&scale=S` | 渲染上传 PDF 的单页为 PNG（只读，按需缓存） | 直接二进制请求 | PNG |
 | `implemented` | `GET` | `/api/kb/chunks/{small_chunk_id}` | 查单个 chunk 详情（含 big_chunk_text） | `apiGet('kb/chunks/{small_chunk_id}')` | JSON |
 | `implemented` | `POST` | `/api/kb/{kb_id}/export` | 导出 KB 数据为 JSON | `apiPost('kb/{id}/export')` | JSON |
 | `implemented` | `POST` | `/api/kb/{kb_id}/import` | 导入 KB JSON 数据 | `apiPost('kb/{id}/import', formData)` | multipart |
@@ -500,7 +501,7 @@
 | `tool_call` | Agent 发起工具调用（args 为对外参数；Skills 读取工具有专用安全投影） | `tool`、`args`、`call_id`、`step_index` |
 | `tool_result` | 工具执行完成（含 result + duration） | `call_id`、`tool`、`result`、`duration`、`success`、`step_index` |
 | `tool_confirm_required` | 权限门控需要用户确认（HITL） | `call_id`、`tool`、`args`、`risk_level`、`reason` |
-| `source` | RAG 检索到来源时 | `id`、`title`、`doc`、`page`、`score`、`excerpt` |
+| `source` | RAG 检索到来源时 | `id`、`title`、`doc`、`doc_id`、`page`、`score`、`excerpt`、`is_pdf`、`mime_type` |
 | `todo_update` | Agent 更新任务清单（todo_write 工具） | `todos`（含 `content`/`status`/`priority`） |
 | `progress` | 长任务进度更新（编译/烧录/循环提示等） | `percent`、`message` |
 | `heartbeat` | 长时间等待模型或工具时保持连接 | 无业务字段 |
@@ -522,6 +523,8 @@
   - 已实现记忆语义：`long_term_memory` 最多 4,000 字符，省略时读取已保存设置，显式 `""` 表示本次不使用；普通聊天、Agent 与确认续跑使用同一请求快照，注入一次。记忆是偏好背景，不是权限；验证边界见 testing.md。
   - `thinking` 的 `content` 为人类可读思考文本；`source` 枚举 `rag` / `llm` / `reasoning`，标识思考来源。
   - `source` 的 `id` 为文档片段唯一标识；`doc` 为所属文档 ID；`page` 为可选页码/位置；`score` 为相似度得分；`excerpt` 为命中片段摘要。
+  - 来源原文页字段（2026-11-08，后端已实现，前端接入/浏览器验收未完成）：`doc_id` 为可定位上传 PDF 的稳定文档 ID（知识库来源由文档 ID 填充，网页来源为空字符串）；`is_pdf` 为布尔提示，`mime_type` 为 `application/pdf` 或空字符串，二者由 chunk 元数据 `file_type`（缺失时回退标题扩展名）推导，仅用于前端决定是否请求原文页。`doc`、`page_start`、`excerpt`、`kb_id` 等既有字段保持兼容。
+  - `GET /api/kb/documents/{doc_id}/page-image`：`page` 为必填的 1-based 页码，`scale` 为相对 72 DPI 的缩放（`0.5`–`2.0`，缺省 `1.0`）。成功返回 `image/png` 二进制，并带 `Cache-Control: private, max-age=86400` 与 `X-Page-Image-Cache: hit|miss`；同一 `doc_id`/`page`/`scale` 且文件大小与 mtime 未变时复用内存缓存。错误使用统一 JSON 形状 `{"success": false, "error": {"code", "message", "details"}}`，错误码：`DOC_NOT_FOUND`（404）、`KB_NOT_FOUND`（404）、`DOCUMENT_NOT_PDF`（415）、`DOCUMENT_FILE_NOT_FOUND`（404）、`PAGE_OUT_OF_RANGE`（400，`details.page_count`）、`INVALID_PAGE`（400）、`INVALID_SCALE`（400）、`PAGE_RENDER_FAILED`（500）。响应不暴露本地绝对路径；只读取知识库上传目录内的 PDF，非 PDF 来源不生成图片。
   - `tool` 的 `icon` 为前端展示图标名；`args` 为结构化调用参数；`result` 为工具执行结果字符串（聊天流中可空，完成后再填充）。
   - `tool_call` 的 `call_id` 为工具调用唯一标识，用于和 `tool_result` / `tool_confirm_required` 关联；`step_index` 为 Agent 执行步骤序号。
   - `tool_result` 的 `duration` 为工具执行耗时（毫秒）；`success` 为布尔值。

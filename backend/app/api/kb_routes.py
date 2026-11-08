@@ -7,13 +7,16 @@
 import asyncio
 import contextvars
 import logging
+import math
+import re
 import threading
 import uuid
 from functools import wraps
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Request
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Request, Query, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from src.config.settings import settings
@@ -38,6 +41,10 @@ DEFAULT_KB_ID = "builtin-001"
 # chunk_size 校验范围
 MIN_CHUNK_SIZE = 100
 MAX_CHUNK_SIZE = 10000
+
+# Uploaded document IDs are generated UUIDs; keep the page-image path segment
+# to characters that can never escape UPLOAD_DIR even before path resolution.
+_DOC_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 
 # Hold strong references to background indexing tasks so they aren't GC'd.
 # Python's event loop only keeps weak refs to tasks; without this, a task can
@@ -1314,6 +1321,102 @@ def get_doc_chunks(doc_id: str):
             "success": False,
             "error": {"code": "INTERNAL_ERROR", "message": sanitize_error(str(e)), "details": None},
         }
+
+
+# ═══════════════════════════════════════════
+# GET /api/kb/documents/{doc_id}/page-image
+# ═══════════════════════════════════════════
+
+def _page_image_error(
+    code: str,
+    status_code: int,
+    message: str,
+    details: dict | None = None,
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "success": False,
+            "error": {"code": code, "message": message, "details": details},
+        },
+    )
+
+
+@router.get("/kb/documents/{doc_id}/page-image")
+def get_document_page_image(
+    doc_id: str,
+    page: int = Query(..., description="1-based page number"),
+    scale: float = Query(1.0, description="Render scale relative to 72 DPI (0.5-2.0)"),
+    user: dict = Depends(current_user_optional),
+):
+    """Render one page of an uploaded PDF as PNG for source previews.
+
+    Only files inside UPLOAD_DIR are read; errors use the standard JSON shape
+    and never expose local absolute paths. Non-PDF sources are rejected so the
+    client keeps its text/code view.
+    """
+    from src.rag.page_image import MAX_SCALE, MIN_SCALE, PageImageError, render_page_png
+
+    if not _DOC_ID_RE.fullmatch(doc_id):
+        return _page_image_error("DOC_NOT_FOUND", 404, "文档不存在")
+    if not math.isfinite(scale) or scale < MIN_SCALE or scale > MAX_SCALE:
+        return _page_image_error(
+            "INVALID_SCALE", 400, f"scale 必须在 {MIN_SCALE}-{MAX_SCALE} 之间",
+        )
+    if page < 1:
+        return _page_image_error("INVALID_PAGE", 400, "page 必须是从 1 开始的页码")
+
+    try:
+        with get_db_ctx() as db:
+            record = db.query(KnowledgeDoc).filter(KnowledgeDoc.doc_id == doc_id).first()
+            if not record:
+                return _page_image_error("DOC_NOT_FOUND", 404, f"文档不存在: {doc_id}")
+            kb_id = record.kb_id
+            file_type = (record.file_type or "").strip().lower().lstrip(".")
+            kb_exists = db.query(KnowledgeBase.id).filter(
+                KnowledgeBase.id == kb_id,
+            ).first() is not None
+    except Exception:
+        logger.exception("查询来源文档失败: %s", doc_id)
+        return _page_image_error("INTERNAL_ERROR", 500, "内部错误")
+    if not kb_exists:
+        return _page_image_error("KB_NOT_FOUND", 404, f"知识库不存在: {kb_id}")
+    if file_type and file_type != "pdf":
+        return _page_image_error(
+            "DOCUMENT_NOT_PDF",
+            415,
+            "该来源不是 PDF，无法渲染原始页面",
+            {"file_type": file_type},
+        )
+
+    upload_root = UPLOAD_DIR.resolve()
+    pdf_path = (upload_root / f"{doc_id}.pdf").resolve()
+    if pdf_path.parent != upload_root or not pdf_path.is_file():
+        return _page_image_error("DOCUMENT_FILE_NOT_FOUND", 404, "文档原文件不存在")
+    try:
+        with pdf_path.open("rb") as handle:
+            header = handle.read(1024)
+    except OSError:
+        return _page_image_error("DOCUMENT_FILE_NOT_FOUND", 404, "文档原文件不存在")
+    if b"%PDF-" not in header:
+        return _page_image_error("DOCUMENT_NOT_PDF", 415, "该来源不是 PDF，无法渲染原始页面")
+
+    try:
+        png, cache_hit = render_page_png(doc_id, pdf_path, page, scale)
+    except PageImageError as exc:
+        return _page_image_error(exc.code, exc.status_code, exc.message, exc.details)
+    except Exception:
+        logger.exception("渲染来源页面失败: %s", doc_id)
+        return _page_image_error("PAGE_RENDER_FAILED", 500, "PDF 页面渲染失败")
+
+    return Response(
+        content=png,
+        media_type="image/png",
+        headers={
+            "Cache-Control": "private, max-age=86400",
+            "X-Page-Image-Cache": "hit" if cache_hit else "miss",
+        },
+    )
 
 
 # ═══════════════════════════════════════════
