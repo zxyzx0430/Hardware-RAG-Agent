@@ -30,7 +30,10 @@ export class WatchForbiddenError extends Error {
   }
 }
 
-const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+// The server emits a heartbeat every 15s. Two missed heartbeats mean the
+// stream is dead (e.g. the backend restarted behind a reverse proxy that kept
+// the client socket open), so reconnect instead of waiting five minutes.
+export const WATCH_IDLE_TIMEOUT_MS = 30_000;
 // Exponential backoff reconnect: 1s, 2s, 4s, 8s, 16s, 30s (capped), max 10 attempts.
 const MAX_RETRIES = 10;
 const MAX_BACKOFF_MS = 30_000;
@@ -67,6 +70,7 @@ export function useExplorerWatch(
   onAuthRequired?: () => void,
   onForbidden?: () => void,
   reconnectKey = 0,
+  idleTimeoutMs = WATCH_IDLE_TIMEOUT_MS,
 ) {
   const onEventRef = useRef(onEvent);
   const onErrorRef = useRef(onError);
@@ -97,6 +101,8 @@ export function useExplorerWatch(
     let waitingForAuth = false;
     let authNotified = false;
     let authPollTimer: ReturnType<typeof setInterval> | null = null;
+    // Surface one generic transport error per outage, not one per backoff step.
+    let errorNotified = false;
 
     const setStatus = (connected: boolean) => onStatusRef.current?.(connected);
 
@@ -106,7 +112,7 @@ export function useExplorerWatch(
         // No heartbeat for IDLE_TIMEOUT_MS: abort current attempt to trigger reconnect.
         idleAborted = true;
         attemptController?.abort();
-      }, IDLE_TIMEOUT_MS);
+      }, idleTimeoutMs);
     };
 
     const scheduleReconnect = () => {
@@ -206,6 +212,7 @@ export function useExplorerWatch(
         retryCount = 0;
         knownToken = getSessionToken();
         authNotified = false;
+        errorNotified = false;
         stopAuthWait();
         setStatus(true);
         while (!controller.signal.aborted) {
@@ -251,7 +258,10 @@ export function useExplorerWatch(
         }
         const message = err instanceof Error ? err.message : String(err);
         useLogStore.getState().log("error", "sse", `explorer/watch failed: ${message}`);
-        onErrorRef.current?.(new Error(message));
+        if (!errorNotified) {
+          errorNotified = true;
+          onErrorRef.current?.(new Error(message));
+        }
         scheduleReconnect();
       } finally {
         if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
@@ -272,5 +282,5 @@ export function useExplorerWatch(
       attemptController?.abort();
       setStatus(false);
     };
-  }, [rootPath, reconnectKey]);
+  }, [rootPath, reconnectKey, idleTimeoutMs]);
 }

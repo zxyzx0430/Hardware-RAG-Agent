@@ -34,4 +34,12 @@ describe("follow-mode toast throttle", () => {
     expect(throttle.shouldShow(2200)).toBe(false);
     expect(throttle.shouldShow(4500)).toBe(true);
   });
+
+  it("coalesces created+modified events for the same path only", () => {
+    const throttle = createFollowToastThrottle(2000);
+    expect(throttle.shouldShowFor("E:\\p\\a.txt", 0)).toBe(true);
+    expect(throttle.shouldShowFor("E:/p/a.txt", 500)).toBe(false);
+    expect(throttle.shouldShowFor("E:/p/b.txt", 600)).toBe(true);
+    expect(throttle.shouldShowFor("E:/p/a.txt", 2100)).toBe(true);
+  });
 });

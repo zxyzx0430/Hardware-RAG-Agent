@@ -382,3 +382,52 @@
 - 调查期间启动的前端（5399）与后端（58081，临时 DB）将在报告完成后停止。
 - 临时 `.env`、认证文件、`vite.e2e.config.ts`、`node_modules` junction 将移除；截图/日志保留在 `E:/DevCaches/Temp/explorer-e2e/`。
 - 未提交 `.env`、DB、截图、fixture；未 push。
+
+---
+
+# 修复记录 r2（2026-11-08，按收窄范围）
+
+- 基线：先 fast-forward 合并主检出 `feat/plan-any-mode-markdown` @ `44c5df53`（已含原报告 commit 与部分 watch/选择器修复）。
+- 本轮负责：P1-01/02/03/04；相关 P2-05/07/09/10/12（ExplorerPanel 部分）。其余 P2/P3 由其他线程负责，未改 FileTree/FileTreeNode/CSS/backend/editorTabParts。
+- 前端：68 文件 / 471 测试通过；`tsc --noEmit` exit 0；explorer 目录 eslint 0 error。
+- 端口：后端 58084（临时 DB `E:/DevCaches/Temp/explorer-fix`），前端 5184；未触碰 58080。
+
+## Commits
+
+| Commit | 内容 |
+| --- | --- |
+| `bc4b8d52` | `fix(explorer): normalize tree paths and refresh loaded dirs` — P1-01 + P1-02；同文件内一并落地 P2-05 调用点、P2-09 静默启动、P2-10 根节点展开、P2-12 前端文案 |
+| `7391377c` | `fix(explorer): reconnect watch after heartbeat loss` — P1-03；watch 文件内 P2-05 按路径节流 |
+| `d17db9fe` | `fix(explorer): bind Ctrl+S in Monaco and reveal active tab` — P1-04 + P2-07 |
+
+> P1-01 与 P1-02 共用 `loadTree` / `loadAuthorizedTree` / `mergeTreeDataFresh` 同一批函数，按 hunk 拆分会互相污染，故合并为一个提交；两者分别有独立测试与浏览器复测。
+
+## 浏览器复测（ego 0.6.2.7，真实 5184+58084）
+
+| 场景 | 结果 | 证据 |
+| --- | --- | --- |
+| P1-01 路径归一化 / 刷新保持展开 | 根/子节点路径均为 `/`；刷新后 root/docs/zh 保持展开，树不折叠 | `E:/DevCaches/Temp/explorer-fix/fix-02-open.png`、`fix-03-refresh.png` |
+| P1-02 已展开目录刷新 | 外部 `docs/fix-watch-new.txt` 与根级文件自动出现；UI 新建/重命名/删除即时反映 | `fix-03-refresh.png`、`fix-04-ui-ops.png` |
+| P1-03 watch 心跳与重连 | 后端重启 + 40s 后灯变灰、无 toast；最近重新打开后自动重连，外部文件出现 | `fix-06-watch-idle.png`、`fix-07-watch-recovered.png` |
+| P1-04 Monaco Ctrl+S | 编辑后 Ctrl+S：`POST /api/explorer/write 200`，脏标记清除，磁盘内容更新 | `fix-05-ctrl-s.png` |
+| P2-05 重复 toast | 跟随模式一次外部创建只出现一条“已更新” | 页面文本计数 = 1 |
+| P2-07 活动标签可见 | 6 个标签时活动标签完整可见（scrollLeft 661.6，右边界 1135≤1136） | `fix-11-tabs.png` |
+| P2-09 未授权启动 | 只显示“该项目尚未授权，请明确重新打开”，1.6s/4.4s 均无 403/打开失败 toast | `fix-09-unauthorized.png` |
+| P2-10 根节点自动展开 | 选择文件夹后根节点直接 `is-expanded`，子项可见 | `fix-02-open.png` |
+| P2-12 前端错误文案 | 选择文件作为根目录 → `打开文件夹失败: 目标不是有效文件夹`，无原始 security 前缀 | `fix-12-friendly-error.png` |
+
+另外确认合并带入的选择器全窗口 modal 生效（1136×774，内层 680×401），根路径与 `localStorage` 均归一化为 `/`。
+
+## 本轮仍未验证 / 边界
+
+- P1-03 的 30s 心跳超时用单元测试（注入 20ms）验证；真实后端重启场景等待 40s 后观察灯变灰，未逐秒计时。
+- P2-12 仅真实页面验证“非目录”一类；其余映射（权限、版本冲突、无法解析、文件过大等）由 `treeUtils.test.ts` 覆盖。
+- Windows 路径大小写差异（盘符大小写）未归一化；如需大小写不敏感比较需另行决定。
+- 30s idle 超时在极端 GC/网络停顿下可能重连一次；心跳周期 15s，当前取 2 次未收到即重连。
+- 其余 P2（选择器之外）与 P3 未在本轮修改，按主控分派由其他线程处理。
+
+## 清理
+
+- 本轮启动的后端 58084、前端 5184 已停止；临时 `.env`、`vite.e2e.config.ts`、认证文件、`node_modules` junction 已移除。
+- 证据保留在 `E:/DevCaches/Temp/explorer-fix/`；未提交 `.env`、DB、截图、fixture；未 push。
+

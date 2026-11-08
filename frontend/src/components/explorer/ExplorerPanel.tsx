@@ -22,7 +22,15 @@ import { FileTree, type FileNode } from "./FileTree";
 import { FolderPickerDialog } from "./FolderPickerDialog";
 import { useExplorerWatch, type WatchEvent } from "./useExplorerWatch";
 import { createFollowToastThrottle, isIgnoredWatchPath } from "./watchEvents";
-import { collectDirPaths, collectLazyExpandedPaths, fileNameFromPath } from "./treeUtils";
+import {
+  collectDirPaths,
+  collectRefreshDirPaths,
+  fileNameFromPath,
+  friendlyExplorerError,
+  normalizePathSeparators,
+  normalizeTreePaths,
+  pathKey,
+} from "./treeUtils";
 
 interface OpenResponse {
   tree: FileNode[];
@@ -33,7 +41,7 @@ interface DirResponse {
 }
 
 function replaceNodeChildren(node: FileNode, targetPath: string, children: FileNode[]): FileNode {
-  if (node.path === targetPath) {
+  if (pathKey(node.path) === pathKey(targetPath)) {
     return { ...node, children, lazy: false };
   }
   if (!node.children) return node;
@@ -51,14 +59,14 @@ function replaceNodeChildren(node: FileNode, targetPath: string, children: FileN
 function mergeTreeDataFresh(prev: FileNode, fresh: FileNode): FileNode {
   // If the fresh node is not lazy (already has children loaded on the backend side),
   // or the previous node was already loaded, keep the loaded children.
-  if (fresh.type === "directory" && prev.type === "directory" && prev.path === fresh.path) {
+  if (fresh.type === "directory" && prev.type === "directory" && pathKey(prev.path) === pathKey(fresh.path)) {
     if (fresh.lazy && !prev.lazy && prev.children) {
       // Previous tree had loaded children; preserve them instead of resetting to lazy.
       return {
         ...fresh,
         lazy: false,
         children: prev.children.map((pc) => {
-          const freshChild = fresh.children?.find((fc) => fc.path === pc.path);
+          const freshChild = fresh.children?.find((fc) => pathKey(fc.path) === pathKey(pc.path));
           return freshChild ? mergeTreeDataFresh(pc, freshChild) : pc;
         }),
       };
@@ -68,7 +76,7 @@ function mergeTreeDataFresh(prev: FileNode, fresh: FileNode): FileNode {
       return {
         ...fresh,
         children: fresh.children.map((fc) => {
-          const prevChild = prev.children!.find((pc) => pc.path === fc.path);
+          const prevChild = prev.children!.find((pc) => pathKey(pc.path) === pathKey(fc.path));
           return prevChild ? mergeTreeDataFresh(prevChild, fc) : fc;
         }),
       };
@@ -84,12 +92,9 @@ const TREE_PANE_MAX = 600;
 const TREE_PANE_DEFAULT = 280;
 const TREE_PANE_KEY = "hwrag_tree_pane_width";
 
-function normalizePath(path: string): string {
-  return path.replace(/\\/g, "/").replace(/\/$/, "");
-}
 
 function formatError(prefix: string, err: unknown): string {
-  return `${prefix}: ${err instanceof Error ? err.message : String(err)}`;
+  return `${prefix}: ${friendlyExplorerError(err)}`;
 }
 
 /** A persisted project root is not authorized again after a backend restart;
@@ -124,10 +129,10 @@ export function ExplorerPanel() {
   // Lifted from FileTree so expanded/selected state survives loadTree refreshes
   // (which previously unmounted FileTree and lost internal state).
   const [expanded, setExpanded] = useState<Set<string>>(() =>
-    rootPath ? new Set(loadExpandedPaths(rootPath)) : new Set()
+    rootPath ? new Set(loadExpandedPaths(rootPath).map(normalizePathSeparators)) : new Set()
   );
   const [selectedPaths, setSelectedPaths] = useState<Set<string>>(() =>
-    rootPath ? new Set(loadSelectedPaths(rootPath)) : new Set()
+    rootPath ? new Set(loadSelectedPaths(rootPath).map(normalizePathSeparators)) : new Set()
   );
   // Lazy directory loading state (path -> loading / error).
   const [loadingDirPaths, setLoadingDirPaths] = useState<Set<string>>(new Set());
@@ -174,22 +179,24 @@ export function ExplorerPanel() {
   const fetchAndReplaceChildren = useCallback(async (path: string, token?: number) => {
     const res = await apiGet<DirResponse>(`explorer/dir?path=${encodeURIComponent(path)}`);
     if (token !== undefined && token !== loadTokenRef.current) return;
-    setTree((prev) => (prev ? replaceNodeChildren(prev, path, res!.children) : prev));
+    const children = (res!.children ?? []).map(normalizeTreePaths);
+    setTree((prev) => (prev ? replaceNodeChildren(prev, path, children) : prev));
   }, []);
 
   const loadTree = useCallback(async (path: string, silent = false) => {
     const token = ++loadTokenRef.current;
-    expectedPathRef.current = path;
+    const rootPath = normalizePathSeparators(path);
+    expectedPathRef.current = rootPath;
     if (!silent) setLoading(true);
     try {
-      const res = await apiPost<OpenResponse>("explorer/open", { path }, 120_000);
+      const res = await apiPost<OpenResponse>("explorer/open", { path: rootPath }, 120_000);
       if (token !== loadTokenRef.current) return;
-      const first = res.tree[0];
+      const first = res.tree[0] ? normalizeTreePaths(res.tree[0]) : undefined;
       if (first) {
         // Merge with previous tree to preserve already-loaded directory children.
         // This prevents silent refreshes from resetting lazy=false dirs back to lazy=true.
         const prevTree = treeRef.current;
-        const merged = (silent && prevTree && prevTree.path === first.path)
+        const merged = (silent && prevTree && pathKey(prevTree.path) === pathKey(first.path))
           ? mergeTreeDataFresh(prevTree, first)
           : first;
         setTree(merged);
@@ -197,16 +204,21 @@ export function ExplorerPanel() {
           setExplorerRootPath(first.path);
           addRecentFolder(first.path);
           setWatchEpoch((value) => value + 1);
+          // A freshly opened project should show its contents, not only a
+          // collapsed root row.
+          setExpanded((prev) => (prev.has(first.path) ? prev : new Set([...prev, first.path])));
         }
-        // Restore previously-expanded directories that are still lazy (not yet loaded).
-        const lazyExpanded = collectLazyExpandedPaths(merged, expandedRef.current);
-        if (lazyExpanded.length > 0) {
-          const CONCURRENCY = 10;
-          for (let i = 0; i < lazyExpanded.length; i += CONCURRENCY) {
-            if (token !== loadTokenRef.current) return;
-            const batch = lazyExpanded.slice(i, i + CONCURRENCY);
-            await Promise.allSettled(batch.map((p) => fetchAndReplaceChildren(p, token)));
-          }
+        // Refresh every expanded or already-loaded directory. Root children
+        // come from this response; nested contents must be re-fetched because
+        // the backend marks them lazy on every root read.
+        const expandedForRefresh = new Set(expandedRef.current);
+        if (!silent) expandedForRefresh.add(first.path);
+        const refreshPaths = collectRefreshDirPaths(merged, expandedForRefresh);
+        const CONCURRENCY = 10;
+        for (let i = 0; i < refreshPaths.length; i += CONCURRENCY) {
+          if (token !== loadTokenRef.current) return;
+          const batch = refreshPaths.slice(i, i + CONCURRENCY);
+          await Promise.allSettled(batch.map((p) => fetchAndReplaceChildren(p, token)));
         }
       }
     } catch (err) {
@@ -220,28 +232,29 @@ export function ExplorerPanel() {
   // Read-only tree restoration and refresh never grants a new project root.
   const loadAuthorizedTree = useCallback(async (path: string, silent = false) => {
     const token = ++loadTokenRef.current;
-    expectedPathRef.current = path;
+    const rootPath = normalizePathSeparators(path);
+    expectedPathRef.current = rootPath;
     if (!silent) setLoading(true);
     try {
-      const res = await apiGet<DirResponse>(`explorer/dir?path=${encodeURIComponent(path)}`);
+      const res = await apiGet<DirResponse>(`explorer/dir?path=${encodeURIComponent(rootPath)}`);
       if (token !== loadTokenRef.current) return;
       const first: FileNode = {
-        name: fileNameFromPath(path),
+        name: fileNameFromPath(rootPath),
         type: "directory",
-        path,
-        children: res.children,
+        path: rootPath,
+        children: (res.children ?? []).map(normalizeTreePaths),
         lazy: false,
       };
       const prevTree = treeRef.current;
-      const merged = (silent && prevTree?.path === first.path)
+      const merged = (silent && prevTree && pathKey(prevTree.path) === pathKey(first.path))
         ? mergeTreeDataFresh(prevTree, first)
         : first;
       setTree(merged);
-      const lazyExpanded = collectLazyExpandedPaths(merged, expandedRef.current);
+      const refreshPaths = collectRefreshDirPaths(merged, expandedRef.current);
       const CONCURRENCY = 10;
-      for (let i = 0; i < lazyExpanded.length; i += CONCURRENCY) {
+      for (let i = 0; i < refreshPaths.length; i += CONCURRENCY) {
         if (token !== loadTokenRef.current) return;
-        const batch = lazyExpanded.slice(i, i + CONCURRENCY);
+        const batch = refreshPaths.slice(i, i + CONCURRENCY);
         await Promise.allSettled(batch.map((p) => fetchAndReplaceChildren(p, token)));
       }
     } catch (err) {
@@ -369,7 +382,7 @@ export function ExplorerPanel() {
 
   const handleFolderPicked = useCallback((path: string) => {
     setShowFolderPicker(false);
-    loadTree(normalizePath(path));
+    loadTree(normalizePathSeparators(path));
   }, [loadTree]);
 
   const switchFolder = useCallback((path: string) => {
@@ -418,16 +431,17 @@ export function ExplorerPanel() {
     }
     if (event.type === "change" && event.path) {
       const state = useAppStore.getState();
-      const isOpen = state.openFiles.some((f) => f.path === event.path);
-      if (isOpen) void state.handleExternalFileChange(event.path);
+      const openFile = state.openFiles.find((f) => pathKey(f.path) === pathKey(event.path!));
+      if (openFile) void state.handleExternalFileChange(openFile.path);
     }
     if (!followMode) return;
     const targetPath = event.dest_path ?? event.path;
     if (targetPath) {
-      highlightPath(targetPath);
-      scrollToNode(targetPath);
+      const treeTargetPath = normalizePathSeparators(targetPath);
+      highlightPath(treeTargetPath);
+      scrollToNode(treeTargetPath);
       if (!explorerOpen) setExplorerOpen(true);
-      if (followToastThrottleRef.current.shouldShow()) {
+      if (followToastThrottleRef.current.shouldShowFor(targetPath)) {
         useToastStore.getState().showInfo(
           t("followModeChangeToast", "{name} 已更新").replace("{name}", fileNameFromPath(targetPath)),
         );
@@ -436,9 +450,9 @@ export function ExplorerPanel() {
   }, [followMode, explorerOpen, highlightPath, debouncedRefresh, scrollToNode, setExplorerOpen, t]);
 
   useExplorerWatch(
-    rootPath,
+    rootPath ? normalizePathSeparators(rootPath) : null,
     handleWatchEvent,
-    (err) => showError(t("watchError", "文件监听异常") + ": " + err.message),
+    (err) => showError(t("watchError", "文件监听异常") + ": " + friendlyExplorerError(err)),
     (connected) => {
       setWatchConnected(connected);
       if (connected) setWatchAuthRequired(false);
@@ -461,19 +475,35 @@ export function ExplorerPanel() {
     setWatchAuthRequired(false);
   }, [rootPath]);
 
-  // mount: restore tree from persisted rootPath
+  // mount: restore tree from persisted rootPath. Normalize an older stored
+  // root that still uses `\` so it matches the tree node paths.
   useEffect(() => {
-    if (rootPath && !tree) void loadAuthorizedTree(rootPath);
+    if (rootPath) {
+      const normalized = normalizePathSeparators(rootPath);
+      if (normalized !== rootPath) setExplorerRootPath(normalized);
+      if (!tree) void loadAuthorizedTree(normalized);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Reset selection/expanded when the user switches to a different folder,
-  // restoring any previously persisted state for that root.
+  // restoring any previously persisted state for that root. The root itself is
+  // always expanded after a switch so its contents are visible.
   useEffect(() => {
     if (prevRootRef.current !== rootPath) {
       prevRootRef.current = rootPath;
-      setSelectedPaths(rootPath ? new Set(loadSelectedPaths(rootPath)) : new Set());
-      setExpanded(rootPath ? new Set(loadExpandedPaths(rootPath)) : new Set());
+      const normalizedRoot = rootPath ? normalizePathSeparators(rootPath) : null;
+      const nextSelected = rootPath
+        ? loadSelectedPaths(rootPath).map(normalizePathSeparators)
+        : [];
+      const nextExpanded = rootPath
+        ? loadExpandedPaths(rootPath).map(normalizePathSeparators)
+        : [];
+      if (normalizedRoot && !nextExpanded.includes(normalizedRoot)) {
+        nextExpanded.push(normalizedRoot);
+      }
+      setSelectedPaths(new Set(nextSelected));
+      setExpanded(new Set(nextExpanded));
     }
   }, [rootPath]);
 

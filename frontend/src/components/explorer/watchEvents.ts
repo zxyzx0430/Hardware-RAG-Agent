@@ -20,6 +20,8 @@ export function isIgnoredWatchPath(path: string | null | undefined): boolean {
 export interface FollowToastThrottle {
   /** Returns true when a toast may be shown now; false while still in the cooldown. */
   shouldShow(now?: number): boolean;
+  /** Per-path variant: one create/modify burst for the same file yields one toast. */
+  shouldShowFor(path: string, now?: number): boolean;
 }
 
 /**
@@ -28,10 +30,19 @@ export interface FollowToastThrottle {
  */
 export function createFollowToastThrottle(intervalMs = 2000): FollowToastThrottle {
   let lastShownAt = Number.NEGATIVE_INFINITY;
+  const lastShownByPath = new Map<string, number>();
+  const allowed = (last: number, now: number) => now - last >= intervalMs;
   return {
     shouldShow(now = Date.now()) {
-      if (now - lastShownAt < intervalMs) return false;
+      if (!allowed(lastShownAt, now)) return false;
       lastShownAt = now;
+      return true;
+    },
+    shouldShowFor(path, now = Date.now()) {
+      const key = path.replace(/\\/g, "/").toLowerCase();
+      const last = lastShownByPath.get(key) ?? Number.NEGATIVE_INFINITY;
+      if (!allowed(last, now)) return false;
+      lastShownByPath.set(key, now);
       return true;
     },
   };
