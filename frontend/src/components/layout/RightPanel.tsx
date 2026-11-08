@@ -164,41 +164,40 @@ function SourcePanel() {
     ? kbItems.find((item) => item.id === fileViewerSource.sourceId) || null
     : null;
 
-  if (viewed) {
-    if (viewed.big_chunk_id) {
-      const siblingTexts = collectSiblingTexts(sources, viewed);
-      return (
-        <BigChunkViewer
-          viewed={viewed}
-          highlightTexts={siblingTexts}
-          onBack={() => setSessionFileViewerSource(activeSessionId, null, null)}
-        />
-      );
-    }
-    // Build page label: prefer real PDF pages, fallback to chunk index
-    const pageLabel = viewed.page_start != null
-      ? (viewed.page_end != null && viewed.page_end !== viewed.page_start
-          ? `${t('pages')} ${viewed.page_start}-${viewed.page_end}`
-          : `${t('page')} ${viewed.page_start}`)
-      : `${t('chunk')} #${viewed.page}`;
-    // Score: show actual relevance percentage (0-100)
-    const displayScore = Math.round((viewed.score || 0) * 100);
-    return (
+  // Opening a source from chat or the KB panel while todos/plan is active
+  // should bring the viewer into view. This only runs when the source changes,
+  // so a later manual tab switch back to todos/plan is preserved.
+  useEffect(() => {
+    if (fileViewerSource) setRightContentTab(activeSessionId, 'sources');
+  }, [fileViewerSource, activeSessionId, setRightContentTab]);
+
+  // The tab bar stays mounted while a source viewer is open, so the user can
+  // always switch to todos/plan instead of being trapped in the viewer.
+  const viewer = viewed ? (
+    viewed.big_chunk_id ? (
+      <BigChunkViewer
+        viewed={viewed}
+        highlightTexts={collectSiblingTexts(sources, viewed)}
+        onBack={() => setSessionFileViewerSource(activeSessionId, null, null)}
+      />
+    ) : (
       <SourceExcerptViewer
         key={`${viewed.messageId || ""}-${viewed.id}`}
         viewed={viewed}
         editorTheme={editorTheme}
-        pageLabel={pageLabel}
-        displayScore={displayScore}
+        pageLabel={buildPageLabel(viewed, t)}
+        displayScore={Math.round((viewed.score || 0) * 100)}
         onBack={() => setSessionFileViewerSource(activeSessionId, null, null)}
         t={t}
       />
-    );
-  }
-
-  if (viewedKbItem) {
-    return <ChunkViewer docId={viewedKbItem.id} docName={viewedKbItem.name} onBack={() => setSessionFileViewerSource(activeSessionId, null, null)} />;
-  }
+    )
+  ) : viewedKbItem ? (
+    <ChunkViewer
+      docId={viewedKbItem.id}
+      docName={viewedKbItem.name}
+      onBack={() => setSessionFileViewerSource(activeSessionId, null, null)}
+    />
+  ) : null;
 
   return (
     <div className="source-panel" id="sourcePanel">
@@ -209,36 +208,58 @@ function SourcePanel() {
           <button className={`source-tab ${tab === 'plan' ? 'active' : 'inactive'}`} id="tab-plan" onClick={() => setRightContentTab(activeSessionId, 'plan')}>{t('planTab')}</button>
         </div>
       </div>
-      <div className="source-scroll" id="sourceScroll">
-        {tab === 'sources' ? (
-          sourceGroups.length ? sourceGroups.map((group) => (
-            <MessageSourceGroup
-              key={group.messageId}
-              group={group}
-              expanded={expandedGroups.has(group.messageId)}
-              onToggle={() => setExpandedGroups((prev) => {
-                const next = new Set(prev);
-                if (next.has(group.messageId)) next.delete(group.messageId);
-                else next.add(group.messageId);
-                return next;
-              })}
-              highlightSourceId={highlightSourceId}
-              onSourceClick={(src) => {
-                setSessionHighlightSourceId(activeSessionId, src.id);
-                setSessionFileViewerSource(activeSessionId, src.messageId || "", src.id);
-              }}
-            />
-          )) : <EmptyState size="sm" title={t('noSourceData')} icon={<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 7h16M4 12h16M4 17h10" strokeLinecap="round" /></svg>} />
-        ) : tab === 'todos' ? (
-          todos.length ? (
+      {tab === 'sources' ? (
+        viewer ? (
+          <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>{viewer}</div>
+        ) : (
+          <div className="source-scroll" id="sourceScroll">
+            {sourceGroups.length ? sourceGroups.map((group) => (
+              <MessageSourceGroup
+                key={group.messageId}
+                group={group}
+                expanded={expandedGroups.has(group.messageId)}
+                onToggle={() => setExpandedGroups((prev) => {
+                  const next = new Set(prev);
+                  if (next.has(group.messageId)) next.delete(group.messageId);
+                  else next.add(group.messageId);
+                  return next;
+                })}
+                highlightSourceId={highlightSourceId}
+                onSourceClick={(src) => {
+                  setSessionHighlightSourceId(activeSessionId, src.id);
+                  setSessionFileViewerSource(activeSessionId, src.messageId || "", src.id);
+                }}
+              />
+            )) : <EmptyState size="sm" title={t('noSourceData')} icon={<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 7h16M4 12h16M4 17h10" strokeLinecap="round" /></svg>} />}
+          </div>
+        )
+      ) : tab === 'todos' ? (
+        <div className="source-scroll" id="sourceScroll">
+          {todos.length ? (
             <TodoCard todos={todos} onClear={() => clearSessionTodos(activeSessionId)} />
-          ) : <EmptyState size="sm" title={t('noTodos') || '暂无任务清单'} icon={<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M9 9h6M9 13h4" strokeLinecap="round" /></svg>} />
-        ) : tab === 'plan' ? (
-          <PlanPanel />
-        ) : null}
-      </div>
+          ) : (
+            <EmptyState
+              size="sm"
+              title={t('noTodos') || '暂无任务清单'}
+              desc={t('noTodosDesc')}
+              icon={<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M9 9h6M9 13h4" strokeLinecap="round" /></svg>}
+            />
+          )}
+        </div>
+      ) : (
+        <div className="source-scroll" id="sourceScroll"><PlanPanel /></div>
+      )}
     </div>
   );
+}
+
+/** Page label: prefer real PDF pages, fallback to chunk index. */
+function buildPageLabel(viewed: SourceRef, t: (key: string, fallback?: string) => string): string {
+  if (viewed.page_start == null) return `${t('chunk')} #${viewed.page}`;
+  if (viewed.page_end != null && viewed.page_end !== viewed.page_start) {
+    return `${t('pages')} ${viewed.page_start}-${viewed.page_end}`;
+  }
+  return `${t('page')} ${viewed.page_start}`;
 }
 
 // ─── Source excerpt viewer: explicit loading state + breadcrumb back to the source list ───
@@ -255,7 +276,7 @@ function SourceExcerptViewer({ viewed, editorTheme, pageLabel, displayScore, onB
     setEditorReady(false);
   }, [viewed.id, viewed.messageId]);
   return (
-    <div className="source-panel" id="sourcePanel">
+    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, overflow: 'hidden' }}>
       <div className="source-fv-header">
         <button className="source-fv-back" onClick={onBack}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15 18 9 12 15 6"/></svg> {t('backToSources', '返回来源引用')}
@@ -566,7 +587,7 @@ function BigChunkDetail({ viewed, chunk, highlightTexts, onBack }: {
     : '';
   const score = Math.round((viewed.score || 0) * 100);
   return (
-    <div className="source-panel" id="sourcePanel">
+    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, overflow: 'hidden' }}>
       <div className="source-fv-header">
         <button className="source-fv-back" onClick={onBack}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15 18 9 12 15 6"/></svg> {t('back')}
@@ -593,7 +614,7 @@ function BigChunkDetail({ viewed, chunk, highlightTexts, onBack }: {
 function BigChunkSimpleView({ onBack, title, body }: { onBack: () => void; title: string; body: string }) {
   const { t } = useI18n();
   return (
-    <div className="source-panel" id="sourcePanel">
+    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, overflow: 'hidden' }}>
       <div className="source-fv-header">
         <button className="source-fv-back" onClick={onBack}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15 18 9 12 15 6"/></svg> {t('back')}

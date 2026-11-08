@@ -159,7 +159,6 @@ const zh: Record<string, string> = {
   // Right panel tabs
   flash: '烧录',
   serial: '串口',
-  wiring: '接线',
   preview: '预览',
   compile: '编译',
   flashBtn: '烧录',
@@ -167,14 +166,10 @@ const zh: Record<string, string> = {
   disconnect: '断开',
   serialMonitor: '串口监视器',
   codePreview: '代码预览',
-  wiringDiagram: '接线图',
-  safetyGuard: '安全护栏',
 
   // Workbench empty states
   previewEmpty1: '切换到此 tab 时自动加载代码示例',
   previewEmpty2: 'Agent 生成代码后自动替换',
-  wiringEmpty1: '引脚接线图将在这里显示',
-  wiringEmpty2: '当 Agent 生成接线方案时自动渲染',
   serialConnectHint: '点击「连接」打开串口，开始接收数据…',
 
   // Serial
@@ -209,25 +204,6 @@ const zh: Record<string, string> = {
   allPass: '全部通过',
   hasIssues: '存在问题',
   hasWarnings: '有警告',
-
-  // Safety
-  safetyTitle: '硬件安全护栏',
-  safetyDesc: '实时监控引脚配置和电气参数',
-  pinConflict: '引脚冲突',
-  voltageMismatch: '电压不匹配',
-  currentOverload: '电流过载',
-  thermalWarning: '热警告',
-  safe: '安全',
-  warning: '警告',
-  danger: '危险',
-  noSafetyIssues: '当前配置无安全问题',
-  suggestion: '建议',
-  pinAllocation: '引脚分配概览',
-  strappingConflict: 'Strapping 冲突',
-  avoidGpio: '避免将',
-  userAssigned: '用户分配',
-  strappingPin: 'Strapping 引脚',
-  strappingNote: '设计中未使用，注意上电电平',
 
   // Common
   noData: '暂无数据',
@@ -372,6 +348,7 @@ const zh: Record<string, string> = {
   collapsePanel: '收起右侧面板',
   noSourceData: '暂无来源数据',
   noTodos: '暂无任务清单',
+  noTodosDesc: 'Agent 在执行多步骤任务时会自动生成待办清单。',
   page: '第',
   pages: '页',
   chunk: '片段',
@@ -448,10 +425,6 @@ const zh: Record<string, string> = {
   noMsgToExport: '当前对话没有消息可导出',
   deleteFolderConfirm: '确定删除此收藏夹？其中的收藏将移至默认收藏夹。',
 
-  // Wiring
-  reset: '重置',
-  bom: '物料清单 (BOM)',
-
   // Session panel - additional
   deleteSessionConfirm: '确定删除此会话？',
   newProjectPlaceholder: '项目名称',
@@ -505,6 +478,14 @@ const zh: Record<string, string> = {
   noPlan: '暂无计划',
 
   // Todo card - clear action
+  todoCardTitle: '任务清单',
+  todoCompletedSuffix: '完成',
+  todoStatusInProgress: '进行中',
+  todoStatusPending: '待办',
+  todoStatusCompleted: '已完成',
+  todoPriorityHigh: '高',
+  todoPriorityMedium: '中',
+  todoPriorityLow: '低',
   todoClear: '清空',
   todoClearConfirm: '确认清空？',
   todoClearing: '清空中…',
@@ -536,11 +517,6 @@ const zh: Record<string, string> = {
 
   // Workbench - additional
   duplicateTab: '复制页签',
-  wiringLabel: '接线图',
-  bomTitle: 'BOM 物料清单',
-  componentLabel: '元件',
-  quantityLabel: '数量',
-  verifyingPin: '正在验证引脚配置...',
   compileSuccess: '编译成功 (0 errors, 0 warnings)',
   flashComplete: '烧录完成',
   compilingStatus: '编译中...',
@@ -548,15 +524,6 @@ const zh: Record<string, string> = {
   compileLabel: '编译',
   flashLabel: '烧录',
   verifyLabel: '验证',
-  safetyVerify: '验证',
-  safetyVerifying: '验证中...',
-  pinSafeOutput: '安全 (输出模式)',
-  pinSafeInput: '安全 (输入模式)',
-  strappingPinWarn: 'Strapping 引脚，上拉电阻可能影响启动',
-  pinSafePwm: '安全 (PWM 输出)',
-  legend: '图例',
-  gpioDigitalSignal: 'GPIO / 数字信号',
-  analogInput: '模拟输入',
   i2cBus: 'I2C 总线',
   powerRail: '电源 (3V3/5V)',
   tempHumiditySensor: '温湿度传感器',

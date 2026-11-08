@@ -108,7 +108,7 @@ DEFAULT_SYSTEM_PROMPT = (
 
 
 # ─── Re-export shim（向后兼容，迁移完成后可删除）──
-from app.api.locks import get_port_lock, wiring_lock  # noqa: E402,F401
+from app.api.locks import get_port_lock  # noqa: E402,F401
 from app.api.sse import sse_event  # noqa: E402,F401
 from app.api.errors import sanitize_error  # noqa: E402,F401
 from app.api.attachments import extract_attachment_text  # noqa: E402,F401

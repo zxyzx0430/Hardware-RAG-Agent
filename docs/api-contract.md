@@ -288,9 +288,7 @@
 | `PAYLOAD_TOO_LARGE` | 413 | 请求体超过 20MB 限制（`main.py` `_RequestBodyLimitMiddleware`，仅拦截 `/api/chat`） |
 | `DEVICE_SCAN_FAILED` | 500 | 串口扫描失败（`hardware_routes.py` `/api/devices`） |
 | `DIAGNOSE_FAILED` | 500 | 引脚诊断失败（`hardware_routes.py` `/api/diagnose`） |
-| `WIRING_FAILED` | 500 | 接线图生成失败（`hardware_routes.py` `/api/wiring`） |
 | `AUDIT_FAILED` | 500 | 引脚审计失败（`hardware_routes.py` `/api/audit_pins`） |
-| `EXTRACT_FAILED` | 500 | 代码提取失败（`wiring_extract.py` `/api/wiring/extract`） |
 | `TOOL_ERROR` | 200 | `/api/tool` 路由捕获未预期异常后返回的业务错误（HTTP 状态仍为 200） |
 | `CONFLICT` | 409 | 消息 ID 已属于其他会话（`crud.py`） |
 | `FORBIDDEN` | 403 | Explorer 路径不在已显式打开的授权根内 |
@@ -389,7 +387,6 @@
 | `implemented` | `PATCH` | `/api/kb/collections/{kb_id}/toggle` | 切换 KB 搜索开关 | `apiPatch('kb/collections/{id}/toggle', { enabled })` | JSON |
 | `implemented` | `POST` | `/api/kb/embedding-models` | 代理上游 embedding 模型列表 | `apiPost('kb/embedding-models', ...)` | JSON |
 | `agreed` | `GET` | `/api/devices` | 扫描串口设备 | `apiGet('devices')` | JSON |
-| `implemented` | `POST` | `/api/wiring` | 生成接线图 SVG | `apiPost('wiring', ...)` | JSON |
 | `agreed` | `POST` | `/api/audit_pins` | 引脚冲突审计 | `apiPost('audit_pins', ...)` | JSON |
 | `implemented` | `POST` | `/api/diagnose` | 代码与引脚诊断 | `apiPost('diagnose', ...)` | JSON |
 | `agreed` | `POST` | `/api/build` | 编译固件 | `apiSSE('build', ...)` | SSE |
@@ -430,7 +427,6 @@
 | `implemented` | `POST` | `/api/agent-sandbox/resume` | HITL 用户决策恢复 | `apiSSE('agent-sandbox/resume', ...)` | SSE |
 | `implemented` | `GET` | `/api/tools` | 列出已注册工具 | `apiGet('tools')` | JSON |
 | `implemented` | `GET` | `/api/token-usage/stats` | Token 用量统计（支持按会话过滤） | `apiGet('token-usage/stats?days=30&session_id=<sessionId>')` | JSON |
-| `implemented` | `POST` | `/api/wiring/extract` | 从 Arduino 代码提取接线 | `apiPost('wiring/extract', ...)` | JSON |
 | `implemented` | `POST` | `/api/auth/store-key` | 加密存储 API Key | `apiPost('auth/store-key', ...)` | JSON |
 | `implemented` | `GET` | `/api/auth/keys` | 列出已存储的 Provider | `apiGet('auth/keys')` | JSON |
 | `implemented` | `DELETE` | `/api/auth/keys/{provider}` | 删除 Provider 的 API Key | `apiDelete('auth/keys/{provider}')` | JSON |
@@ -929,46 +925,10 @@
 }
 ```
 
-### 5.5 `POST /api/wiring`
+### 5.5 `POST /api/wiring`（已移除）
 
-- 状态：`implemented`（软件接口已有定向测试；不代表接线或硬件实机验收）
-- 用途：根据器件和连接关系生成接线图 SVG。
-- 前端入口：`apiPost('wiring', body)`
-- 请求体：
-
-```json
-{
-  "title": "ESP32 + LED",
-  "components": [
-    {"name": "MCU", "type": "mcu", "pins": ["GPIO2"]},
-    {"name": "LED", "type": "led", "pins": ["ANODE", "CATHODE"]}
-  ],
-  "connections": [
-    {
-      "from": {"component": "MCU", "pin": "GPIO2"},
-      "to": {"component": "LED", "pin": "ANODE"},
-      "color": "#ff0000",
-      "line_type": "signal"
-    }
-  ]
-}
-```
-
-- `components[]` 的 `name` 标识器件，`pins` 列出该器件可用的引脚；`type` 可用于 SVG/BOM。每个 `connections[]` 的 `from`、`to` 都必须指向请求中已声明的器件及其引脚，否则请求校验返回 HTTP `422`。
-- 规范连接格式是上述嵌套端点。为了兼容旧调用，后端仍接收扁平字段 `{from, pin, to_component, to_pin}` 或 `{from_component, from_pin, to_component, to_pin}`，并在 API 边界转为规范格式；新调用和 OpenAPI schema 使用嵌套端点。
-- `color`、`label` 可选；`line_type` 可选，允许 `power`、`signal`、`ground`，目前用于输入校验，现有 SVG 生成器未按它区分线型。
-
-- 成功响应：
-
-```json
-{
-  "success": true,
-  "data": {
-    "svg": "<svg viewBox=\"0 0 640 420\">...</svg>",
-    "bom": []
-  }
-}
-```
+- 状态：`removed`（2026-11-08）
+- 接线图工作台与 SVG 生成已下线；需要接线示意图时使用 Agent 的 `image_generation` 工具。
 
 ### 5.6 `POST /api/audit_pins`
 
@@ -1852,50 +1812,10 @@
 - 后端约束：数据来自 SQLite `token_usage` 表（`chat_helpers._record_token_usage` 写入）。无 `current_user` 依赖（统计接口）。
 - 更新时间：2026-07-01
 
-### 5.30 `POST /api/wiring/extract`
+### 5.30 `POST /api/wiring/extract`（已移除）
 
-- 状态：`implemented`
-- 用途：从 Arduino/C 代码用正则及启发式规则提取器件和连线，返回可直接送入 `POST /api/wiring` 的 `components` / `connections`。
-- 前端入口：`apiPost('wiring/extract', { code })`
-- 请求体：
-
-```json
-{ "code": "#define STATUS_LED 2\nvoid setup() { pinMode(STATUS_LED, OUTPUT); }\nvoid loop() { digitalWrite(STATUS_LED, HIGH); }" }
-```
-
-- 成功响应：
-
-```json
-{
-  "success": true,
-  "data": {
-    "components": [
-      {"name": "MCU", "type": "mcu", "pins": ["GPIO2"]},
-      {"name": "LED", "type": "led", "pins": ["ANODE", "CATHODE"]}
-    ],
-    "connections": [
-      {
-        "from": {"component": "MCU", "pin": "GPIO2"},
-        "to": {"component": "LED", "pin": "ANODE"},
-        "line_type": "signal",
-        "color": "#ff0000"
-      }
-    ]
-  }
-}
-```
-
-- 提取结果中的连线使用嵌套端点；结果包含 `MCU` 器件及实际使用的源引脚。LED 器件声明 `ANODE`、`CATHODE`，此示例连到 `ANODE`。未识别到引脚时返回空数组及可选 `message`。
-
-- 错误响应：
-
-| 场景 | code | 状态码 |
-| --- | --- | --- |
-| `code` 为空 | `EMPTY_CODE` | HTTP 200，body 内 `success=false` |
-| 提取异常 | `EXTRACT_FAILED` | HTTP 200，body 内 `success=false` |
-
-- 后端约束：使用 `current_user_optional`；提取逻辑在 `app/hardware/code_extractor.extract_wiring_from_code`。
-- 更新时间：2026-09-24
+- 状态：`removed`（2026-11-08）
+- 接线图工作台与代码提取逻辑已下线，不再提供前端入口。
 
 ### 5.31 `POST /api/auth/store-key`
 
@@ -2493,6 +2413,7 @@
 
 | 日期 | 变更内容 | 变更人 |
 | --- | --- | --- |
+| 2026-11-08 | 移除 `POST /api/wiring` 与 `POST /api/wiring/extract`（工作台接线图功能下线，含前端 tab、`render_wiring`/`wiring` 工具与 SVG 生成器）；`render_safety_report` 保留但不再推送右侧面板，工作台安全护栏 tab 移除 | 00 主控与集成 |
 | 2026-11-04 | §5.1 新增 `history_mode: "client" \| "server"`：server 模式由服务端按 owner/session 读取完整持久历史，请求体只提供当前 user 轮与 quote system 消息；新增 `HISTORY_UNAVAILABLE` 失败终态，长对话不再受客户端消息条数上限约束；§5.16.2 owner-bound legacy 历史返回 `server_history: true`，可走 server 历史 + 图内压缩、保存仍走 legacy Message 接口。定向隔离测试见 [testing.md](testing.md)；完整后端套件仍包含候选存量失败，不能据此宣称全量发布门禁通过 | 00 主控与集成 |
 | 2026-10-31 | §5.1 `/api/chat` 可选 `message_id` 作为独立、按序 sidecar 接入 V3 owner source-binding compaction；最后一条尚未持久化的 user 槽位为 `null` 并留在 recent 后缀，旧客户端及 owner/source 不匹配场景 fail closed，ID 不进入 Agent/model/SSE，禁止回退到无绑定压缩 | 02 聊天与会话 |
 | 2026-10-31 | §4 登记 `POST /api/sessions/{session_id}/messages/append-v1`；新增 §5.16.1，说明稳定 ID 幂等、UTF-8 正文/metadata 容量、同 owner 事务及 fail-closed 迁移边界；保留普通 `/messages` POST 的旧端点语义 | 02 聊天与会话 |

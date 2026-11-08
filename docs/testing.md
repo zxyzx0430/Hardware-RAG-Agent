@@ -888,3 +888,20 @@ Vite 的 advisory 报告 Prism chunk 621.06 kB、主 bundle 1,020.16 kB（minifi
 | Chromium 验收 | Playwright/Chromium，临时 SQLite + 临时 `HARDWARE_AGENT_HOME` | 记忆 Hub 四区、条目创建、proposal 批准、硬件档案、工作记忆快照均通过；无 console/page error |
 
 测试环境均使用 E 盘 `TEMP/TMP`、独立 `SQLITE_DB_PATH`、`AGENT_CHECKPOINTER_TYPE=memory`；浏览器证据在 `E:\DevCaches\Temp\mem-v2-browser\evidence`。真实模型自动抽取、真实聊天回答效果、硬件/串口未在本轮验收范围内，不能由上述软件回归替代。
+
+## 工作台接线图下线 + 待办页（2026-11-08）
+
+在 `claude/silly-lalande-5f13bb` 工作树运行；`TEMP/TMP` 在 E 盘，独立 `SQLITE_DB_PATH`，`AGENT_CHECKPOINTER_TYPE=memory`，`HF_HUB_OFFLINE=1`/`TRANSFORMERS_OFFLINE=1`，显式 `-p asyncio -p pytest_timeout`。
+
+| 阶段 | 命令 | 结果 |
+| --- | --- | --- |
+| 后端定向 | 6 个路由/工具/注册测试文件 | **58 passed**，exit 0 |
+| 后端全量 | `pytest tests -q -p asyncio -p pytest_timeout` | **1937 passed / 7 failed / 75 skipped / 9 errors**，731.65s，exit 1 |
+| 失败隔离复跑 | `test_agent_import_order.py` + `test_chat_stream_termination.py` | **20 passed** |
+| 失败隔离复跑 | `test_kb_index_responsiveness.py` + `test_memory_v2_review_findings.py` | **29 passed** |
+| 失败隔离复跑 | `test_git_snapshot_undo_isolation.py` + `test_memory_v2_project_identity.py` | **13 passed** |
+| 前端定向 | TodoCard / useChatStore.todo / RightPanel.todo（含“todos tab 打开来源自动切到 sources”）/ SerialPane.scan | **19 passed** |
+| 前端全量 | `vitest run`（单 fork） | **64 files / 444 passed**，exit 0 |
+| TypeScript | `tsc --noEmit -p tsconfig.app.json` | exit 0 |
+
+全量后端 7 failed / 9 errors 中，6 个失败和 9 个 error 在单独运行时全部通过，属于同进程顺序或资源污染，不是本次改动引入。剩余 `test_plan_policy.py::test_classifier_default_mode_still_asks_for_write` 单独运行仍失败：工作树位于 `E:\Desktop\agent\.claude\...`，`path_guard` 把相对路径解析到项目根下的 `.claude` 并命中 deny pattern；主检出不在 `.claude` 下时该断言应通过。未做浏览器或实机验收。

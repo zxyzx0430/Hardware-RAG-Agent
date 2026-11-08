@@ -6,7 +6,7 @@ export type RightMode = 'workbench' | 'content';
 export type RightContentTab = 'sources' | 'todos' | 'plan';
 export type Lang = 'zh' | 'en';
 export type Theme = 'light' | 'dark' | 'auto';
-export type WbTab = 'serial' | 'flash' | 'preview' | 'wiring' | 'safety';
+export type WbTab = 'serial' | 'flash' | 'preview';
 export type FlashState = 'idle' | 'compiling' | 'compiled' | 'flashing' | 'flashed' | 'error';
 export type BuildState = 'idle' | 'compiling' | 'compiled' | 'error';
 
@@ -70,10 +70,6 @@ export type {
   ChatSSEEvent,
   BuildRequest,
   BuildSSEEvent,
-  WiringRequest,
-  WiringResponse,
-  WiringConnection,
-  WiringComponent,
   PinAuditRequest,
   PinAuditResponse,
   PinWarning,

@@ -1,7 +1,7 @@
 // useWorkbenchBridge — bridges Agent tool SSE events to Workbench panes.
 //
 // Listens to tool_call / tool_result SSE events (from useChatStore) and routes
-// render_data to the matching pane (wiring / safety / preview). Handles the
+// render_data to the matching pane (preview / flash). Handles the
 // "auto-switch only on first call" rule via workbenchUserOverride.
 //
 // T5 boundary note: useChatStore is T5-owned. We never modify it. Because
@@ -16,18 +16,6 @@ import { useAppStore } from "./useAppStore";
 import type { ToolResultSSEEvent, ToolCallSSEEvent } from "../types/api";
 
 // ─── Render data shapes (asserted at runtime; backend is the source) ─────
-
-interface WiringRenderData {
-  svg: string;
-  bom: { component: string; qty: number }[];
-}
-
-interface SafetyRenderData {
-  safe: boolean;
-  conflicts: unknown[];
-  warnings: unknown[];
-  pin_map: Record<string, unknown>;
-}
 
 interface CodeRenderData {
   code: string;
@@ -44,20 +32,16 @@ export interface FlashRenderData {
   error?: { code: string; message: string };
 }
 
-type TargetPane = "wiring" | "safety" | "preview" | "flash";
+type TargetPane = "preview" | "flash";
 
 // ─── Store ───────────────────────────────────────────────────────────────
 
 interface WorkbenchBridgeState {
-  wiringRenderData: WiringRenderData | null;
-  safetyRenderData: SafetyRenderData | null;
   codeRenderData: CodeRenderData | null;
   flashRenderData: FlashRenderData | null;
   flashLiveLog: string[];
   flashProgress: number;
   lastCallId: string | null;
-  setWiringRenderData: (data: WiringRenderData | null) => void;
-  setSafetyRenderData: (data: SafetyRenderData | null) => void;
   setCodeRenderData: (data: CodeRenderData | null) => void;
   setFlashRenderData: (data: FlashRenderData | null) => void;
   clearFlashRenderData: () => void;
@@ -68,15 +52,11 @@ interface WorkbenchBridgeState {
 }
 
 export const useWorkbenchBridge = create<WorkbenchBridgeState>((set) => ({
-  wiringRenderData: null,
-  safetyRenderData: null,
   codeRenderData: null,
   flashRenderData: null,
   flashLiveLog: [],
   flashProgress: 0,
   lastCallId: null,
-  setWiringRenderData: (wiringRenderData) => set({ wiringRenderData }),
-  setSafetyRenderData: (safetyRenderData) => set({ safetyRenderData }),
   setCodeRenderData: (codeRenderData) => set({ codeRenderData }),
   setFlashRenderData: (flashRenderData) => set({ flashRenderData }),
   clearFlashRenderData: () => set({ flashRenderData: null }),
@@ -87,16 +67,6 @@ export const useWorkbenchBridge = create<WorkbenchBridgeState>((set) => ({
 }));
 
 // ─── Type guards ─────────────────────────────────────────────────────────
-
-function isWiringRenderData(d: unknown): d is WiringRenderData {
-  return typeof d === "object" && d !== null
-    && typeof (d as WiringRenderData).svg === "string";
-}
-
-function isSafetyRenderData(d: unknown): d is SafetyRenderData {
-  return typeof d === "object" && d !== null
-    && typeof (d as SafetyRenderData).safe === "boolean";
-}
 
 function isCodeRenderData(d: unknown): d is CodeRenderData {
   return typeof d === "object" && d !== null
@@ -129,20 +99,6 @@ function resetOverrideIfNewCallId(callId: string): void {
   bridge.setLastCallId(callId);
 }
 
-/** Push wiring render_data + auto-switch pane. */
-function dispatchWiringResult(data: unknown): void {
-  if (!isWiringRenderData(data)) return;
-  useWorkbenchBridge.getState().setWiringRenderData(data);
-  autoSwitchPane("wiring");
-}
-
-/** Push safety render_data + auto-switch pane. */
-function dispatchSafetyResult(data: unknown): void {
-  if (!isSafetyRenderData(data)) return;
-  useWorkbenchBridge.getState().setSafetyRenderData(data);
-  autoSwitchPane("safety");
-}
-
 /** Push code render_data + auto-switch pane. */
 function dispatchCodeResult(data: unknown): void {
   if (!isCodeRenderData(data)) return;
@@ -159,13 +115,14 @@ function dispatchFlashResult(data: unknown): void {
   autoSwitchPane("flash");
 }
 
-/** Dispatch render_data by target_pane. */
-function dispatchByTargetPane(target: TargetPane, data: unknown): void {
+/** Dispatch render_data by target_pane. Unknown panes (for example the
+ *  retained "safety" report target) are intentionally ignored: those tools
+ *  still return their result to the chat, but there is no workbench pane. */
+function dispatchByTargetPane(target: string, data: unknown): void {
   switch (target) {
-    case "wiring": dispatchWiringResult(data); break;
-    case "safety": dispatchSafetyResult(data); break;
     case "preview": dispatchCodeResult(data); break;
     case "flash": dispatchFlashResult(data); break;
+    default: break;
   }
 }
 
@@ -227,8 +184,3 @@ export function handleProgressEvent(call_id: string, percent: number, message?: 
     bridge.appendFlashLiveLog(`⏳ ${message}`);
   }
 }
-
-// NOTE: The previous `initWorkbenchBridge()` fallback subscription (which
-// listened to streamingSteps to reset workbenchUserOverride) has been removed
-// as dead code — T5 now calls handleToolCallEvent directly inside useChatStore's
-// onEvent, making the fallback path obsolete.

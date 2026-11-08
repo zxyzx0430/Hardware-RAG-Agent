@@ -2796,6 +2796,17 @@ export const useChatStore = create<ChatState>((set, get) => {
     if (cached.length > 0 && get().activeSessionId === sessionId) {
       set({ messages: cached });
     }
+    // Server-authoritative todo/plan snapshots start immediately, in parallel
+    // with the message fetch. Waiting for messages meant a slow or failed
+    // message request left the todo tab empty even though the server had rows.
+    // A live stream will replay its own todo_update/plan_update events; the
+    // revision guard in loadSessionTodos/loadSessionPlan discards a stale GET.
+    const liveForSessionAtStart = get().isStreaming && get().streamingSessionId === sessionId
+      && (get().currentSseRequest !== null || get().backgroundSseRequests.has(sessionId));
+    if (!liveForSessionAtStart) {
+      void get().loadSessionTodos(sessionId);
+      void get().loadSessionPlan(sessionId);
+    }
     // 2. 从后端拉权威数据
     try {
       const data = await apiGet<{ messages: BackendMessage[] }>(`sessions/${sessionId}/messages`);
@@ -2971,15 +2982,6 @@ export const useChatStore = create<ChatState>((set, get) => {
           needsApiKey: false,
         }));
         saveSessionMessages(sessionId, msgs);
-      }
-      // Server-authoritative todo/plan snapshots. A live stream (foreground or
-      // background) will replay its own todo_update/plan_update events, and a
-      // GET started now could overwrite newer SSE state.
-      const liveForSession = (get().isStreaming && get().streamingSessionId === sessionId)
-        || get().backgroundSseRequests.has(sessionId);
-      if (!liveForSession) {
-        void get().loadSessionTodos(sessionId);
-        void get().loadSessionPlan(sessionId);
       }
       // Recovery R1: after a refresh, reattach to a run that was still active.
       void get().reattachRun(sessionId);

@@ -1,7 +1,7 @@
 """
 Hardware RAG Agent — RenderSafetyReportTool (workbench group).
 
-Audits pin assignments and pushes the report to the SafetyPane.
+Audits pin assignments and returns a readable report to the conversation.
 Migrated from tools/workbench_tools.py (Task 1, SubTask 1.9).
 
 industrial-tool-runtime Task 2: refactored to ToolSpec.
@@ -52,22 +52,23 @@ class RenderSafetyReportArgs(BaseModel):
 
 class RenderSafetyReportOutput(BaseModel):
     """Describes envelope.data shape (output is lifted out by ToolRouter)."""
-    target_pane: str = Field("safety", description="目标展示面板")
+    target_pane: str = Field("safety", description="保留的历史字段；前端工作台已不再消费")
     render_data: dict = Field(default_factory=dict, description="渲染数据（safe/conflicts/warnings/pin_map）")
 
 
 class RenderSafetyReportTool(ToolSpec):
-    """Audit pin assignments and push the report to the SafetyPane."""
+    """Audit pin assignments and return a readable report to the conversation."""
     name: str = "render_safety_report"
     description: str = (
         "检查引脚分配的 GPIO 冲突和 Strapping 引脚警告，"
-        "结果推送到工作台 Safety Pane 展示给用户。"
+        "生成面向用户的可读审计报告。"
+        "结果返回给对话/Agent 使用，不再推送到右侧工作台面板。"
         "支持检测同一引脚分配多个功能的冲突。"
         "支持 ESP32 全系列（S3/C3/C6/S2/H2）+ STM32 系列（F4/F7/H7 调试引脚）。"
         "\n\n与 audit_pins 的区分："
-        "\n- render_safety_report：推送到前端面板展示给用户看（用户可见）"
-        "\n- audit_pins：返回数据给 LLM 分析（用户不可见，LLM 内部用）"
-        "\n通常先调 audit_pins 检查问题，确认有/无问题后再调本工具推给用户。"
+        "\n- render_safety_report：生成可读报告，适合在回答中直接呈现给用户"
+        "\n- audit_pins：返回审计数据给 LLM 做进一步分析"
+        "\n需要接线示意图时改用 image_generation。"
     )
     args_schema: type = RenderSafetyReportArgs
     output_schema: type[BaseModel] | None = RenderSafetyReportOutput

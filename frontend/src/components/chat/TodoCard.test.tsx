@@ -38,6 +38,22 @@ describe("TodoCard", () => {
     expect(screen.getByText("Flash firmware")).toBeTruthy();
   });
 
+  it("groups by status order and shows priority", () => {
+    render(<TodoCard todos={[
+      { id: "p", content: "Pending task", status: "pending", priority: "low" },
+      { id: "d", content: "Done task", status: "completed", priority: "high" },
+      { id: "a", content: "Active task", status: "in_progress", priority: "medium" },
+    ]} />);
+    const contents = Array.from(document.querySelectorAll(".todo-content")).map((el) => el.textContent);
+    expect(contents).toEqual(["Active task", "Pending task", "Done task"]);
+    expect(screen.getByText("进行中")).toBeTruthy();
+    expect(screen.getByText("待办")).toBeTruthy();
+    expect(screen.getByText("已完成")).toBeTruthy();
+    expect(screen.getByText("高")).toBeTruthy();
+    expect(screen.getByText("中")).toBeTruthy();
+    expect(screen.getByText("低")).toBeTruthy();
+  });
+
   it("requires a second click before clearing", async () => {
     const onClear = vi.fn().mockResolvedValue(undefined);
     render(<TodoCard todos={todos} onClear={onClear} />);
