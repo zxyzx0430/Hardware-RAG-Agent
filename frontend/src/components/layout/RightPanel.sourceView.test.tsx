@@ -87,6 +87,17 @@ const unknownLanguageSource: SourceRef = {
   messageId: "m1",
 };
 
+const unknownCodeLanguageSource: SourceRef = {
+  id: "src5",
+  title: "sensor-firmware",
+  doc: "sensor-firmware",
+  page: 7,
+  score: 0.75,
+  excerpt: "const reading = bme280.readPressure();",
+  language: "zig",
+  messageId: "m1",
+};
+
 function imageResponse() {
   return {
     ok: true,
@@ -217,6 +228,15 @@ describe("RightPanel source viewer modes", () => {
     const monaco = screen.getByTestId("monaco");
     expect(monaco.getAttribute("data-language")).toBe("plaintext");
     expect(monaco.getAttribute("data-language")).not.toBe("cpp");
+  });
+
+  it("keeps an unknown non-text language in Monaco even without a known extension", () => {
+    renderSource(unknownCodeLanguageSource);
+
+    const monaco = screen.getByTestId("monaco");
+    expect(monaco.getAttribute("data-language")).toBe("plaintext");
+    expect(monaco.textContent).toContain("bme280.readPressure");
+    expect(screen.queryAllByRole("tab")).toHaveLength(0);
   });
 
   it("offers the text excerpt when the original page image fails", async () => {

@@ -114,10 +114,9 @@ function fileExtension(name?: string): string {
 /** Code sources keep Monaco; documents (PDF/TXT/MD/unknown) use the reading view. */
 function isCodeSource(viewed: SourceRef): boolean {
   const lang = (viewed.language || "").trim().toLowerCase();
-  if (lang) {
-    if (TEXT_LANGUAGES.has(lang)) return false;
-    if (mapLanguage(lang) !== "plaintext") return true;
-  }
+  // A non-empty language that is not prose means code, even when Monaco does
+  // not know it; monacoLanguageFor then falls back to plaintext.
+  if (lang) return !TEXT_LANGUAGES.has(lang);
   return [viewed.doc, viewed.title].some((name) => CODE_EXTENSIONS.has(fileExtension(name)));
 }
 

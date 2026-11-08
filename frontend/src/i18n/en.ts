@@ -809,6 +809,14 @@ const en: Record<string, string> = {
   // Source preview
   previewLoading: 'Loading preview…',
   backToSources: 'Back to sources',
+  sourceViewMode: 'Source view',
+  originalPage: 'Original page',
+  textExcerpt: 'Text excerpt',
+  originalPageLoading: 'Loading original page…',
+  originalPageUnavailable: 'Original page unavailable: no page image exists for this source, or it has not been generated yet.',
+  viewTextExcerpt: 'View text excerpt',
+  clickToZoom: 'Click to zoom in',
+  clickToFit: 'Click to fit',
 
   // Model dropdown
   modelSearchPlaceholder: 'Search models or providers…',
