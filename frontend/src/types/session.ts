@@ -120,6 +120,14 @@ export interface SourceRef {
   id: string;
   title: string;
   doc: string;
+  /** Knowledge-base document id, used to fetch the original PDF page image. */
+  doc_id?: string;
+  /** Backend hint that this source came from a PDF upload. */
+  is_pdf?: boolean;
+  /** Source document MIME type (application/pdf for uploaded PDFs). */
+  mime_type?: string;
+  /** Legacy/alternate MIME field; prefer mime_type when both exist. */
+  mime?: string;
   page: number; // chunk_index (backward compat)
   chunk_index?: number;
   page_start?: number | null; // real PDF page start

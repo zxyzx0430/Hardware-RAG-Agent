@@ -12,26 +12,133 @@ import TodoCard from "../chat/TodoCard";
 import { PlanPanel } from "../plan/PlanPanel";
 import { useAppliedDarkMode } from "../shared/MarkdownRenderer";
 import { EmptyState } from "../shared/EmptyState";
-import { fetchBigChunk, type BigChunkData } from "../../api/client";
+import { fetchBigChunk, getAuthHeaders, type BigChunkData } from "../../api/client";
+import "../../styles/source-viewer.css";
 
+/** Monaco language id for a code source; unknown languages stay plain text. */
 const mapLanguage = (lang?: string): string => {
-  switch (lang) {
+  switch ((lang || "").trim().toLowerCase()) {
+    case "c":
+      return "c";
     case "cpp":
     case "c++":
     case "arduino":
+    case "ino":
+    case "h":
+    case "hh":
+    case "hpp":
+    case "cc":
+    case "cxx":
       return "cpp";
     case "python":
     case "py":
       return "python";
     case "javascript":
     case "js":
-    case "ts":
-    case "typescript":
+    case "jsx":
+    case "mjs":
+    case "cjs":
       return "javascript";
+    case "typescript":
+    case "ts":
+    case "tsx":
+      return "typescript";
+    case "java":
+      return "java";
+    case "rust":
+    case "rs":
+      return "rust";
+    case "go":
+    case "golang":
+      return "go";
+    case "csharp":
+    case "c#":
+    case "cs":
+      return "csharp";
+    case "ruby":
+    case "rb":
+      return "ruby";
+    case "kotlin":
+    case "kt":
+    case "kts":
+      return "kotlin";
+    case "swift":
+      return "swift";
+    case "php":
+      return "php";
+    case "lua":
+      return "lua";
+    case "shell":
+    case "sh":
+    case "bash":
+    case "zsh":
+      return "shell";
+    case "sql":
+      return "sql";
+    case "html":
+    case "htm":
+      return "html";
+    case "css":
+    case "scss":
+      return "css";
+    case "json":
+      return "json";
+    case "yaml":
+    case "yml":
+      return "yaml";
+    case "xml":
+      return "xml";
     default:
-      return "cpp";
+      return "plaintext";
   }
 };
+
+const TEXT_LANGUAGES = new Set(["text", "txt", "plain", "plaintext", "markdown", "md", "pdf", "log", "csv"]);
+
+const CODE_EXTENSIONS = new Set([
+  "c", "h", "hh", "hpp", "cc", "cpp", "cxx", "ino",
+  "py", "pyw", "js", "jsx", "mjs", "cjs", "ts", "tsx",
+  "java", "rs", "go", "cs", "rb", "kt", "kts", "swift",
+  "php", "lua", "sh", "bash", "zsh", "sql",
+  "html", "htm", "css", "scss", "json", "yaml", "yml", "xml", "toml", "asm",
+]);
+
+function fileExtension(name?: string): string {
+  if (!name) return "";
+  const base = name.split(/[\\/]/).pop() || "";
+  const dot = base.lastIndexOf(".");
+  if (dot <= 0 || dot === base.length - 1) return "";
+  return base.slice(dot + 1).toLowerCase();
+}
+
+/** Code sources keep Monaco; documents (PDF/TXT/MD/unknown) use the reading view. */
+function isCodeSource(viewed: SourceRef): boolean {
+  const lang = (viewed.language || "").trim().toLowerCase();
+  if (lang) {
+    if (TEXT_LANGUAGES.has(lang)) return false;
+    if (mapLanguage(lang) !== "plaintext") return true;
+  }
+  return [viewed.doc, viewed.title].some((name) => CODE_EXTENSIONS.has(fileExtension(name)));
+}
+
+function isPdfSource(viewed: SourceRef): boolean {
+  if (viewed.is_pdf === true) return true;
+  const mime = (viewed.mime_type || viewed.mime || "").trim().toLowerCase();
+  if (mime === "application/pdf") return true;
+  if ((viewed.language || "").trim().toLowerCase() === "pdf") return true;
+  return [viewed.doc, viewed.title].some((name) => fileExtension(name) === "pdf");
+}
+
+/** Prefer the backend's language tag, then fall back to the file extension. */
+function monacoLanguageFor(viewed: SourceRef): string {
+  const byLanguage = mapLanguage(viewed.language);
+  if (byLanguage !== "plaintext") return byLanguage;
+  for (const name of [viewed.doc, viewed.title]) {
+    const byExtension = mapLanguage(fileExtension(name));
+    if (byExtension !== "plaintext") return byExtension;
+  }
+  return "plaintext";
+}
 
 export function RightPanel({ overlay = false, onClose }: { overlay?: boolean; onClose?: () => void } = {}) {
   const { t } = useI18n();
@@ -262,7 +369,9 @@ function buildPageLabel(viewed: SourceRef, t: (key: string, fallback?: string) =
   return `${t('page')} ${viewed.page_start}`;
 }
 
-// ─── Source excerpt viewer: explicit loading state + breadcrumb back to the source list ───
+// ─── Source excerpt viewer: code uses Monaco, documents use a reading view ───
+type SourceViewMode = "original" | "text";
+
 function SourceExcerptViewer({ viewed, editorTheme, pageLabel, displayScore, onBack, t }: {
   viewed: SourceRef;
   editorTheme: string;
@@ -271,12 +380,21 @@ function SourceExcerptViewer({ viewed, editorTheme, pageLabel, displayScore, onB
   onBack: () => void;
   t: (key: string, fallback?: string) => string;
 }) {
+  const isCode = isCodeSource(viewed);
+  const isPdf = !isCode && isPdfSource(viewed);
+  const [viewMode, setViewMode] = useState<SourceViewMode>(isPdf ? "original" : "text");
   const [editorReady, setEditorReady] = useState(false);
   useEffect(() => {
     setEditorReady(false);
-  }, [viewed.id, viewed.messageId]);
+    setViewMode(isPdf ? "original" : "text");
+  }, [viewed.id, viewed.messageId, isPdf]);
+
+  // Until the backend ships doc_id on every source, `doc` may already hold it.
+  const docId = viewed.doc_id || viewed.doc || "";
+  const pageNumber = viewed.page_start ?? null;
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, overflow: 'hidden' }}>
+    <div className="source-fv-root">
       <div className="source-fv-header">
         <button className="source-fv-back" onClick={onBack}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15 18 9 12 15 6"/></svg> {t('backToSources', '返回来源引用')}
@@ -302,31 +420,150 @@ function SourceExcerptViewer({ viewed, editorTheme, pageLabel, displayScore, onB
           {viewed.category ? <span className="fv-sep">·</span> : null}
           {viewed.category ? <span className="fv-category">{viewed.category}</span> : null}
         </div>
-        <div className="source-fv-content" style={{ flex: 1, minHeight: 0, position: "relative" }}>
-          {!editorReady ? (
-            <div className="source-fv-loading" role="status" aria-live="polite">
-              {t('previewLoading', '正在加载预览…')}
-            </div>
-          ) : null}
-          <MonacoEditor
-            language={mapLanguage(viewed.language)}
-            value={viewed.excerpt}
-            theme={editorTheme}
-            height="100%"
-            loading={<div className="source-fv-loading">{t('previewLoading', '正在加载预览…')}</div>}
-            onMount={() => setEditorReady(true)}
-            options={{
-              readOnly: true,
-              minimap: { enabled: false },
-              fontSize: 13,
-              lineNumbers: "on",
-              scrollBeyondLastLine: false,
-              wordWrap: "on",
-              tabSize: 2,
-              automaticLayout: true,
-            }}
+        {isPdf ? (
+          <div className="source-view-tabs" role="tablist" aria-label={t('sourceViewMode', '来源视图')}>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={viewMode === 'original'}
+              className={`source-view-tab${viewMode === 'original' ? ' active' : ''}`}
+              onClick={() => setViewMode('original')}
+            >
+              {t('originalPage', '原文页')}
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={viewMode === 'text'}
+              className={`source-view-tab${viewMode === 'text' ? ' active' : ''}`}
+              onClick={() => setViewMode('text')}
+            >
+              {t('textExcerpt', '文字摘录')}
+            </button>
+          </div>
+        ) : null}
+        {isCode ? (
+          <div className="source-fv-content source-fv-code" style={{ position: "relative" }}>
+            {!editorReady ? (
+              <div className="source-fv-loading" role="status" aria-live="polite">
+                {t('previewLoading', '正在加载预览…')}
+              </div>
+            ) : null}
+            <MonacoEditor
+              language={monacoLanguageFor(viewed)}
+              value={viewed.excerpt}
+              theme={editorTheme}
+              height="100%"
+              loading={<div className="source-fv-loading">{t('previewLoading', '正在加载预览…')}</div>}
+              onMount={() => setEditorReady(true)}
+              options={{
+                readOnly: true,
+                minimap: { enabled: false },
+                fontSize: 13,
+                lineNumbers: "on",
+                scrollBeyondLastLine: false,
+                wordWrap: "on",
+                tabSize: 2,
+                automaticLayout: true,
+              }}
+            />
+          </div>
+        ) : isPdf && viewMode === 'original' ? (
+          <PageImageViewer
+            docId={docId}
+            page={pageNumber}
+            title={viewed.title}
+            t={t}
+            onShowText={() => setViewMode('text')}
           />
+        ) : (
+          <div className="source-fv-content source-reading-scroll">
+            <article className="source-reading-body">{viewed.excerpt}</article>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PageImageViewer({ docId, page, title, t, onShowText }: {
+  docId: string;
+  page: number | null;
+  title: string;
+  t: (key: string, fallback?: string) => string;
+  onShowText: () => void;
+}) {
+  const [status, setStatus] = useState<"loading" | "ready" | "error">(docId && page != null ? "loading" : "error");
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const [zoomed, setZoomed] = useState(false);
+
+  useEffect(() => {
+    if (!docId || page == null) {
+      setStatus("error");
+      setImageUrl(null);
+      return;
+    }
+    let cancelled = false;
+    let objectUrl: string | null = null;
+    setStatus("loading");
+    setImageUrl(null);
+    setZoomed(false);
+    const query = new URLSearchParams({ page: String(page), scale: "1.5" });
+    fetch(`/api/kb/documents/${encodeURIComponent(docId)}/page-image?${query.toString()}`, {
+      headers: getAuthHeaders(),
+    })
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.blob();
+      })
+      .then((blob) => {
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(blob);
+        setImageUrl(objectUrl);
+        setStatus("ready");
+      })
+      .catch(() => {
+        if (!cancelled) setStatus("error");
+      });
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [docId, page]);
+
+  if (status === "loading") {
+    return (
+      <div className="source-fv-content source-page-viewer" aria-busy="true">
+        <div className="source-page-skeleton" role="status" aria-live="polite">
+          <span className="source-page-skeleton-label">{t('originalPageLoading', '正在加载原文页…')}</span>
         </div>
+      </div>
+    );
+  }
+
+  if (status === "error" || !imageUrl) {
+    return (
+      <div className="source-fv-content source-page-viewer">
+        <div className="source-page-error" role="alert">
+          <p>{t('originalPageUnavailable', '原文页不可用：该来源没有对应页面图像，或页面尚未生成。')}</p>
+          <button type="button" className="source-page-text-btn" onClick={onShowText}>
+            {t('viewTextExcerpt', '查看文字摘录')}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className={`source-fv-content source-page-viewer${zoomed ? ' zoomed' : ''}`}>
+      <div className="source-page-scroll">
+        <img
+          className="source-page-image"
+          src={imageUrl}
+          alt={`${title}${page != null ? ` p.${page}` : ''}`}
+          title={zoomed ? t('clickToFit', '点击还原') : t('clickToZoom', '点击放大')}
+          onClick={() => setZoomed((value) => !value)}
+        />
       </div>
     </div>
   );
