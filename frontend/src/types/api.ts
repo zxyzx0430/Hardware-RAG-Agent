@@ -189,6 +189,8 @@ export interface ErrorSSEEvent {
   code?: string;
   message: string;
   detail?: string;
+  /** Safe to resend the same turn without user action (e.g. previous run still releasing). */
+  retryable?: boolean;
 }
 
 export interface ProgressSSEEvent {

@@ -359,6 +359,10 @@ const _runReattachInFlight = new Set<string>();
 // One automatic "submit the plan" follow-up per session when plan mode ends
 // with research but without a submitted plan.
 const _planAutoRetryUsed = new Set<string>();
+// A stopped or refreshed request may still be releasing its writer lease on
+// the backend. Retry the same turn once without dropping the draft or messages.
+const _WRITER_BUSY_MAX_AUTO_RETRIES = 1;
+const _WRITER_BUSY_RETRY_DELAY_MS = 700;
 
 export interface ChatSkillsRequest {
   mode: NonNullable<ChatRequest["skills_mode"]>;
@@ -3494,35 +3498,70 @@ export const useChatStore = create<ChatState>((set, get) => {
     _clearRunTracking(requestSessionId);
     const terminal: ChatTerminalState = { outcome: "running", errorMessage: "回答未能完成", finalized: false };
 
-    const controller = new AbortController();
-    if (get().activeSessionId === requestSessionId) {
-      set({ currentSseRequest: controller });
-    } else {
-      set((state) => {
-        const backgroundSseRequests = new Map(state.backgroundSseRequests);
-        backgroundSseRequests.set(requestSessionId, controller);
-        return { backgroundSseRequests };
-      });
-    }
+    let writerBusyRetries = 0;
+    let retryAfterWriterBusy = false;
 
-    apiSSE("chat", requestBody, {
-      onEvent: (event, meta) => {
-        const evt = event as ChatSSEEvent;
-        if (!_trackChatRunEvent(requestSessionId, evt, meta, (runId, after) => {
-          _replayRunEvents(requestSessionId, runId, after, "chat");
-        })) return;
-        if (evt.type === "tool_confirm_required") {
-          const record = get().activeRuns[requestSessionId] ?? getActiveRun(requestSessionId);
-          if (record) _markRunStatus(requestSessionId, record.runId, "awaiting_confirmation");
-        }
-        _applyChatEvent(evt, requestSessionId, terminal);
-      },
-      onDone: () => _finalizeChatStream(requestSessionId, terminal, startTime),
-      onError: (err) => _failChatStream(requestSessionId, terminal, err),
-    }, controller, {
-      reconnect: { maxAttempts: 5 },
-      onRunId: (runId) => _beginActiveRun(requestSessionId, runId),
-    });
+    const startAgentStream = (): void => {
+      const controller = new AbortController();
+      if (get().activeSessionId === requestSessionId) {
+        set({ currentSseRequest: controller });
+      } else {
+        set((state) => {
+          const backgroundSseRequests = new Map(state.backgroundSseRequests);
+          backgroundSseRequests.set(requestSessionId, controller);
+          return { backgroundSseRequests };
+        });
+      }
+
+      apiSSE("chat", requestBody, {
+        onEvent: (event, meta) => {
+          const evt = event as ChatSSEEvent;
+          if (!_trackChatRunEvent(requestSessionId, evt, meta, (runId, after) => {
+            _replayRunEvents(requestSessionId, runId, after, "chat");
+          })) return;
+          if (
+            evt.type === "error"
+            && evt.code === "AGENT_WRITER_BUSY"
+            && evt.retryable === true
+            && writerBusyRetries < _WRITER_BUSY_MAX_AUTO_RETRIES
+          ) {
+            writerBusyRetries += 1;
+            retryAfterWriterBusy = true;
+            return;
+          }
+          if (evt.type === "tool_confirm_required") {
+            const record = get().activeRuns[requestSessionId] ?? getActiveRun(requestSessionId);
+            if (record) _markRunStatus(requestSessionId, record.runId, "awaiting_confirmation");
+          }
+          _applyChatEvent(evt, requestSessionId, terminal);
+        },
+        onDone: () => {
+          if (retryAfterWriterBusy) {
+            retryAfterWriterBusy = false;
+            const stillWanted = get().streamingSessionId === requestSessionId
+              || get().backgroundSseRequests.has(requestSessionId);
+            if (!stillWanted) return;
+            getLog()("warn", "chat", "上一轮仍在结束中，自动重试一次");
+            window.setTimeout(() => {
+              const stillStreaming = get().streamingSessionId === requestSessionId
+                || get().backgroundSseRequests.has(requestSessionId);
+              if (!stillStreaming) return;
+              terminal.outcome = "running";
+              terminal.errorMessage = "回答未能完成";
+              startAgentStream();
+            }, _WRITER_BUSY_RETRY_DELAY_MS);
+            return;
+          }
+          _finalizeChatStream(requestSessionId, terminal, startTime);
+        },
+        onError: (err) => _failChatStream(requestSessionId, terminal, err),
+      }, controller, {
+        reconnect: { maxAttempts: 5 },
+        onRunId: (runId) => _beginActiveRun(requestSessionId, runId),
+      });
+    };
+
+    startAgentStream();
     } catch (err) {
       // 同步异常（如构建请求体失败）也要让用户看到 ErrorBlock，不能只 console.warn
       const errMsg = err instanceof Error ? err.message : String(err);

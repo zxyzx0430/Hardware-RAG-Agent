@@ -1606,7 +1606,9 @@ def _inject_ctx_and_register(tools: list[BaseTool], ctx: Any, register: Any) -> 
         register(tool)
 
 
-def _build_tool_ctx(payload: Any, skills_runtime: Any = None) -> ToolContext:
+def _build_tool_ctx(
+    payload: Any, skills_runtime: Any = None, *, run_id: str = "",
+) -> ToolContext:
     """Build ToolContext from payload's permission_mode + session_id."""
     from src.agent.exceptions import ToolContext
     from src.agent.tools.groups.retrieval.source_registry import RagSourceRegistry
@@ -1618,6 +1620,7 @@ def _build_tool_ctx(payload: Any, skills_runtime: Any = None) -> ToolContext:
     return ToolContext(
         permission_mode=mode,
         session_id=session_id,
+        run_id=run_id or None,
         skills_mode=skills_mode,
         skills_runtime=skills_runtime,
         kb_scope=kb_scope,

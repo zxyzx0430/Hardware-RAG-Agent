@@ -79,6 +79,37 @@ async def test_cancelling_stream_awaits_agent_producer_and_unregisters_queue(mon
 
 
 @pytest.mark.asyncio
+async def test_user_stop_finishes_run_without_quarantine(monkeypatch):
+    import src.agent.writer_bridge as writer_bridge
+
+    calls = []
+    real_finish = writer_bridge.finish_native_run
+
+    def capture(handle, *, joined, had_error):
+        calls.append((joined, had_error))
+        return real_finish(handle, joined=joined, had_error=had_error)
+
+    monkeypatch.setattr(writer_bridge, "finish_native_run", capture)
+    monkeypatch.setattr(sse_adapter, "AGENT_HEARTBEAT_INTERVAL", 0.004)
+    monkeypatch.setattr(sse_adapter, "init_stream_state", lambda *_args: {})
+    stream_double = _SilentAgent()
+    with authenticated_test_stream(
+        monkeypatch, stream_double, business_session_id="user-stop-recovery-test",
+    ) as (agent, config, _queue_id):
+        stream = sse_adapter.stream_agent_to_sse(
+            agent, {}, config, Counter(), model="test-model",
+        )
+        first = await asyncio.wait_for(stream.__anext__(), timeout=0.2)
+        assert '"type": "heartbeat"' in first
+
+        await stream.aclose()
+
+        assert stream_double.closed.is_set()
+    assert calls
+    assert calls[-1] == (True, False)
+
+
+@pytest.mark.asyncio
 async def test_real_tool_progress_resets_idle_deadline_but_heartbeats_do_not(monkeypatch):
     monkeypatch.setattr(sse_adapter, "AGENT_HEARTBEAT_INTERVAL", 0.01)
     monkeypatch.setattr(sse_adapter, "AGENT_STREAM_IDLE_TIMEOUT_S", 0.12)

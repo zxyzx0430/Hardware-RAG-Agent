@@ -145,6 +145,7 @@ class AgentRequestSnapshot:
         repr=False,
         compare=False,
     )
+    run_id: str = field(default="", repr=False, compare=False)
     context_event_scope: Any = field(default=None, repr=False, compare=False)
     tool_event_scope: Any = field(default=None, repr=False, compare=False)
     business_session_id: str = ""
@@ -275,6 +276,66 @@ def _build_request_writer_binding(
     )
 
 
+# A stopped request may still be joining its native run when the user resends.
+# Wait briefly for that owner to clear instead of failing the new request.
+_WRITER_RECOVERY_WAIT_S = 2.0
+_WRITER_RECOVERY_POLL_S = 0.1
+
+
+def _reset_session_writer_state(binding: Any, owner_key: str, lease: Any = None) -> bool:
+    """Drop one session's unresolved writer record and its checkpoint rows."""
+    from src.agent.agent_factory import delete_thread_checkpoint_direct
+
+    removed = binding.registry.reset_owner(owner_key, lease=lease)
+    if removed:
+        try:
+            delete_thread_checkpoint_direct(owner_key)
+        except Exception:
+            logger.warning(
+                "checkpoint reset after writer recovery failed thread=%s",
+                owner_key, exc_info=True,
+            )
+    return removed
+
+
+async def _acquire_request_writer_lease_with_recovery(binding: Any):
+    """Recover one abandoned session owner, then acquire its writer lease.
+
+    A quarantined owner is dropped together with its checkpoint before the
+    request may run. An owner that still has a native run is retried for a
+    short bounded window; if it remains busy the caller gets a retryable
+    conflict instead of a permanently locked session.
+    """
+    from src.agent.compact.writer_lifecycle import (
+        WriterOwnerConflictError,
+        WriterQuarantinedError,
+    )
+
+    owner_key = None
+    last_error: BaseException | None = None
+    deadline = time.monotonic() + _WRITER_RECOVERY_WAIT_S
+    while True:
+        try:
+            return _acquire_request_writer_lease(binding)
+        except WriterQuarantinedError as exc:
+            last_error = exc
+            if owner_key is None:
+                owner_key = binding.scope.owner_key
+                logger.warning(
+                    "recovering quarantined writer owner session=%s", owner_key,
+                )
+            try:
+                _reset_session_writer_state(binding, owner_key)
+            except WriterOwnerConflictError:
+                # The previous request is still finishing; wait it out below.
+                pass
+        except WriterOwnerConflictError as exc:
+            last_error = exc
+        if time.monotonic() >= deadline:
+            raise last_error
+        await asyncio.sleep(_WRITER_RECOVERY_POLL_S)
+
+
 def _acquire_request_writer_lease(binding: Any):
     """Acquire only after the authoritative request scope has been re-read."""
     scope = binding.current_scope()
@@ -285,31 +346,43 @@ def _release_request_writer_lease(
     binding: Any,
     lease: Any,
     release_state: dict[str, bool] | None = None,
-) -> None:
-    """Release a fully joined owner, or quarantine any unresolved outcome."""
+) -> bool:
+    """Try a normal lease release; return False when the owner is unresolved."""
     if release_state is not None and release_state.get("released"):
-        return
-    from src.agent.compact.writer_lifecycle import QuarantineReason
-
+        return True
     try:
         binding.registry.release(lease, binding.current_scope())
         if release_state is not None:
             release_state["released"] = True
-        return
+        return True
     except BaseException as exc:
         logger.warning(
-            "Agent writer lease could not be safely released; owner remains closed (%s)",
+            "Agent writer lease could not be released; resetting this session (%s)",
             type(exc).__name__,
         )
+        return False
+
+
+async def _release_request_writer_lease_with_recovery(
+    binding: Any,
+    lease: Any,
+    release_state: dict[str, bool] | None = None,
+) -> None:
+    """Release a joined owner, or reset this one session after an unresolved stop."""
+    if release_state is None:
+        released = _release_request_writer_lease(binding, lease)
+    else:
+        released = _release_request_writer_lease(binding, lease, release_state)
+    if released:
+        return
+    owner_key = binding.scope.owner_key
     try:
-        binding.registry.quarantine(
-            lease,
-            binding.scope,
-            reason=QuarantineReason.CALLER_REPORTED_UNCERTAINTY,
+        _reset_session_writer_state(binding, owner_key, lease)
+    except BaseException as exc:
+        logger.warning(
+            "Agent writer owner reset failed session=%s (%s)",
+            owner_key, type(exc).__name__,
         )
-    except BaseException:
-        # A stale or already-quarantined lease is already fail-closed.
-        pass
     if release_state is not None:
         release_state["released"] = True
 
@@ -406,6 +479,8 @@ def _ensure_request_tool_context(
 ) -> AgentRequestSnapshot:
     """Bind one fresh Agent ToolContext to a new request snapshot."""
     if snapshot.tool_context is not None:
+        if snapshot.run_id and not snapshot.tool_context.run_id:
+            snapshot.tool_context.run_id = snapshot.run_id
         snapshot.tool_context.tool_observation_scope = _tool_observation_scope(snapshot)
         return snapshot
 
@@ -423,7 +498,9 @@ def _ensure_request_tool_context(
             skills_mode=snapshot.skills_mode,
         )
     request_payload = _payload_with_request_snapshot(payload, snapshot)
-    context = _build_tool_ctx(request_payload, snapshot.skills_runtime)
+    context = _build_tool_ctx(
+        request_payload, snapshot.skills_runtime, run_id=snapshot.run_id,
+    )
     context.tool_observation_scope = _tool_observation_scope(snapshot)
     return replace(snapshot, tool_context=context)
 
@@ -1407,7 +1484,9 @@ async def _run_agent_stream(
             writer_binding = _build_request_writer_binding(
                 agent, config, snapshot, payload.session_id,
             )
-            writer_lease = _acquire_request_writer_lease(writer_binding)
+            writer_lease = await _acquire_request_writer_lease_with_recovery(
+                writer_binding,
+            )
         except _RequestSnapshotEpochError:
             raise
         except WriterOwnerConflictError:
@@ -1499,7 +1578,9 @@ async def _run_agent_stream(
         raise
     finally:
         if writer_binding is not None and writer_lease is not None:
-            _release_request_writer_lease(writer_binding, writer_lease)
+            await _release_request_writer_lease_with_recovery(
+                writer_binding, writer_lease,
+            )
 
 
 async def _stream_agent_in_context(
@@ -2088,6 +2169,7 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
     run_id = _create_chat_run(
         run_store, payload, model, run_session_id, run_principal_id,
     )
+    request_snapshot = replace(request_snapshot, run_id=run_id)
     if request_snapshot.tool_context is not None:
         request_snapshot.tool_context.run_id = run_id
     seeded_todos = None
@@ -2276,22 +2358,24 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
                         })
                         yield sse_event("done", {"success": False, "completed": False})
                         return
-                    from src.agent.compact.writer_lifecycle import WriterQuarantinedError
+                    from src.agent.compact.writer_lifecycle import (
+                        WriterOwnerConflictError,
+                        WriterQuarantinedError,
+                    )
 
-                    if isinstance(agent_exc, WriterQuarantinedError):
+                    if isinstance(
+                        agent_exc, (WriterOwnerConflictError, WriterQuarantinedError),
+                    ):
                         logger.warning(
-                            "agent writer quarantined; request stopped before graph execution"
+                            "agent writer owner is still busy; request stopped before graph execution"
                         )
                         yield sse_event("error", {
-                            "code": "AGENT_WRITER_QUARANTINED",
-                            "retryable": False,
-                            "message": (
-                                "该会话的写入保护已隔离，本轮请求未启动。"
-                                "请开启新会话后重试。"
-                            ),
+                            "code": "AGENT_WRITER_BUSY",
+                            "retryable": True,
+                            "message": "上一轮仍在结束中，请稍后重试。",
                             "detail": (
-                                "上一次 Agent 执行中断，写入状态无法确认；"
-                                "服务重启也会清除隔离，其他会话不受影响。"
+                                "该会话的上一次运行尚未释放写入锁；"
+                                "稍后重试即可，其他会话不受影响。"
                             ),
                         })
                         yield sse_event("done", {"success": False, "completed": False})
@@ -2661,6 +2745,10 @@ async def resume_agent(req: ResumeRequest, request: Request, user: dict = Depend
                 },
             },
         ) from exc
+    if req.run_id:
+        request_snapshot = replace(request_snapshot, run_id=req.run_id)
+        if request_snapshot.tool_context is not None:
+            request_snapshot.tool_context.run_id = req.run_id
     effective_payload = _payload_with_request_snapshot(req.payload, request_snapshot)
     effective_req = req.model_copy(update={"payload": effective_payload})
     creds = _resolve_creds(effective_payload, request)
@@ -2679,13 +2767,18 @@ async def resume_agent(req: ResumeRequest, request: Request, user: dict = Depend
     )
     _require_resume_snapshot_current(request_snapshot, req.payload.session_id)
     config = build_agent_config(session_id)
-    from src.agent.compact.writer_lifecycle import WriterOwnerConflictError
+    from src.agent.compact.writer_lifecycle import (
+        WriterOwnerConflictError,
+        WriterQuarantinedError,
+    )
 
     try:
         writer_binding = _build_request_writer_binding(
             agent, config, request_snapshot, req.payload.session_id,
         )
-        writer_lease = _acquire_request_writer_lease(writer_binding)
+        writer_lease = await _acquire_request_writer_lease_with_recovery(
+            writer_binding,
+        )
     except _RequestSnapshotEpochError as exc:
         _clear_pending_request_snapshot(session_id)
         raise HTTPException(
@@ -2698,7 +2791,7 @@ async def resume_agent(req: ResumeRequest, request: Request, user: dict = Depend
                 },
             },
         ) from exc
-    except WriterOwnerConflictError as exc:
+    except (WriterOwnerConflictError, WriterQuarantinedError) as exc:
         raise HTTPException(
             status_code=409,
             detail={
@@ -2751,7 +2844,9 @@ async def resume_agent(req: ResumeRequest, request: Request, user: dict = Depend
                 ),
             )
         except Exception as exc:
-            _release_request_writer_lease(writer_binding, writer_lease)
+            await _release_request_writer_lease_with_recovery(
+                writer_binding, writer_lease,
+            )
             raise HTTPException(
                 status_code=409,
                 detail={
@@ -2849,7 +2944,7 @@ async def resume_agent(req: ResumeRequest, request: Request, user: dict = Depend
             media_type="text/event-stream",
             headers=headers,
             background=BackgroundTask(
-                _release_request_writer_lease,
+                _release_request_writer_lease_with_recovery,
                 writer_binding,
                 writer_lease,
                 lease_release_state,
@@ -2859,7 +2954,9 @@ async def resume_agent(req: ResumeRequest, request: Request, user: dict = Depend
         return response
     finally:
         if not lease_transferred:
-            _release_request_writer_lease(writer_binding, writer_lease)
+            await _release_request_writer_lease_with_recovery(
+                writer_binding, writer_lease,
+            )
 
 
 @dataclass
@@ -2943,7 +3040,7 @@ async def _resume_event_generator_from_ctx(ctx: ResumeContext):
             _clear_pending_request_snapshot(ctx.req.payload.session_id)
     finally:
         if ctx.writer_binding is not None and ctx.writer_lease is not None:
-            _release_request_writer_lease(
+            await _release_request_writer_lease_with_recovery(
                 ctx.writer_binding, ctx.writer_lease, ctx.lease_release_state,
             )
 

@@ -351,8 +351,10 @@ class WriterLifecycleRegistry:
     ``known_savers`` is an identity allowlist supplied by trusted host setup.
     An empty allowlist refuses every acquisition. No timeout or TTL transfers
     an active or quarantined owner; only the current lease capability can
-    release an active owner after every native run has been confirmed joined.
-    The trusted host must revalidate the authoritative current epoch before
+    release an active owner after every native run has been confirmed joined,
+    or an explicit ``reset_owner`` for that one session can drop an unresolved
+    record once the host has abandoned its run. The trusted host must
+    revalidate the authoritative current epoch before
     every acquisition and after awaits. The registry compares persistent epoch
     strings by exact value and object authorities by identity while a lease is
     active, but cannot prove first-seen scope freshness or identify stale
@@ -898,11 +900,12 @@ class WriterLifecycleRegistry:
         *,
         reason: QuarantineReason,
     ) -> None:
-        """Permanently block this owner after an unresolved task/run/write.
+        """Block this owner after an unresolved task/run/write.
 
-        This registry has no timeout-based recovery or public unquarantine
-        operation. A mismatching scope automatically quarantines the current
-        lease before raising.
+        There is no timeout or TTL recovery. A local host that has decided the
+        abandoned run is finished may call ``reset_owner`` for this exact
+        session; until then acquire/run/release stay refused. A mismatching
+        scope automatically quarantines the current lease before raising.
         """
         with self._lock:
             record = self._current_record(lease)
@@ -913,6 +916,46 @@ class WriterLifecycleRegistry:
                 )
                 raise WriterLifecycleError("quarantine requires a known reason")
             self._quarantine_record(record, reason)
+
+    def reset_owner(
+        self,
+        owner_key: str,
+        *,
+        lease: WriterLease | None = None,
+    ) -> bool:
+        """Drop one owner's record so the next request can acquire it again.
+
+        Without ``lease`` only a QUARANTINED record is recoverable; an ACTIVE
+        owner is still the minimum single-run guard for this session and is
+        refused so a concurrent acquisition is never dropped. Passing the
+        owning ``lease`` additionally allows an unresolved-but-idle ACTIVE
+        record to be cleaned up by its own request teardown. Other owners are
+        never touched.
+        """
+        if type(owner_key) is not str or not owner_key.strip():
+            raise WriterScopeError("owner_key must be a non-empty string")
+        with self._lock:
+            record = self._owners.get(owner_key)
+            if record is None:
+                return False
+            if lease is not None and record.lease is not lease:
+                raise WriterLeaseError("lease is stale or no longer owns this key")
+            if record.state is not LeaseState.QUARANTINED and lease is None:
+                raise WriterOwnerConflictError(
+                    "only a quarantined owner can be recovered automatically"
+                )
+            if record.state is not LeaseState.QUARANTINED and (
+                record.active_run is not None
+                or record.host_write_active
+                or record.host_state_update_token is not None
+            ):
+                raise WriterOwnerConflictError(
+                    "owner still has an active run or checkpoint write"
+                )
+            record.state = LeaseState.RELEASED
+            record.lease._state = LeaseState.RELEASED
+            self._owners.pop(owner_key, None)
+            return True
 
     def release(self, lease: WriterLease, scope: WriterScope) -> None:
         """Release only the exact current lease, with no active/unresolved run."""

@@ -145,7 +145,7 @@ def test_agent_error_after_partial_text_keeps_text_and_emits_one_failed_terminal
     assert calls == 1
 
 
-def test_quarantined_writer_returns_actionable_non_retryable_error(monkeypatch):
+def test_busy_writer_returns_retryable_not_new_session_error(monkeypatch):
     from src.agent.compact.writer_lifecycle import WriterQuarantinedError
 
     async def fake_stream(*_args, **_kwargs):
@@ -156,9 +156,9 @@ def test_quarantined_writer_returns_actionable_non_retryable_error(monkeypatch):
 
     errors = [event for event in events if event.get("type") == "error"]
     assert len(errors) == 1
-    assert errors[0]["code"] == "AGENT_WRITER_QUARANTINED"
-    assert errors[0]["retryable"] is False
-    assert "新会话" in errors[0]["message"]
+    assert errors[0]["code"] == "AGENT_WRITER_BUSY"
+    assert errors[0]["retryable"] is True
+    assert "新会话" not in errors[0]["message"]
     assert events[-1] == {"type": "done", "success": False, "completed": False}
 
 

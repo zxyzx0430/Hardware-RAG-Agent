@@ -544,6 +544,7 @@ async def _iter_agent_sse(
     last_progress_at = time.monotonic()
     next_item_task: asyncio.Task | None = None
     had_error = False
+    user_stopped = False
     graph_drained = False
     cleanup_joined = False
     try:
@@ -583,6 +584,7 @@ async def _iter_agent_sse(
                 if acknowledge_drained(run, exc):
                     graph_drained = True
                     break
+                user_stopped = isinstance(exc, (asyncio.CancelledError, GeneratorExit))
                 had_error = True
                 raise
             next_item_task = None
@@ -616,7 +618,8 @@ async def _iter_agent_sse(
         had_error = True
         logger.warning("agent_timeout elapsed=%.1fs limit=%ss", exc.elapsed, exc.limit)
         raise
-    except BaseException:
+    except BaseException as exc:
+        user_stopped = isinstance(exc, (asyncio.CancelledError, GeneratorExit))
         had_error = True
         raise
     finally:
@@ -647,7 +650,13 @@ async def _iter_agent_sse(
                         raise
             cleanup_joined = True
         finally:
-            finish_native_run(run, joined=cleanup_joined and not had_error, had_error=had_error)
+            # A user stop is not an uncertain native outcome: teardown already
+            # cancelled and joined this run, so the session may be reused.
+            finish_native_run(
+                run,
+                joined=cleanup_joined and (not had_error or user_stopped),
+                had_error=had_error and not user_stopped,
+            )
 
     if state.get("needs_compact"):
         if not graph_drained:

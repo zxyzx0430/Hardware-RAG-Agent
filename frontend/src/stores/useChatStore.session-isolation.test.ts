@@ -31,11 +31,11 @@ type CapturedSseCallbacks = {
 const sessionA = "isolation-session-a";
 const sessionB = "isolation-session-b";
 
-const quarantinedError: ErrorSSEEvent = {
+const sessionStreamError: ErrorSSEEvent = {
   type: "error",
-  code: "AGENT_WRITER_QUARANTINED",
-  message: "该会话的写入保护已隔离，本轮请求未启动。请开启新会话后重试。",
-  detail: "上一次 Agent 执行中断，写入状态无法确认；服务重启也会清除隔离，其他会话不受影响。",
+  code: "AGENT_STREAM_ERROR",
+  message: "本轮 Agent 执行失败，请重试。",
+  detail: "该错误只属于产生它的会话。",
 };
 
 const messagesA: Message[] = [
@@ -108,11 +108,11 @@ describe("per-session chat error and confirmation isolation", () => {
     });
 
     const callbacks = await startStream(store, "触发隔离错误");
-    callbacks.onEvent(quarantinedError);
+    callbacks.onEvent(sessionStreamError);
 
-    expect(store.getState().streamingError).toMatchObject({ code: "AGENT_WRITER_QUARANTINED" });
+    expect(store.getState().streamingError).toMatchObject({ code: "AGENT_STREAM_ERROR" });
     expect(store.getState().streamingErrorBySession[sessionA]).toMatchObject({
-      code: "AGENT_WRITER_QUARANTINED",
+      code: "AGENT_STREAM_ERROR",
     });
 
     store.getState().setActiveSession(sessionB);
@@ -121,7 +121,7 @@ describe("per-session chat error and confirmation isolation", () => {
     expect(store.getState().messages.map((message) => message.id)).toEqual(messagesB.map((message) => message.id));
 
     store.getState().setActiveSession(sessionA);
-    expect(store.getState().streamingError).toMatchObject({ code: "AGENT_WRITER_QUARANTINED" });
+    expect(store.getState().streamingError).toMatchObject({ code: "AGENT_STREAM_ERROR" });
   });
 
   it("keeps a background run's error out of the session the user switched to", async () => {
@@ -134,16 +134,16 @@ describe("per-session chat error and confirmation isolation", () => {
 
     const callbacks = await startStream(store, "后台运行中切走");
     store.getState().setActiveSession(sessionB);
-    callbacks.onEvent(quarantinedError);
+    callbacks.onEvent(sessionStreamError);
 
     expect(store.getState().activeSessionId).toBe(sessionB);
     expect(store.getState().streamingError).toBeNull();
     expect(store.getState().streamingErrorBySession[sessionA]).toMatchObject({
-      code: "AGENT_WRITER_QUARANTINED",
+      code: "AGENT_STREAM_ERROR",
     });
 
     store.getState().setActiveSession(sessionA);
-    expect(store.getState().streamingError).toMatchObject({ code: "AGENT_WRITER_QUARANTINED" });
+    expect(store.getState().streamingError).toMatchObject({ code: "AGENT_STREAM_ERROR" });
   });
 
   it("shows the HITL confirmation only for the session that owns the paused run", async () => {
@@ -246,7 +246,7 @@ describe("per-session chat error and confirmation isolation", () => {
     });
 
     const firstCallbacks = await startStream(store, "第一次失败");
-    firstCallbacks.onEvent(quarantinedError);
+    firstCallbacks.onEvent(sessionStreamError);
     expect(store.getState().streamingErrorBySession[sessionA]).toBeTruthy();
 
     const secondCallbacks = await startStream(store, "第二次成功");

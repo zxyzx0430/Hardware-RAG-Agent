@@ -599,6 +599,43 @@ describe("useChatStore", () => {
       .not.toHaveProperty("skill_ids");
   });
 
+  it("上一轮仍在结束时自动重试一次且不清空消息", async () => {
+    const store = await importStore();
+    store.setState({
+      messages: [],
+      sessionMessages: {},
+      activeSessionId: "s1",
+      isStreaming: false,
+    });
+
+    store.getState().sendMessage("重试这一轮");
+    expect(apiSSEPaths).toEqual(["chat"]);
+    capturedCallbacks!.onEvent({
+      type: "error",
+      code: "AGENT_WRITER_BUSY",
+      retryable: true,
+      message: "上一轮仍在结束中，请稍后重试。",
+    } as ChatSSEEvent);
+    capturedCallbacks!.onDone!();
+
+    expect(store.getState().isStreaming).toBe(true);
+    expect(store.getState().messages[1].content).not.toContain("仍在结束");
+
+    await vi.waitFor(() => expect(apiSSEPaths).toEqual(["chat", "chat"]), {
+      timeout: 2500,
+    });
+
+    capturedCallbacks!.onEvent({ type: "text", content: "重试成功" });
+    capturedCallbacks!.onEvent({
+      type: "done", success: true, completed: true,
+    } as ChatSSEEvent);
+    capturedCallbacks!.onDone!();
+
+    expect(store.getState().messages[0].content).toBe("重试这一轮");
+    expect(store.getState().messages[1].content).toBe("重试成功");
+    expect(store.getState().isStreaming).toBe(false);
+  });
+
   it("error 事件触发 stopStreaming 并在消息中追加错误", async () => {
     const store = await importStore();
     store.setState({
