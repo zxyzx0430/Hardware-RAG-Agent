@@ -72,6 +72,10 @@
   background: var(--muted); font-size: 11px; color: var(--muted-fg);
 }
 .source-scroll { flex: 1; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+/* Scroll content keeps its natural height: shrinking these items (their own
+   overflow:hidden zeroes the auto min-size) would clip the list and leave the
+   scroll container with nothing to scroll. */
+.source-scroll > * { flex-shrink: 0; }
 
 /* Source groups: one collapsible group per message */
 .source-group {
