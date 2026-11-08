@@ -15,7 +15,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-from src.explorer.security import ExplorerSecurityError, validate_path
+from src.explorer.security import ExplorerAccessDeniedError, validate_path
 
 logger = logging.getLogger(__name__)
 
@@ -30,11 +30,18 @@ class FileVersionConflictError(Exception):
     """Raised when a file changed since Explorer last read it."""
 
 
+class ExplorerWriteError(Exception):
+    """Raised when a file write fails for a reason other than permissions."""
+
+
 def read_file_response(path: Path) -> dict[str, Any]:
     """Build the response payload for a read request."""
-    if _is_text_file(path):
-        return _text_response(path)
-    return _binary_response(path)
+    try:
+        if _is_text_file(path):
+            return _text_response(path)
+        return _binary_response(path)
+    except PermissionError as exc:
+        raise ExplorerAccessDeniedError("file could not be read") from exc
 
 
 def write_text_file(path: Path, content: str, expected_version: str | None = None) -> str:
@@ -44,13 +51,13 @@ def write_text_file(path: Path, content: str, expected_version: str | None = Non
     The returned digest is the version for the newly-written bytes.
     """
     with _path_write_lock(path):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if _file_version(path) != expected_version:
-            raise FileVersionConflictError(f"file changed since it was read: {path}")
-
-        encoded = content.encode("utf-8")
         temp_path: Path | None = None
         try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if _file_version(path) != expected_version:
+                raise FileVersionConflictError("file changed since it was read")
+
+            encoded = content.encode("utf-8")
             with tempfile.NamedTemporaryFile(
                 mode="wb", prefix=f".{path.name}.", suffix=".tmp", dir=path.parent, delete=False
             ) as handle:
@@ -60,10 +67,14 @@ def write_text_file(path: Path, content: str, expected_version: str | None = Non
                 os.fsync(handle.fileno())
             # Check again before replacement; the per-path lock serializes Explorer saves.
             if _file_version(path) != expected_version:
-                raise FileVersionConflictError(f"file changed while save was pending: {path}")
+                raise FileVersionConflictError("file changed while save was pending")
             os.replace(temp_path, path)
             temp_path = None
             return hashlib.sha256(encoded).hexdigest()
+        except PermissionError as exc:
+            raise ExplorerAccessDeniedError("file is read-only or access is denied") from exc
+        except OSError as exc:
+            raise ExplorerWriteError("file could not be written") from exc
         finally:
             if temp_path is not None:
                 try:
@@ -112,27 +123,47 @@ def create_node(path: Path, node_type: str, *, session_id: str) -> None:
     """Create a new file or directory at *path*."""
     validate_path(str(path), must_exist=False, session_id=session_id)
     if path.exists():
-        raise FileExistsError(f"already exists: {path}")
-    if node_type == "directory":
-        path.mkdir(parents=True, exist_ok=True)
-    else:
-        write_text_file(path, "")
+        raise FileExistsError(path.name)
+    try:
+        if node_type == "directory":
+            path.mkdir(parents=True, exist_ok=True)
+        else:
+            write_text_file(path, "")
+    except PermissionError as exc:
+        raise ExplorerAccessDeniedError("file is read-only or access is denied") from exc
 
 
 def rename_node(path: Path, new_name: str, *, session_id: str) -> Path:
     """Rename *path* to *new_name* in the same parent directory."""
     new_path = path.with_name(new_name)
     validate_path(str(new_path), must_exist=False, session_id=session_id)
-    path.rename(new_path)
+    if new_path.exists() and not _is_same_file(path, new_path):
+        raise FileExistsError(new_name)
+    try:
+        path.rename(new_path)
+    except FileExistsError as exc:
+        raise FileExistsError(new_name) from exc
+    except PermissionError as exc:
+        raise ExplorerAccessDeniedError("file is read-only or access is denied") from exc
     return new_path
+
+
+def _is_same_file(first: Path, second: Path) -> bool:
+    try:
+        return os.path.samefile(first, second)
+    except OSError:
+        return False
 
 
 def delete_node(path: Path) -> None:
     """Delete a file or directory."""
-    if path.is_dir():
-        shutil.rmtree(path)
-    else:
-        path.unlink()
+    try:
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+    except PermissionError as exc:
+        raise ExplorerAccessDeniedError("file or directory is read-only or access is denied") from exc
 
 
 def move_node(path: Path, target_dir: Path, *, session_id: str) -> Path:
@@ -140,8 +171,13 @@ def move_node(path: Path, target_dir: Path, *, session_id: str) -> Path:
     target = target_dir / path.name
     validate_path(str(target), must_exist=False, session_id=session_id)
     if target.exists():
-        raise FileExistsError(f"target already exists: {target}")
-    shutil.move(str(path), str(target))
+        raise FileExistsError(target.name)
+    try:
+        shutil.move(str(path), str(target))
+    except FileExistsError as exc:
+        raise FileExistsError(target.name) from exc
+    except PermissionError as exc:
+        raise ExplorerAccessDeniedError("file or directory is read-only or access is denied") from exc
     return target
 
 
@@ -150,11 +186,16 @@ def copy_node(path: Path, target_dir: Path, *, session_id: str) -> Path:
     target = target_dir / path.name
     validate_path(str(target), must_exist=False, session_id=session_id)
     if target.exists():
-        raise FileExistsError(f"target already exists: {target}")
-    if path.is_dir():
-        shutil.copytree(str(path), str(target))
-    else:
-        shutil.copy2(str(path), str(target))
+        raise FileExistsError(target.name)
+    try:
+        if path.is_dir():
+            shutil.copytree(str(path), str(target))
+        else:
+            shutil.copy2(str(path), str(target))
+    except FileExistsError as exc:
+        raise FileExistsError(target.name) from exc
+    except PermissionError as exc:
+        raise ExplorerAccessDeniedError("file or directory is read-only or access is denied") from exc
     return target
 
 

@@ -1,6 +1,8 @@
 import { useCallback, useRef, useState } from "react";
 import { Modal } from "../shared/Modal";
 import { useI18n } from "../../i18n";
+import { apiPost } from "../../api/client";
+import { useToastStore } from "../../stores/useToastStore";
 import type { OpenFileItem } from "../../types";
 
 interface CloseConfirmDialogProps {
@@ -115,10 +117,59 @@ const MIN_SCALE = 0.1;
 const MAX_SCALE = 10;
 const WHEEL_ZOOM_STEP = 0.15;
 
+const BINARY_MIME_TYPES: Record<string, string> = {
+  bin: "application/octet-stream",
+  hex: "application/octet-stream",
+  uf2: "application/octet-stream",
+  img: "application/octet-stream",
+  elf: "application/x-elf",
+  so: "application/x-sharedlib",
+  wasm: "application/wasm",
+  pdf: "application/pdf",
+  zip: "application/zip",
+  gz: "application/gzip",
+  tar: "application/x-tar",
+  "7z": "application/x-7z-compressed",
+  rar: "application/vnd.rar",
+  exe: "application/vnd.microsoft.portable-executable",
+  dll: "application/vnd.microsoft.portable-executable",
+  wav: "audio/wav",
+  mp3: "audio/mpeg",
+  mp4: "video/mp4",
+};
+
+function fileMimeType(file: OpenFileItem): string {
+  if (file.mime) return file.mime;
+  const extension = file.name.includes(".")
+    ? file.name.split(".").pop()?.toLowerCase() ?? ""
+    : "";
+  return BINARY_MIME_TYPES[extension] ?? "application/octet-stream";
+}
+
+function formatFileSize(bytes: number | undefined): string | null {
+  if (bytes === undefined || !Number.isFinite(bytes) || bytes < 0) return null;
+  if (bytes < 1024) return `${bytes} B`;
+  const kilobytes = bytes / 1024;
+  if (kilobytes < 1024) return `${kilobytes.toFixed(1)} KB`;
+  const megabytes = kilobytes / 1024;
+  if (megabytes < 1024) return `${megabytes.toFixed(1)} MB`;
+  return `${(megabytes / 1024).toFixed(1)} GB`;
+}
+
 export function ImagePreview({ file }: { file: OpenFileItem }) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const [scale, setScale] = useState(1);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  const handleReveal = useCallback(async () => {
+    try {
+      await apiPost("explorer/reveal", { path: file.path });
+    } catch (err) {
+      useToastStore.getState().showError(
+        `${t("revealFailed", "在文件管理器中显示失败")}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }, [file.path, t]);
 
   const handleWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault();
@@ -135,7 +186,28 @@ export function ImagePreview({ file }: { file: OpenFileItem }) {
   }, []);
 
   if (!file.data_url) {
-    return <div className="editor-empty">{t("previewNotSupported", "此文件类型不支持预览")}</div>;
+    const mime = fileMimeType(file);
+    const size = formatFileSize(file.size);
+    const details = (lang === "en"
+      ? [`Type: ${mime}`, size ? `Size: ${size}` : null]
+      : [`类型：${mime}`, size ? `大小：${size}` : null]
+    ).filter(Boolean).join(" · ");
+    return (
+      <div className="editor-empty">
+        <div>{t("previewNotSupported", "此文件类型不支持预览")}</div>
+        <div style={{ fontSize: 12, opacity: 0.75, lineHeight: 1.7 }}>
+          <div>{file.name}</div>
+          <div>{details}</div>
+        </div>
+        <button
+          type="button"
+          className="editor-close-btn secondary"
+          onClick={() => void handleReveal()}
+        >
+          {t("reveal", "在文件管理器中显示")}
+        </button>
+      </div>
+    );
   }
   return (
     <div

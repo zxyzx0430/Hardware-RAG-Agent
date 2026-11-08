@@ -34,6 +34,14 @@ class ExplorerSecurityError(ValueError):
     """Raised when a path fails explorer security validation."""
 
 
+class ExplorerNotFoundError(ExplorerSecurityError):
+    """Raised when an authorized path does not exist."""
+
+
+class ExplorerAccessDeniedError(Exception):
+    """Raised when the operating system denies access to an authorized path."""
+
+
 def session_scope(session_id: str) -> str:
     """Return a non-reversible in-memory scope key for a validated session token."""
     if not session_id:
@@ -115,7 +123,7 @@ def validate_path(
     _assert_no_deny_pattern(real)
     _assert_within_root(real, session_id)
     if must_exist and not real.exists():
-        raise ExplorerSecurityError("path does not exist")
+        raise ExplorerNotFoundError("path does not exist")
     if not allow_file and real.is_file():
         raise ExplorerSecurityError("expected directory, got file")
     if not allow_dir and real.is_dir():
@@ -130,6 +138,8 @@ def _resolve_directory(path: str) -> Path:
     real = _safe_resolve(requested)
     if real is None:
         raise ExplorerSecurityError("root path could not be resolved")
+    if not real.exists():
+        raise ExplorerNotFoundError("root path does not exist")
     if not real.is_dir():
         raise ExplorerSecurityError("root path is not a directory")
     return real
