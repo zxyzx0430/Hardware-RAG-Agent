@@ -809,6 +809,14 @@ const zh: Record<string, string> = {
   // Source preview
   previewLoading: '正在加载预览…',
   backToSources: '返回来源引用',
+  sourceViewMode: '来源视图',
+  originalPage: '原文页',
+  textExcerpt: '文字摘录',
+  originalPageLoading: '正在加载原文页…',
+  originalPageUnavailable: '原文页不可用：该来源没有对应页面图像，或页面尚未生成。',
+  viewTextExcerpt: '查看文字摘录',
+  clickToZoom: '点击放大',
+  clickToFit: '点击还原',
 
   // Model dropdown
   modelSearchPlaceholder: '搜索模型或服务商…',

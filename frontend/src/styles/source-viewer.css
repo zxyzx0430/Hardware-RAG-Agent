@@ -1,0 +1,183 @@
+/* Source viewer — document reading view and original PDF page.
+   Scoped to RightPanel's SourceExcerptViewer; list/scroll layout lives in
+   workbench.css and is intentionally not overridden here. */
+
+.source-fv-root {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ── 原文页 / 文字摘录 switch (PDF sources only) ── */
+.source-view-tabs {
+  display: inline-flex;
+  align-self: flex-start;
+  gap: 2px;
+  margin-bottom: 10px;
+  padding: 3px;
+  border-radius: var(--radius);
+  background: var(--muted);
+}
+
+.source-view-tab {
+  padding: 4px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--muted-fg);
+  transition: background 0.15s, color 0.15s;
+}
+
+.source-view-tab:hover {
+  color: var(--fg);
+}
+
+.source-view-tab.active {
+  background: var(--card);
+  color: var(--fg);
+  font-weight: 500;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+/* ── Reading view: extracted document text, never styled as code ── */
+.source-fv-content.source-reading-scroll {
+  overflow-y: auto;
+  background: var(--card);
+}
+
+.source-reading-body {
+  max-width: 66ch;
+  margin: 0 auto;
+  padding: 22px 26px 44px;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.8;
+  letter-spacing: 0.005em;
+  color: var(--fg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 4;
+}
+
+/* ── Code sources keep Monaco; the wrapper only owns the layout ── */
+.source-fv-content.source-fv-code {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+/* ── Original PDF page image ── */
+.source-fv-content.source-page-viewer {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.source-page-scroll {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  padding: 12px;
+  overflow: auto;
+}
+
+.source-page-image {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+  border-radius: 2px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+  cursor: zoom-in;
+}
+
+.source-page-viewer.zoomed .source-page-scroll {
+  justify-content: flex-start;
+}
+
+.source-page-viewer.zoomed .source-page-image {
+  width: auto;
+  max-width: none;
+  cursor: zoom-out;
+}
+
+/* ── Page image loading skeleton ── */
+.source-page-skeleton {
+  flex: 1;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 12px;
+  min-height: 200px;
+  border-radius: var(--radius);
+  color: var(--muted-fg);
+  font-size: 12px;
+  background: linear-gradient(
+    100deg,
+    var(--muted) 30%,
+    color-mix(in oklab, var(--muted), var(--fg) 6%) 50%,
+    var(--muted) 70%
+  );
+  background-size: 220% 100%;
+  animation: source-page-skeleton-sweep 1.4s ease-in-out infinite;
+}
+
+@keyframes source-page-skeleton-sweep {
+  from { background-position: 120% 0; }
+  to { background-position: -120% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .source-page-skeleton { animation: none; }
+}
+
+/* ── Page image failure: explain and offer the text excerpt ── */
+.source-page-error {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+  text-align: center;
+}
+
+.source-page-error p {
+  max-width: 42ch;
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--muted-fg);
+}
+
+.source-page-text-btn {
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--card);
+  color: var(--fg);
+  font-size: 12px;
+  transition: 0.15s;
+}
+
+.source-page-text-btn:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+/* Narrow right-panel widths: keep the reading measure comfortable. */
+@media (max-width: 420px) {
+  .source-reading-body {
+    padding: 16px 14px 36px;
+    font-size: 13.5px;
+    line-height: 1.75;
+  }
+}
