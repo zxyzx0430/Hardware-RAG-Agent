@@ -611,7 +611,17 @@ def test_restart_marks_non_terminal_runs_interrupted() -> None:
         )
         assert completed["error_code"] is None
 
-        assert [row["seq"] for row in _run_event_rows(running_id)] == [1]
+        # P1: the restart terminal is written into the same ledger so replay
+        # never has to synthesize a second source of truth.
+        running_events = _run_event_rows(running_id)
+        assert [row["seq"] for row in running_events] == [1, 2, 3]
+        assert [row["type"] for row in running_events] == ["run_started", "error", "done"]
+        terminal = json.loads(running_events[-1]["payload_json"])
+        assert terminal["interrupted"] is True
+        awaiting_events = _run_event_rows(awaiting_id)
+        assert [row["seq"] for row in awaiting_events] == [1, 2, 3]
+        assert [row["type"] for row in awaiting_events] == ["run_started", "error", "done"]
+        assert [row["seq"] for row in _run_event_rows(completed_id)] == [1, 2]
     finally:
         _cleanup_runs([running_id, awaiting_id, completed_id])
 

@@ -472,6 +472,96 @@ class RunStore:
             session.commit()
         return changed
 
+    def list_runs(
+        self,
+        *,
+        session_id: str | None = None,
+        statuses: tuple[str, ...] | list[str] | None = None,
+        limit: int | None = None,
+    ) -> list[RunRecord]:
+        """Return runs newest first, optionally scoped by session and status."""
+        statement = select(Run)
+        if session_id is not None:
+            statement = statement.where(Run.session_id == session_id)
+        if statuses is not None:
+            wanted = tuple(statuses)
+            for status in wanted:
+                _require_run_status(status)
+            if not wanted:
+                return []
+            statement = statement.where(Run.status.in_(wanted))
+        statement = statement.order_by(
+            Run.started_at.desc(), Run.id.desc()
+        )
+        if limit is not None:
+            _require_non_negative_int(limit, "limit")
+            statement = statement.limit(limit)
+        with self._session() as session:
+            rows = session.execute(statement).scalars().all()
+            return [_run_record(row) for row in rows]
+
+    def claim_run_status(
+        self,
+        run_id: str,
+        *,
+        expected_status: tuple[str, ...] | list[str] | str,
+        status: str,
+        error_code: str | None = None,
+        error_message: str | None = None,
+        finished_at: _dt.datetime | None = None,
+    ) -> RunRecord | None:
+        """Atomically move a run from an expected status (resume/claim guard).
+
+        Returns ``None`` when the run does not exist or is no longer in one of
+        the expected statuses, so two concurrent resumes cannot both win.
+        """
+        _require_run_status(status)
+        expected = (
+            (expected_status,) if isinstance(expected_status, str) else tuple(expected_status)
+        )
+        if not expected:
+            return None
+        for item in expected:
+            _require_run_status(item)
+        values: dict[str, Any] = {
+            "status": status,
+            "error_code": error_code,
+            "error_message": error_message,
+        }
+        if finished_at is not None:
+            values["finished_at"] = _to_utc_naive(finished_at)
+        elif status in TERMINAL_RUN_STATUSES:
+            values["finished_at"] = _utc_now_naive()
+        elif status == RUN_STATUS_RUNNING:
+            values["finished_at"] = None
+        with self._session() as session:
+            result = session.execute(
+                update(Run)
+                .where(Run.id == run_id, Run.status.in_(expected))
+                .values(**values)
+                .execution_options(synchronize_session=False)
+            )
+            changed = result.rowcount
+            session.commit()
+        if changed != 1:
+            return None
+        return self.get_run(run_id)
+
+    def update_run_checkpoint(
+        self, run_id: str, checkpoint_id: str | None
+    ) -> bool:
+        """Record the checkpoint a paused run can resume from."""
+        with self._session() as session:
+            result = session.execute(
+                update(Run)
+                .where(Run.id == run_id)
+                .values(checkpoint_id=checkpoint_id)
+                .execution_options(synchronize_session=False)
+            )
+            changed = result.rowcount
+            session.commit()
+        return changed == 1
+
     # -------------------------------------------------------------- events
 
     def append_event(
@@ -978,6 +1068,52 @@ class RuntimeRunStore:
         return self._store.mark_running_interrupted(
             error_code=error_code, error_message=error_message
         )
+
+    def list_runs(
+        self,
+        *,
+        session_id: str | None = None,
+        statuses: Any = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        records = self._store.list_runs(
+            session_id=session_id,
+            statuses=(
+                (statuses,) if isinstance(statuses, str)
+                else tuple(statuses) if statuses is not None else None
+            ),
+            limit=limit,
+        )
+        return [self._run_row(record) for record in records]
+
+    def claim_run_status(
+        self,
+        run_id: str,
+        *,
+        expected_status: Any,
+        status: str,
+        error_code: str | None = None,
+        error_message: str | None = None,
+        finished_at: str | None = None,
+    ) -> dict[str, Any] | None:
+        record = self._store.claim_run_status(
+            run_id,
+            expected_status=expected_status,
+            status=status,
+            error_code=error_code,
+            error_message=error_message,
+            finished_at=_parse_datetime(finished_at),
+        )
+        return self._run_row(record) if record is not None else None
+
+    def update_run_checkpoint(
+        self, run_id: str, checkpoint_id: str | None
+    ) -> bool:
+        return self._store.update_run_checkpoint(run_id, checkpoint_id)
+
+    def expire_pending_approvals(self, now: Any = None) -> int:
+        moment = _parse_datetime(now) if isinstance(now, str) else now
+        return self._store.expire_pending_approvals(moment)
 
     def create_pending_approval(
         self, approval: Mapping[str, Any]

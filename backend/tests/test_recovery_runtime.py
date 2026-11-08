@@ -175,6 +175,7 @@ async def test_stream_cancellation_persists_cancelled_terminal(isolated_run_runt
         yield sse_event("text", {"content": "partial"})
         raise asyncio.CancelledError()
 
+    run_events.get_run_control().cancel(RUN_ID)
     with pytest.raises(asyncio.CancelledError):
         await _collect(run_events.stream_with_persistence(
             inner(), store=store, run_id=RUN_ID,
@@ -185,6 +186,27 @@ async def test_stream_cancellation_persists_cancelled_terminal(isolated_run_runt
     terminal = store.list_run_events(RUN_ID)[-1]
     assert terminal["type"] == "done"
     assert terminal["payload"]["cancelled"] is True
+
+
+async def test_stream_unrequested_cancellation_becomes_interrupted(isolated_run_runtime):
+    store = isolated_run_runtime
+    _seed_run(store)
+
+    async def inner():
+        yield sse_event("text", {"content": "partial"})
+        raise asyncio.CancelledError()
+
+    with pytest.raises(asyncio.CancelledError):
+        await _collect(run_events.stream_with_persistence(
+            inner(), store=store, run_id=RUN_ID,
+        ))
+
+    run = store.get_run(RUN_ID)
+    assert run["status"] == run_events.RUN_STATUS_INTERRUPTED
+    payloads = [event["payload"] for event in store.list_run_events(RUN_ID)]
+    assert payloads[-2]["code"] == run_events.INTERRUPTED_EVENT_CODE
+    assert payloads[-1]["type"] == "done"
+    assert payloads[-1]["interrupted"] is True
 
 
 async def test_stream_unexpected_error_persists_error_and_failed_terminal(
@@ -339,6 +361,10 @@ async def test_hitl_confirmation_persists_pending_approvals_and_snapshot(
     snapshot = store.get_latest_request_snapshot(run_id)
     assert snapshot is not None
     assert "secret-value" not in snapshot["payload_json"]
+    persisted = json.loads(snapshot["payload_json"])
+    assert isinstance(persisted.get("_recovery_epochs"), dict)
+    assert persisted["_recovery_epochs"]["session_delete"] is not None
+    assert persisted["_recovery_epochs"]["memory_clear"] is not None
 
 
 # ---------------------------------------------------------------------------
@@ -667,14 +693,14 @@ async def test_resume_route_rejects_foreign_session_run(isolated_run_runtime):
     assert exc_info.value.detail["error"]["code"] == "RUN_SESSION_MISMATCH"
 
 
-async def test_run_resume_endpoint_is_unsupported_for_interrupted(isolated_run_runtime):
+async def test_run_resume_endpoint_requires_decision_for_interrupted(isolated_run_runtime):
     store = isolated_run_runtime
     _seed_run(store, status=run_events.RUN_STATUS_INTERRUPTED)
 
     with pytest.raises(HTTPException) as exc_info:
-        await runs.resume_run(RUN_ID, user={})
+        await runs.resume_run(RUN_ID, _request(), body=None, user={})
     assert exc_info.value.status_code == 409
-    assert exc_info.value.detail["error"]["code"] == "RESUME_UNSUPPORTED"
+    assert exc_info.value.detail["error"]["code"] == "RESUME_NEEDS_REVIEW"
 
 
 async def test_run_resume_endpoint_rejects_running(isolated_run_runtime):
@@ -682,5 +708,5 @@ async def test_run_resume_endpoint_rejects_running(isolated_run_runtime):
     _seed_run(store)
 
     with pytest.raises(HTTPException) as exc_info:
-        await runs.resume_run(RUN_ID, user={})
+        await runs.resume_run(RUN_ID, _request(), body=None, user={})
     assert exc_info.value.detail["error"]["code"] == "RUN_NOT_INTERRUPTED"

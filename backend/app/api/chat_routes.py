@@ -13,6 +13,7 @@ import threading
 import time
 import uuid
 from collections import Counter
+from collections.abc import Mapping
 from contextlib import ExitStack, contextmanager, nullcontext, nullcontext
 from dataclasses import dataclass, field, replace
 from enum import Enum
@@ -30,7 +31,7 @@ except ImportError:  # pragma: no cover - openai optional dependency
     OpenAINotFoundError = None  # type: ignore[assignment]
 from app.api.auth import get_provider_key, resolve_credentials
 from app.api.dependencies import current_user, current_user_optional
-from app.api.runs import recover_interrupted_runs, router as runs_router
+from app.api.runs import classify_run_resume, recover_interrupted_runs, router as runs_router
 from app.api.common import get_db_ctx, make_client
 from app.api.memory_epoch import read_memory_clear_epoch
 from app.api.sse import sse_event
@@ -1740,9 +1741,31 @@ def _resolve_run_store() -> Any | None:
         return None
 
 
+def _run_exists(store: Any, run_id: str) -> bool:
+    try:
+        return store.get_run(run_id) is not None
+    except Exception:
+        logger.warning("Run existence check failed run=%s", run_id, exc_info=True)
+        return False
+
+
 def _sanitized_run_request(payload: ChatRequest) -> dict[str, Any]:
     """Persist only request fields needed to rebuild the HITL card."""
     return payload.model_dump(exclude={"tool_keys", "attachments"})
+
+
+def _persisted_run_request(
+    payload: ChatRequest,
+    snapshot: AgentRequestSnapshot | None = None,
+) -> dict[str, Any]:
+    """Sanitized request plus the epoch fence that bounds a restart resume."""
+    data = _sanitized_run_request(payload)
+    if snapshot is not None:
+        data["_recovery_epochs"] = {
+            "session_delete": snapshot.session_delete_epoch,
+            "memory_clear": snapshot.memory_clear_epoch,
+        }
+    return data
 
 
 def _create_chat_run(
@@ -1751,6 +1774,8 @@ def _create_chat_run(
     model: str,
     session_id: str,
     principal_id: str | None,
+    *,
+    long_term_memory: str = "",
 ) -> str:
     run_id = run_events.new_run_id()
     if store is None:
@@ -1758,12 +1783,15 @@ def _create_chat_run(
     config = {
         "history_mode": payload.history_mode,
         "skills_mode": payload.skills_mode,
+        "skill_ids": list(payload.skill_ids or ()),
         "use_agent": payload.use_agent,
         "temperature": payload.temperature,
         "max_tokens": payload.max_tokens,
         "kb_ids": payload.kb_ids,
         "top_k": payload.top_k,
         "relevance_threshold": payload.relevance_threshold,
+        "approved_plan_id": payload.approved_plan_id,
+        "long_term_memory": long_term_memory,
         "principal_id": principal_id,
     }
     try:
@@ -1794,7 +1822,12 @@ def _require_resume_run(
     decision: str,
     call_id: str | None,
 ) -> dict[str, Any]:
-    """Validate that a HITL resume targets the live paused run of this session."""
+    """Validate that a HITL resume targets a run of this session.
+
+    ``interrupted`` is accepted here because a restart turns a paused run into
+    an interrupted one; the caller still has to prove a persisted pending
+    approval and rebuild the request snapshot before any checkpoint is touched.
+    """
     if store is None:
         raise HTTPException(
             status_code=503,
@@ -1826,7 +1859,10 @@ def _require_resume_run(
                 },
             },
         )
-    if run.get("status") not in run_events.ACTIVE_RUN_STATUSES:
+    if (
+        run.get("status") not in run_events.ACTIVE_RUN_STATUSES
+        and run.get("status") != run_events.RUN_STATUS_INTERRUPTED
+    ):
         raise HTTPException(
             status_code=409,
             detail={
@@ -1883,6 +1919,189 @@ def _consume_resume_approvals(
             },
         )
     return consumed
+
+
+_RESUME_IDENTITY_FIELDS = (
+    "session_id",
+    "permission_mode",
+    "kb_ids",
+    "top_k",
+    "relevance_threshold",
+    "skills_mode",
+    "skill_ids",
+    "use_agent",
+    "history_mode",
+    "approved_plan_id",
+)
+
+
+def _run_config(run: Mapping[str, Any]) -> dict[str, Any]:
+    raw = run.get("config_json")
+    if isinstance(raw, str):
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        return value if isinstance(value, dict) else {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _persisted_registry_provider(snapshot: AgentRequestSnapshot):
+    """Capture request-local evidence alongside the persisted request snapshot."""
+
+    def provider() -> dict[str, Any] | None:
+        context = snapshot.tool_context
+        if context is None:
+            return None
+        try:
+            from src.agent.tools.groups.retrieval.source_registry import (
+                get_context_source_registry,
+            )
+
+            return {
+                "rag_source_registry_snapshot": get_context_source_registry(
+                    context,
+                ).to_snapshot(),
+            }
+        except Exception:
+            logger.warning("request-local source registry snapshot failed", exc_info=True)
+            return None
+
+    return provider
+
+
+def _restore_request_snapshot_from_run(
+    run_store: Any,
+    run: Mapping[str, Any],
+    payload: ChatRequest,
+    user: dict,
+) -> AgentRequestSnapshot | None:
+    """Rebuild a paused request after a restart from persisted state only.
+
+    Fails closed when the incoming configuration no longer matches the stored
+    snapshot, when the principal differs, when the request epochs changed, or
+    when the persisted source registry cannot be reconstructed.
+    """
+    run_id = run.get("id")
+    if not isinstance(run_id, str):
+        return None
+    try:
+        stored = run_store.get_latest_request_snapshot(run_id)
+    except Exception:
+        logger.warning("request snapshot read failed run=%s", run_id, exc_info=True)
+        return None
+    if stored is None:
+        return None
+    if run_events.approval_is_expired(stored):
+        logger.warning("resume request snapshot expired run=%s", run_id)
+        return None
+    raw = stored.get("payload_json")
+    try:
+        stored_payload = json.loads(raw) if isinstance(raw, str) else raw
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(stored_payload, dict):
+        return None
+
+    incoming = _sanitized_run_request(payload)
+    for field in _RESUME_IDENTITY_FIELDS:
+        if stored_payload.get(field) != incoming.get(field):
+            logger.warning("resume payload mismatch field=%s run=%s", field, run_id)
+            return None
+
+    config = _run_config(run)
+    principal_id = _verified_principal_id(user)
+    if config.get("principal_id") != principal_id:
+        logger.warning("resume principal mismatch run=%s", run_id)
+        return None
+
+    try:
+        session_epoch, memory_epoch = _capture_request_snapshot_epochs(payload.session_id)
+    except _RequestSnapshotEpochError:
+        return None
+    stored_epochs = stored_payload.get("_recovery_epochs")
+    if (
+        not isinstance(stored_epochs, Mapping)
+        or stored_epochs.get("session_delete") != session_epoch
+        or stored_epochs.get("memory_clear") != memory_epoch
+    ):
+        # A snapshot that crossed session deletion or a memory clear cannot be
+        # used to continue the paused request; never guess the new generation.
+        logger.warning("resume epoch fence mismatch run=%s", run_id)
+        return None
+    memory = config.get("long_term_memory")
+    if not isinstance(memory, str):
+        try:
+            memory = resolve_long_term_memory(payload)
+        except Exception:
+            return None
+
+    snapshot = _request_snapshot_from_payload(
+        payload,
+        memory,
+        session_delete_epoch=session_epoch,
+        memory_clear_epoch=memory_epoch,
+    )
+    snapshot = replace(
+        snapshot,
+        principal_id=principal_id,
+        session_id=_session_memory_key(payload.session_id),
+        business_session_id=_session_memory_key(payload.session_id),
+        principal_hash=compaction_principal(user),
+        run_id=run_id,
+    )
+    request_scope = make_compaction_scope(user, payload.session_id, session_epoch)
+    snapshot = replace(
+        snapshot,
+        context_event_scope=request_scope,
+        tool_event_scope=request_scope,
+    )
+    try:
+        snapshot = _ensure_skills_runtime(snapshot)
+    except Exception:
+        logger.warning(
+            "resume skills runtime could not be rebuilt run=%s", run_id, exc_info=True,
+        )
+        return None
+    snapshot = _ensure_request_tool_context(snapshot, payload, payload.session_id)
+    if snapshot.tool_context is None:
+        return None
+
+    registry_snapshot = stored_payload.get("rag_source_registry_snapshot")
+    if not isinstance(registry_snapshot, Mapping):
+        # Without the request-local registry the resumed tool call could
+        # renumber or lose evidence; refuse instead of guessing.
+        logger.warning("resume source registry missing run=%s", run_id)
+        return None
+    try:
+        from src.agent.tools.groups.retrieval.source_registry import RagSourceRegistry
+
+        registry = RagSourceRegistry.from_snapshot(registry_snapshot)
+    except Exception:
+        logger.warning("resume source registry is invalid run=%s", run_id, exc_info=True)
+        return None
+    snapshot.tool_context.rag_source_registry = registry
+    snapshot.tool_context.source_counter = registry.next_id - 1
+    snapshot = replace(snapshot, rag_source_registry_snapshot=registry.to_snapshot())
+
+    try:
+        pending = run_store.list_pending_approvals(
+            run_id, status=run_events.APPROVAL_STATUS_PENDING,
+        )
+    except Exception:
+        return None
+    snapshot = replace(
+        snapshot,
+        pending_call_ids=tuple(
+            row["call_id"] for row in pending
+            if isinstance(row.get("call_id"), str)
+            and not run_events.approval_is_expired(row)
+        ),
+    )
+    stored_snapshot = _store_pending_request_snapshot(payload.session_id, snapshot)
+    if stored_snapshot is None:
+        return None
+    return _get_pending_request_snapshot(payload.session_id) or stored_snapshot
 
 
 # ═══════════════════════════════════════════
@@ -2169,6 +2388,7 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
         )
     run_id = _create_chat_run(
         run_store, payload, model, run_session_id, run_principal_id,
+        long_term_memory=long_term_memory,
     )
     request_snapshot = replace(request_snapshot, run_id=run_id)
     if request_snapshot.tool_context is not None:
@@ -2183,7 +2403,7 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
             first_execution = False
         if first_execution:
             seeded_todos = _seed_plan_todos(run_session_id, approved_plan)
-    run_request_snapshot = _sanitized_run_request(payload)
+    run_request_snapshot = _persisted_run_request(payload, request_snapshot)
 
     async def event_generator():
         """SSE 流式生成器，带 CancelledError 处理 + idle timeout + finally 清理。"""
@@ -2593,19 +2813,36 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
 
         finally:
             logger.debug("SSE 流结束，资源已释放")
-    async def persisted_event_generator():
-        async for frame in run_events.stream_with_persistence(
+    # The run is owned by the server: start it before the response is
+    # returned, and serve this client (and any reconnect) from the persisted
+    # ledger. A client disconnect only removes a subscriber.
+    run_created = run_store is not None and _run_exists(run_store, run_id)
+    if run_created:
+        run_events.start_run_task(
             event_generator(),
             store=run_store,
             run_id=run_id,
             principal_id=run_principal_id,
             session_id=run_session_id,
             request_snapshot=run_request_snapshot,
-        ):
-            yield frame
+            snapshot_provider=_persisted_registry_provider(request_snapshot),
+            emit_started=True,
+        )
+        stream = run_events.iterate_run_events(run_id, 0, store=run_store)
+    else:
+        # Degraded path: persistence failed, so there is nothing to reconnect
+        # to. Keep the legacy inline stream so the user still gets an answer.
+        stream = run_events.stream_with_persistence(
+            event_generator(),
+            store=None,
+            run_id=run_id,
+            principal_id=run_principal_id,
+            session_id=run_session_id,
+            request_snapshot=run_request_snapshot,
+        )
 
     return StreamingResponse(
-        persisted_event_generator(),
+        stream,
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -2666,10 +2903,64 @@ async def resume_agent(req: ResumeRequest, request: Request, user: dict = Depend
         return {"error": "Agent path unavailable"}
     session_id = _session_memory_key(req.payload.session_id)
     run_store = _resolve_run_store()
+    run: dict[str, Any] | None = None
+    is_restart_resume = False
     if req.run_id is not None:
-        _require_resume_run(
+        run = _require_resume_run(
             run_store, req.run_id, session_id, req.decision, req.call_id,
         )
+        is_restart_resume = run.get("status") == run_events.RUN_STATUS_INTERRUPTED
+        if is_restart_resume:
+            # Same verdict the run detail endpoint exposes: a run with an
+            # unpaired side-effecting call must not be resumed through any
+            # route, even if a pending approval exists for another call.
+            verdict = classify_run_resume(run_store, run)
+            if verdict.get("mode") != "hitl_approval":
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "success": False,
+                        "error": {
+                            "code": "RESUME_NEEDS_REVIEW",
+                            "message": verdict.get("reason")
+                            or "该运行没有可安全恢复的断点，禁止自动重放。",
+                        },
+                        "resume": verdict,
+                    },
+                )
+            # Only a persisted, unexpired approval proves the checkpoint is a
+            # safe pause. No approval means the crash happened elsewhere and
+            # the tool outcome may be unknown -> never replay automatically.
+            pending = run_store.list_pending_approvals(
+                req.run_id, status=run_events.APPROVAL_STATUS_PENDING,
+            )
+            pending_calls = {
+                row.get("call_id") for row in pending
+                if isinstance(row.get("call_id"), str)
+                and not run_events.approval_is_expired(row)
+            }
+            if not pending_calls:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "success": False,
+                        "error": {
+                            "code": "RESUME_NEEDS_REVIEW",
+                            "message": "该运行没有可恢复的待确认操作，请人工核对后重新发起。",
+                        },
+                    },
+                )
+            if req.decision == "allow" and req.call_id not in pending_calls:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "success": False,
+                        "error": {
+                            "code": "HITL_CONFIRMATION_STALE",
+                            "message": "确认已失效或不属于该暂停请求。",
+                        },
+                    },
+                )
     try:
         pinned_session_epoch, pinned_memory_epoch = _capture_request_snapshot_epochs(
             req.payload.session_id,
@@ -2687,12 +2978,27 @@ async def resume_agent(req: ResumeRequest, request: Request, user: dict = Depend
             },
         ) from exc
     request_snapshot = _get_pending_request_snapshot(session_id)
+    if request_snapshot is None and is_restart_resume and run is not None:
+        request_snapshot = _restore_request_snapshot_from_run(
+            run_store, run, req.payload, user,
+        )
     if (
         request_snapshot is None
         or request_snapshot.session_delete_epoch != pinned_session_epoch
         or request_snapshot.memory_clear_epoch != pinned_memory_epoch
     ):
         _clear_pending_request_snapshot(session_id)
+        if is_restart_resume:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "success": False,
+                    "error": {
+                        "code": "RESUME_SNAPSHOT_UNAVAILABLE",
+                        "message": "重启后无法从持久快照重建该请求，请人工核对后重新发起。",
+                    },
+                },
+            )
         raise HTTPException(
             status_code=409,
             detail={
@@ -2861,6 +3167,8 @@ async def resume_agent(req: ResumeRequest, request: Request, user: dict = Depend
 
     lease_transferred = False
     lease_release_state = {"released": False}
+    claimed_restart = False
+    resume_registered = False
     try:
         authorization = getattr(request_snapshot.tool_context, "mcp_authorization", None)
         if authorization is not None:
@@ -2909,17 +3217,72 @@ async def resume_agent(req: ResumeRequest, request: Request, user: dict = Depend
         from starlette.background import BackgroundTask
 
         if req.run_id is not None:
-            _consume_resume_approvals(
+            # The burst guard is taken only once validation passed, so a user
+            # retrying after a stale-confirmation error is not blocked.
+            if not run_events.get_run_control().begin_resume(req.run_id):
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "success": False,
+                        "error": {
+                            "code": "RUN_RESUME_IN_PROGRESS",
+                            "message": "该运行正在恢复中，请勿重复提交。",
+                        },
+                    },
+                )
+            resume_registered = True
+            if is_restart_resume:
+                # Atomic transition: two concurrent resumes cannot both claim
+                # the interrupted run.
+                claimed = run_store.claim_run_status(
+                    req.run_id,
+                    expected_status=run_events.RUN_STATUS_INTERRUPTED,
+                    status=run_events.RUN_STATUS_RUNNING,
+                )
+                if claimed is None:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "success": False,
+                            "error": {
+                                "code": "RUN_RESUME_CONFLICT",
+                                "message": "该运行已被其他恢复请求使用，请刷新后重试。",
+                            },
+                        },
+                    )
+                claimed_restart = True
+            consumed = _consume_resume_approvals(
                 run_store, req.run_id, req.decision, req.call_id,
             )
+            run_events.append_approval_decisions(
+                run_store, req.run_id, consumed, decision=req.decision,
+            )
+            if not is_restart_resume:
+                try:
+                    run_store.update_run_status(
+                        req.run_id, run_events.RUN_STATUS_RUNNING,
+                        error_code=None, error_message=None,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Run resume status update failed run=%s", req.run_id, exc_info=True,
+                    )
             try:
-                run_store.update_run_status(
-                    req.run_id, run_events.RUN_STATUS_RUNNING,
-                    error_code=None, error_message=None,
+                observed = await agent.aget_state(config)
+                observed_config = getattr(observed, "config", None)
+                configurable = (
+                    observed_config.get("configurable")
+                    if isinstance(observed_config, dict) else None
                 )
+                checkpoint_id = (
+                    configurable.get("checkpoint_id")
+                    if isinstance(configurable, dict) else None
+                )
+                if isinstance(checkpoint_id, str) and checkpoint_id:
+                    run_store.update_run_checkpoint(req.run_id, checkpoint_id)
             except Exception:
-                logger.warning(
-                    "Run resume status update failed run=%s", req.run_id, exc_info=True,
+                logger.debug(
+                    "Run checkpoint could not be recorded run=%s", req.run_id, exc_info=True,
                 )
 
         resume_stream = _resume_event_generator(
@@ -2928,33 +3291,71 @@ async def resume_agent(req: ResumeRequest, request: Request, user: dict = Depend
             writer_binding, writer_lease, lease_release_state,
             authenticated_user=user,
         )
+        headers = {"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
         if req.run_id is not None:
-            resume_stream = run_events.stream_with_persistence(
+            headers["X-Run-Id"] = req.run_id
+
+            async def _finish_resume_run() -> None:
+                try:
+                    await _release_request_writer_lease_with_recovery(
+                        writer_binding, writer_lease, lease_release_state,
+                    )
+                finally:
+                    run_events.get_run_control().end_resume(req.run_id)
+
+            # Server-owned resume: the HTTP response is only a subscriber, so a
+            # disconnect cannot abort the resumed checkpoint or leak its lease.
+            run_events.start_run_task(
                 resume_stream,
                 store=run_store,
                 run_id=req.run_id,
                 principal_id=request_snapshot.principal_id,
                 session_id=session_id,
+                request_snapshot=_persisted_run_request(req.payload, request_snapshot),
+                snapshot_provider=_persisted_registry_provider(request_snapshot),
                 emit_started=False,
+                on_finished=_finish_resume_run,
             )
-        headers = {"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
-        if req.run_id is not None:
-            headers["X-Run-Id"] = req.run_id
-        response = StreamingResponse(
-            resume_stream,
-            media_type="text/event-stream",
-            headers=headers,
-            background=BackgroundTask(
-                _release_request_writer_lease_with_recovery,
-                writer_binding,
-                writer_lease,
-                lease_release_state,
-            ),
-        )
+            response = StreamingResponse(
+                run_events.iterate_run_events(req.run_id, 0, store=run_store),
+                media_type="text/event-stream",
+                headers=headers,
+            )
+        else:
+            response = StreamingResponse(
+                resume_stream,
+                media_type="text/event-stream",
+                headers=headers,
+                background=BackgroundTask(
+                    _release_request_writer_lease_with_recovery,
+                    writer_binding,
+                    writer_lease,
+                    lease_release_state,
+                ),
+            )
         lease_transferred = True
         return response
+    except BaseException:
+        if resume_registered:
+            run_events.get_run_control().end_resume(req.run_id)
+        if claimed_restart:
+            try:
+                run_store.update_run_status(
+                    req.run_id,
+                    run_events.RUN_STATUS_INTERRUPTED,
+                    error_code=run_events.INTERRUPTED_ERROR_CODE,
+                    error_message="resume failed before streaming",
+                )
+            except Exception:
+                logger.warning(
+                    "Run resume claim could not be reverted run=%s",
+                    req.run_id, exc_info=True,
+                )
+        raise
     finally:
         if not lease_transferred:
+            if resume_registered:
+                run_events.get_run_control().end_resume(req.run_id)
             await _release_request_writer_lease_with_recovery(
                 writer_binding, writer_lease,
             )
