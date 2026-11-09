@@ -390,11 +390,6 @@ export function ChatArea() {
           >
             {(pagedHistoryStatus?.pagesLoaded ?? 0) > 0 ? "加载更早的消息" : "加载历史分页"}
           </button>
-          {(pagedHistoryStatus?.pagesLoaded ?? 0) === 0 && (
-            <span>历史按页读取；读取最新一页后，可逐页加载更早消息。</span>
-          )}
-          {isLoadingMessages && <span role="status" aria-live="polite">会话正在恢复，稍后可加载分页历史。</span>}
-          {isActiveSessionStreaming && <span role="status" aria-live="polite">回复生成中，完成后可加载分页历史。</span>}
         </>
       )}
       {pagedHistoryStatus?.persistenceError && (

@@ -286,10 +286,10 @@ const ToolStep = memo(function ToolStep({ step, running, activityDone }: { step:
         {isPending ? (
           <>
             <span className="tool-spinner" />
-            {step.startTime ? <span className="tool-duration">已耗时 {(elapsed / 1000).toFixed(1)}s</span> : null}
+            {step.startTime ? <span className="tool-duration">已耗时 {formatDuration(elapsed)}</span> : null}
           </>
         ) : (
-          <span className="tool-duration">耗时 {((step.duration || 0) / 1000).toFixed(1)}s</span>
+          <span className="tool-duration">耗时 {formatDuration(step.duration || 0)}</span>
         )}
         {stepStatus === 'running' ? <span className="tool-spinner" /> : null}
         {step.risk_level ? (

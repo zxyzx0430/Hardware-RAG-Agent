@@ -1969,7 +1969,7 @@ function _finalizeChatStream(sessionId: string, terminal: ChatTerminalState, sta
   } else if (cancelledRun) {
     getLog()("info", "chat", "运行已取消");
   } else {
-    getLog()("ok", "chat", `回答完成 (${(durationMs / 1000).toFixed(1)}s)${usage ? ` tokens=${usage.totalTokens}` : ''}`);
+    getLog()("ok", "chat", `回答完成 (${Math.round(durationMs)}ms)${usage ? ` tokens=${usage.totalTokens}` : ''}`);
   }
 
   useChatStore.setState((s) => {
