@@ -1077,7 +1077,12 @@ function _patchRunView(sessionId: string, patch: Partial<RunView>): void {
   });
 }
 
-function _setRunViewTerminal(sessionId: string, status: RunStatus, errorMessage?: string | null): void {
+function _setRunViewTerminal(
+  sessionId: string,
+  status: RunStatus,
+  errorMessage?: string | null,
+  finishedAt?: number,
+): void {
   useChatStore.setState((state) => {
     const view = state.runViewBySession[sessionId];
     if (!view) return {};
@@ -1088,7 +1093,7 @@ function _setRunViewTerminal(sessionId: string, status: RunStatus, errorMessage?
           ...view,
           status,
           phase: "terminal",
-          finishedAt: view.finishedAt ?? Date.now(),
+          finishedAt: finishedAt ?? view.finishedAt ?? Date.now(),
           errorMessage: errorMessage ?? view.errorMessage,
           actionPending: false,
         },
@@ -1261,12 +1266,14 @@ function _applyRunStateToView(
   useChatStore.setState((s) => {
     const previousView = s.runViewBySession[sessionId];
     const sameRun = previousView?.runId === runId;
+    const backendStartedAt = _parseIsoTime(runState.started_at);
+    const backendFinishedAt = _parseIsoTime(runState.finished_at);
     const view: RunView = {
       ...(sameRun ? previousView : _emptyRunView(runId, runState.status, effectivePhase)),
       status: runState.status,
       phase: effectivePhase,
-      startedAt: _parseIsoTime(runState.started_at) ?? (sameRun ? previousView.startedAt : null),
-      finishedAt: _parseIsoTime(runState.finished_at),
+      startedAt: sameRun ? (previousView.startedAt ?? backendStartedAt) : backendStartedAt,
+      finishedAt: sameRun ? (previousView.finishedAt ?? backendFinishedAt) : backendFinishedAt,
       lastEventSeq: runState.last_event_seq ?? (sameRun ? previousView.lastEventSeq : null),
       checkpointId: runState.checkpoint_id ?? null,
       errorCode: runState.error_code ?? null,
@@ -1418,7 +1425,7 @@ function _recordRunEventView(sessionId: string, event: ChatSSEEvent, seq: number
         [sessionId]: {
           ...base,
           runId,
-          startedAt: base.startedAt ?? Date.now(),
+          startedAt: base.startedAt ?? useChatStore.getState().streamingStartTime ?? Date.now(),
           ...(status ? { status } : {}),
           phase: _isLiveRunStatus(effectiveStatus) ? "live" : base.phase,
           lastEventType: event.type,
@@ -1960,7 +1967,8 @@ function _finalizeChatStream(sessionId: string, terminal: ChatTerminalState, sta
 
   const awaitingConfirmation = terminal.outcome === "awaiting_confirmation";
   const cancelledRun = terminal.outcome === "cancelled";
-  const durationMs = Date.now() - startTime;
+  const finishedAt = Date.now();
+  const durationMs = finishedAt - startTime;
   const usage = useChatStore.getState()._pendingUsage;
   const finalMsgId = useChatStore.getState().messages[useChatStore.getState().messages.length - 1]?.id ?? '';
   console.info('[ChatStore] stream_done session=%s msg_id=%s', sessionId, finalMsgId);
@@ -2109,6 +2117,7 @@ function _finalizeChatStream(sessionId: string, terminal: ChatTerminalState, sta
       sessionId,
       viewStatus === "interrupted" ? "interrupted" : cancelledRun ? "cancelled" : "completed",
       null,
+      finishedAt,
     );
   }
 
@@ -3932,6 +3941,7 @@ export const useChatStore = create<ChatState>((set, get) => {
   },
 
   sendMessage: async (content, attachments, quoted, skills, options) => {
+    const turnStartedAt = Date.now();
     const initialState = get();
     let { messages, activeSessionId } = initialState;
     const { isStreaming, selectedKbIds, kbScopeIssue } = initialState;
@@ -4092,7 +4102,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         // A new turn starts from the persisted list until its own todo_update arrives.
         streamingTodosSeen: { ...state.streamingTodosSeen, [activeSessionId]: false },
         streamingSessionId: activeSessionId,
-        streamingStartTime: Date.now(),
+        streamingStartTime: turnStartedAt,
         _pendingUsage: null,
         sessionMessages,
       };
@@ -4154,7 +4164,7 @@ export const useChatStore = create<ChatState>((set, get) => {
       },
     };
 
-    const startTime = Date.now();
+    const startTime = turnStartedAt;
     // ★ 关键：捕获发起请求时的 sessionId，回调中始终使用此 ID
     const requestSessionId = activeSessionId;
     // v2-T4: cache payload for the resume API (HITL confirm flow)
@@ -4228,7 +4238,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         onError: (err) => _failChatStream(requestSessionId, terminal, err),
       }, controller, {
         reconnect: { maxAttempts: 5 },
-        onRunId: (runId) => _beginActiveRun(requestSessionId, runId),
+        onRunId: (runId) => _beginActiveRun(requestSessionId, runId, "running", startTime),
       });
     };
 
