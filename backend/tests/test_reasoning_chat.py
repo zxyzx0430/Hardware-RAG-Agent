@@ -193,3 +193,18 @@ class TestReasoningChatOpenAIOverride:
         assert "ChatGenerationChunk" in sub_ret, (
             f"Override return annotation lost ChatGenerationChunk: {sub_ret}"
         )
+
+
+def test_agent_factory_passes_reasoning_effort_to_chat_model():
+    from src.agent.agent_factory import _build_llm as build_agent_llm
+
+    llm = build_agent_llm(
+        model="glm",
+        api_key="sk-test-key-not-real",
+        base_url="https://fake.example.com/v1",
+        temperature=0.2,
+        max_tokens=1024,
+        reasoning_effort="high",
+    )
+
+    assert llm.reasoning_effort == "high"

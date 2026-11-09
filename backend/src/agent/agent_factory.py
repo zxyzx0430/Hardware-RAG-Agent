@@ -105,6 +105,7 @@ class AgentConfig:
     session_id: str = ""
     plan_mode: bool = False
     approved_plan_text: str = ""
+    reasoning_effort: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,10 +166,14 @@ async def create_hardware_agent_from_config(config: AgentConfig) -> Any:
         started_at=build_started_at,
     )
     try:
+        llm_kwargs: dict[str, Any] = {}
+        if config.reasoning_effort is not None:
+            llm_kwargs["reasoning_effort"] = config.reasoning_effort
         llm = _build_llm(
             config.model, config.api_key, config.base_url,
             config.temperature, config.max_tokens,
             config.context_window_override,
+            **llm_kwargs,
         )
         interrupt_before = ["tools"] if config.enable_hitl else []
         try:
@@ -299,6 +304,7 @@ async def create_hardware_agent(
     session_id: str = "",
     plan_mode: bool = False,
     approved_plan_text: str = "",
+    reasoning_effort: str | None = None,
 ) -> Any:
     """Backward-compat shim around create_hardware_agent_from_config (P2-I-1).
 
@@ -315,6 +321,7 @@ async def create_hardware_agent(
         skills_catalog=skills_catalog or [],
         skills_context=skills_context or [],
         context_window_override=context_window_override,
+        reasoning_effort=reasoning_effort,
         user_query=user_query,
         session_id=session_id,
         plan_mode=plan_mode,
@@ -1217,6 +1224,7 @@ def _build_llm(
     model: str, api_key: str, base_url: str,
     temperature: float, max_tokens: int,
     context_window_override: int | None = None,
+    reasoning_effort: str | None = None,
 ) -> Any:
     """Wrap OpenAI-compatible endpoint as ReasoningChatOpenAI.
 
@@ -1231,6 +1239,7 @@ def _build_llm(
         temperature=temperature,
         max_completion_tokens=max_tokens,
         context_window_override=context_window_override,
+        reasoning_effort=reasoning_effort,
     )
 
 

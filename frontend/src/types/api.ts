@@ -1,6 +1,7 @@
 // API 请求/响应类型 — 保持与现有组件兼容的导出集合
 
 import type { SourceRef, ActivityBlock, ContentPart, TodoItem } from './session';
+import type { ReasoningMode } from './reasoning';
 import type { ProviderInfo } from './settings';
 import type { KBItem } from './kb';
 import type { SerialDevice } from './serial';
@@ -53,6 +54,7 @@ export interface ChatRequest {
   skills_mode?: 'off' | 'auto' | 'manual';
   skill_ids?: string[];
   permission_mode?: string;
+  reasoning_mode?: ReasoningMode;
   /** Execute an approved plan for this session; validated server-side. */
   approved_plan_id?: string;
   tool_keys?: Record<string, string>;

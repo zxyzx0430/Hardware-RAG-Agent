@@ -1,8 +1,12 @@
+import type { ReasoningMode } from './reasoning';
+
 export interface Session {
   id: string;
   title: string;
   preview: string;
   model: string;
+  /** Per-session reasoning effort. Missing/auto lets the model decide. */
+  reasoningMode?: ReasoningMode;
   /** 创建时间的 epoch 毫秒，用于动态计算 group 和显示时间 */
   createdAt: number;
   project: string;
@@ -114,6 +118,10 @@ export interface ActivityStep {
   file_path?: string;
   /** Safe, body-free provenance for the two read-only Skill tools. */
   skill_trace?: SkillTrace;
+  /** Synthetic waiting step that must become a final explanation if no reasoning arrives. */
+  placeholder?: boolean;
+  /** Requested per-turn reasoning mode, used to explain an empty thinking card. */
+  reasoningMode?: ReasoningMode;
 }
 
 export interface SourceRef {

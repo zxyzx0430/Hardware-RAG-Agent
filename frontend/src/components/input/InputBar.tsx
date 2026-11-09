@@ -10,6 +10,7 @@ import { useSkillsStore } from "../../stores/useSkillsStore";
 import { TemplatePanel } from "../shared/TemplatePanel";
 import { useI18n } from "../../i18n";
 import { buildModelGroups, filterModelGroups } from "../../utils/modelOptions";
+import { reasoningModesFor, reasoningLabel, type ReasoningMode } from "../../types/reasoning";
 import type { Attachment } from "../../types/api";
 
 type PermissionChoice = "manual" | "auto" | "plan" | "yolo";
@@ -88,6 +89,7 @@ export function InputBar() {
   const [showModelDropdown, setShowModelDropdown] = useState(false);
   const [modelQuery, setModelQuery] = useState("");
   const [showPermissionDropdown, setShowPermissionDropdown] = useState(false);
+  const [showReasoningDropdown, setShowReasoningDropdown] = useState(false);
   const [attachError, setAttachError] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const [textareaHeight, setTextareaHeight] = useState(loadInputHeight());
@@ -96,6 +98,8 @@ export function InputBar() {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const dropdownRef = useRef<HTMLDivElement | null>(null);
   const permissionDropdownRef = useRef<HTMLDivElement | null>(null);
+  const reasoningDropdownRef = useRef<HTMLDivElement | null>(null);
+  const capabilityRefreshAttemptedRef = useRef<Set<string>>(new Set());
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   // Ref mirror of attachments to read latest value inside async callbacks
   const attachmentsRef = useRef<Attachment[]>([]);
@@ -104,6 +108,7 @@ export function InputBar() {
 
   const { sendMessage, stopStreaming, isStreaming, activeSessionId, drafts, setDraft, clearDraft, sessionAttachments, setSessionAttachments, clearSessionAttachments, planMode, setPlanMode, leaveAgentPlanMode } = useChatStore();
   const { providers, chatProviderId, chatModel, setChatModel, permissionMode, updateSetting } = useSettingsStore();
+  const fetchProviderModels = useSettingsStore((s) => s.fetchProviderModels);
   const { sessions, updateSessionMeta } = useSessionStore();
   // 输入框文本从 store 草稿派生，切换会话自动响应
   const text = drafts[activeSessionId] || "";
@@ -112,6 +117,26 @@ export function InputBar() {
   // 模型优先从当前会话读取（各对话独立），回退到全局设置
   const currentSession = sessions.find((s) => s.id === activeSessionId);
   const model = currentSession?.model || chatModel;
+  const reasoningProvider = providers.find((p) => p.id === chatProviderId);
+  const reasoningCapability = reasoningProvider?.modelCapabilities?.[model];
+  const reasoningModes = reasoningModesFor(reasoningCapability);
+  const requestedReasoningMode = currentSession?.reasoningMode ?? "auto";
+  const selectedReasoningMode: ReasoningMode = reasoningModes.includes(requestedReasoningMode)
+    ? requestedReasoningMode
+    : "auto";
+  const reasoningText = reasoningLabel(selectedReasoningMode, lang);
+  const reasoningUnknown = reasoningCapability === undefined;
+  const reasoningUnsupported = reasoningCapability?.reasoning === false;
+
+  useEffect(() => {
+    if (typeof fetchProviderModels !== "function" || !chatProviderId || !model) return;
+    const provider = providers.find((item) => item.id === chatProviderId);
+    if (!provider?.verified || provider.models.length === 0) return;
+    if (Object.keys(provider.modelCapabilities || {}).length > 0) return;
+    if (capabilityRefreshAttemptedRef.current.has(chatProviderId)) return;
+    capabilityRefreshAttemptedRef.current.add(chatProviderId);
+    void fetchProviderModels(chatProviderId);
+  }, [chatProviderId, fetchProviderModels, model, providers]);
   const { quotedMsg, setQuotedMsg, templatePanelOpen, setTemplatePanelOpen } = useAppStore();
 
   // Keep ref in sync with attachments state for reading inside async callbacks
@@ -130,6 +155,7 @@ export function InputBar() {
 
   const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number } | null>(null);
   const [permissionDropdownPos, setPermissionDropdownPos] = useState<{ top: number; left: number } | null>(null);
+  const [reasoningDropdownPos, setReasoningDropdownPos] = useState<{ top: number; left: number } | null>(null);
 
   const selectedPermission: PermissionChoice = planMode
     ? "plan"
@@ -141,6 +167,21 @@ export function InputBar() {
   const permissionLabel = PERMISSION_OPTIONS.find(
     (option) => option.id === selectedPermission,
   )?.label ?? "manual";
+  const reasoningTitle = reasoningUnknown
+    ? (lang === "zh" ? "该模型未声明思考能力，选择显式模型后可调" : "Reasoning capability unknown; choose an explicit model to control it")
+    : reasoningUnsupported
+      ? (lang === "zh" ? "该模型不支持思考" : "This model does not support reasoning")
+      : reasoningCapability?.effortSupported
+        ? (lang === "zh" ? "切换本会话的思考强度" : "Change this session's reasoning effort")
+        : (lang === "zh" ? "该模型只支持自动思考" : "This model only supports automatic reasoning");
+
+  const chooseReasoning = (mode: ReasoningMode) => {
+    if (activeSessionId) {
+      updateSessionMeta(activeSessionId, { reasoningMode: mode });
+    }
+    setShowReasoningDropdown(false);
+  };
+
   const choosePermission = (choice: PermissionChoice) => {
     if (choice === "plan") {
       // Plan mode is request-scoped; the persisted permission mode stays untouched.
@@ -172,6 +213,9 @@ export function InputBar() {
       if (!permissionDropdownRef.current?.contains(e.target as Node)) {
         setShowPermissionDropdown(false);
       }
+      if (!reasoningDropdownRef.current?.contains(e.target as Node)) {
+        setShowReasoningDropdown(false);
+      }
     };
     document.addEventListener("click", onDocClick);
     return () => document.removeEventListener("click", onDocClick);
@@ -202,6 +246,19 @@ export function InputBar() {
       setPermissionDropdownPos(null);
     }
   }, [showPermissionDropdown]);
+
+  // 计算思考强度下拉菜单的 fixed 定位
+  useLayoutEffect(() => {
+    if (showReasoningDropdown && reasoningDropdownRef.current) {
+      const rect = reasoningDropdownRef.current.getBoundingClientRect();
+      setReasoningDropdownPos({
+        top: rect.top - 4,
+        left: rect.left,
+      });
+    } else {
+      setReasoningDropdownPos(null);
+    }
+  }, [showReasoningDropdown]);
 
   const handleInsertTemplate = useCallback((content: string) => {
     const prev = drafts[activeSessionId] || "";
@@ -522,6 +579,23 @@ export function InputBar() {
               </div>
 
               <div
+                className={`reasoning-selector${reasoningUnknown || reasoningUnsupported ? " muted" : ""}`}
+                id="reasoningSelector"
+                ref={reasoningDropdownRef}
+                title={reasoningTitle}
+                aria-label={reasoningTitle}
+                onClick={() => setShowReasoningDropdown((v) => !v)}
+              >
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                </svg>
+                <span className="reasoning-label">思考: {reasoningText}</span>
+                <svg className="reasoning-chevron" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <polyline points="6 9 12 15 18 9" />
+                </svg>
+              </div>
+
+              <div
                 className="permission-selector"
                 id="permissionSelector"
                 ref={permissionDropdownRef}
@@ -622,6 +696,63 @@ export function InputBar() {
                 </div>
               ))
             )}
+          </div>
+        </div>,
+        document.body,
+      )}
+
+      {/* 思考强度下拉菜单 — Portal 到 body，避免 overflow 裁剪 */}
+      {showReasoningDropdown && reasoningDropdownPos && createPortal(
+        <div
+          className="reasoning-dropdown"
+          id="reasoningDropdown"
+          style={{
+            position: "fixed",
+            bottom: "auto",
+            top: "auto",
+            left: reasoningDropdownPos.left,
+            maxHeight: Math.min(240, reasoningDropdownPos.top - 8),
+            overflowY: "auto",
+          }}
+          ref={(el) => {
+            if (el) {
+              const elRect = el.getBoundingClientRect();
+              el.style.top = `${reasoningDropdownPos.top - elRect.height - 4}px`;
+            }
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            {reasoningUnknown ? (
+              <div className="reasoning-note">
+                {lang === "zh"
+                  ? "组合模型未声明思考能力。选择显式模型后可切换强度。"
+                  : "This combo model does not declare reasoning capability. Choose an explicit model to control it."}
+              </div>
+            ) : reasoningUnsupported ? (
+              <div className="reasoning-note">
+                {lang === "zh" ? "该模型不支持思考。" : "This model does not support reasoning."}
+              </div>
+            ) : null}
+            {reasoningModes.map((mode) => (
+              <button
+                key={mode}
+                className={`reasoning-option${selectedReasoningMode === mode ? " selected" : ""}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  chooseReasoning(mode);
+                }}
+              >
+                <span className="reasoning-option-label">{reasoningLabel(mode, lang)}</span>
+                <span className="reasoning-option-desc">
+                  {mode === "auto"
+                    ? (lang === "zh" ? "由模型决定是否思考" : "Let the model decide")
+                    : (lang === "zh" ? `请求${reasoningLabel(mode, lang)}思考强度` : `Request ${reasoningLabel(mode, lang)} reasoning effort`)}
+                </span>
+              </button>
+            ))}
           </div>
         </div>,
         document.body,

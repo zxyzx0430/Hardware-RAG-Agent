@@ -27,7 +27,13 @@ const {
     apiSSEPaths: [] as string[],
     apiSSEBodies: [] as unknown[],
     operationOrder: [] as string[],
-    settingsValues: { topK: 5, relevanceThreshold: 0 },
+    settingsValues: {
+      topK: 5,
+      relevanceThreshold: 0,
+      providers: [] as Array<Record<string, unknown>>,
+      chatProviderId: "",
+      chatModel: "gpt-4o",
+    },
     newSessionMock: vi.fn(),
     sessionState,
     appState,
@@ -91,14 +97,11 @@ vi.mock("../utils/broadcast", () => ({
 vi.mock("../stores/useSettingsStore", () => ({
   useSettingsStore: {
     getState: () => ({
-      ...settingsValues,
       temperature: 0.2,
       systemPrompt: "",
       longTermMemory: "",
-      chatModel: "gpt-4o",
       maxTokens: 8192,
-      providers: [],
-      chatProviderId: "",
+      ...settingsValues,
       webSearchConfig: { apiKey: "", baseUrl: "" },
       resolveChatCreds: () => ({ providerId: "", model: "gpt-4o", baseUrl: "https://api.openai.com/v1", apiKey: "" }),
       resolveVisionCreds: () => ({ model: "", baseUrl: "", apiKey: "" }),
@@ -171,6 +174,8 @@ describe("useChatStore", () => {
     apiGetMock.mockReset().mockResolvedValue({ messages: [] });
     settingsValues.topK = 5;
     settingsValues.relevanceThreshold = 0;
+    settingsValues.providers = [];
+    settingsValues.chatProviderId = "";
     apiSSEPaths.length = 0;
     apiSSEBodies.length = 0;
     operationOrder.length = 0;
@@ -583,6 +588,76 @@ describe("useChatStore", () => {
       "s1",
       expect.objectContaining({ msgCount: expect.any(Number), preview: "你好" })
     ));
+  });
+
+  it("没有 thinking 事件时把占位卡改为模型没有返回思考信息", async () => {
+    const store = await importStore();
+    store.setState({ messages: [], sessionMessages: {}, activeSessionId: "s1", isStreaming: false });
+
+    store.getState().sendMessage("你好");
+    expect(store.getState().streamingSteps[0]).toMatchObject({
+      type: "thinking",
+      content: "模型正在思考...",
+    });
+
+    capturedCallbacks!.onEvent({ type: "text", content: "你好，有什么可以帮你？" });
+    capturedCallbacks!.onEvent({ type: "done", success: true });
+    capturedCallbacks!.onDone!();
+
+    const steps = store.getState().messages[1].activity?.steps ?? [];
+    expect(steps).toHaveLength(1);
+    expect(steps[0]).toMatchObject({
+      type: "thinking",
+      content: "模型没有返回思考信息",
+    });
+  });
+
+  it("sends the supported per-session reasoning mode", async () => {
+    const store = await importStore();
+    sessionState.sessions = [{
+      id: "s1",
+      title: "新对话",
+      model: "glm",
+      reasoningMode: "high",
+    }];
+    settingsValues.providers = [{
+      id: "provider-a",
+      modelCapabilities: {
+        glm: {
+          reasoning: true,
+          canDisable: true,
+          effortSupported: true,
+          efforts: ["low", "medium", "high"],
+          format: "zai",
+        },
+      },
+    }];
+    settingsValues.chatProviderId = "provider-a";
+    store.setState({ messages: [], sessionMessages: {}, activeSessionId: "s1", isStreaming: false });
+
+    store.getState().sendMessage("用高强度思考");
+
+    expect(apiSSEBodies[0]).toMatchObject({ reasoning_mode: "high" });
+  });
+
+  it("sends auto when the session mode is unsupported by the model", async () => {
+    const store = await importStore();
+    sessionState.sessions = [{
+      id: "s1",
+      title: "新对话",
+      model: "Text",
+      reasoningMode: "high",
+    }];
+    settingsValues.providers = [{
+      id: "provider-a",
+      modelCapabilities: {},
+    }];
+    settingsValues.chatProviderId = "provider-a";
+    store.setState({ messages: [], sessionMessages: {}, activeSessionId: "s1", isStreaming: false });
+
+    store.getState().sendMessage("你好");
+
+    expect(apiSSEBodies[0]).toMatchObject({ reasoning_mode: "auto" });
   });
 
   it("会话摘要更新失败不回滚已确认写入的消息状态", async () => {

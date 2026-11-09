@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { useLogStore } from "./useLogStore";
 import { useToastStore } from "./useToastStore";
 import { apiPost, apiGet, apiPut, apiPatch, apiDelete, getSessionToken, setSessionToken } from "../api/client";
+import { normalizeModelCapabilities, type ModelReasoningCapability } from "../types/reasoning";
 
 interface Skill { name: string; desc: string; enabled: boolean; group?: string; }
 interface MCPServer { id: string; name: string; command: string; status: string; tools: number; }
@@ -14,6 +15,8 @@ export interface ProviderConfig {
   apiKey: string;
   verified: boolean;
   models: string[];
+  /** Provider-declared reasoning capabilities, keyed by model id. */
+  modelCapabilities: Record<string, ModelReasoningCapability>;
 }
 
 interface SettingsState {
@@ -225,6 +228,12 @@ function loadPersistedDefaults(): Partial<typeof DEFAULTS> {
   if (picked.maxTokens && (picked.maxTokens as number) < 8192) {
     picked.maxTokens = 8192;
   }
+  if (Array.isArray(picked.providers)) {
+    picked.providers = (picked.providers as ProviderConfig[]).map((provider) => ({
+      ...provider,
+      modelCapabilities: provider.modelCapabilities ?? {},
+    }));
+  }
   return picked;
 }
 
@@ -269,6 +278,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       apiKey: apiKey.trim(),
       verified: false,
       models: [],
+      modelCapabilities: {},
     };
     set((s) => ({ providers: [...s.providers, provider] }));
     useLogStore.getState().log("info", "settings", `新增服务商: ${provider.name}`);
@@ -291,7 +301,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   updateProvider: (id, patch) => {
     set((s) => ({
       providers: s.providers.map((p) =>
-        p.id === id ? { ...p, ...patch, verified: false, models: [] } : p
+        p.id === id ? { ...p, ...patch, verified: false, models: [], modelCapabilities: {} } : p
       ),
     }));
   },
@@ -311,6 +321,11 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       const models = response && typeof response === "object" && "models" in response
         ? (response as { models?: unknown }).models
         : undefined;
+      const modelCapabilities = normalizeModelCapabilities(
+        response && typeof response === "object" && "capabilities" in response
+          ? (response as { capabilities?: unknown }).capabilities
+          : undefined,
+      );
       if (!Array.isArray(models)) {
         useLogStore.getState().log("error", "settings", "服务商验证失败 (unknown)");
         return { ok: false, kind: "unknown" };
@@ -326,7 +341,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       const verifiedModels = models as string[];
       set((s) => ({
         providers: s.providers.map((p) =>
-          p.id === id ? { ...p, verified: true, models: verifiedModels } : p
+          p.id === id ? { ...p, verified: true, models: verifiedModels, modelCapabilities } : p
         ),
       }));
         // 加密存储 API Key 到后端（fire-and-forget）。
@@ -423,11 +438,16 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         "X-Base-URL": provider.baseUrl,
         "X-Provider": id,
       };
-      const res = await apiPost<{ models: string[] }>("models", { base_url: provider.baseUrl }, 60_000, customHeaders);
+      const res = await apiPost<{ models: string[]; capabilities?: unknown }>(
+        "models", { base_url: provider.baseUrl }, 60_000, customHeaders,
+      );
       if (res.models && res.models.length > 0) {
+        const modelCapabilities = normalizeModelCapabilities(res.capabilities);
         set((s) => ({
           providers: s.providers.map((p) =>
-            p.id === id ? { ...p, models: res.models, verified: true } : p
+            p.id === id ? {
+              ...p, models: res.models, verified: true, modelCapabilities,
+            } : p
           ),
         }));
         return res.models;

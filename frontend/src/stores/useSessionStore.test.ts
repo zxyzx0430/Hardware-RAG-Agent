@@ -1,13 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { apiPostMock, setActiveSessionMock, setChatStateMock } = vi.hoisted(() => ({
+const { apiGetMock, apiPostMock, setActiveSessionMock, setChatStateMock } = vi.hoisted(() => ({
+  apiGetMock: vi.fn(),
   apiPostMock: vi.fn(),
   setActiveSessionMock: vi.fn(),
   setChatStateMock: vi.fn(),
 }));
 
 vi.mock("../api/client", () => ({
-  apiGet: vi.fn(),
+  apiGet: apiGetMock,
   apiPost: apiPostMock,
   apiPut: vi.fn(),
   apiPatch: vi.fn(),
@@ -47,9 +48,45 @@ async function loadSessionStore() {
 describe("useSessionStore.newSession", () => {
   beforeEach(() => {
     localStorage.clear();
+    apiGetMock.mockReset().mockResolvedValue({ sessions: [] });
     apiPostMock.mockReset().mockResolvedValue({ id: "server-session" });
     setActiveSessionMock.mockReset();
     setChatStateMock.mockReset();
+  });
+
+  it("preserves a local per-session reasoning mode when reloading sessions", async () => {
+    const store = await loadSessionStore();
+    store.setState({
+      sessions: [{
+        id: "s1",
+        title: "本地会话",
+        preview: "",
+        model: "glm",
+        reasoningMode: "high",
+        createdAt: Date.now(),
+        project: "",
+        pinned: false,
+        msgCount: 0,
+        contextWindow: 262144,
+      }],
+    });
+    apiGetMock.mockResolvedValueOnce({
+      sessions: [{
+        id: "s1",
+        title: "后端会话",
+        model: "glm",
+        project: "",
+        pinned: false,
+        msg_count: 0,
+        context_window: 262144,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }],
+    });
+
+    await store.getState().initSessions();
+
+    expect(store.getState().sessions[0].reasoningMode).toBe("high");
   });
 
   it("strict 创建失败时拒绝请求且不留下本地幽灵会话", async () => {

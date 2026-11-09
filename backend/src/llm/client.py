@@ -365,6 +365,7 @@ class LLMClient:
         base_url: Optional[str] = None,
         model: Optional[str] = None,
         provider: Optional[str] = None,
+        reasoning_effort: Optional[str] = None,
     ) -> AsyncGenerator[StreamChunk, None]:
         """
         流式对话调用，逐 token 产出内容，区分思考(reasoning)和正文(text)。
@@ -401,6 +402,8 @@ class LLMClient:
                     # OpenCode-compatible endpoints reject requests carrying max_tokens.
                     if "opencode" not in base:
                         create_kwargs["max_tokens"] = output_cap
+                    if reasoning_effort:
+                        create_kwargs["reasoning_effort"] = reasoning_effort
                     # Ollama 兼容：启用 think 模式（推理模型需要）
                     # 检测方式：显式 provider 优先，再兜底 base_url
                     resolved_provider = (provider or "").lower()
@@ -467,6 +470,48 @@ class LLMClient:
         async for chunk in _timeout_wrapper():
             yield chunk
 
+    async def list_model_catalog(
+        self,
+        timeout: float = 10.0,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        provider: Optional[str] = None,
+    ) -> List[dict[str, Any]]:
+        """Return model payloads including provider capabilities.
+
+        OpenAI-compatible providers may attach non-standard fields such as
+        ``capabilities`` to each model.  ``list_models`` intentionally returns
+        only IDs for old callers; this method preserves the full payload so the
+        UI can decide which reasoning controls a model actually supports.
+        """
+        runtime_client = self.client if not (api_key or base_url) else AsyncOpenAI(
+            api_key=api_key or self.api_key,
+            base_url=base_url or self.base_url,
+        )
+
+        async def _list():
+            resp = await runtime_client.models.list()
+            catalog: list[dict[str, Any]] = []
+            for item in resp.data:
+                payload: dict[str, Any] = {}
+                dump = getattr(item, "model_dump", None)
+                if callable(dump):
+                    dumped = dump()
+                    if type(dumped) is dict:
+                        payload = dumped
+                if not payload:
+                    payload = {"id": getattr(item, "id", None)}
+                catalog.append(payload)
+            return sorted(
+                catalog,
+                key=lambda entry: str(entry.get("id") or ""),
+            )
+
+        try:
+            return await asyncio.wait_for(self._with_retries(_list), timeout=timeout)
+        except Exception as e:
+            raise LLMError(f"无法获取模型列表：{e}") from e
+
     async def list_models(
         self,
         timeout: float = 10.0,
@@ -480,17 +525,14 @@ class LLMClient:
         这个能力是 Day 3 动态鉴权的延伸：不只是聊天能换 Key，
         连模型列表也必须跟着用户自己的 Key 走。
         """
-        # 模型列表和聊天请求一样，也要允许前端带自己的 key / base url。
-        runtime_client = self.client if not (api_key or base_url) else AsyncOpenAI(
-            api_key=api_key or self.api_key,
-            base_url=base_url or self.base_url,
+        catalog = await self.list_model_catalog(
+            timeout=timeout,
+            api_key=api_key,
+            base_url=base_url,
+            provider=provider,
         )
-
-        async def _list():
-            resp = await runtime_client.models.list()
-            return sorted([m.id for m in resp.data])
-
-        try:
-            return await asyncio.wait_for(self._with_retries(_list), timeout=timeout)
-        except Exception as e:
-            raise LLMError(f"无法获取模型列表：{e}") from e
+        return sorted(
+            str(entry["id"])
+            for entry in catalog
+            if isinstance(entry.get("id"), str) and entry["id"]
+        )

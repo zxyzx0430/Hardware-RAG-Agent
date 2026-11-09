@@ -935,6 +935,7 @@ class ChatRequest(BaseModel):
     # the request flows through the ReAct agent instead of the single-shot LLM stream.
     use_agent: bool = False
     permission_mode: Literal["bypassPermissions", "default", "acceptEdits", "yolo", "plan"] = "default"
+    reasoning_mode: Literal["auto", "off", "low", "medium", "high"] = "auto"
     approved_plan_id: Optional[str] = Field(default=None, max_length=128)
     tool_keys: dict[str, str] = {}  # per-request tool credentials, e.g. {"tavily": "..."}
     skills_mode: Literal["off", "auto", "manual"] = "off"
@@ -1424,6 +1425,30 @@ async def _check_and_compact_history(
         agent_input["messages"] = _langchain_messages_to_dicts(compacted)
 
 
+async def _resolve_reasoning_effort(payload: ChatRequest, creds: dict) -> str | None:
+    """Resolve a requested effort against the provider's model catalog."""
+    from src.llm.model_catalog import resolve_reasoning_effort
+
+    requested = getattr(payload, "reasoning_mode", "auto")
+    try:
+        applied = await resolve_reasoning_effort(
+            provider=creds.get("provider"),
+            base_url=creds.get("base_url"),
+            api_key=creds.get("api_key"),
+            model=creds.get("model") or "",
+            requested=requested,
+        )
+        if requested != "auto" or applied is not None:
+            logger.info(
+                "reasoning mode requested=%s applied=%s model=%s",
+                requested, applied or "auto", creds.get("model") or "",
+            )
+        return applied
+    except Exception:
+        logger.warning("reasoning effort resolution failed", exc_info=True)
+        return None
+
+
 async def _run_agent_stream(
     payload: ChatRequest,
     creds: dict,
@@ -1432,6 +1457,7 @@ async def _run_agent_stream(
     *,
     authenticated_user: dict | None = None,
     assembled_history: Any = None,
+    reasoning_effort: str | None = None,
 ) -> AsyncIterator[str]:
     """Build the agent and yield SSE events from its stream.
 
@@ -1471,6 +1497,7 @@ async def _run_agent_stream(
     agent = await _build_agent_for_payload(
         effective_payload, creds, resolved_memory, request_snapshot=snapshot,
         context_window_override=context_budget.effective_window,
+        reasoning_effort=reasoning_effort,
     )
     _require_request_snapshot_epochs_current(snapshot, payload.session_id)
     config = build_agent_config(session_id)
@@ -1631,6 +1658,7 @@ async def _build_agent_for_payload(
     long_term_memory: str | None = None,
     request_snapshot: AgentRequestSnapshot | None = None,
     context_window_override: int | None = None,
+    reasoning_effort: str | None = None,
 ):
     """Instantiate tools + the compiled ReAct agent for this request.
 
@@ -1697,6 +1725,7 @@ async def _build_agent_for_payload(
     _optional_arg(kwargs, "temperature", payload.temperature)
     _optional_arg(kwargs, "max_tokens", payload.max_tokens)
     _optional_arg(kwargs, "context_window_override", context_window_override)
+    _optional_arg(kwargs, "reasoning_effort", reasoning_effort)
     return await create_hardware_agent(**kwargs)
 
 
@@ -1790,6 +1819,7 @@ def _create_chat_run(
         "skills_mode": payload.skills_mode,
         "skill_ids": list(payload.skill_ids or ()),
         "use_agent": payload.use_agent,
+        "reasoning_mode": payload.reasoning_mode,
         "temperature": payload.temperature,
         "max_tokens": payload.max_tokens,
         "kb_ids": payload.kb_ids,
@@ -2454,6 +2484,13 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
                 api_key=api_key, base_url=base_url, model=model,
                 temperature=payload.temperature, max_tokens=payload.max_tokens,
             )
+            reasoning_effort = await _resolve_reasoning_effort(
+                payload,
+                {
+                    "api_key": api_key, "base_url": base_url,
+                    "model": model, "provider": provider,
+                },
+            )
 
             # === Agent 主路径（spec §2.2 / §10.1）===
             # 所有请求默认走 Agent；Agent 不可用时（langgraph 未装/模型不支持 tools）
@@ -2466,7 +2503,10 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
                     ModelEmptyResponseError,
                 )
 
-                creds = {"api_key": api_key, "base_url": base_url, "model": model}
+                creds = {
+                    "api_key": api_key, "base_url": base_url,
+                    "model": model, "provider": provider,
+                }
                 agent_text_seen = False
                 agent_saw_confirmation = False
                 agent_saw_error = False
@@ -2491,11 +2531,15 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
                             })
                             yield sse_event("done", {"success": False, "completed": False})
                             return
+                    agent_stream_kwargs: dict[str, Any] = {}
+                    if reasoning_effort:
+                        agent_stream_kwargs["reasoning_effort"] = reasoning_effort
                     async for sse in _run_agent_stream(
                         payload, creds, long_term_memory=long_term_memory,
                         request_snapshot=request_snapshot,
                         authenticated_user=user,
                         assembled_history=assembled_history,
+                        **agent_stream_kwargs,
                     ):
                         for frame in _sse_frames(sse):
                             event = _sse_frame_payload(frame)
@@ -2656,10 +2700,14 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
                     """后台任务：消费 LLM stream 并推入队列。"""
                     try:
                         _require_request_snapshot_epochs_current(request_snapshot, payload.session_id)
+                        fallback_stream_kwargs: dict[str, Any] = {}
+                        if reasoning_effort:
+                            fallback_stream_kwargs["reasoning_effort"] = reasoning_effort
                         async for chunk in client.chat_stream(
                             user_message=last_user_msg, system_prompt=system_prompt,
                             history=history if len(history) > 0 else None,
                             api_key=api_key, base_url=base_url, model=model, provider=provider,
+                            **fallback_stream_kwargs,
                         ):
                             await q.put(chunk)
                     except _asyncio.CancelledError:
@@ -3067,6 +3115,7 @@ async def resume_agent(req: ResumeRequest, request: Request, user: dict = Depend
     effective_payload = _payload_with_request_snapshot(req.payload, request_snapshot)
     effective_req = req.model_copy(update={"payload": effective_payload})
     creds = _resolve_creds(effective_payload, request)
+    reasoning_effort = await _resolve_reasoning_effort(effective_payload, creds)
     _require_resume_snapshot_current(request_snapshot, req.payload.session_id)
     from src.agent.context_guard import resolve_context_budget
 
@@ -3075,10 +3124,14 @@ async def resume_agent(req: ResumeRequest, request: Request, user: dict = Depend
         _session_context_window(req.payload.session_id),
         req.payload.max_tokens,
     )
+    build_kwargs: dict[str, Any] = {}
+    if reasoning_effort:
+        build_kwargs["reasoning_effort"] = reasoning_effort
     agent = await _build_agent_for_payload(
         effective_payload, creds, request_snapshot.long_term_memory,
         request_snapshot=request_snapshot,
         context_window_override=context_budget.effective_window,
+        **build_kwargs,
     )
     _require_resume_snapshot_current(request_snapshot, req.payload.session_id)
     config = build_agent_config(session_id)
@@ -3674,8 +3727,25 @@ async def list_models(payload: ModelsRequest, request: Request, user: dict = Dep
 
     client = LLMClient(api_key=api_key, base_url=base_url)
     try:
-        models = await client.list_models(api_key=api_key, base_url=base_url, provider=provider)
-        return {"success": True, "data": {"models": models or []}}
+        catalog = await client.list_model_catalog(
+            api_key=api_key, base_url=base_url, provider=provider,
+        )
+        models = sorted(
+            str(entry["id"])
+            for entry in catalog
+            if isinstance(entry.get("id"), str) and entry["id"]
+        )
+        from src.llm.model_catalog import normalize_catalog, remember_catalog
+
+        capabilities = normalize_catalog(catalog)
+        remember_catalog(
+            provider=provider, base_url=base_url, api_key=api_key,
+            catalog=capabilities,
+        )
+        return {
+            "success": True,
+            "data": {"models": models, "capabilities": capabilities},
+        }
     except LLMError as e:
         return {
             "success": False,

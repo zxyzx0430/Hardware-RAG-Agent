@@ -78,6 +78,7 @@ import {
   type InterruptedRunAssessment,
 } from "../utils/runRecovery";
 import { post, on } from "../utils/broadcast";
+import { reasoningModesFor, type ReasoningMode } from "../types/reasoning";
 import { useAppStore } from "./useAppStore";
 import { useSessionStore, CONTEXT_WINDOW_256K } from "./useSessionStore";
 import { apiSSE, apiPost, apiGet, apiDelete } from "../api/client";
@@ -87,6 +88,9 @@ import { useToastStore } from "./useToastStore";
 import { handleToolCallEvent, handleToolResultEvent, handleCompileLogEvent, handleProgressEvent } from "./useWorkbenchBridge";
 
 const DEFAULT_MODEL = "";
+const THINKING_PLACEHOLDER_TEXT = "模型正在思考...";
+const REASONING_MISSING_TEXT = "模型没有返回思考信息";
+const REASONING_OFF_TEXT = "思考已关闭";
 /** User-visible turn that starts executing an approved plan. */
 export const APPROVED_PLAN_EXECUTION_MESSAGE = "按照已批准的计划开始执行。";
 type KbScopeIssue = "corrupt" | "unavailable" | "repair" | "storage_error" | "verification_failed" | null;
@@ -985,15 +989,24 @@ function _hasContent(content: string | ContentPart[]): boolean {
 
 /** FIX-3: 将 pending steps 标记为 done 并补 duration，防止耗时无限累计。 */
 function _finalizePendingSteps(steps: ActivityStep[]): ActivityStep[] {
-  return steps.map((step) =>
-    step.status === "pending"
+  return steps.map((step) => {
+    const placeholder = step.type === "thinking"
+      && (step.placeholder === true || step.content === THINKING_PLACEHOLDER_TEXT);
+    const resolved = placeholder
       ? {
           ...step,
-          status: "done" as const,
-          duration: step.startTime ? Date.now() - step.startTime : step.duration,
+          content: step.reasoningMode === "off" ? REASONING_OFF_TEXT : REASONING_MISSING_TEXT,
+          placeholder: false,
         }
-      : step
-  );
+      : step;
+    return resolved.status === "pending"
+      ? {
+          ...resolved,
+          status: "done" as const,
+          duration: resolved.startTime ? Date.now() - resolved.startTime : resolved.duration,
+        }
+      : resolved;
+  });
 }
 
 /** 同步 messages 到 sessionMessages 并持久化 */
@@ -1603,8 +1616,11 @@ function _applyChatEvent(event: ChatSSEEvent, requestSessionId: string, terminal
         const lastStep = steps[steps.length - 1];
 
         // 占位 thinking 卡片（发送消息时预置）应被首个真实 thinking 事件替换，避免双卡。
-        if (lastStep && lastStep.type === "thinking" && lastStep.content === "模型正在思考...") {
-          steps[steps.length - 1] = { ...lastStep, content: thinkContent, source: thinkSource };
+        if (lastStep && lastStep.type === "thinking"
+            && (lastStep.placeholder === true || lastStep.content === THINKING_PLACEHOLDER_TEXT)) {
+          steps[steps.length - 1] = {
+            ...lastStep, content: thinkContent, source: thinkSource, placeholder: false,
+          };
         } else if (thinkSource === "reasoning") {
           if (lastStep && lastStep.type === "thinking" && lastStep.source === "llm") {
             steps[steps.length - 1] = { ...lastStep, content: thinkContent, source: "reasoning" };
@@ -4083,6 +4099,22 @@ export const useChatStore = create<ChatState>((set, get) => {
     // 立即同步到 sessionMessages
     saveSessionMessages(activeSessionId, nextMessages);
 
+    const currentSession = useSessionStore.getState().sessions.find((s) => s.id === activeSessionId);
+    const model = currentSession?.model || useSettingsStore.getState().chatModel;
+    const settingsForReasoning = useSettingsStore.getState();
+    const reasoningProviders = Array.isArray(settingsForReasoning.providers)
+      ? settingsForReasoning.providers
+      : [];
+    const reasoningProvider = reasoningProviders.find(
+      (provider) => provider.id === settingsForReasoning.chatProviderId,
+    );
+    const requestedReasoningMode = currentSession?.reasoningMode ?? "auto";
+    const reasoningMode: ReasoningMode = reasoningModesFor(
+      reasoningProvider?.modelCapabilities?.[model],
+    ).includes(requestedReasoningMode)
+      ? requestedReasoningMode
+      : "auto";
+
     set((state) => {
       const sessionMessages = { ...state.sessionMessages, [activeSessionId]: nextMessages };
       if (state.activeSessionId !== activeSessionId) return { sessionMessages };
@@ -4097,9 +4129,11 @@ export const useChatStore = create<ChatState>((set, get) => {
         streamingSteps: [{
           id: `h-${Date.now()}`,
           type: "thinking",
-          content: "模型正在思考...",
+          content: THINKING_PLACEHOLDER_TEXT,
           source: "reasoning",
           status: "running",
+          placeholder: true,
+          reasoningMode,
         }],
         streamingSources: [],
         streamingTodos: [],
@@ -4119,8 +4153,6 @@ export const useChatStore = create<ChatState>((set, get) => {
     // Plan mode is request-scoped: it maps to permission_mode "plan" for this
     // turn only and never touches the persisted settings value.
     const planMode = get().planMode;
-    const currentSession = useSessionStore.getState().sessions.find((s) => s.id === activeSessionId);
-    const model = currentSession?.model || useSettingsStore.getState().chatModel;
     getLog()("info", "chat", `model=${model} topK=${topK} maxTokens=${maxTokens} threshold=${relevanceThreshold} sessionId=${activeSessionId} systemPrompt="${systemPrompt?.slice(0, 50)}..."`);
     const history = messages.map((m) => ({ role: m.role, content: m.content, message_id: m.id }));
     const newMsg = { role: "user" as const, content: apiContent };
@@ -4154,6 +4186,7 @@ export const useChatStore = create<ChatState>((set, get) => {
       use_agent: true,
       skills_mode: skillsMode,
       permission_mode: planMode ? "plan" : permissionMode,
+      reasoning_mode: reasoningMode,
       ...(options?.approvedPlanId ? { approved_plan_id: options.approvedPlanId } : {}),
       tool_keys: {
         tavily: webSearchConfig.apiKey || "",

@@ -104,7 +104,6 @@ function migrateSession(s: unknown): Session {
   const model = base.model === "gpt-4o-mini" ? "" : base.model;
   return { ...base, contextWindow, model };
 }
-
 // ─── Store ───────────────────────────────────────────────────
 
 interface SessionState {
@@ -129,7 +128,7 @@ interface SessionState {
   deleteProject: (name: string) => void;
   setCreateProjectInputVisible: (visible: boolean) => void;
   /** 更新会话元数据（msgCount, preview, title, branchFromSessionId, branchFromMessageId 等） */
-  updateSessionMeta: (sessionId: string, updates: Partial<Pick<Session, "msgCount" | "preview" | "title" | "model" | "branchFromSessionId" | "branchFromMessageId" | "planModeRequested">>) => void;
+  updateSessionMeta: (sessionId: string, updates: Partial<Pick<Session, "msgCount" | "preview" | "title" | "model" | "reasoningMode" | "branchFromSessionId" | "branchFromMessageId" | "planModeRequested">>) => void;
   /** Update current session's context window budget (tokens) and PATCH backend. */
   setContextWindow: (window: number) => void;
 }
@@ -155,12 +154,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     try {
       const data = await apiGet<{ sessions: BackendSession[] }>("sessions");
       if (data?.sessions) {
+        const localById = new Map(get().sessions.map((session) => [session.id, session]));
         const sessions: Session[] = data.sessions.map((s) => ({
           id: s.id,
           title: s.title && s.title !== "新对话" ? cleanTitle(s.title) : getDefaultSessionTitle(),
           preview: "",
           // FIX-2: 迁移旧的硬编码默认 model "gpt-4o-mini" → ""，让 footer fallthrough 到全局 chatModel
           model: s.model === "gpt-4o-mini" ? "" : (s.model ?? DEFAULT_MODEL),
+          reasoningMode: localById.get(s.id)?.reasoningMode ?? "auto",
           createdAt: s.created_at ? new Date(s.created_at).getTime() : Date.now(),
           project: s.project ?? "",
           pinned: s.pinned ?? false,

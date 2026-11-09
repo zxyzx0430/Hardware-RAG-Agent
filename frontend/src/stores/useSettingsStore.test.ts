@@ -307,6 +307,7 @@ describe("provider verification outcomes", () => {
       apiKey: "secret-provider-key",
       verified: true,
       models: ["previous-model"],
+      modelCapabilities: {},
     };
     store.setState({ providers: [provider] });
     logMock.mockClear();
@@ -338,6 +339,7 @@ describe("provider verification outcomes", () => {
       apiKey: "secret-provider-key",
       verified: true,
       models: ["previous-model"],
+      modelCapabilities: {},
     };
     store.setState({ providers: [provider] });
     apiPostMock.mockResolvedValueOnce({ models: [] });

@@ -38,7 +38,19 @@ def test_models_endpoint_uses_request_headers():
     app = create_app()
     client = TestClient(app)
 
-    with patch("app.api.common.LLMClient.list_models", new=AsyncMock(return_value=["gpt-4o-mini"])) as mock_list:
+    with patch(
+        "app.api.common.LLMClient.list_model_catalog",
+        new=AsyncMock(return_value=[{
+            "id": "gpt-4o-mini",
+            "capabilities": {
+                "reasoning": True,
+                "thinkingFormat": "openai",
+                "thinkingCanDisable": True,
+                "thinkingEffortSupported": True,
+                "thinkingRange": None,
+            },
+        }]),
+    ) as mock_list:
         response = client.post(
             "/api/models",
             json={"base_url": "https://example.com/v1"},
@@ -49,6 +61,20 @@ def test_models_endpoint_uses_request_headers():
         )
 
     assert response.status_code == 200
-    assert response.json() == {"success": True, "data": {"models": ["gpt-4o-mini"]}}
+    assert response.json() == {
+        "success": True,
+        "data": {
+            "models": ["gpt-4o-mini"],
+            "capabilities": {
+                "gpt-4o-mini": {
+                    "reasoning": True,
+                    "can_disable": True,
+                    "effort_supported": True,
+                    "efforts": ["low", "medium", "high"],
+                    "format": "openai",
+                },
+            },
+        },
+    }
     assert mock_list.await_args.kwargs["api_key"] == "user-key"
     assert mock_list.await_args.kwargs["base_url"] == "https://example.com/v1"
