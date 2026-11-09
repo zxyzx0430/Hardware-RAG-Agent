@@ -31,10 +31,13 @@ from app.db import database
 from app.db.recovery_models import (
     APPROVAL_STATUSES,
     RUN_STATUSES,
+    TOOL_INVOCATION_STATUSES,
+    TOOL_SIDE_EFFECTS,
     PendingApproval,
     RequestSnapshot,
     Run,
     RunEvent,
+    ToolInvocation,
 )
 
 RUN_STATUS_RUNNING = "running"
@@ -63,6 +66,12 @@ APPROVAL_STATUS_EXPIRED = "expired"
 APPROVAL_DECISION_STATUSES = frozenset(
     {APPROVAL_STATUS_ALLOWED, APPROVAL_STATUS_DENIED, APPROVAL_STATUS_STOPPED}
 )
+
+TOOL_INVOCATION_STARTED = "started"
+TOOL_INVOCATION_SUCCEEDED = "succeeded"
+TOOL_INVOCATION_FAILED = "failed"
+TOOL_INVOCATION_UNKNOWN = "unknown"
+TOOL_INVOCATION_RETRYABLE_STATUSES = (TOOL_INVOCATION_STARTED, TOOL_INVOCATION_UNKNOWN)
 
 PROCESS_RESTART_ERROR_CODE = "PROCESS_RESTART"
 
@@ -169,6 +178,26 @@ class RequestSnapshotRecord:
     payload: Any
     created_at: _dt.datetime
     expires_at: _dt.datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class ToolInvocationRecord:
+    run_id: str
+    call_id: str
+    tool_name: str
+    args_hash: str
+    side_effect: str
+    target: str | None
+    status: str
+    attempts: int
+    result_hash: str | None
+    result_ref: str | None
+    result_json: str | None
+    error_code: str | None
+    error_message: str | None
+    version: str | None
+    started_at: _dt.datetime
+    finished_at: _dt.datetime | None
 
 
 def _normalize_key(key: str) -> str:
@@ -293,6 +322,16 @@ def _require_decision_status(status: Any) -> None:
         raise ValueError(f"invalid approval decision: {status!r}")
 
 
+def _require_tool_invocation_status(status: Any) -> None:
+    if status not in TOOL_INVOCATION_STATUSES:
+        raise ValueError(f"invalid tool invocation status: {status!r}")
+
+
+def _require_side_effect(side_effect: Any) -> None:
+    if side_effect not in TOOL_SIDE_EFFECTS:
+        raise ValueError(f"invalid tool side effect: {side_effect!r}")
+
+
 def _run_record(row: Run) -> RunRecord:
     return RunRecord(
         id=row.id,
@@ -345,6 +384,27 @@ def _snapshot_record(row: RequestSnapshot) -> RequestSnapshotRecord:
         payload=_json_loads(row.payload_json),
         created_at=_to_utc_aware(row.created_at),
         expires_at=_to_utc_aware(row.expires_at),
+    )
+
+
+def _tool_invocation_record(row: ToolInvocation) -> ToolInvocationRecord:
+    return ToolInvocationRecord(
+        run_id=row.run_id,
+        call_id=row.call_id,
+        tool_name=row.tool_name,
+        args_hash=row.args_hash,
+        side_effect=row.side_effect,
+        target=row.target,
+        status=row.status,
+        attempts=row.attempts,
+        result_hash=row.result_hash,
+        result_ref=row.result_ref,
+        result_json=row.result_json,
+        error_code=row.error_code,
+        error_message=row.error_message,
+        version=row.version,
+        started_at=_to_utc_aware(row.started_at),
+        finished_at=_to_utc_aware(row.finished_at),
     )
 
 
@@ -561,6 +621,238 @@ class RunStore:
             changed = result.rowcount
             session.commit()
         return changed == 1
+
+    # --------------------------------------------------- tool invocations
+
+    def begin_tool_invocation(
+        self,
+        run_id: str,
+        call_id: str,
+        *,
+        tool_name: str,
+        args_hash: str,
+        side_effect: str,
+        target: str | None = None,
+        version: str | None = None,
+        started_at: _dt.datetime | None = None,
+    ) -> ToolInvocationRecord | None:
+        """Insert a ``started`` row; ``None`` means another dispatcher won."""
+        _require_side_effect(side_effect)
+        row = ToolInvocation(
+            run_id=run_id,
+            call_id=call_id,
+            tool_name=tool_name,
+            args_hash=args_hash,
+            side_effect=side_effect,
+            target=target,
+            status=TOOL_INVOCATION_STARTED,
+            attempts=1,
+            version=version,
+            started_at=_to_utc_naive(started_at) or _utc_now_naive(),
+        )
+        with self._session() as session:
+            session.add(row)
+            try:
+                session.commit()
+            except IntegrityError:
+                session.rollback()
+                return None
+            return _tool_invocation_record(row)
+
+    def get_tool_invocation(
+        self, run_id: str, call_id: str
+    ) -> ToolInvocationRecord | None:
+        with self._session() as session:
+            row = session.get(ToolInvocation, (run_id, call_id))
+            return _tool_invocation_record(row) if row is not None else None
+
+    def list_tool_invocations(
+        self,
+        run_id: str | None = None,
+        *,
+        statuses: tuple[str, ...] | list[str] | None = None,
+    ) -> list[ToolInvocationRecord]:
+        statement = select(ToolInvocation)
+        if run_id is not None:
+            statement = statement.where(ToolInvocation.run_id == run_id)
+        if statuses is not None:
+            wanted = tuple(statuses)
+            for status in wanted:
+                _require_tool_invocation_status(status)
+            if not wanted:
+                return []
+            statement = statement.where(ToolInvocation.status.in_(wanted))
+        statement = statement.order_by(
+            ToolInvocation.started_at.asc(),
+            ToolInvocation.run_id.asc(),
+            ToolInvocation.call_id.asc(),
+        )
+        with self._session() as session:
+            rows = session.execute(statement).scalars().all()
+            return [_tool_invocation_record(row) for row in rows]
+
+    def restart_tool_invocation(
+        self,
+        run_id: str,
+        call_id: str,
+        *,
+        version: str | None = None,
+        started_at: _dt.datetime | None = None,
+    ) -> ToolInvocationRecord | None:
+        """Re-arm a started/unknown row whose replay is provably safe."""
+        values: dict[str, Any] = {
+            "status": TOOL_INVOCATION_STARTED,
+            "attempts": ToolInvocation.attempts + 1,
+            "started_at": _to_utc_naive(started_at) or _utc_now_naive(),
+            "finished_at": None,
+            "error_code": None,
+            "error_message": None,
+        }
+        if version is not None:
+            values["version"] = version
+        with self._session() as session:
+            try:
+                result = session.execute(
+                    update(ToolInvocation)
+                    .where(
+                        ToolInvocation.run_id == run_id,
+                        ToolInvocation.call_id == call_id,
+                        ToolInvocation.status.in_(TOOL_INVOCATION_RETRYABLE_STATUSES),
+                    )
+                    .values(**values)
+                    .execution_options(synchronize_session=False)
+                )
+                changed = result.rowcount
+                session.commit()
+            except IntegrityError:
+                # Another live call already owns this resource target.
+                session.rollback()
+                return None
+        if changed != 1:
+            return None
+        return self.get_tool_invocation(run_id, call_id)
+
+    def find_started_tool_invocation(
+        self, run_id: str, *, target: str | None
+    ) -> ToolInvocationRecord | None:
+        """Return the live invocation holding a resource target, if any."""
+        if not target:
+            return None
+        with self._session() as session:
+            row = session.execute(
+                select(ToolInvocation)
+                .where(
+                    ToolInvocation.run_id == run_id,
+                    ToolInvocation.status == TOOL_INVOCATION_STARTED,
+                    ToolInvocation.side_effect.in_(("local_write", "hardware")),
+                    ToolInvocation.target == target,
+                )
+                .order_by(ToolInvocation.started_at.asc())
+                .limit(1)
+            ).scalar_one_or_none()
+            return _tool_invocation_record(row) if row is not None else None
+
+    def finish_tool_invocation(
+        self,
+        run_id: str,
+        call_id: str,
+        *,
+        status: str,
+        result_hash: str | None = None,
+        result_ref: str | None = None,
+        result_json: str | None = None,
+        error_code: str | None = None,
+        error_message: str | None = None,
+        version: str | None = None,
+        finished_at: _dt.datetime | None = None,
+    ) -> ToolInvocationRecord | None:
+        """Write the terminal state exactly once; ``None`` when not claimed."""
+        _require_tool_invocation_status(status)
+        if status == TOOL_INVOCATION_STARTED:
+            raise ValueError("finish requires a terminal tool invocation status")
+        values: dict[str, Any] = {
+            "status": status,
+            "result_hash": result_hash,
+            "result_ref": result_ref,
+            "result_json": result_json,
+            "error_code": error_code,
+            "error_message": error_message,
+            "finished_at": _to_utc_naive(finished_at) or _utc_now_naive(),
+        }
+        if version is not None:
+            values["version"] = version
+        with self._session() as session:
+            result = session.execute(
+                update(ToolInvocation)
+                .where(
+                    ToolInvocation.run_id == run_id,
+                    ToolInvocation.call_id == call_id,
+                    ToolInvocation.status == TOOL_INVOCATION_STARTED,
+                )
+                .values(**values)
+                .execution_options(synchronize_session=False)
+            )
+            changed = result.rowcount
+            session.commit()
+        if changed != 1:
+            return None
+        return self.get_tool_invocation(run_id, call_id)
+
+    def mark_tool_invocation_unknown(
+        self,
+        run_id: str,
+        call_id: str,
+        *,
+        error_code: str | None = "TOOL_RESULT_UNKNOWN",
+        error_message: str | None = None,
+        finished_at: _dt.datetime | None = None,
+    ) -> ToolInvocationRecord | None:
+        with self._session() as session:
+            result = session.execute(
+                update(ToolInvocation)
+                .where(
+                    ToolInvocation.run_id == run_id,
+                    ToolInvocation.call_id == call_id,
+                    ToolInvocation.status.in_(TOOL_INVOCATION_RETRYABLE_STATUSES),
+                )
+                .values(
+                    status=TOOL_INVOCATION_UNKNOWN,
+                    error_code=error_code,
+                    error_message=error_message,
+                    finished_at=_to_utc_naive(finished_at) or _utc_now_naive(),
+                )
+                .execution_options(synchronize_session=False)
+            )
+            changed = result.rowcount
+            session.commit()
+        if changed != 1:
+            return None
+        return self.get_tool_invocation(run_id, call_id)
+
+    def mark_started_tool_invocations_unknown(
+        self,
+        *,
+        error_code: str | None = "TOOL_RESULT_UNKNOWN",
+        error_message: str | None = None,
+        finished_at: _dt.datetime | None = None,
+    ) -> int:
+        """Startup sweep: any ``started`` row belongs to a dead process."""
+        moment = _to_utc_naive(finished_at) or _utc_now_naive()
+        with self._session() as session:
+            result = session.execute(
+                update(ToolInvocation)
+                .where(ToolInvocation.status == TOOL_INVOCATION_STARTED)
+                .values(
+                    status=TOOL_INVOCATION_UNKNOWN,
+                    error_code=error_code,
+                    error_message=error_message,
+                    finished_at=moment,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            changed = result.rowcount
+            session.commit()
+        return changed
 
     # -------------------------------------------------------------- events
 
@@ -1011,6 +1303,27 @@ class RuntimeRunStore:
             "expires_at": _isoformat(record.expires_at),
         }
 
+    @staticmethod
+    def _tool_invocation_row(record: ToolInvocationRecord) -> dict[str, Any]:
+        return {
+            "run_id": record.run_id,
+            "call_id": record.call_id,
+            "tool_name": record.tool_name,
+            "args_hash": record.args_hash,
+            "side_effect": record.side_effect,
+            "target": record.target,
+            "status": record.status,
+            "attempts": record.attempts,
+            "result_hash": record.result_hash,
+            "result_ref": record.result_ref,
+            "result_json": record.result_json,
+            "error_code": record.error_code,
+            "error_message": record.error_message,
+            "version": record.version,
+            "started_at": _isoformat(record.started_at),
+            "finished_at": _isoformat(record.finished_at),
+        }
+
     def create_run(self, run: Mapping[str, Any]) -> dict[str, Any]:
         record = self._store.create_run(
             run["session_id"],
@@ -1194,6 +1507,125 @@ class RuntimeRunStore:
     ) -> dict[str, Any] | None:
         record = self._store.get_request_snapshot(run_id=run_id)
         return self._snapshot_row(record) if record is not None else None
+
+    # --------------------------------------------------- tool invocations
+
+    def begin_tool_invocation(
+        self, invocation: Mapping[str, Any]
+    ) -> dict[str, Any] | None:
+        record = self._store.begin_tool_invocation(
+            invocation["run_id"],
+            invocation["call_id"],
+            tool_name=invocation["tool_name"],
+            args_hash=invocation["args_hash"],
+            side_effect=invocation["side_effect"],
+            target=invocation.get("target"),
+            version=invocation.get("version"),
+            started_at=_parse_datetime(invocation.get("started_at")),
+        )
+        return self._tool_invocation_row(record) if record is not None else None
+
+    def get_tool_invocation(
+        self, run_id: str, call_id: str
+    ) -> dict[str, Any] | None:
+        record = self._store.get_tool_invocation(run_id, call_id)
+        return self._tool_invocation_row(record) if record is not None else None
+
+    def find_started_tool_invocation(
+        self, run_id: str, *, target: str | None
+    ) -> dict[str, Any] | None:
+        record = self._store.find_started_tool_invocation(run_id, target=target)
+        return self._tool_invocation_row(record) if record is not None else None
+
+    def list_tool_invocations(
+        self,
+        run_id: str | None = None,
+        *,
+        statuses: Any = None,
+    ) -> list[dict[str, Any]]:
+        records = self._store.list_tool_invocations(
+            run_id,
+            statuses=(
+                (statuses,) if isinstance(statuses, str)
+                else tuple(statuses) if statuses is not None else None
+            ),
+        )
+        return [self._tool_invocation_row(record) for record in records]
+
+    def restart_tool_invocation(
+        self,
+        run_id: str,
+        call_id: str,
+        *,
+        version: str | None = None,
+        started_at: str | None = None,
+    ) -> dict[str, Any] | None:
+        record = self._store.restart_tool_invocation(
+            run_id,
+            call_id,
+            version=version,
+            started_at=_parse_datetime(started_at),
+        )
+        return self._tool_invocation_row(record) if record is not None else None
+
+    def finish_tool_invocation(
+        self,
+        run_id: str,
+        call_id: str,
+        *,
+        status: str,
+        result_hash: str | None = None,
+        result_ref: str | None = None,
+        result_json: str | None = None,
+        error_code: str | None = None,
+        error_message: str | None = None,
+        version: str | None = None,
+        finished_at: str | None = None,
+    ) -> dict[str, Any] | None:
+        record = self._store.finish_tool_invocation(
+            run_id,
+            call_id,
+            status=status,
+            result_hash=result_hash,
+            result_ref=result_ref,
+            result_json=result_json,
+            error_code=error_code,
+            error_message=error_message,
+            version=version,
+            finished_at=_parse_datetime(finished_at),
+        )
+        return self._tool_invocation_row(record) if record is not None else None
+
+    def mark_tool_invocation_unknown(
+        self,
+        run_id: str,
+        call_id: str,
+        *,
+        error_code: str | None = "TOOL_RESULT_UNKNOWN",
+        error_message: str | None = None,
+        finished_at: str | None = None,
+    ) -> dict[str, Any] | None:
+        record = self._store.mark_tool_invocation_unknown(
+            run_id,
+            call_id,
+            error_code=error_code,
+            error_message=error_message,
+            finished_at=_parse_datetime(finished_at),
+        )
+        return self._tool_invocation_row(record) if record is not None else None
+
+    def mark_started_tool_invocations_unknown(
+        self,
+        *,
+        error_code: str | None = "TOOL_RESULT_UNKNOWN",
+        error_message: str | None = None,
+        finished_at: str | None = None,
+    ) -> int:
+        return self._store.mark_started_tool_invocations_unknown(
+            error_code=error_code,
+            error_message=error_message,
+            finished_at=_parse_datetime(finished_at),
+        )
 
 
 _RUNTIME_STORE: RuntimeRunStore | None = None

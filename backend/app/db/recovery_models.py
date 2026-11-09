@@ -25,6 +25,25 @@ RUN_STATUSES = (
 
 APPROVAL_STATUSES = ("pending", "allowed", "denied", "stopped", "expired")
 
+# Tool-level idempotency ledger. ``started`` is written before the tool runs and
+# is the only state a crashed process can leave behind; recovery turns it into
+# ``unknown`` so no surface can claim the side effect happened or did not.
+TOOL_INVOCATION_STATUSES = ("started", "succeeded", "failed", "unknown")
+
+# How a tool call can affect the world. Read-only calls may be replayed after a
+# crash; every other category needs review unless an unchanged file version
+# proves that a local write never landed.
+TOOL_SIDE_EFFECTS = (
+    "read_only",
+    "local_write",
+    "command",
+    "delete",
+    "hardware",
+    "external",
+    "mcp",
+    "other",
+)
+
 
 def _utc_now() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
@@ -123,3 +142,60 @@ class RequestSnapshot(Base):
     payload_json = Column(Text, nullable=False)
     created_at = Column(DateTime, nullable=False, default=_utc_now)
     expires_at = Column(DateTime, nullable=True)
+
+
+class ToolInvocation(Base):
+    """Durable tool-call ledger, keyed by ``(run_id, call_id)``.
+
+    A row is inserted as ``started`` before the tool executes, so a crash
+    between side effect and result leaves an explicit unknown rather than a
+    call that recovery might replay. Raw arguments and raw results are never
+    stored: only hashes, a redacted target summary, a sanitized bounded replay
+    envelope, and a file version marker for local writes.
+    """
+
+    __tablename__ = "tool_invocations"
+    __table_args__ = (
+        Index("idx_tool_invocations_run", "run_id"),
+        Index("idx_tool_invocations_status", "status"),
+        # Resource-level exclusion only: local writes to the same file and
+        # hardware actions on the same port cannot run concurrently in one
+        # run. Different call_ids and different targets stay fully parallel;
+        # commands and MCP calls are never serialized by this index.
+        Index(
+            "uq_tool_invocations_started_target",
+            "run_id",
+            "target",
+            unique=True,
+            sqlite_where=text(
+                "status = 'started' AND side_effect IN ('local_write', 'hardware') "
+                "AND target IS NOT NULL"
+            ),
+        ),
+        CheckConstraint(
+            "status IN ('started', 'succeeded', 'failed', 'unknown')",
+            name="ck_tool_invocations_status",
+        ),
+        CheckConstraint(
+            "side_effect IN ('read_only', 'local_write', 'command', 'delete', "
+            "'hardware', 'external', 'mcp', 'other')",
+            name="ck_tool_invocations_side_effect",
+        ),
+    )
+
+    run_id = Column(String(64), primary_key=True)
+    call_id = Column(String(64), primary_key=True)
+    tool_name = Column(String(255), nullable=False)
+    args_hash = Column(String(64), nullable=False)
+    side_effect = Column(String(32), nullable=False, default="other")
+    target = Column(Text, nullable=True)
+    status = Column(String(32), nullable=False, default="started")
+    attempts = Column(Integer, nullable=False, default=1, server_default="1")
+    result_hash = Column(String(64), nullable=True)
+    result_ref = Column(String(255), nullable=True)
+    result_json = Column(Text, nullable=True)
+    error_code = Column(String(64), nullable=True)
+    error_message = Column(Text, nullable=True)
+    version = Column(Text, nullable=True)
+    started_at = Column(DateTime, nullable=False, default=_utc_now)
+    finished_at = Column(DateTime, nullable=True)

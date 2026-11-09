@@ -17,7 +17,7 @@ from __future__ import annotations
 import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ErrorDetail(BaseModel):
@@ -38,7 +38,14 @@ class ResultMetadata(BaseModel):
 
     `kb_coverage_hint` is populated by search_docs (via ToolContext counter)
     when consecutive low-relevance calls cross the threshold.
+
+    ``extra="allow"`` keeps the tool-observation archive keys and the
+    tool-idempotency markers (idempotent_replay / idempotency_blocked /
+    idempotency_status / side_effect) without changing the shape every
+    ordinary result already has.
     """
+    model_config = ConfigDict(extra="allow")
+
     tool_name: str
     duration_ms: int = 0
     call_id: str = ""

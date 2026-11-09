@@ -12,7 +12,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, StrictStr
 
 from app.api.dependencies import current_user
-from src.agent import run_events
+from src.agent import run_events, tool_idempotency
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +166,31 @@ def _public_approval(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _unknown_side_effect_calls(
+    store: run_events.RunStore, run_id: str,
+) -> list[dict[str, Any]]:
+    """Tool invocations whose outcome is unknown and not safe to replay.
+
+    Read-only calls and local writes proven to have left the target unchanged
+    are deliberately excluded: the runtime may safely re-dispatch those.
+    """
+    lister = getattr(store, "list_tool_invocations", None)
+    if lister is None:
+        return []
+    try:
+        rows = lister(run_id)
+    except Exception:
+        logger.warning(
+            "Tool invocation ledger could not be read run=%s", run_id, exc_info=True,
+        )
+        return []
+    return [
+        tool_idempotency.public_invocation(row)
+        for row in rows
+        if tool_idempotency.invocation_needs_review(row)
+    ]
+
+
 def classify_run_resume(
     store: run_events.RunStore, run: dict[str, Any],
 ) -> dict[str, Any]:
@@ -174,7 +199,9 @@ def classify_run_resume(
     Safe means: the ledger only has tool calls covered by a still-pending,
     unexpired approval, and the sanitized request snapshot needed to rebuild
     the paused request survived the restart. Anything else is ``needs_review``
-    and must never be replayed automatically.
+    and must never be replayed automatically. An invocation that started but
+    has no recorded terminal result overrides the approval path: its side
+    effect is unknown until a person checks it.
     """
     status = run.get("status")
     if status != run_events.RUN_STATUS_INTERRUPTED:
@@ -184,6 +211,7 @@ def classify_run_resume(
             "pending_approval_count": 0,
             "request_snapshot_available": False,
             "unresolved_tool_calls": [],
+            "unknown_side_effect_calls": [],
         }
     events = store.list_run_events(run["id"])
     summary = run_events.summarize_run_events(events)
@@ -197,13 +225,20 @@ def classify_run_resume(
         if not isinstance(call.get("call_id"), str)
         or call.get("call_id") not in pending_calls
     ]
+    unknown_side_effect_calls = _unknown_side_effect_calls(store, run["id"])
     snapshot = store.get_latest_request_snapshot(run["id"])
     info: dict[str, Any] = {
         "pending_approval_count": len(pending),
         "request_snapshot_available": snapshot is not None,
         "unresolved_tool_calls": open_calls,
+        "unknown_side_effect_calls": unknown_side_effect_calls,
     }
-    if unknown_calls:
+    if unknown_side_effect_calls:
+        info.update(
+            mode="needs_review",
+            reason="有工具调用已开始但结果未知，副作用状态未确认，禁止自动重放。",
+        )
+    elif unknown_calls:
         info.update(
             mode="needs_review",
             reason="部分工具调用没有结果，副作用状态未知，禁止自动重放。",
@@ -474,6 +509,18 @@ async def recover_interrupted_runs() -> None:
         logger.warning("Run restart recovery failed", exc_info=True)
         return
 
+    # Any tool invocation still ``started`` belongs to the dead process. Mark
+    # it unknown before resume can classify the run, so no path replays a side
+    # effect whose outcome nobody saw.
+    try:
+        unknown_invocations = store.mark_started_tool_invocations_unknown(
+            error_code=run_events.TOOL_RESULT_UNKNOWN_CODE,
+            error_message="service restarted while the tool call was executing",
+        )
+    except Exception:
+        unknown_invocations = 0
+        logger.warning("Tool invocation restart recovery failed", exc_info=True)
+
     repaired = 0
     terminal_recovered = 0
     for run in active:
@@ -522,8 +569,9 @@ async def recover_interrupted_runs() -> None:
         expired = 0
         logger.warning("Expired approval sweep failed", exc_info=True)
 
-    if changed or repaired or terminal_recovered or expired:
+    if changed or repaired or terminal_recovered or expired or unknown_invocations:
         logger.warning(
-            "Run restart recovery: interrupted=%d repaired=%d terminal=%d expired=%d",
-            changed, repaired, terminal_recovered, expired,
+            "Run restart recovery: interrupted=%d repaired=%d terminal=%d "
+            "expired=%d unknown_tool_invocations=%d",
+            changed, repaired, terminal_recovered, expired, unknown_invocations,
         )
