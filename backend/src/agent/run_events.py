@@ -58,6 +58,16 @@ APPROVAL_DECISION_EVENT = "approval_decision"
 ERROR_EVENT = "error"
 DONE_EVENT = "done"
 
+TOOL_INVOCATION_STARTED = "started"
+TOOL_INVOCATION_SUCCEEDED = "succeeded"
+TOOL_INVOCATION_FAILED = "failed"
+TOOL_INVOCATION_UNKNOWN = "unknown"
+TOOL_INVOCATION_RETRYABLE_STATUSES = (
+    TOOL_INVOCATION_STARTED,
+    TOOL_INVOCATION_UNKNOWN,
+)
+TOOL_RESULT_UNKNOWN_CODE = "TOOL_RESULT_UNKNOWN"
+
 # One RunEvent ledger carries every fact the frontend replays: model text,
 # tool call/result pairs, approvals, errors, compaction and terminal state.
 # The persisted payload is the SSE payload unchanged, so call_id, tool status,
@@ -175,6 +185,66 @@ class RunStore(Protocol):
 
     def get_latest_request_snapshot(self, run_id: str) -> dict[str, Any] | None: ...
 
+    # Tool-level idempotency ledger. ``begin_tool_invocation`` returns None when
+    # another dispatcher already inserted the same ``(run_id, call_id)`` row.
+    def begin_tool_invocation(
+        self, invocation: Mapping[str, Any],
+    ) -> dict[str, Any] | None: ...
+
+    def get_tool_invocation(
+        self, run_id: str, call_id: str,
+    ) -> dict[str, Any] | None: ...
+
+    def find_started_tool_invocation(
+        self, run_id: str, *, target: str | None,
+    ) -> dict[str, Any] | None: ...
+
+    def list_tool_invocations(
+        self, run_id: str | None = None, *, statuses: Any = None,
+    ) -> list[dict[str, Any]]: ...
+
+    def restart_tool_invocation(
+        self,
+        run_id: str,
+        call_id: str,
+        *,
+        version: str | None = None,
+        started_at: str | None = None,
+    ) -> dict[str, Any] | None: ...
+
+    def finish_tool_invocation(
+        self,
+        run_id: str,
+        call_id: str,
+        *,
+        status: str,
+        result_hash: str | None = None,
+        result_ref: str | None = None,
+        result_json: str | None = None,
+        error_code: str | None = None,
+        error_message: str | None = None,
+        version: str | None = None,
+        finished_at: str | None = None,
+    ) -> dict[str, Any] | None: ...
+
+    def mark_tool_invocation_unknown(
+        self,
+        run_id: str,
+        call_id: str,
+        *,
+        error_code: str | None = TOOL_RESULT_UNKNOWN_CODE,
+        error_message: str | None = None,
+        finished_at: str | None = None,
+    ) -> dict[str, Any] | None: ...
+
+    def mark_started_tool_invocations_unknown(
+        self,
+        *,
+        error_code: str | None = TOOL_RESULT_UNKNOWN_CODE,
+        error_message: str | None = None,
+        finished_at: str | None = None,
+    ) -> int: ...
+
 
 class InMemoryRunStore:
     """Process-local fallback used until ``app.db.run_store`` is available.
@@ -189,6 +259,7 @@ class InMemoryRunStore:
         self._events: dict[str, list[dict[str, Any]]] = {}
         self._approvals: list[dict[str, Any]] = []
         self._snapshots: dict[str, list[dict[str, Any]]] = {}
+        self._tool_invocations: dict[tuple[str, str], dict[str, Any]] = {}
 
     def create_run(self, run: Mapping[str, Any]) -> dict[str, Any]:
         row = dict(run)
@@ -414,6 +485,176 @@ class InMemoryRunStore:
             rows = self._snapshots.get(run_id) or []
             return dict(rows[-1]) if rows else None
 
+    # --------------------------------------------------- tool invocations
+
+    def begin_tool_invocation(
+        self, invocation: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        row = dict(invocation)
+        row.setdefault("status", TOOL_INVOCATION_STARTED)
+        row.setdefault("attempts", 1)
+        row.setdefault("started_at", utc_now_iso())
+        row.setdefault("finished_at", None)
+        row.setdefault("result_hash", None)
+        row.setdefault("result_ref", None)
+        row.setdefault("result_json", None)
+        row.setdefault("error_code", None)
+        row.setdefault("error_message", None)
+        row.setdefault("version", None)
+        key = (row["run_id"], row["call_id"])
+        with self._lock:
+            if key in self._tool_invocations:
+                return None
+            if _target_lockable(row) and _target_live(self._tool_invocations, row):
+                return None
+            self._tool_invocations[key] = row
+            return dict(row)
+
+    def get_tool_invocation(
+        self, run_id: str, call_id: str,
+    ) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._tool_invocations.get((run_id, call_id))
+            return dict(row) if row is not None else None
+
+    def find_started_tool_invocation(
+        self, run_id: str, *, target: str | None,
+    ) -> dict[str, Any] | None:
+        if not target:
+            return None
+        with self._lock:
+            for row in sorted(
+                self._tool_invocations.values(),
+                key=lambda item: (str(item.get("started_at") or ""), item["call_id"]),
+            ):
+                if (
+                    row["run_id"] == run_id
+                    and row["status"] == TOOL_INVOCATION_STARTED
+                    and row.get("side_effect") in _TARGET_LOCK_SIDE_EFFECTS
+                    and row.get("target") == target
+                ):
+                    return dict(row)
+        return None
+
+    def list_tool_invocations(
+        self, run_id: str | None = None, *, statuses: Any = None,
+    ) -> list[dict[str, Any]]:
+        wanted = (
+            None if statuses is None
+            else {statuses} if isinstance(statuses, str)
+            else set(statuses)
+        )
+        with self._lock:
+            rows = [
+                dict(row) for row in self._tool_invocations.values()
+                if (run_id is None or row["run_id"] == run_id)
+                and (wanted is None or row["status"] in wanted)
+            ]
+        rows.sort(key=lambda row: (str(row.get("started_at") or ""), row["run_id"], row["call_id"]))
+        return rows
+
+    def restart_tool_invocation(
+        self,
+        run_id: str,
+        call_id: str,
+        *,
+        version: str | None = None,
+        started_at: str | None = None,
+    ) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._tool_invocations.get((run_id, call_id))
+            if row is None or row["status"] not in TOOL_INVOCATION_RETRYABLE_STATUSES:
+                return None
+            candidate = dict(row)
+            candidate["status"] = TOOL_INVOCATION_STARTED
+            if version is not None:
+                candidate["version"] = version
+            if _target_lockable(candidate) and _target_live(
+                self._tool_invocations, candidate, exclude_key=(run_id, call_id),
+            ):
+                return None
+            row["status"] = TOOL_INVOCATION_STARTED
+            row["attempts"] = int(row.get("attempts") or 0) + 1
+            row["started_at"] = started_at or utc_now_iso()
+            row["finished_at"] = None
+            row["error_code"] = None
+            row["error_message"] = None
+            if version is not None:
+                row["version"] = version
+            return dict(row)
+
+    def finish_tool_invocation(
+        self,
+        run_id: str,
+        call_id: str,
+        *,
+        status: str,
+        result_hash: str | None = None,
+        result_ref: str | None = None,
+        result_json: str | None = None,
+        error_code: str | None = None,
+        error_message: str | None = None,
+        version: str | None = None,
+        finished_at: str | None = None,
+    ) -> dict[str, Any] | None:
+        if status not in (TOOL_INVOCATION_SUCCEEDED, TOOL_INVOCATION_FAILED):
+            raise ValueError(f"invalid terminal tool invocation status: {status!r}")
+        with self._lock:
+            row = self._tool_invocations.get((run_id, call_id))
+            if row is None or row["status"] != TOOL_INVOCATION_STARTED:
+                return None
+            row.update({
+                "status": status,
+                "result_hash": result_hash,
+                "result_ref": result_ref,
+                "result_json": result_json,
+                "error_code": error_code,
+                "error_message": error_message,
+                "finished_at": finished_at or utc_now_iso(),
+            })
+            if version is not None:
+                row["version"] = version
+            return dict(row)
+
+    def mark_tool_invocation_unknown(
+        self,
+        run_id: str,
+        call_id: str,
+        *,
+        error_code: str | None = TOOL_RESULT_UNKNOWN_CODE,
+        error_message: str | None = None,
+        finished_at: str | None = None,
+    ) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._tool_invocations.get((run_id, call_id))
+            if row is None or row["status"] not in TOOL_INVOCATION_RETRYABLE_STATUSES:
+                return None
+            row["status"] = TOOL_INVOCATION_UNKNOWN
+            row["error_code"] = error_code
+            row["error_message"] = error_message
+            row["finished_at"] = finished_at or utc_now_iso()
+            return dict(row)
+
+    def mark_started_tool_invocations_unknown(
+        self,
+        *,
+        error_code: str | None = TOOL_RESULT_UNKNOWN_CODE,
+        error_message: str | None = None,
+        finished_at: str | None = None,
+    ) -> int:
+        changed = 0
+        moment = finished_at or utc_now_iso()
+        with self._lock:
+            for row in self._tool_invocations.values():
+                if row["status"] != TOOL_INVOCATION_STARTED:
+                    continue
+                row["status"] = TOOL_INVOCATION_UNKNOWN
+                row["error_code"] = error_code
+                row["error_message"] = error_message
+                row["finished_at"] = moment
+                changed += 1
+        return changed
+
 
 def _expired(expires_at: Any, now: datetime) -> bool:
     if not isinstance(expires_at, str) or not expires_at:
@@ -425,6 +666,35 @@ def _expired(expires_at: Any, now: datetime) -> bool:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed <= now
+
+
+_TARGET_LOCK_SIDE_EFFECTS = frozenset({"local_write", "hardware"})
+
+
+def _target_lockable(row: Mapping[str, Any]) -> bool:
+    """Only known resource identities (file path, hardware port) are locked."""
+    return (
+        bool(row.get("target"))
+        and row.get("side_effect") in _TARGET_LOCK_SIDE_EFFECTS
+    )
+
+
+def _target_live(
+    rows: Mapping[tuple[str, str], Mapping[str, Any]],
+    candidate: Mapping[str, Any],
+    *,
+    exclude_key: tuple[str, str] | None = None,
+) -> bool:
+    for key, row in rows.items():
+        if key == exclude_key:
+            continue
+        if (
+            row.get("run_id") == candidate.get("run_id")
+            and row.get("status") == TOOL_INVOCATION_STARTED
+            and row.get("target") == candidate.get("target")
+        ):
+            return True
+    return False
 
 
 def approval_is_expired(
@@ -892,7 +1162,13 @@ class RunEventPump:
         return [dict(call) for call in self.open_tool_calls.values()]
 
     def _ledger_unresolved_tool_calls(self) -> list[dict[str, Any]] | None:
-        """Pair calls across the whole run, including previous resume segments."""
+        """Pair calls across the whole run, including previous resume segments.
+
+        The event ledger records tool_call/tool_result pairs; the invocation
+        ledger additionally knows about a call that started but never produced
+        a terminal row (crash inside the tool). Both must block a success
+        terminal, otherwise a crash could be reported as success.
+        """
         if self.store is None:
             return None
         try:
@@ -903,7 +1179,36 @@ class RunEventPump:
                 self.run_id, exc_info=True,
             )
             return None
-        return summarize_run_events(events)["open_tool_calls"]
+        open_calls = summarize_run_events(events)["open_tool_calls"]
+        seen = {
+            call.get("call_id") for call in open_calls
+            if isinstance(call.get("call_id"), str)
+        }
+        lister = getattr(self.store, "list_tool_invocations", None)
+        if lister is not None:
+            try:
+                invocations = lister(self.run_id)
+            except Exception:
+                logger.warning(
+                    "Tool invocation ledger could not be read run=%s",
+                    self.run_id, exc_info=True,
+                )
+                invocations = []
+            for row in invocations:
+                if row.get("status") not in TOOL_INVOCATION_RETRYABLE_STATUSES:
+                    continue
+                call_id = row.get("call_id")
+                if isinstance(call_id, str) and call_id in seen:
+                    continue
+                open_calls.append({
+                    "call_id": call_id if isinstance(call_id, str) else None,
+                    "tool": row.get("tool_name"),
+                    "risk_level": None,
+                    "decision_source": None,
+                    "side_effect": row.get("side_effect"),
+                    "status": row.get("status"),
+                })
+        return open_calls
 
     def _guard_success_terminal(
         self, payload: Mapping[str, Any],

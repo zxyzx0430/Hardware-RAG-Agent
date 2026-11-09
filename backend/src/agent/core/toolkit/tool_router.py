@@ -42,6 +42,7 @@ from src.agent.core.toolkit.tool_output_budget import (
     apply_plan_output_budget,
     plan_budget_preflight,
 )
+from src.agent import tool_idempotency
 from src.agent.exceptions import ToolContext
 from src.agent.plan_policy import PLAN_MODE, is_allowed_in_plan_mode
 
@@ -228,19 +229,73 @@ class ToolRouter:
                 )
             )
             return notice
-        envelope = await self._run_pipeline(state)
+        ledger = tool_idempotency.ToolInvocationLedger.maybe(
+            run_id=getattr(ctx, "run_id", None),
+            call_id=call_id,
+            spec=spec,
+            args=args,
+            start_ms=start_ms,
+        )
+        claim = ledger.preflight() if ledger is not None else None
+        if claim is not None and claim.action != tool_idempotency.ACTION_EXECUTE:
+            return self._finish_ledger_decision(
+                claim, call_id, spec, audit_args, ctx,
+            )
+        invalid = _validate_args(state)
+        if invalid is not None:
+            self.audit_recorder.record(
+                AuditRecord(
+                    call_id, spec, audit_args, invalid,
+                    decision, decision_source, ctx,
+                )
+            )
+            return _with_observation_status(invalid)
+        if ledger is not None:
+            race = ledger.begin(claim)
+            if race is not None and race.action != tool_idempotency.ACTION_EXECUTE:
+                return self._finish_ledger_decision(
+                    race, call_id, spec, audit_args, ctx,
+                )
+        envelope = await self._run_pipeline(state, validated=True)
+        reference = _archive_tool_observation(envelope, spec, ctx)
+        result = _with_observation_status(envelope, reference)
+        if ledger is not None:
+            ledger.finish(envelope, result, reference)
         self.audit_recorder.record(
             AuditRecord(call_id, spec, audit_args, envelope, decision, decision_source, ctx)
         )
-        reference = _archive_tool_observation(envelope, spec, ctx)
-        result = _with_observation_status(envelope, reference)
         return apply_plan_output_budget(result, spec.name, ctx)
 
-    async def _run_pipeline(self, state: _DispatchState) -> ToolResultEnvelope:
+    def _finish_ledger_decision(
+        self,
+        decision: tool_idempotency.LedgerDecision,
+        call_id: str,
+        spec: ToolSpec,
+        audit_args: dict[str, Any],
+        ctx: ToolContext,
+    ) -> dict[str, Any]:
+        """Audit and return a replay/blocked result without executing the tool."""
+        envelope = ToolResultEnvelope(**decision.result)
+        self.audit_recorder.record(
+            AuditRecord(
+                call_id, spec, audit_args, envelope,
+                "allow" if decision.action == tool_idempotency.ACTION_REPLAY else "deny",
+                decision.audit_source or "idempotency_guard",
+                ctx,
+            )
+        )
+        return apply_plan_output_budget(
+            _with_observation_status(envelope), spec.name, ctx,
+        )
+
+    async def _run_pipeline(
+        self, state: _DispatchState, *, validated: bool = False,
+    ) -> ToolResultEnvelope:
         """Validate args, execute, wrap and soft-validate, then preserve output."""
-        invalid = _validate_args(state)
-        if invalid is not None:
-            return invalid
+        if not validated:
+            invalid = _validate_args(state)
+            if invalid is not None:
+                return invalid
         result, error = await self._run_with_timeout(state)
         envelope = _build_envelope(state, result, error)
         self._validate_output_schema(state, envelope)
@@ -257,7 +312,16 @@ class ToolRouter:
         """
         timeout = state.spec.timeout_seconds
         last_exc: Exception | None = None
-        retries = 0 if state.spec.mcp_info is not None else state.spec.max_retries
+        # A transport retry is re-execution. Only read-only tools may repeat
+        # inside one call_id; side-effectful tools leave the timeout as a
+        # recorded failure/unknown instead of risking a second side effect.
+        side_effect = tool_idempotency.classify_side_effect(state.spec, state.args)
+        retries = (
+            state.spec.max_retries
+            if state.spec.mcp_info is None
+            and side_effect == tool_idempotency.SIDE_EFFECT_READ_ONLY
+            else 0
+        )
         for _ in range(retries + 1):
             try:
                 result = await asyncio.wait_for(

@@ -13,7 +13,7 @@ import codecs
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from sqlalchemy import CheckConstraint, UniqueConstraint, create_engine, event, inspect
+from sqlalchemy import CheckConstraint, UniqueConstraint, create_engine, event, inspect, text
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 
 _LOGGER = logging.getLogger(__name__)
@@ -4431,6 +4431,25 @@ def _ensure_legacy_message_blob_snapshot_storage_schema():
                 )
 
 
+def _ensure_tool_invocation_started_target_index() -> None:
+    """Add the resource-exclusion index to a pre-existing tool_invocations table.
+
+    ``create_all`` skips tables that already exist, so the model's partial
+    unique index only reaches fresh databases. This idempotent DDL keeps the
+    "one live local write per file / one live hardware action per port" rule on
+    upgraded databases too. It does not serialize different targets.
+    """
+    with engine.connect() as conn:
+        conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_tool_invocations_started_target "
+            "ON tool_invocations(run_id, target) "
+            "WHERE status = 'started' "
+            "AND side_effect IN ('local_write', 'hardware') "
+            "AND target IS NOT NULL"
+        ))
+        conn.commit()
+
+
 def init_db():
     """建表（首次启动时使用，后续通过 Alembic 迁移）。"""
     import app.db.models  # noqa: ensure models are loaded
@@ -4438,6 +4457,7 @@ def init_db():
     import app.db.memory_models  # noqa: register Memory v1 table
     import app.db.hardware_profile_models  # noqa: register hardware profile table
     Base.metadata.create_all(bind=engine)
+    _ensure_tool_invocation_started_target_index()
     _ensure_legacy_body_chunk_storage_schema()
     _ensure_legacy_message_snapshot_schema()
     _ensure_legacy_message_blob_snapshot_storage_schema()
