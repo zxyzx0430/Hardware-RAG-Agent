@@ -6,8 +6,8 @@ import { useAppStore } from "../../stores/useAppStore";
 import { MarkdownRenderer } from "../shared/MarkdownRenderer";
 import { isSkillToolName, isValidSkillId, isValidSkillResourcePath, type SkillToolName } from "../../utils/skillTrace";
 
-const ACTIVITY_TIMER_INTERVAL_MS = 100;
-const TOOLSTEP_TIMER_INTERVAL_MS = 100;
+const ACTIVITY_TIMER_INTERVAL_MS = 10;
+const TOOLSTEP_TIMER_INTERVAL_MS = 10;
 
 const ActivityBlock = memo(function ActivityBlock({ activity, msgId, startTime }: { activity: ActivityBlockData; msgId: string; startTime?: number }) {
   const { t } = useI18n();

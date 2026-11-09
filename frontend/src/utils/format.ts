@@ -1,5 +1,6 @@
 export function formatDuration(ms: number): string {
-  return `${Math.round(ms)}ms`;
+  const hundredths = Math.floor(Math.max(0, ms) / 10) / 100;
+  return `${hundredths.toFixed(2)}秒`;
 }
 
 export function formatDate(iso: string): string {

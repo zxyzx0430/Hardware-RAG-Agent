@@ -6,6 +6,7 @@ import { useI18n } from "../../i18n";
 import { formatDuration } from "../../utils/format";
 
 const EMPTY_STEPS: ActivityStep[] = [];
+const RUN_TIMER_INTERVAL_MS = 10;
 
 const STATUS_LABEL_KEYS: Record<RunStatus, string> = {
   running: "runStatusRunning",
@@ -81,7 +82,7 @@ export function RunStatusBar({ sessionId, onOpenSource }: RunStatusBarProps) {
   useEffect(() => {
     if (!isLive) return;
     setNow(Date.now());
-    const timer = setInterval(() => setNow(Date.now()), 1000);
+    const timer = setInterval(() => setNow(Date.now()), RUN_TIMER_INTERVAL_MS);
     return () => clearInterval(timer);
   }, [isLive]);
 
