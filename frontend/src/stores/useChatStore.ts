@@ -2113,6 +2113,10 @@ function _finalizeChatStream(sessionId: string, terminal: ChatTerminalState, sta
     });
   } else {
     const viewStatus = useChatStore.getState().runViewBySession[sessionId]?.status;
+    // The bar and ActivityBlock must describe the same client turn; backend
+    // run timestamps can start after request validation, so pin both edges to
+    // the send/onDone clock.
+    _patchRunView(sessionId, { startedAt: startTime, finishedAt });
     _setRunViewTerminal(
       sessionId,
       viewStatus === "interrupted" ? "interrupted" : cancelledRun ? "cancelled" : "completed",
