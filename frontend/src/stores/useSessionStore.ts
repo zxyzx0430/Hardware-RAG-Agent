@@ -570,9 +570,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         saveToStorage("sessions", updated.sessions);
         return updated;
       });
+      getLog()("ok", "workspace", `已绑定工作区: ${workspaceRoot}`);
       return true;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      getLog()("warn", "workspace", `绑定工作区失败: ${msg}`);
       useToastStore.getState().showError(`绑定工作区失败: ${msg}`);
       return false;
     }
@@ -592,9 +594,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         saveToStorage("sessions", updated.sessions);
         return updated;
       });
+      getLog()("ok", "workspace", "已解除工作区绑定");
       return true;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      getLog()("warn", "workspace", `解绑工作区失败: ${msg}`);
       useToastStore.getState().showError(`解绑工作区失败: ${msg}`);
       return false;
     }

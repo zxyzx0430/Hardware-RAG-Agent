@@ -425,6 +425,11 @@ async def stream_agent_to_sse(
             if queue_registered:
                 unregister_queue(session_id, state["tool_event_queue"])
             timing.finish(outcome, error_type=error_type)
+    usage = state.get("usage")
+    if isinstance(usage, dict) and any(usage.get(key, 0) for key in (
+        "prompt_tokens", "completion_tokens", "total_tokens",
+    )):
+        yield sse_event("usage", {"usage": usage})
     logger.info("stream_agent_to_sse done total_steps=%s", state.get("step_index", 0))
 
 
@@ -761,8 +766,47 @@ async def _handle_message_chunk(
     parts: list[str] = []
     _append_reasoning_event(parts, msg_chunk, state)
     _append_text_event(parts, msg_chunk, state)
+    _capture_usage(msg_chunk, state)
     accumulate_tokens(msg_chunk.content, state)
     return "\n".join(parts) if parts else None
+
+
+def _capture_usage(msg_chunk: AIMessageChunk, state: dict) -> None:
+    """Accumulate provider-reported usage exactly once per model response."""
+    raw = getattr(msg_chunk, "usage_metadata", None)
+    if callable(getattr(raw, "model_dump", None)):
+        raw = raw.model_dump()
+    if not isinstance(raw, dict):
+        return
+    input_tokens = _as_int(raw.get("input_tokens"))
+    output_tokens = _as_int(raw.get("output_tokens"))
+    total_tokens = _as_int(raw.get("total_tokens")) or input_tokens + output_tokens
+    input_details = raw.get("input_token_details")
+    cached_tokens = 0
+    if isinstance(input_details, dict):
+        cached_tokens = _as_int(input_details.get("cache_read"))
+        if not cached_tokens:
+            cached_tokens = _as_int(input_details.get("cached_tokens"))
+    if not (input_tokens or output_tokens or total_tokens):
+        return
+    usage = state.setdefault("usage", {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "cached_tokens": 0,
+    })
+    usage["prompt_tokens"] += input_tokens
+    usage["completion_tokens"] += output_tokens
+    usage["total_tokens"] += total_tokens
+    usage["cached_tokens"] += cached_tokens
+
+
+def _as_int(value: Any) -> int:
+    if type(value) is int and value >= 0:
+        return value
+    if type(value) is float and value >= 0 and value.is_integer():
+        return int(value)
+    return 0
 
 
 def _append_reasoning_event(parts: list[str], msg_chunk: AIMessageChunk, state: dict) -> None:

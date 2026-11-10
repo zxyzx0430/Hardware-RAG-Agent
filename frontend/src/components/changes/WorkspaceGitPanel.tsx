@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { apiGet, apiPost } from "../../api/client";
 import { useI18n } from "../../i18n";
+import { useLogStore } from "../../stores/useLogStore";
 import type { ChangeSet } from "../../types/change";
 
 export interface GitContext {
@@ -92,8 +93,11 @@ export function WorkspaceGitPanel({
     try {
       await action();
       await loadContext();
+      useLogStore.getState().log("ok", "git", `${kind} completed`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      useLogStore.getState().log("warn", "git", `${kind} failed: ${message}`);
+      setError(message);
     } finally {
       setBusy(null);
     }

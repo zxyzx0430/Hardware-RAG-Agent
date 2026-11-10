@@ -1,6 +1,11 @@
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
+import { apiPost } from "../../api/client";
 import { useSkillsStore, type GitHubSkillPreview, type InstalledSkill, type SkillDetail } from "../../stores/useSkillsStore";
+import { useAppStore } from "../../stores/useAppStore";
+import { useLogStore } from "../../stores/useLogStore";
+import { useToastStore } from "../../stores/useToastStore";
+import { MarkdownRenderer } from "../shared/MarkdownRenderer";
 
 type SkillDialog = { skill: SkillDetail; mode: "view" | "edit" | "enable" };
 type SkillDeleteTarget = { id: string; name: string };
@@ -37,6 +42,26 @@ function compatibilityLabel(status: unknown, isChinese: boolean): string {
     review_required: ["需审核", "Review required"],
   };
   return labels[value]?.[isChinese ? 0 : 1] ?? (value || (isChinese ? "未提供" : "not provided"));
+}
+
+function skillFileTarget(skill: SkillDetail): { baseDir: string; filePath: string } | null {
+  const base = skill.install_path?.trim();
+  if (!base) return null;
+  if (/\.md$/i.test(base)) {
+    const parent = base.replace(/[\\/][^\\/]+$/, "");
+    return parent === base ? null : { baseDir: parent, filePath: base };
+  }
+  const separator = /[\\/]$/.test(base) ? "" : "/";
+  const fileName = skill.format === "legacy" ? "skill.md" : "SKILL.md";
+  return { baseDir: base, filePath: `${base}${separator}${fileName}` };
+}
+
+function samePath(left: string, right: string): boolean {
+  const normalize = (value: string) => value.replace(/\\/g, "/").replace(/\/+$/, "");
+  const a = normalize(left);
+  const b = normalize(right);
+  const windowsDrive = /^[a-z]:\//i;
+  return windowsDrive.test(a) && windowsDrive.test(b) ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
 export function SkillsManager({ lang }: { lang: string }) {
@@ -78,6 +103,12 @@ export function SkillsManager({ lang }: { lang: string }) {
   const [enablingSkill, setEnablingSkill] = useState(false);
   const [deletingSkillId, setDeletingSkillId] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
+  const [feedbackError, setFeedbackError] = useState(false);
+
+  const showFeedback = (text: string | null, isError = false) => {
+    setFeedback(text);
+    setFeedbackError(isError);
+  };
 
   useEffect(() => {
     void fetchSkills();
@@ -85,21 +116,55 @@ export function SkillsManager({ lang }: { lang: string }) {
 
   const openSkillDialog = async (skill: InstalledSkill, mode: SkillDialog["mode"]) => {
     clearError();
-    setFeedback(null);
+    showFeedback(null);
     setDialogLoading(skill.id);
     const detail = await getSkill(skill.id);
     setDialogLoading(null);
     if (!detail) return;
+    useLogStore.getState().log("info", "skills", `${mode} ${skill.id}`);
     setEditContent(detail.content || "");
     setDialog({ skill: detail, mode });
   };
 
+  const openSkillFile = async (skill: SkillDetail) => {
+    const target = skillFileTarget(skill);
+    if (!target) {
+      showFeedback(isChinese ? "该技能没有可打开的文件路径。" : "This skill has no openable file path.", true);
+      return;
+    }
+    showFeedback(null);
+    try {
+      useAppStore.getState().setExplorerOpen(true);
+      // Skills live outside the session workspace; authorize the skill folder
+      // before asking Explorer to read the file.
+      await apiPost("explorer/open", { path: target.baseDir }, 120_000);
+      await useAppStore.getState().openFile(target.filePath);
+      const opened = useAppStore.getState().openFiles.some((file) => samePath(file.path, target.filePath));
+      if (!opened) {
+        useLogStore.getState().log("warn", "skills", `open failed: ${target.filePath}`);
+        showFeedback(isChinese
+          ? `打开文件失败：${target.filePath}`
+          : `Failed to open file: ${target.filePath}`, true);
+        return;
+      }
+      useAppStore.getState().setExplorerRootPath(target.baseDir);
+      window.dispatchEvent(new CustomEvent("hwrag:explorer-open-root", { detail: { root: target.baseDir } }));
+      useLogStore.getState().log("ok", "skills", `opened ${target.filePath}`);
+      showFeedback(isChinese ? `已打开 ${target.filePath}` : `Opened ${target.filePath}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      useLogStore.getState().log("warn", "skills", `open failed: ${message}`);
+      showFeedback(isChinese ? `打开文件失败：${message}` : `Failed to open file: ${message}`, true);
+      useToastStore.getState().showError(isChinese ? `打开文件失败：${message}` : `Failed to open file: ${message}`);
+    }
+  };
+
   const toggleSkill = async (skill: InstalledSkill) => {
     clearError();
-    setFeedback(null);
+    showFeedback(null);
     if (skill.enabled) {
       if (await setSkillEnabled(skill.id, false)) {
-        setFeedback(isChinese ? "技能已停用。" : "Skill disabled.");
+        showFeedback(isChinese ? "技能已停用。" : "Skill disabled.");
       }
       return;
     }
@@ -113,7 +178,7 @@ export function SkillsManager({ lang }: { lang: string }) {
     try {
       if (await setSkillEnabled(dialog.skill.id, true)) {
         setDialog(null);
-        setFeedback(isChinese ? "技能已启用。" : "Skill enabled.");
+        showFeedback(isChinese ? "技能已启用。" : "Skill enabled.");
       }
     } finally {
       setEnablingSkill(false);
@@ -124,8 +189,9 @@ export function SkillsManager({ lang }: { lang: string }) {
     if (!dialog || dialog.mode !== "edit") return;
     setSavingSkill(true);
     if (await updateSkillContent(dialog.skill.id, editContent)) {
+      useLogStore.getState().log("ok", "skills", `saved ${dialog.skill.id}`);
       setDialog(null);
-      setFeedback(isChinese
+      showFeedback(isChinese
         ? "技能已保存；修改外部来源技能后需重新确认启用。"
         : "Skill saved. Edited imported skills require a new enable confirmation.");
     }
@@ -142,11 +208,12 @@ export function SkillsManager({ lang }: { lang: string }) {
     setCreatingSkill(true);
     try {
       if (await createSkill(content)) {
+        useLogStore.getState().log("ok", "skills", `created ${name}`);
         setCreateOpen(false);
         setNewSkillName("");
         setNewSkillDescription("");
         setNewSkillBody("");
-        setFeedback(isChinese ? `技能“${name}”已创建。` : `Skill “${name}” was created.`);
+        showFeedback(isChinese ? `技能“${name}”已创建。` : `Skill “${name}” was created.`);
       }
     } finally {
       setCreatingSkill(false);
@@ -159,9 +226,10 @@ export function SkillsManager({ lang }: { lang: string }) {
     setDeletingSkillId(target.id);
     try {
       if (await deleteSkill(target.id)) {
+        useLogStore.getState().log("ok", "skills", `deleted ${target.id}`);
         setDeleteTarget(null);
         if (dialog?.skill.id === target.id) setDialog(null);
-        setFeedback(isChinese ? `技能“${target.name}”已删除。` : `Skill “${target.name}” was deleted.`);
+        showFeedback(isChinese ? `技能“${target.name}”已删除。` : `Skill “${target.name}” was deleted.`);
       }
     } finally {
       setDeletingSkillId(null);
@@ -171,18 +239,19 @@ export function SkillsManager({ lang }: { lang: string }) {
   const previewGitHub = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setSelectedPaths([]);
-    setFeedback(null);
+    showFeedback(null);
     await previewGitHubImport(sourceUrl, sourceRef || undefined, sourcePath || undefined);
   };
 
   const confirmImport = async () => {
     if (await importGitHubSkills(selectedPaths, { scope: installScope, claude_adapter: claudeAdapter })) {
+      useLogStore.getState().log("ok", "skills", `imported ${selectedPaths.length} skill(s)`);
       setImportOpen(false);
       setSourceUrl("");
       setSourceRef("");
       setSourcePath("");
       setSelectedPaths([]);
-      setFeedback(isChinese
+      showFeedback(isChinese
         ? "有效技能已导入并启用；需审核的技能仍不可用。"
         : "Valid skills are imported and enabled; skills requiring review remain unavailable.");
     }
@@ -224,7 +293,7 @@ export function SkillsManager({ lang }: { lang: string }) {
       </div>
 
       {error && <div role="alert" style={{ color: "var(--danger)", fontSize: 12, margin: "8px 0" }}>{error}</div>}
-      {feedback && <div role="status" style={{ color: "var(--success)", fontSize: 12, margin: "8px 0" }}>{feedback}</div>}
+      {feedback && <div role={feedbackError ? "alert" : "status"} style={{ color: feedbackError ? "var(--danger)" : "var(--success)", fontSize: 12, margin: "8px 0" }}>{feedback}</div>}
 
       {createOpen && (
         <form onSubmit={(event) => void submitCreateSkill(event)} style={{ padding: 14, border: "1px solid var(--border)", borderRadius: 8, margin: "12px 0" }}>
@@ -376,7 +445,7 @@ export function SkillsManager({ lang }: { lang: string }) {
                     type="button"
                     className="verify-btn danger"
                     aria-label={`${isChinese ? "删除技能" : "Delete skill"}: ${skill.name}`}
-                    onClick={() => { clearError(); setFeedback(null); setDeleteTarget({ id: skill.id, name: skill.name }); }}
+                    onClick={() => { clearError(); showFeedback(null); setDeleteTarget({ id: skill.id, name: skill.name }); }}
                     disabled={dialogLoading === skill.id || deletingSkillId !== null}
                   >
                     {isChinese ? "删除" : "Delete"}
@@ -398,6 +467,7 @@ export function SkillsManager({ lang }: { lang: string }) {
           onEdit={(value) => setEditContent(value)}
           onSave={() => void saveEdit()}
           onEnable={() => void confirmEnable()}
+          onOpenFile={() => void openSkillFile(dialog.skill)}
           enabling={enablingSkill}
         />
       )}
@@ -504,6 +574,7 @@ function SkillDialogView({
   onEdit,
   onSave,
   onEnable,
+  onOpenFile,
   enabling,
 }: {
   dialog: SkillDialog;
@@ -514,6 +585,7 @@ function SkillDialogView({
   onEdit: (content: string) => void;
   onSave: () => void;
   onEnable: () => void;
+  onOpenFile: () => void;
   enabling: boolean;
 }) {
   const { skill, mode } = dialog;
@@ -542,7 +614,9 @@ function SkillDialogView({
         {mode === "edit" ? (
           <textarea className="settings-textarea" rows={14} value={editContent} onChange={(event) => onEdit(event.target.value)} disabled={saving} aria-label={isChinese ? "技能 Markdown 内容" : "Skill Markdown content"} />
         ) : (
-          <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", maxHeight: "48vh", overflow: "auto", padding: 12, borderRadius: 6, background: "var(--thinking-bg)", fontSize: 12 }}>{skill.content}</pre>
+          skill.content
+            ? <div className="skill-view-content"><MarkdownRenderer content={skill.content} /></div>
+            : <p style={{ fontSize: 12, color: "var(--muted-fg)" }}>{isChinese ? "这个技能没有可显示的 Markdown 内容；可尝试打开对应文件。" : "This skill has no displayable Markdown; try opening its file."}</p>
         )}
         {Array.isArray(skill.resources) && skill.resources.length > 0 && (
           <details style={{ marginTop: 10 }}>
@@ -564,6 +638,7 @@ function SkillDialogView({
           </p>
         )}
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
+          <button type="button" className="verify-btn" onClick={onOpenFile} disabled={saving || enabling}>{isChinese ? "打开文件" : "Open file"}</button>
           <button type="button" className="verify-btn" onClick={onClose} disabled={saving || enabling}>{isChinese ? "关闭" : "Close"}</button>
           {mode === "edit" && (
             <button type="button" className="verify-btn primary" onClick={onSave} disabled={saving}>

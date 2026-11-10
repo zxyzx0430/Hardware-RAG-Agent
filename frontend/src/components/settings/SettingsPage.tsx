@@ -15,10 +15,6 @@ import { AuditLogPanel } from "./AuditLogPanel";
 import { MemoryHubPanel } from "../memory/MemoryHubPanel";
 import { EmptyState } from "../shared/EmptyState";
 
-function isApiKeyMissing(providers: { apiKey?: string }[]): boolean {
-  return !providers.some((p) => p.apiKey?.trim());
-}
-
 const TAB_IDS = ["api", "rag", "memory", "memory-hub", "appearance", "usage", "logs", "audit", "mcp", "tools", "skills", "about"] as const;
 
 const TOOL_ENTRIES = [
@@ -28,7 +24,6 @@ const TOOL_ENTRIES = [
 
 export function SettingsPage() {
   const { t } = useI18n();
-  const needsApiKey = useChatStore((s) => s.needsApiKey);
   const { setActiveNav, themeMode, setThemeMode, lang, setLang, chatFontSize, setChatFontSize } = useAppStore();
   const {
     providers, chatProviderId, chatModel, imageProviderId, imageModel, visionProviderId, visionModel,
@@ -722,7 +717,7 @@ export function SettingsPage() {
             )}
 
             {tab === 'usage' && (
-              (needsApiKey || isApiKeyMissing(providers)) ? (
+              providers.length === 0 ? (
                 <div className="settings-section">
                   <h3 style={{ fontSize: 16, fontWeight: 500, marginBottom: 18 }}>{t('tokenUsage')}</h3>
                   <div style={{ textAlign: "center", padding: 40, color: "var(--muted-fg)", fontSize: 13 }}>

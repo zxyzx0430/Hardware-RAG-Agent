@@ -16,6 +16,8 @@ interface DailyEntry {
   input: number;
   output: number;
   total: number;
+  cached?: number;
+  hit_rate?: number;
 }
 
 interface ModelEntry {
@@ -23,6 +25,8 @@ interface ModelEntry {
   input: number;
   output: number;
   total: number;
+  cached?: number;
+  hit_rate?: number;
   calls: number;
 }
 
@@ -33,6 +37,8 @@ interface TokenStats {
     total_input: number;
     total_output: number;
     total_tokens: number;
+    total_cached?: number;
+    hit_rate?: number;
     days: number;
   };
 }
@@ -97,7 +103,7 @@ export function TokenUsagePanel() {
 
   const maxTokens = useMemo(() => {
     if (daily.length === 0) return 100;
-    return Math.max(...daily.map((d) => Math.max(d.input, d.output)), 100);
+    return Math.max(...daily.map((d) => Math.max(d.input, d.output, d.cached ?? 0)), 100);
   }, [daily]);
 
   // Compute per-model max once (avoid O(n²) recomputation inside map)
@@ -117,6 +123,11 @@ export function TokenUsagePanel() {
   const outputPath = useMemo(() => {
     if (daily.length === 0) return "";
     return daily.map((d, i) => `${i === 0 ? "M" : "L"} ${xPos(i)} ${yPos(d.output)}`).join(" ");
+  }, [daily, maxTokens]);
+
+  const cachedPath = useMemo(() => {
+    if (daily.length === 0 || !daily.some((d) => (d.cached ?? 0) > 0)) return "";
+    return daily.map((d, i) => `${i === 0 ? "M" : "L"} ${xPos(i)} ${yPos(d.cached ?? 0)}`).join(" ");
   }, [daily, maxTokens]);
 
   // Measure actual SVG path length for accurate stroke-dasharray animation
@@ -144,6 +155,8 @@ export function TokenUsagePanel() {
   // Colors
   const inputColor = "var(--primary)";
   const outputColor = "var(--chart-output)";
+  const cachedColor = "var(--chart-cached, #8b5cf6)";
+  const hitRate = summary?.hit_rate ?? 0;
 
   if (loading) {
     return (
@@ -196,6 +209,14 @@ export function TokenUsagePanel() {
         <div className="stat-card">
           <div className="stat-label">{t('totalTokens')}</div>
           <div className="stat-value">{formatTokens(summary?.total_tokens ?? 0)}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">{t('cachedTokens')}</div>
+          <div className="stat-value" style={{ color: cachedColor }}>{formatTokens(summary?.total_cached ?? 0)}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">{t('cacheHitRate')}</div>
+          <div className="stat-value">{(hitRate * 100).toFixed(1)}%</div>
         </div>
       </div>
 
@@ -289,6 +310,18 @@ export function TokenUsagePanel() {
                   transition: "stroke-dashoffset 1.2s ease-in-out 0.2s",
                 }}
               />
+              {/* Cached input line */}
+              {cachedPath ? (
+                <path
+                  d={cachedPath}
+                  fill="none" stroke={cachedColor} strokeWidth={2} strokeDasharray="5 4"
+                  strokeLinejoin="round" strokeLinecap="round"
+                  style={{
+                    opacity: animated ? 1 : 0,
+                    transition: "opacity 0.5s ease 0.4s",
+                  }}
+                />
+              ) : null}
               {/* Data points */}
               {daily.map((d, i) => (
                 <g key={i}>
@@ -308,6 +341,16 @@ export function TokenUsagePanel() {
                       transition: `opacity 0.3s ease ${0.8 + i * 0.02}s`,
                     }}
                   />
+                  {(d.cached ?? 0) > 0 ? (
+                    <circle
+                      cx={xPos(i)} cy={yPos(d.cached ?? 0)} r={3}
+                      fill={cachedColor}
+                      style={{
+                        opacity: animated ? 1 : 0,
+                        transition: `opacity 0.3s ease ${0.8 + i * 0.02}s`,
+                      }}
+                    />
+                  ) : null}
                 </g>
               ))}
             </>
@@ -317,26 +360,36 @@ export function TokenUsagePanel() {
           {chartType === "bar" && (
             <>
               {daily.map((d, i) => {
-                const barW = Math.min(28, Math.max(4, xStep * 0.28));
+                const barW = Math.min(22, Math.max(4, xStep * 0.22));
                 const gap = 2;
                 const inputH = (d.input / maxTokens) * chartH;
                 const outputH = (d.output / maxTokens) * chartH;
+                const cachedH = ((d.cached ?? 0) / maxTokens) * chartH;
                 return (
                   <g key={i}>
                     {/* Input bar */}
                     <rect
-                      x={xPos(i) - barW - gap / 2} y={CHART_PAD.top + chartH - (animated ? inputH : 0)}
+                      x={xPos(i) - barW - gap} y={CHART_PAD.top + chartH - (animated ? inputH : 0)}
                       width={barW} height={animated ? inputH : 0}
                       fill={inputColor} rx={3}
                       style={{ transition: `all 0.6s ease ${i * 0.02}s` }}
                     />
                     {/* Output bar */}
                     <rect
-                      x={xPos(i) + gap / 2} y={CHART_PAD.top + chartH - (animated ? outputH : 0)}
+                      x={xPos(i)} y={CHART_PAD.top + chartH - (animated ? outputH : 0)}
                       width={barW} height={animated ? outputH : 0}
                       fill={outputColor} rx={3}
                       style={{ transition: `all 0.6s ease ${i * 0.02 + 0.1}s` }}
                     />
+                    {/* Cached input bar */}
+                    {cachedH > 0 ? (
+                      <rect
+                        x={xPos(i) + barW + gap} y={CHART_PAD.top + chartH - (animated ? cachedH : 0)}
+                        width={barW} height={animated ? cachedH : 0}
+                        fill={cachedColor} rx={3}
+                        style={{ transition: `all 0.6s ease ${i * 0.02 + 0.2}s` }}
+                      />
+                    ) : null}
                   </g>
                 );
               })}
@@ -344,11 +397,13 @@ export function TokenUsagePanel() {
           )}
 
           {/* Legend */}
-          <g transform={`translate(${CHART_W - CHART_PAD.right - 120}, ${CHART_PAD.top - 8})`}>
+          <g transform={`translate(${CHART_W - CHART_PAD.right - 150}, ${CHART_PAD.top - 8})`}>
             <rect x={0} y={0} width={10} height={10} fill={inputColor} rx={2} />
             <text x={14} y={9} fontSize={11} fill="var(--fg)">{t('inputTokens')}</text>
             <rect x={0} y={16} width={10} height={10} fill={outputColor} rx={2} />
             <text x={14} y={25} fontSize={11} fill="var(--fg)">{t('outputTokens')}</text>
+            <rect x={0} y={32} width={10} height={10} fill={cachedColor} rx={2} />
+            <text x={14} y={41} fontSize={11} fill="var(--fg)">{t('cachedTokens')}</text>
           </g>
         </svg>
       </div>
@@ -374,6 +429,8 @@ export function TokenUsagePanel() {
                 </div>
                 <span className="model-bar-tokens" style={{ fontSize: 11 }}>
                   {formatTokens(row.total)} · {row.calls} {t('calls')}
+                  {row.cached ? ` · ${t('cachedTokens')} ${formatTokens(row.cached)}` : ""}
+                  {row.hit_rate ? ` · ${(row.hit_rate * 100).toFixed(1)}%` : ""}
                 </span>
               </div>
             );

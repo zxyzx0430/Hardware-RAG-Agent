@@ -2541,6 +2541,8 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
                 agent_saw_confirmation = False
                 agent_saw_error = False
                 agent_terminal: dict[str, Any] | None = None
+                agent_usage: dict[str, Any] | None = None
+                agent_usage_recorded = False
                 try:
                     assembled_history = None
                     if payload.history_mode == "server":
@@ -2574,6 +2576,19 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
                         for frame in _sse_frames(sse):
                             event = _sse_frame_payload(frame)
                             event_type = event.get("type") if event else None
+                            if event_type == "usage":
+                                usage = event.get("usage") if event else None
+                                if isinstance(usage, dict) and not agent_usage_recorded:
+                                    agent_usage = usage
+                                    _record_token_usage(
+                                        model=model, provider=provider or "",
+                                        session_id=payload.session_id,
+                                        usage_data=usage,
+                                        run_id=run_id,
+                                        source="agent",
+                                    )
+                                    agent_usage_recorded = True
+                                continue
                             if event_type == "done":
                                 agent_terminal = event
                                 continue
@@ -2593,7 +2608,7 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
                             "success": True,
                             "completed": False,
                             "awaiting_confirmation": True,
-                            "usage": None,
+                            "usage": agent_usage,
                         })
                         return
                     if not agent_text_seen:
@@ -2603,7 +2618,7 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
                     yield sse_event("done", {
                         "success": True,
                         "completed": True,
-                        "usage": (agent_terminal or {}).get("usage"),
+                        "usage": agent_usage or (agent_terminal or {}).get("usage"),
                     })
                     return
                 except Exception as agent_exc:
@@ -3811,13 +3826,16 @@ def token_usage_stats(
     """返回近 N 天的 Token 用量统计。
 
     返回:
-        daily: 按天聚合 [{date, input, output, total}]
-        by_model: 按模型分组 [{model, input, output, total, calls}]
-        summary: {total_input, total_output, total_tokens, days}
+        daily: 按天聚合 [{date, input, output, total, cached, hit_rate}]
+        by_model: 按模型分组 [{model, input, output, total, cached, hit_rate, calls}]
+        summary: {total_input, total_output, total_tokens, total_cached, hit_rate, days}
     """
     days = max(1, min(days, 365))  # Clamp to valid range
     import datetime
     from sqlalchemy import func
+
+    def _hit_rate(cached: int, input_tokens: int) -> float:
+        return round(cached / input_tokens, 4) if input_tokens > 0 else 0.0
 
     cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
 
@@ -3829,6 +3847,7 @@ def token_usage_stats(
                 func.sum(TokenUsage.prompt_tokens).label("input"),
                 func.sum(TokenUsage.completion_tokens).label("output"),
                 func.sum(TokenUsage.total_tokens).label("total"),
+                func.sum(TokenUsage.cached_tokens).label("cached"),
             ).filter(TokenUsage.created_at >= cutoff)
             if session_id is not None:
                 daily_query = daily_query.filter(TokenUsage.session_id == session_id)
@@ -3838,15 +3857,18 @@ def token_usage_stats(
                 func.date(TokenUsage.created_at)
             ).all()
 
-            daily = [
-                {
+            daily = []
+            for row in daily_rows:
+                input_tokens = int(row.input or 0)
+                cached_tokens = int(row.cached or 0)
+                daily.append({
                     "date": str(row.date),
-                    "input": int(row.input or 0),
+                    "input": input_tokens,
                     "output": int(row.output or 0),
                     "total": int(row.total or 0),
-                }
-                for row in daily_rows
-            ]
+                    "cached": cached_tokens,
+                    "hit_rate": _hit_rate(cached_tokens, input_tokens),
+                })
 
             # By model aggregation
             model_query = db.query(
@@ -3854,6 +3876,7 @@ def token_usage_stats(
                 func.sum(TokenUsage.prompt_tokens).label("input"),
                 func.sum(TokenUsage.completion_tokens).label("output"),
                 func.sum(TokenUsage.total_tokens).label("total"),
+                func.sum(TokenUsage.cached_tokens).label("cached"),
                 func.count(TokenUsage.id).label("calls"),
             ).filter(TokenUsage.created_at >= cutoff)
             if session_id is not None:
@@ -3864,20 +3887,24 @@ def token_usage_stats(
                 func.sum(TokenUsage.total_tokens).desc()
             ).all()
 
-            by_model = [
-                {
+            by_model = []
+            for row in model_rows:
+                input_tokens = int(row.input or 0)
+                cached_tokens = int(row.cached or 0)
+                by_model.append({
                     "model": row.model,
-                    "input": int(row.input or 0),
+                    "input": input_tokens,
                     "output": int(row.output or 0),
                     "total": int(row.total or 0),
+                    "cached": cached_tokens,
+                    "hit_rate": _hit_rate(cached_tokens, input_tokens),
                     "calls": int(row.calls or 0),
-                }
-                for row in model_rows
-            ]
+                })
 
             # Summary
             total_input = sum(d["input"] for d in daily)
             total_output = sum(d["output"] for d in daily)
+            total_cached = sum(d["cached"] for d in daily)
             total_tokens = sum(d["total"] for d in daily)
 
             return {
@@ -3889,6 +3916,8 @@ def token_usage_stats(
                         "total_input": total_input,
                         "total_output": total_output,
                         "total_tokens": total_tokens,
+                        "total_cached": total_cached,
+                        "hit_rate": _hit_rate(total_cached, total_input),
                         "days": days,
                     },
                 },

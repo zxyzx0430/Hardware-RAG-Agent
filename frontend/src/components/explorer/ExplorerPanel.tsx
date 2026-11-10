@@ -513,6 +513,17 @@ export function ExplorerPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Settings can open a skill file outside the current workspace. The root
+  // change alone does not grant access, so ask Explorer to reopen it.
+  useEffect(() => {
+    const handleOpenRoot = (event: Event) => {
+      const root = (event as CustomEvent<{ root?: string }>).detail?.root;
+      if (root) void loadTree(root);
+    };
+    window.addEventListener("hwrag:explorer-open-root", handleOpenRoot);
+    return () => window.removeEventListener("hwrag:explorer-open-root", handleOpenRoot);
+  }, [loadTree]);
+
   // Reset selection/expanded when the user switches to a different folder,
   // restoring any previously persisted state for that root. The root itself is
   // always expanded after a switch so its contents are visible.

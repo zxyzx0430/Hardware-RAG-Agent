@@ -176,7 +176,7 @@ describe("SkillsManager", () => {
     await screen.findByText("Review hardware");
 
     fireEvent.click(screen.getByRole("button", { name: "检查并启用: review" }));
-    expect(await screen.findByText("# Review instructions")).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Review instructions" })).toBeTruthy();
     expect(screen.getByText("Read-only references only")).toBeTruthy();
     expect(apiPatchMock).not.toHaveBeenCalled();
 
@@ -204,7 +204,7 @@ describe("SkillsManager", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "查看" }));
     await screen.findByRole("dialog");
-    await screen.findByText("# Review first");
+    await screen.findByRole("heading", { name: "Review first" });
     expect(document.body.textContent).toContain("This skill asks for an unsupported tool.");
     expect(document.body.textContent).toContain("warning · UNSUPPORTED_TOOL");
     fireEvent.click(screen.getByText("附加资料 (2)"));

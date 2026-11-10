@@ -631,6 +631,8 @@ const en: Record<string, string> = {
   inputTokens: 'Input Tokens',
   outputTokens: 'Output Tokens',
   totalTokens: 'Total Tokens',
+  cachedTokens: 'Cached Input',
+  cacheHitRate: 'Cache Hit Rate',
   last30Days: 'Last 30 Days',
   lineChart: 'Line Chart',
   barChart: 'Bar Chart',

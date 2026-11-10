@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { apiGet, apiPatch, apiPost } from "../../api/client";
 import { useChatStore } from "../../stores/useChatStore";
+import { useLogStore } from "../../stores/useLogStore";
 import { useI18n } from "../../i18n";
 import type {
   ChangeItem,
@@ -224,9 +225,12 @@ export function ChangeSetPanel() {
         review_status: status,
         review_note: reviewNote || null,
       });
+      useLogStore.getState().log("ok", "changes", `${status} ${selected.path || selected.id}`);
       await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      useLogStore.getState().log("warn", "changes", `review failed: ${message}`);
+      setError(message);
     } finally {
       setBusy(false);
     }
@@ -239,9 +243,12 @@ export function ChangeSetPanel() {
       await apiPost(`change-sets/${encodeURIComponent(changeSet.id)}/review`, {
         review_status: status,
       });
+      useLogStore.getState().log("ok", "changes", `${status} set ${changeSet.run_id}`);
       await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      useLogStore.getState().log("warn", "changes", `set review failed: ${message}`);
+      setError(message);
     } finally {
       setBusy(false);
     }
@@ -254,9 +261,12 @@ export function ChangeSetPanel() {
     setError(null);
     try {
       await apiPost(`change-items/${encodeURIComponent(selected.id)}/revert`, {});
+      useLogStore.getState().log("ok", "changes", `reverted ${selected.path || selected.id}`);
       await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      useLogStore.getState().log("warn", "changes", `revert failed: ${message}`);
+      setError(message);
     } finally {
       setBusy(false);
     }
@@ -268,9 +278,12 @@ export function ChangeSetPanel() {
     setError(null);
     try {
       await apiPost(`change-sets/${encodeURIComponent(changeSet.id)}/revert`, {});
+      useLogStore.getState().log("ok", "changes", `reverted set ${changeSet.run_id}`);
       await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      useLogStore.getState().log("warn", "changes", `set revert failed: ${message}`);
+      setError(message);
     } finally {
       setBusy(false);
     }
@@ -286,12 +299,15 @@ export function ChangeSetPanel() {
         cwd: validationCwd.trim(),
         timeout_ms: 30000,
       });
+      useLogStore.getState().log("ok", "changes", `validation ${validationCommand.trim()}`);
       const data = await apiGet<{ validations: ValidationRun[] }>(
         `change-sets/${encodeURIComponent(selectedSet.id)}/validations`,
       );
       setValidations(data.validations || []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      useLogStore.getState().log("warn", "changes", `validation failed: ${message}`);
+      setError(message);
     } finally {
       setValidationBusy(false);
     }

@@ -631,6 +631,8 @@ const zh: Record<string, string> = {
   inputTokens: '输入 Token',
   outputTokens: '输出 Token',
   totalTokens: '总计 Token',
+  cachedTokens: '缓存输入',
+  cacheHitRate: '缓存命中率',
   last30Days: '近 30 天',
   lineChart: '折线图',
   barChart: '柱状图',

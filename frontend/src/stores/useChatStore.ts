@@ -3982,7 +3982,12 @@ export const useChatStore = create<ChatState>((set, get) => {
             streamingSessionId, currentSseRequest, streamingContent,
             streamingSteps, backgroundSseRequests,
             streamingError, streamingErrorBySession, planModeBySession } = get();
-    if (id === activeSessionId) return;
+    if (id === activeSessionId) {
+      // HMR can leave a store instance with an empty message buffer; clicking
+      // the already-active session must still be able to recover from disk.
+      if (messages.length === 0 && !isStreaming) void get().fetchMessages(id);
+      return;
+    }
     const nextKbScope = _loadKbScope(id);
     getLog()("info", "chat", `切换会话: ${activeSessionId} → ${id}`);
 
