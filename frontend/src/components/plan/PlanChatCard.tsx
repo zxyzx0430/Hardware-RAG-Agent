@@ -9,6 +9,10 @@ import { stripPlanSourceCitations } from "../../utils/planMarkdown";
 export function PlanChatCard() {
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const plan = useChatStore((s) => s.sessionPlans?.[s.activeSessionId] ?? null);
+  const changeSets = useChatStore((s) => s.changeSetsBySession?.[s.activeSessionId]);
+  const linkedChanges = (changeSets || []).flatMap((set) => (
+    plan?.id && set.plan_id === plan.id ? set.items : []
+  ));
   const isStreaming = useChatStore((s) => s.isStreaming);
   const approvePlan = useChatStore((s) => s.approvePlan);
   const rejectPlan = useChatStore((s) => s.rejectPlan);
@@ -76,6 +80,9 @@ export function PlanChatCard() {
           {pending ? "待批准" : "已批准"}
         </span>
         <span className="plan-chat-version">计划 v{plan.version}</span>
+        {linkedChanges.length > 0 ? (
+          <span className="plan-chat-change-badge">变更 {linkedChanges.length}</span>
+        ) : null}
         <button type="button" className="plan-chat-view" onClick={viewPlan}>在右侧查看</button>
       </div>
       <h3 className="plan-chat-title">{title}</h3>

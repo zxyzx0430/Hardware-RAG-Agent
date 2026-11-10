@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import AsyncIterator
 
+from src.agent.path_guard import active_workspace_root
 from src.agent.tools.groups.file_ops._git_lock import get_git_lock, get_git_sync_lock
 from src.config.settings import ROOT_DIR
 
@@ -213,10 +214,24 @@ def _finish_snapshot(token: _SnapshotToken) -> None:
             logger.info("git snapshot postimage skipped: %s", exc)
 
 
-def _repo_root() -> Path | None:
-    """Return the enclosing Git worktree root, if ROOT_DIR is in one."""
+def _snapshot_base_root() -> Path:
+    """Use the request workspace, falling back to the historic test seam."""
     try:
-        return Path(_git_text(["rev-parse", "--show-toplevel"], Path(ROOT_DIR))).resolve()
+        from src.agent.request_context import active_tool_context
+
+        context = active_tool_context()
+        root = getattr(context, "workspace_root", None) if context is not None else None
+        if isinstance(root, str) and root.strip():
+            return Path(root)
+    except Exception:
+        pass
+    return Path(ROOT_DIR)
+
+
+def _repo_root() -> Path | None:
+    """Return the enclosing Git worktree root, if the active workspace is in one."""
+    try:
+        return Path(_git_text(["rev-parse", "--show-toplevel"], _snapshot_base_root())).resolve()
     except (OSError, subprocess.SubprocessError):
         return None
 

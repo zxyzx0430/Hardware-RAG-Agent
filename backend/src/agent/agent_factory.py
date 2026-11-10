@@ -1640,6 +1640,7 @@ def _build_tool_ctx(
         skills_mode=skills_mode,
         skills_runtime=skills_runtime,
         kb_scope=kb_scope,
+        workspace_root=getattr(payload, "workspace_root", None),
         rag_source_registry=RagSourceRegistry(),
     )
 
@@ -1673,6 +1674,7 @@ def _build_local_execution_tools() -> list[BaseTool]:
     from src.agent.tools.groups.execution import (
         EnterPlanModeTool,
         RunCommandTool,
+        SetPlanStepTool,
         SubmitPlanTool,
         TodoWriteTool,
     )
@@ -1681,6 +1683,7 @@ def _build_local_execution_tools() -> list[BaseTool]:
         TodoWriteTool(),
         SubmitPlanTool(),
         EnterPlanModeTool(),
+        SetPlanStepTool(),
     ]
 
 

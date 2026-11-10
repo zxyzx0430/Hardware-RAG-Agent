@@ -905,3 +905,28 @@ Vite 的 advisory 报告 Prism chunk 621.06 kB、主 bundle 1,020.16 kB（minifi
 | TypeScript | `tsc --noEmit -p tsconfig.app.json` | exit 0 |
 
 全量后端 7 failed / 9 errors 中，6 个失败和 9 个 error 在单独运行时全部通过，属于同进程顺序或资源污染，不是本次改动引入。剩余 `test_plan_policy.py::test_classifier_default_mode_still_asks_for_write` 单独运行仍失败：工作树位于 `E:\Desktop\agent\.claude\...`，`path_guard` 把相对路径解析到项目根下的 `.claude` 并命中 deny pattern；主检出不在 `.claude` 下时该断言应通过。未做浏览器或实机验收。
+
+## 2026-11-10 P2 批次 1：ChangeSet 观测
+
+- 后端定向：`pytest -q tests/test_change_capture.py tests/test_change_routes.py tests/test_git_snapshot_undo_isolation.py tests/test_tool_router_request_spec.py tests/test_main.py --disable-warnings`，**17 passed**。
+- 前端全量：`cd frontend && npm test`，**88 files / 566 tests passed**；`npm run build`（`tsc -b` + Vite）通过。
+- 真实链路：临时 session 让 Agent 通过两个 `write_file` 创建两个文件；RunEvent 收到 `change_set_updated`/`change_item_updated`，`GET /change-sets` 返回 1 个 set、2 个 observed item，两个 item 的 diff API 均 `available:true`。浏览器页面确认“变更”页、工作区基线、两个 ChangeItem 和 Monaco Diff 可见。
+- 未验证：接受/拒绝、撤销、Validation、外部 Explorer 根目录、复合 shell/build/flash 的变更捕获；这些属于后续批次。
+
+## 2026-11-10 P2 批次 2–4：Review / Revert / Validation
+
+- 后端定向：`pytest -q tests/test_change_capture.py tests/test_change_routes.py tests/test_change_workflow.py tests/test_git_snapshot_undo_isolation.py tests/test_tool_router_request_spec.py tests/test_enter_plan_mode.py tests/test_agent_factory_request_tool_config.py --disable-warnings`，**40 passed**。
+- 前端全量：`cd frontend && npm test`，**88 files / 569 tests passed**；`npm run build`（`tsc -b` + Vite）通过。
+- 真实 Agent 链路：一次 Run 创建 a.txt、b.txt 并编辑 edit.txt，生成 1 个 ChangeSet / 3 个 observed item；逐项接受和整轮接受返回 200；validation 使用 `python -m pytest tmp_p2_full_acceptance/test_sample.py -q` 返回 `passed`；撤销 edit.txt 后恢复 OLD，整轮撤销后 a/b 文件均被删除。
+- Plan 归因：创建并批准一个 plan，Agent 调用 `set_plan_step(0)` 后写文件，ChangeItem 记录 `plan_step_id=pl_...:v1:0`、`plan_step_index=0`。
+- 未验证/边界：外部 Explorer 根目录未自动纳入 Agent 写作用域；blob/表只有手动 `prune_change_data` helper，没有自动 retention；Validation 目前是用户触发的受限命令，没有从 Plan step 自动冻结测试计划；未强制以 Validation 结果阻止 Run 完成；写入前 staging 未实现。
+
+## 2026-11-10 P2 外部工作区与 Git
+
+- 外部根真实链路：Explorer 授权临时目录 → 会话绑定 → Agent 相对路径写文件 → ChangeSet root 为该目录 → 整轮 Revert 删除文件，均通过。
+- Git 真实链路：临时 Git 仓库创建分支、只提交 selected 文件、保留 user dirty；无 GitHub remote 的 PR 查询返回 `NO_GITHUB_REMOTE`。
+- 后端定向：`test_workspace_git.py`、`test_workspace_scope.py`、P2 ChangeSet 组，**24 passed**。
+- 最终 P2/workspace 回归：ChangeSet、review/revert/validation、plan、workspace/Git 相关文件 **63 passed**；前端 **89 files / 571 tests passed**，build 通过。
+- 全后端隔离脚本未完成：该脚本只复制 `backend/`，`tests/test_gc_data_integrity.py` 无法导入 `scripts/gc_data_integrity.py`，在收集阶段退出；这是既有隔离脚本边界，不是本次 P2 断言失败。
+- 前端全量：**89 files / 571 tests passed**；`npm run build`（`tsc -b` + Vite）通过。
+- 未验证：真实 GitHub PR/CI（为避免自动远端写入，仅做 gh auth/本地 remote 检查和 mock/错误路径）；浏览器外部根按钮点击由组件/API 组合验证，未替代完整人工验收。

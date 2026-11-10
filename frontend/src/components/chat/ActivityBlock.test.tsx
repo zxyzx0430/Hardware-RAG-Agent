@@ -256,6 +256,22 @@ describe("ActivityBlock Skill trace rendering", () => {
     expect(container.textContent).toContain("ordinary tool result");
     expect(container.textContent).toContain("reasoning text remains visible");
   });
+
+  it("offers a ChangeSet entry for a file tool result", () => {
+    const step = {
+      id: "change-call",
+      type: "tool",
+      name: "write_file",
+      args: "{\"path\":\"output.txt\"}",
+      status: "done",
+      change_item_id: "ci_1",
+    } as unknown as ActivityStep;
+    const activity = { durationMs: 1, steps: [step], status: "done" } as ActivityBlockData;
+    render(<ActivityBlock activity={activity} msgId="change-message" />);
+
+    fireEvent.click(screen.getAllByRole("button")[0]);
+    expect(screen.getByText("变更")).toBeTruthy();
+  });
 });
 
 describe("ActivityBlock reasoning Markdown rendering", () => {
@@ -337,5 +353,22 @@ describe("ActivityBlock reasoning Markdown rendering", () => {
       "int main(void)",
     );
     expect(body.textContent).not.toContain("```");
+  });
+});
+
+describe("ActivityBlock step count", () => {
+  it("counts tools without treating thinking steps as tools", () => {
+    const steps = [
+      { id: "thinking-1", type: "thinking", source: "reasoning", content: "first thought" },
+      { id: "tool-1", type: "tool", name: "list_kb_docs", status: "done", duration: 10 },
+      { id: "thinking-2", type: "thinking", source: "reasoning", content: "second thought" },
+      { id: "tool-2", type: "tool", name: "search_docs", status: "done", duration: 20 },
+    ] as unknown as ActivityStep[];
+    const activity = { durationMs: 30, steps, status: "done" } as ActivityBlockData;
+
+    const { container } = render(<ActivityBlock activity={activity} msgId="mixed-steps" />);
+
+    expect(container.textContent).toContain("2 tools");
+    expect(container.textContent).not.toContain("4 tools");
   });
 });

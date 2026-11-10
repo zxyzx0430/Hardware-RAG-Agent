@@ -11,6 +11,7 @@ import { useI18n } from "../../i18n";
 import type { TodoItem, SourceRef } from "../../types/session";
 import TodoCard from "../chat/TodoCard";
 import { PlanPanel } from "../plan/PlanPanel";
+import { ChangeSetPanel } from "../changes/ChangeSetPanel";
 import { useAppliedDarkMode } from "../shared/MarkdownRenderer";
 import { EmptyState } from "../shared/EmptyState";
 import { fetchBigChunk, getAuthHeaders, type BigChunkData } from "../../api/client";
@@ -313,6 +314,7 @@ function SourcePanel() {
           <button className={`source-tab ${tab === 'sources' ? 'active' : 'inactive'}`} id="tab-sources" onClick={() => setRightContentTab(activeSessionId, 'sources')}>{t('sources')}</button>
           <button className={`source-tab ${tab === 'todos' ? 'active' : 'inactive'}`} id="tab-todos" onClick={() => setRightContentTab(activeSessionId, 'todos')}>{t('todos')}</button>
           <button className={`source-tab ${tab === 'plan' ? 'active' : 'inactive'}`} id="tab-plan" onClick={() => setRightContentTab(activeSessionId, 'plan')}>{t('planTab')}</button>
+          <button className={`source-tab ${tab === 'changes' ? 'active' : 'inactive'}`} id="tab-changes" onClick={() => setRightContentTab(activeSessionId, 'changes')}>{t('changesTab')}</button>
         </div>
       </div>
       {tab === 'sources' ? (
@@ -353,8 +355,10 @@ function SourcePanel() {
             />
           )}
         </div>
-      ) : (
+      ) : tab === 'plan' ? (
         <div className="source-scroll" id="sourceScroll"><PlanPanel /></div>
+      ) : (
+        <div className="source-scroll" id="sourceScroll"><ChangeSetPanel /></div>
       )}
     </div>
   );

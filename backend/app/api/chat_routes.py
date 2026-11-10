@@ -155,6 +155,7 @@ class AgentRequestSnapshot:
     context_event_scope: Any = field(default=None, repr=False, compare=False)
     tool_event_scope: Any = field(default=None, repr=False, compare=False)
     business_session_id: str = ""
+    workspace_root: str | None = None
     principal_hash: str | None = field(default=None, repr=False)
     graph_config: dict | None = field(default=None, repr=False, compare=False)
     pending_call_ids: tuple[str, ...] = ()
@@ -459,6 +460,7 @@ def _request_snapshot_from_payload(
         skills_mode=getattr(payload, "skills_mode", "off") or "off",
         skill_ids=tuple(getattr(payload, "skill_ids", None) or ()),
         approved_plan_id=getattr(payload, "approved_plan_id", None),
+        workspace_root=getattr(payload, "workspace_root", None),
     )
 
 
@@ -472,6 +474,7 @@ def _payload_with_request_snapshot(payload: Any, snapshot: AgentRequestSnapshot)
         "skills_mode": snapshot.skills_mode,
         "skill_ids": list(snapshot.skill_ids),
         "approved_plan_id": snapshot.approved_plan_id,
+        "workspace_root": snapshot.workspace_root,
     }
     if hasattr(payload, "model_copy"):
         return payload.model_copy(update=updates)
@@ -488,6 +491,7 @@ def _ensure_request_tool_context(
     if snapshot.tool_context is not None:
         if snapshot.run_id and not snapshot.tool_context.run_id:
             snapshot.tool_context.run_id = snapshot.run_id
+        snapshot.tool_context.workspace_root = snapshot.workspace_root
         snapshot.tool_context.tool_observation_scope = _tool_observation_scope(snapshot)
         return snapshot
 
@@ -941,6 +945,8 @@ class ChatRequest(BaseModel):
     skills_mode: Literal["off", "auto", "manual"] = "off"
     skill_ids: list[str] = Field(default_factory=list, max_length=3)
     history_mode: Literal["client", "server"] = "client"
+    # Server-resolved workspace; clients must not treat this as authorization.
+    workspace_root: Optional[str] = Field(default=None, max_length=1000)
 
     @field_validator("long_term_memory", mode="before")
     @classmethod
@@ -1826,6 +1832,7 @@ def _create_chat_run(
         "top_k": payload.top_k,
         "relevance_threshold": payload.relevance_threshold,
         "approved_plan_id": payload.approved_plan_id,
+        "workspace_root": payload.workspace_root,
         "long_term_memory": long_term_memory,
         "principal_id": principal_id,
     }
@@ -2237,9 +2244,32 @@ def _seed_plan_todos(session_id: str, plan: dict) -> list[dict] | None:
     return todos
 
 
+def _resolve_bound_workspace(payload: ChatRequest, request: Request) -> str:
+    from app.api.session_workspace import (
+        WorkspaceAuthorizationError, resolve_session_workspace,
+    )
+
+    try:
+        return resolve_session_workspace(payload.session_id, request)
+    except WorkspaceAuthorizationError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "success": False,
+                "error": {
+                    "code": "WORKSPACE_NOT_AUTHORIZED",
+                    "message": str(exc),
+                },
+            },
+        ) from exc
+
+
 @router.post("/chat")
 async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(current_user)):
     """RAG 流式聊天，严格匹配前端 SSE 事件协议。"""
+    payload = payload.model_copy(
+        update={"workspace_root": _resolve_bound_workspace(payload, request)},
+    )
     creds = resolve_credentials(payload, request)
     api_key = creds["api_key"]
     base_url = creds["base_url"]
@@ -3113,6 +3143,11 @@ async def resume_agent(req: ResumeRequest, request: Request, user: dict = Depend
         if request_snapshot.tool_context is not None:
             request_snapshot.tool_context.run_id = req.run_id
     effective_payload = _payload_with_request_snapshot(req.payload, request_snapshot)
+    bound_root = _resolve_bound_workspace(effective_payload, request)
+    effective_payload = effective_payload.model_copy(
+        update={"workspace_root": bound_root},
+    )
+    request_snapshot = replace(request_snapshot, workspace_root=bound_root)
     effective_req = req.model_copy(update={"payload": effective_payload})
     creds = _resolve_creds(effective_payload, request)
     reasoning_effort = await _resolve_reasoning_effort(effective_payload, creds)

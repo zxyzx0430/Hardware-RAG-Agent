@@ -113,6 +113,8 @@ def build_approved_plan_prompt(plan: dict[str, Any]) -> str:
         "adapting only when evidence requires it.\n"
         "This approval is NOT a permission grant: file writes, commands, MCP, builds, and "
         "flashing still follow the normal permission policy.\n"
+        "Before starting each approved plan step, call `set_plan_step` with its zero-based "
+        "index so the system can attribute file changes to that step.\n"
         f"{file_line}\n"
         "<approved_plan>\n"
         f"{body}\n"

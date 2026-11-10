@@ -8,6 +8,12 @@ export function PlanPanel() {
   const { t } = useI18n();
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const plan = useChatStore((s) => s.sessionPlans[s.activeSessionId] ?? null);
+  const changeSets = useChatStore((s) => s.changeSetsBySession?.[s.activeSessionId]);
+  const linkedSets = (changeSets || []).filter((set) => plan?.id && set.plan_id === plan.id);
+  const linkedItems = linkedSets.flatMap((set) => set.items);
+  const accepted = linkedItems.filter((item) => item.review_status === "accepted").length;
+  const pending = linkedItems.filter((item) => item.review_status === "pending").length;
+  const reverted = linkedItems.filter((item) => item.status === "reverted").length;
 
   if (!activeSessionId || !plan) {
     return (
@@ -49,6 +55,16 @@ export function PlanPanel() {
       <div className="plan-panel-markdown">
         <MarkdownRenderer content={markdown} />
       </div>
+
+      {linkedItems.length > 0 ? (
+        <div className="plan-change-summary">
+          <strong>{t('planChanges', '计划变更')}</strong>
+          <span>{linkedItems.length} {t('files', '文件')}</span>
+          <span>{accepted} {t('accepted', '已接受')}</span>
+          <span>{pending} {t('pendingReview', '待审阅')}</span>
+          {reverted ? <span>{reverted} {t('reverted', '已撤销')}</span> : null}
+        </div>
+      ) : null}
 
       <div className="plan-meta">
         <div>{t('planStatus')}: {t(`planStatus_${plan.status}`)}</div>

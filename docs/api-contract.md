@@ -2549,3 +2549,68 @@ SSE 新增：
   `executed_run_id` 的版本，前端据此隐藏“待执行”提示。
 - `todo_update {todos:[]}`：合法的清空事件，前端必须用空数组覆盖旧展示。
 - 空 session 的 Todo 只走内存回退；不影响聊天完成。
+
+## P2 批次 1：变更观测与只读变更集
+
+变更事实按 Run 持久化到 `change_sets` / `change_items` / `change_events`。工具仍直接写文件；本批次只捕获和展示，不提供接受/拒绝、撤销或验证。所有响应沿用 `{success, data}` envelope；会话接口校验 owner。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/workspace/context` | 返回 Agent 工作区 root、branch、HEAD、dirty、untracked |
+| GET | `/api/sessions/{sid}/change-sets?limit=20` | 返回 `{workspace, change_sets}`；每个 set 内含 items |
+| GET | `/api/change-sets/{id}` | 返回 `{change_set, workspace}` |
+| GET | `/api/change-items/{id}/diff` | 返回 `{item, before_content, after_content, available, reason}` |
+
+`change_set` 关键字段：`id, session_id, run_id, plan_id, plan_version, workspace_root, status, base_ref, base_sha, created_at, updated_at`。`change_item` 关键字段：`id, change_set_id, call_id, tool_name, operation, path, before_sha256, after_sha256, diff_stats, risk, status, review_status, created_at`。
+
+SSE 新增：
+
+- `change_set_updated {change_set_id, session_id, workspace_root}`：本轮首次捕获或刷新。
+- `change_item_updated {change_set_id, item}`：文件工具完成后产生 item。
+
+只读内容来自本地 blob store；二进制、超过 1MiB 或非 Git 场景可能只返回 hash 和 `available:false`。`run_command` 仅对可解析的单目标写入捕获；复合 shell、build/flash、设备动作标为 `unobserved`，不能当作可撤销文件变更。
+
+## P2 批次 2–4：审阅、撤销与验证
+
+### 审阅
+
+| 方法 | 路径 | 请求/返回 |
+| --- | --- | --- |
+| PATCH | `/api/change-items/{id}` | `{review_status:"accepted"\|"rejected", review_note?}` → `{item, change_set}`；接受时若当前文件 hash 已变化，返回 409 `CHANGE_REVIEW_CONFLICT` 并标记 conflict |
+| POST | `/api/change-sets/{id}/review` | `{review_status:"accepted"\|"rejected", review_note?}` → `{results, change_set}`；逐项应用，冲突项单独失败 |
+
+`ChangeItem.review_status`：`pending / accepted / rejected`；`review_note`、`decided_at` 持久化。审阅只记录决定，不修改磁盘。`ChangeSet.plan_id/plan_version` 来自 Run 的 `approved_plan_id`；`plan_step_id = "{plan_id}:v{plan_version}:{step_index}"`。`set_plan_step` Agent 工具用于标记当前已批准计划的步骤。
+
+### 撤销
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| POST | `/api/change-items/{id}/revert` | 撤销单个 observed 文件变更；只有当前内容等于 `after_sha256` 才执行 |
+| POST | `/api/change-sets/{id}/revert` | 按反向顺序撤销整轮 observed 文件变更；部分失败返回 `partially_reverted` |
+
+撤销从 blob store 恢复 before 内容；创建文件删除、删除文件重建、修改文件覆盖。当前文件 hash 不匹配、路径越界、symlink、目录、缺失 blob → 不覆盖并返回冲突/失败。`unobserved` 项不可撤销；shell/设备副作用明确不在撤销范围。所有动作写 ChangeEvent 和 RunEvent。
+
+### 验证
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/change-sets/{id}/validations` | 返回 `{validations:[...]}` |
+| POST | `/api/change-sets/{id}/validations/run` | `{command, cwd?, timeout_ms?}`；仅允许测试/构建命令前缀（pytest、npm test、npm run、tsc、pio 等） |
+
+`ValidationRun` 字段：`id, change_set_id, run_id, command, cwd, status, exit_code, duration_ms, timed_out, stdout, stderr, created_at, finished_at`。状态为 `running/passed/failed/timeout`；命令严禁通过该 API 执行任意 shell，危险操作仍走 Agent 工具审批。SSE 新增 `change_reviewed`、`change_reverted`、`validation_started`、`validation_finished`。
+
+### 持久化
+
+`change_sets`、`change_items`、`change_events`、`validation_runs` 由 `init_db` 的 `Base.metadata.create_all` 创建；不修改用户 Git index/branch/HEAD/stash。工作区根默认是 Agent `PROJECT_ROOT`，ChangeItem/revert 路径必须位于该根内。
+
+## P2 批次 6：外部工作区、Git 与 PR/CI
+
+- `POST /api/sessions/{sid}/workspace/bind`：body `{path}`，要求当前 bearer session 已在 Explorer 打开并授权该目录；保存会话级 `workspace_root`。
+- `DELETE /api/sessions/{sid}/workspace/bind`：解除绑定，回到项目根。
+- `GET /api/sessions/{sid}/git`：返回本地 Git root、branch、HEAD、dirty/untracked、remote/upstream；remote 中的凭据会被脱敏。
+- `POST /api/sessions/{sid}/git/branch`：`{name}`，创建并切换分支；不 force。
+- `POST /api/sessions/{sid}/git/commit`：`{message, paths[]}`，只提交当前工作区内的显式路径；不 stash/reset/force。
+- `GET /api/sessions/{sid}/git/pr`：返回当前 PR 与 CI checks；无 GitHub origin 返回 `NO_GITHUB_REMOTE`，gh 未登录返回 `GH_AUTH_REQUIRED`。
+- `POST /api/sessions/{sid}/git/pr`：`{base,title,body,push}`，显式确认后推送当前分支并创建草稿 PR；不自动合并、不自动轮询 CI。
+
+外部根绑定后，Agent 的 `path_guard`、相对路径解析、`run_command` 默认 cwd、私有 Git snapshot、ChangeSet、Revert 和 Validation 都限制在该 root；未重新授权的绑定会让 chat 返回 `WORKSPACE_NOT_AUTHORIZED`，不会静默回退到项目根。

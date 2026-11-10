@@ -4454,6 +4454,7 @@ def init_db():
     """建表（首次启动时使用，后续通过 Alembic 迁移）。"""
     import app.db.models  # noqa: ensure models are loaded
     import app.db.recovery_models  # noqa: register recovery R1 tables
+    import app.db.change_models  # noqa: register P2 change facts
     import app.db.memory_models  # noqa: register Memory v1 table
     import app.db.hardware_profile_models  # noqa: register hardware profile table
     Base.metadata.create_all(bind=engine)
@@ -4464,7 +4465,7 @@ def init_db():
     _ensure_session_message_revision_schema()
     # 为已有数据库添加分支字段（幂等，列已存在时忽略）
     with engine.connect() as conn:
-        for col in ("branch_from_session_id", "branch_from_message_id"):
+        for col in ("branch_from_session_id", "branch_from_message_id", "workspace_root"):
             try:
                 conn.execute(
                     __import__("sqlalchemy").text(

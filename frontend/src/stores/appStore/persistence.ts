@@ -53,7 +53,7 @@ export function saveRightPanelWidth(width: number): void {
   saveNumber(RIGHT_PANEL_WIDTH_KEY, width);
 }
 
-const RIGHT_CONTENT_TABS: ReadonlySet<string> = new Set(["sources", "todos", "plan"]);
+const RIGHT_CONTENT_TABS: ReadonlySet<string> = new Set(["sources", "todos", "plan", "changes"]);
 const RIGHT_MODES: ReadonlySet<string> = new Set(["workbench", "content"]);
 
 export function loadRightMode(): RightMode {

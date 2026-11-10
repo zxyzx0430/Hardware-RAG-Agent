@@ -128,9 +128,13 @@ interface SessionState {
   deleteProject: (name: string) => void;
   setCreateProjectInputVisible: (visible: boolean) => void;
   /** 更新会话元数据（msgCount, preview, title, branchFromSessionId, branchFromMessageId 等） */
-  updateSessionMeta: (sessionId: string, updates: Partial<Pick<Session, "msgCount" | "preview" | "title" | "model" | "reasoningMode" | "branchFromSessionId" | "branchFromMessageId" | "planModeRequested">>) => void;
+  updateSessionMeta: (sessionId: string, updates: Partial<Pick<Session, "msgCount" | "preview" | "title" | "model" | "reasoningMode" | "workspaceRoot" | "branchFromSessionId" | "branchFromMessageId" | "planModeRequested">>) => void;
   /** Update current session's context window budget (tokens) and PATCH backend. */
   setContextWindow: (window: number) => void;
+  /** Bind an Explorer-authorized root to the active chat session. */
+  bindWorkspace: (path: string) => Promise<boolean>;
+  /** Clear the active session's external workspace binding. */
+  unbindWorkspace: () => Promise<boolean>;
 }
 
 export const useSessionStore = create<SessionState>((set, get) => ({
@@ -169,6 +173,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           branchFromSessionId: s.branch_from_session_id ?? undefined,
           branchFromMessageId: s.branch_from_message_id ?? undefined,
           contextWindow: normalizeContextWindow(s.context_window),
+          workspaceRoot: s.workspace_root ?? null,
           planModeRequested: s.plan_mode_requested === true,
         }));
         getLog()("ok", "session", `从后端加载 ${sessions.length} 个会话`);
@@ -546,6 +551,53 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       console.warn('[useSessionStore] setContextWindow failed:', err);
       useToastStore.getState().showError("设置上下文窗口失败");
     });
+  },
+
+  bindWorkspace: async (path) => {
+    const sid = useChatStore.getState().activeSessionId;
+    if (!sid || !path.trim()) return false;
+    try {
+      const data = await apiPost<{ workspace_root?: string }>(
+        `sessions/${sid}/workspace/bind`, { path: path.trim() },
+      );
+      const workspaceRoot = data?.workspace_root || path.trim();
+      set((s) => {
+        const updated = {
+          sessions: s.sessions.map((session) => (
+            session.id === sid ? { ...session, workspaceRoot } : session
+          )),
+        };
+        saveToStorage("sessions", updated.sessions);
+        return updated;
+      });
+      return true;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      useToastStore.getState().showError(`绑定工作区失败: ${msg}`);
+      return false;
+    }
+  },
+
+  unbindWorkspace: async () => {
+    const sid = useChatStore.getState().activeSessionId;
+    if (!sid) return false;
+    try {
+      await apiDelete(`sessions/${sid}/workspace/bind`);
+      set((s) => {
+        const updated = {
+          sessions: s.sessions.map((session) => (
+            session.id === sid ? { ...session, workspaceRoot: null } : session
+          )),
+        };
+        saveToStorage("sessions", updated.sessions);
+        return updated;
+      });
+      return true;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      useToastStore.getState().showError(`解绑工作区失败: ${msg}`);
+      return false;
+    }
   },
 }));
 

@@ -30,6 +30,12 @@ const EVENT_LABEL_KEYS: Record<string, string> = {
   artifact: "runEventArtifact",
   todo: "runEventTodo",
   plan: "runEventPlan",
+  change_set: "runEventChangeSet",
+  change_item: "runEventChangeItem",
+  change_review: "runEventChangeReview",
+  change_revert: "runEventChangeRevert",
+  validation_start: "runEventValidationStart",
+  validation_end: "runEventValidationEnd",
   permission: "runEventPermission",
   context: "runEventContext",
   progress: "runEventProgress",
@@ -57,6 +63,12 @@ export function RunStatusBar({ sessionId, onOpenSource }: RunStatusBarProps) {
   const view = useChatStore((s) => s.runViewBySession?.[sessionId]);
   const notice = useChatStore((s) => s.runRecoveryNoticeBySession?.[sessionId]);
   const timeline = useChatStore((s) => s.runTimelineBySession?.[sessionId]);
+  // A live turn's clock starts when the user sends, before the backend run
+  // exists. Use that same client start as ActivityBlock; reattached runs have
+  // no client start and fall back to the backend's started_at.
+  const streamingStartTime = useChatStore((s) => (
+    s.activeSessionId === sessionId ? s.streamingStartTime : null
+  ));
   const steps = useChatStore((s) => {
     if (s.activeSessionId !== sessionId) return EMPTY_STEPS;
     if (s.streamingSteps?.length > 0) return s.streamingSteps;
@@ -94,7 +106,9 @@ export function RunStatusBar({ sessionId, onOpenSource }: RunStatusBarProps) {
     ?? toolSteps.at(-1)?.name
     ?? null;
   const stepIndex = view?.currentStepIndex ?? toolSteps.length;
-  const startedAt = view?.startedAt ?? null;
+  const startedAt = isLive
+    ? streamingStartTime ?? view?.startedAt ?? null
+    : view?.startedAt ?? null;
   const finishedAt = view?.finishedAt ?? null;
   const elapsed = startedAt !== null
     ? Math.max(0, (finishedAt ?? now) - startedAt)

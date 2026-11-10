@@ -3,6 +3,8 @@ import { createPortal } from "react-dom";
 import { useAppStore } from "../../stores/useAppStore";
 import { useModalStore } from "../../stores/useModalStore";
 import { useToastStore } from "../../stores/useToastStore";
+import { useChatStore } from "../../stores/useChatStore";
+import { useSessionStore } from "../../stores/useSessionStore";
 import {
   loadExpandedPaths,
   loadSelectedPaths,
@@ -115,6 +117,10 @@ export function ExplorerPanel() {
   const setExplorerOpen = useAppStore((s) => s.setExplorerOpen);
   const addRecentFolder = useAppStore((s) => s.addRecentFolder);
   const toggleFollowMode = useAppStore((s) => s.toggleFollowMode);
+  const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const sessions = useSessionStore((s) => s.sessions);
+  const bindWorkspace = useSessionStore((s) => s.bindWorkspace);
+  const unbindWorkspace = useSessionStore((s) => s.unbindWorkspace);
   const { t } = useI18n();
 
   const [tree, setTree] = useState<FileNode | null>(null);
@@ -143,6 +149,7 @@ export function ExplorerPanel() {
   // (backend restarted, folder grant lost) reconnects to the same root.
   const [watchEpoch, setWatchEpoch] = useState(0);
   const [matchCount, setMatchCount] = useState(0);
+  const [workspaceBinding, setWorkspaceBinding] = useState(false);
   // Tree pane width (px) — draggable divider, persisted to localStorage
   const [treePaneWidth, setTreePaneWidth] = useState<number>(() => {
     try {
@@ -175,6 +182,26 @@ export function ExplorerPanel() {
   const showError = useCallback((message: string) => {
     useToastStore.getState().showError(message);
   }, []);
+
+  const boundSession = sessions.find((session) => session.id === activeSessionId);
+  const workspaceBound = Boolean(
+    rootPath && boundSession?.workspaceRoot
+    && pathKey(rootPath) === pathKey(boundSession.workspaceRoot),
+  );
+  const handleWorkspaceBinding = useCallback(async () => {
+    if (!rootPath || !activeSessionId || workspaceBinding) return;
+    setWorkspaceBinding(true);
+    try {
+      const ok = workspaceBound ? await unbindWorkspace() : await bindWorkspace(rootPath);
+      if (ok) {
+        useToastStore.getState().showInfo(
+          workspaceBound ? t("workspaceUnbound", "已解除工作区绑定") : t("workspaceBound", "已绑定到当前对话"),
+        );
+      }
+    } finally {
+      setWorkspaceBinding(false);
+    }
+  }, [activeSessionId, bindWorkspace, rootPath, t, unbindWorkspace, workspaceBinding, workspaceBound]);
 
   const fetchAndReplaceChildren = useCallback(async (path: string, token?: number) => {
     const res = await apiGet<DirResponse>(`explorer/dir?path=${encodeURIComponent(path)}`);
@@ -683,6 +710,17 @@ export function ExplorerPanel() {
           <button type="button" className="explorer-toolbar-btn" onClick={expandAll} disabled={!tree} title={t("expandAll", "展开所有")}>⊕</button>
           <button type="button" className="explorer-toolbar-btn" onClick={collapseAll} disabled={!tree} title={t("collapseAll", "折叠所有")}>⊖</button>
           <button type="button" className="explorer-toolbar-btn" onClick={refreshTree} disabled={!tree || loading} title={t("refreshTree", "刷新文件树")}>🔄</button>
+          {rootPath && (
+            <button
+              type="button"
+              className={`explorer-toolbar-btn${workspaceBound ? " active" : ""}`}
+              onClick={() => void handleWorkspaceBinding()}
+              disabled={!activeSessionId || workspaceBinding}
+              title={workspaceBound ? t("unbindWorkspace", "解除当前对话的工作区绑定") : t("bindWorkspace", "将当前文件夹绑定到当前对话")}
+            >
+              {workspaceBinding ? "…" : workspaceBound ? "✓ WS" : "WS"}
+            </button>
+          )}
           {rootPath && (
             watchAuthRequired ? (
               <button

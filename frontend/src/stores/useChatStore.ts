@@ -51,6 +51,7 @@ import { create } from "zustand";
 import type { Message, SourceRef, ActivityStep, Session, ContentPart, TodoItem } from "../types/session";
 import type { ChatRequest, ChatSSEEvent, Attachment, BackendMessage, RunStateResponse, RunStatus } from "../types/api";
 import type { Plan } from "../types/plan";
+import type { ChangeSet, ChangeSetsResponse, WorkspaceContext } from "../types/change";
 import type { SSEEventMeta } from "../api/client";
 import { loadFromStorage, saveToStorage, saveSessionMessages as writeSessionMessages, loadSessionMessages, removeSessionMessages, migrateMessagesToShards } from "../utils/persistence";
 import { getSessionHistoryMode } from "../utils/rollingHistoryClient";
@@ -248,6 +249,13 @@ interface ChatState {
   sessionPlans: Record<string, Plan | null>;
   sessionPlanLoaded: Record<string, boolean>;
   sessionPlanRevision: Record<string, number>;
+  /** Session-scoped P2 change facts, loaded from the change-set API and refreshed by SSE. */
+  changeSetsBySession: Record<string, ChangeSet[]>;
+  changeSetsLoadingBySession: Record<string, boolean>;
+  workspaceContextBySession: Record<string, WorkspaceContext | undefined>;
+  selectedChangeItemBySession: Record<string, string | null>;
+  setSelectedChangeItem: (sessionId: string, itemId: string | null) => void;
+  loadChangeSets: (sessionId: string) => Promise<void>;
   /** Load GET /todos for a session; stale responses lose to newer SSE updates. */
   loadSessionTodos: (sessionId: string) => Promise<void>;
   /** Load GET /plans/latest for a session; stale responses lose to newer SSE updates. */
@@ -640,6 +648,33 @@ function _clearPendingSaveIds(sessionId: string, ids: string[]): string[] {
   return _storePendingSaveIds(sessionId, remaining) ? remaining : current;
 }
 
+/**
+ * Drop save markers that no longer belong to the turn being saved.
+ *
+ * A failed turn can leave its assistant ID in the per-session marker store.
+ * When a later turn succeeds, only that turn's messages are allowed to remain
+ * pending; older or no-longer-present IDs would otherwise keep the save banner
+ * visible forever.
+ */
+function _reconcilePendingSaveMarkers(sessionId: string, keepIds: Iterable<string>): void {
+  const messages = useChatStore.getState().sessionMessages[sessionId] || [];
+  const byId = new Map(messages.map((message) => [message.id, message]));
+  const keep = new Set(keepIds);
+  const staleStoredIds = _loadPendingSaveIds(sessionId).filter((id) => {
+    const message = byId.get(id);
+    return !keep.has(id) || message === undefined || _isMessageSaveConfirmed(sessionId, message);
+  });
+  if (staleStoredIds.length > 0) _clearPendingSaveIds(sessionId, staleStoredIds);
+
+  const staleLocalIds = messages
+    .filter((message) => {
+      const tracked = (message as LocallyTrackedMessage)[LOCAL_PENDING_SAVE_FIELD] === true;
+      return tracked && (!keep.has(message.id) || _isMessageSaveConfirmed(sessionId, message));
+    })
+    .map((message) => message.id);
+  if (staleLocalIds.length > 0) _clearLocalPendingSaveIds(sessionId, staleLocalIds);
+}
+
 function _pendingSaveStatus(sessionId: string): "saving" | "pending" | undefined {
   if (_messageSaveQueues.has(sessionId)) return "saving";
   const messages = useChatStore.getState().sessionMessages[sessionId] || [];
@@ -956,6 +991,15 @@ function _extractFilePath(toolName: string, result: unknown): string | undefined
   const data = (typeof r.data === "object" && r.data !== null) ? r.data as Record<string, unknown> : r;
   const path = typeof data.path === "string" ? data.path : (typeof data.file_path === "string" ? data.file_path : "");
   return path || undefined;
+}
+
+function _extractChangeItemId(toolName: string, result: unknown): string | undefined {
+  if (!_FILE_EDIT_TOOLS.has(toolName)) return undefined;
+  if (!result || typeof result !== "object") return undefined;
+  const metadata = (result as Record<string, unknown>).metadata;
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return undefined;
+  const id = (metadata as Record<string, unknown>).change_item_id;
+  return typeof id === "string" && id ? id : undefined;
 }
 
 /** Append an ImagePart to existing message content (string | ContentPart[]).
@@ -1378,6 +1422,21 @@ function _timelineEntry(
       return { seq, type: "todo", at, message: String(event.todos?.length ?? 0) };
     case "plan_update":
       return { seq, type: "plan", at, message: event.plan?.title ?? "" };
+    case "change_set_updated":
+      return { seq, type: "change_set", at, message: event.change_set_id };
+    case "change_item_updated":
+      return {
+        seq, type: "change_item", at,
+        message: event.item?.path || event.item?.tool_name || "",
+      };
+    case "change_reviewed":
+      return { seq, type: "change_review", at, message: event.change_set_id };
+    case "change_reverted":
+      return { seq, type: "change_revert", at, message: event.item_id || event.change_set_id };
+    case "validation_started":
+      return { seq, type: "validation_start", at, message: event.validation_id };
+    case "validation_finished":
+      return { seq, type: "validation_end", at, message: event.change_set_id };
     case "permission_mode_changed":
       return { seq, type: "permission", at, message: event.permission_mode };
     case "context_compressing":
@@ -1800,11 +1859,16 @@ function _applyChatEvent(event: ChatSSEEvent, requestSessionId: string, terminal
         const imagePart = sse.tool === "image_generation" ? _extractImagePart(sse.result) : null;
         // File-editing tools: extract file_path for "查看 diff" button
         const filePath = _extractFilePath(sse.tool, sse.result);
+        const changeItemId = _extractChangeItemId(sse.tool, sse.result);
 
         if (isActive) {
           const steps = s.streamingSteps.map((step) =>
             step.call_id === sse.call_id
-              ? { ...step, status: newStatus, result: resultText, duration: sse.duration, file_path: filePath ?? step.file_path }
+              ? {
+                  ...step, status: newStatus, result: resultText,
+                  duration: sse.duration, file_path: filePath ?? step.file_path,
+                  change_item_id: changeItemId ?? step.change_item_id,
+                }
               : step
           );
           _needsParagraphBreak.set(sid, true);
@@ -1828,7 +1892,11 @@ function _applyChatEvent(event: ChatSSEEvent, requestSessionId: string, terminal
           if (last?.role === "assistant" && last.activity) {
             const steps = last.activity.steps.map((step) =>
               step.call_id === sse.call_id
-                ? { ...step, status: newStatus, result: resultText, duration: sse.duration, file_path: filePath ?? step.file_path }
+                ? {
+                    ...step, status: newStatus, result: resultText,
+                    duration: sse.duration, file_path: filePath ?? step.file_path,
+                    change_item_id: changeItemId ?? step.change_item_id,
+                  }
                 : step
             );
             msgs[msgs.length - 1] = { ...last, activity: { ...last.activity, steps } };
@@ -1893,6 +1961,16 @@ function _applyChatEvent(event: ChatSSEEvent, requestSessionId: string, terminal
       case "plan_update": {
         _planAutoRetryUsed.delete(sid);
         return planUpdateState(s, sid, sse.plan ?? null);
+      }
+
+      case "change_set_updated":
+      case "change_item_updated":
+      case "change_reviewed":
+      case "change_reverted":
+      case "validation_started":
+      case "validation_finished": {
+        void useChatStore.getState().loadChangeSets(sid);
+        return {};
       }
 
       case "done": {
@@ -2943,6 +3021,10 @@ export const useChatStore = create<ChatState>((set, get) => {
   sessionPlans: {},
   sessionPlanLoaded: {},
   sessionPlanRevision: {},
+  changeSetsBySession: {},
+  changeSetsLoadingBySession: {},
+  workspaceContextBySession: {},
+  selectedChangeItemBySession: {},
 
   setSelectedKbIds: (ids) => {
     const selectedKbIds = [...new Set(ids.filter((id) => typeof id === "string" && id.length > 0))];
@@ -3076,6 +3158,43 @@ export const useChatStore = create<ChatState>((set, get) => {
       getLog()("warn", "chat", `加载计划失败: ${sessionId} - ${errMsg}`);
     }
   },
+
+  loadChangeSets: async (sessionId) => {
+    if (!sessionId) return;
+    set((s) => ({
+      changeSetsLoadingBySession: {
+        ...s.changeSetsLoadingBySession, [sessionId]: true,
+      },
+    }));
+    try {
+      const data = await apiGet<ChangeSetsResponse>(
+        `sessions/${encodeURIComponent(sessionId)}/change-sets`,
+      );
+      set((s) => ({
+        changeSetsBySession: {
+          ...s.changeSetsBySession, [sessionId]: data.change_sets || [],
+        },
+        workspaceContextBySession: {
+          ...s.workspaceContextBySession, [sessionId]: data.workspace,
+        },
+      }));
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      getLog()("warn", "chat", `加载变更集失败: ${sessionId} - ${errMsg}`);
+    } finally {
+      set((s) => ({
+        changeSetsLoadingBySession: {
+          ...s.changeSetsLoadingBySession, [sessionId]: false,
+        },
+      }));
+    }
+  },
+
+  setSelectedChangeItem: (sessionId, itemId) => set((s) => ({
+    selectedChangeItemBySession: {
+      ...s.selectedChangeItemBySession, [sessionId]: itemId,
+    },
+  })),
 
   clearSessionTodos: async (sessionId) => {
     const sid = sessionId || get().activeSessionId;
@@ -3720,8 +3839,11 @@ export const useChatStore = create<ChatState>((set, get) => {
         remainingPendingIds.has(id) || remainingLocalPendingIds.has(id)
       );
       const saved = snapshotIsCurrent && localSnapshotPersisted && !lastTwoRemainPending;
+      if (saved) _reconcilePendingSaveMarkers(sessionId, lastTwoIds);
+      const pendingAfterSave = new Set(_loadPendingSaveIds(sessionId));
+      const localPendingAfterSave = new Set(_localPendingSaveIds(get().sessionMessages[sessionId] || []));
       updatePendingSaveStatus(sessionId, _pendingSaveStatus(sessionId));
-      if (saved && remainingPendingIds.size === 0 && remainingLocalPendingIds.size === 0) {
+      if (saved && pendingAfterSave.size === 0 && localPendingAfterSave.size === 0) {
         _updateSessionMetaAfterPersistedMessages(
           sessionId,
           get().sessionMessages[sessionId] || lastTwo,
@@ -3749,8 +3871,11 @@ export const useChatStore = create<ChatState>((set, get) => {
         remainingPendingIds.has(message.id) || remainingLocalPendingIds.has(message.id)
       );
       const saved = snapshotIsCurrent && localSnapshotPersisted && lastTwoAreConfirmed && !lastTwoRemainPending;
+      if (saved) _reconcilePendingSaveMarkers(sessionId, lastTwo.map((message) => message.id));
+      const pendingAfterSave = new Set(_loadPendingSaveIds(sessionId));
+      const localPendingAfterSave = new Set(_localPendingSaveIds(get().sessionMessages[sessionId] || []));
       updatePendingSaveStatus(sessionId, _pendingSaveStatus(sessionId));
-      if (saved && remainingPendingIds.size === 0 && remainingLocalPendingIds.size === 0) {
+      if (saved && pendingAfterSave.size === 0 && localPendingAfterSave.size === 0) {
         _updateSessionMetaAfterPersistedMessages(
           sessionId,
           get().sessionMessages[sessionId] || lastTwo,
@@ -3791,6 +3916,12 @@ export const useChatStore = create<ChatState>((set, get) => {
     if (retryMessages.length === 0) {
       const snapshotIsCurrent = _isMessageSaveSnapshotCurrent(sessionId, retryCandidates);
       const localSnapshotPersisted = snapshotIsCurrent && _saveCurrentLocalSnapshot(sessionId);
+      if (snapshotIsCurrent && localSnapshotPersisted) {
+        _reconcilePendingSaveMarkers(
+          sessionId,
+          retryCandidates.map((message) => message.id),
+        );
+      }
       const pendingIdsRemain = _loadPendingSaveIds(sessionId).length > 0
         || _localPendingSaveIds(get().sessionMessages[sessionId] || []).length > 0;
       const retrySaveCompleted = snapshotIsCurrent && localSnapshotPersisted && !pendingIdsRemain;
@@ -3823,12 +3954,14 @@ export const useChatStore = create<ChatState>((set, get) => {
         && localSnapshotPersisted
         && retryMessagesAreConfirmed
         && !retryMessagesRemainPending;
+      if (retrySaveCompleted) _reconcilePendingSaveMarkers(sessionId, retryIds);
+      const pendingAfterRetry = _loadPendingSaveIds(sessionId);
+      const localPendingAfterRetry = _localPendingSaveIds(get().sessionMessages[sessionId] || []);
       updatePendingSaveStatus(sessionId, _pendingSaveStatus(sessionId));
       if (
         retrySaveCompleted
-        && remainingPendingIds.length === 0
-        && _loadPendingSaveIds(sessionId).length === 0
-        && remainingLocalPendingIds.length === 0
+        && pendingAfterRetry.length === 0
+        && localPendingAfterRetry.length === 0
       ) {
         _updateSessionMetaAfterPersistedMessages(
           sessionId,

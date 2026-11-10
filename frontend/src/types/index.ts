@@ -3,7 +3,7 @@
 // UI meta types (local to this file)
 export type NavView = 'chat' | 'knowledge' | 'bookmarks' | 'settings';
 export type RightMode = 'workbench' | 'content';
-export type RightContentTab = 'sources' | 'todos' | 'plan';
+export type RightContentTab = 'sources' | 'todos' | 'plan' | 'changes';
 export type Lang = 'zh' | 'en';
 export type Theme = 'light' | 'dark' | 'auto';
 export type WbTab = 'serial' | 'flash' | 'preview';
@@ -54,6 +54,18 @@ export type {
   ActivityStep,
   SourceRef,
 } from './session';
+
+export type {
+  WorkspaceContext,
+  ChangeSet,
+  ChangeItem,
+  ChangeSetsResponse,
+  ChangeItemDiffResponse,
+  ValidationRun,
+  ValidationStatus,
+  ChangeReviewStatus,
+  ChangeItemStatus,
+} from './change';
 
 export type {
   ProviderInfo,

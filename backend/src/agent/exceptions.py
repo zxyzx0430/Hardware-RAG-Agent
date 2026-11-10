@@ -34,6 +34,8 @@ class ToolContext:
     # for small-window models (0 means unknown / use the default budget).
     context_token_limit: int = 0
     mcp_authorization: Any = field(default=None, repr=False)
+    # One user-authorized workspace root for this request; None = PROJECT_ROOT.
+    workspace_root: str | None = None
     rag_source_registry: Any = field(default=None, repr=False, compare=False)
     tool_observation_scope: Any = field(default=None, repr=False, compare=False)
 

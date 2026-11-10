@@ -446,6 +446,7 @@ const en: Record<string, string> = {
 
   // Plan mode - banner, panel, status
   planTab: 'Plan',
+  changesTab: 'Changes',
   planPendingTitle: 'Plan v{n} awaiting approval',
   planApprovedTitle: 'Plan v{n} approved',
   planView: 'View',
@@ -871,6 +872,12 @@ const en: Record<string, string> = {
   runEventArtifact: 'Artifact',
   runEventTodo: 'Todo list',
   runEventPlan: 'Plan',
+  runEventChangeSet: 'Change set',
+  runEventChangeItem: 'Change item',
+  runEventChangeReview: 'Change review',
+  runEventChangeRevert: 'Change revert',
+  runEventValidationStart: 'Validation started',
+  runEventValidationEnd: 'Validation finished',
   runEventPermission: 'Permission',
   runEventContext: 'Context',
   runEventProgress: 'Progress',
@@ -880,6 +887,12 @@ const en: Record<string, string> = {
   runResumeRequested: 'Resume requested',
   runResumeFailed: 'Could not resume the run',
   runReattachFailed: 'Could not reconnect to this run',
+
+  // Workspace binding
+  bindWorkspace: 'Bind this folder to the current chat',
+  unbindWorkspace: 'Unbind the current chat workspace',
+  workspaceBound: 'Workspace bound to this chat',
+  workspaceUnbound: 'Workspace binding removed',
 
   // Model dropdown
   modelSearchPlaceholder: 'Search models or providers…',

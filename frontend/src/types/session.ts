@@ -14,6 +14,8 @@ export interface Session {
   msgCount: number;
   /** Per-session context window budget (tokens). Default 256K = 262144. */
   contextWindow: number;
+  /** User-authorized external Explorer root bound to this session. */
+  workspaceRoot?: string | null;
   /** True while the Agent's persisted plan-mode request is active. */
   planModeRequested?: boolean;
   /** 兼容旧数据：原始的 timestamp/group/createTime 字段 */
@@ -118,6 +120,8 @@ export interface ActivityStep {
   file_path?: string;
   /** Safe, body-free provenance for the two read-only Skill tools. */
   skill_trace?: SkillTrace;
+  /** ChangeSet item created for this file-editing tool result. */
+  change_item_id?: string;
   /** Synthetic waiting step that must become a final explanation if no reasoning arrives. */
   placeholder?: boolean;
   /** Requested per-turn reasoning mode, used to explain an empty thinking card. */

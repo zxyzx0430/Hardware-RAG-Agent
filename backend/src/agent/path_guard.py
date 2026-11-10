@@ -84,19 +84,33 @@ TRAVERSAL_SEQ: str = ".."
 # Public API
 # ═══════════════════════════════════════════
 
+def active_workspace_root() -> Path:
+    """Return the bound workspace root for the active Agent request."""
+    try:
+        from src.agent.request_context import active_tool_context
+
+        context = active_tool_context()
+        root = getattr(context, "workspace_root", None) if context is not None else None
+        if isinstance(root, str) and root.strip():
+            return Path(root)
+    except Exception:
+        pass
+    return PROJECT_ROOT
+
+
 def resolve_agent_path(path: str) -> str:
-    """Resolve an Agent path, treating relative paths as project-root relative.
+    """Resolve an Agent path relative to the active request workspace.
 
     The backend process may run from ``backend/`` (the usual dev entry point),
-    but Agent file tools advertise and should use the project root. Resolving
-    here keeps read/write/search tools consistent instead of silently using
-    the server's current working directory.
+    but Agent file tools advertise and should use the bound workspace root.
+    Resolving here keeps read/write/search tools consistent instead of
+    silently using the server's current working directory.
     """
     if not path:
         return ""
     candidate = Path(path).expanduser()
     if not candidate.is_absolute():
-        candidate = PROJECT_ROOT / candidate
+        candidate = active_workspace_root() / candidate
     return resolve_guard_path(str(candidate))
 
 
@@ -118,9 +132,10 @@ def validate_path(path: str, is_write: bool) -> tuple[bool, str]:
 
 
 def is_in_allowed_dir(path: str) -> bool:
-    """Check whether a resolved path is inside one of ALLOWED_DIRS."""
+    """Check whether a resolved path is inside the active workspace or sandbox."""
     normalized = normalize_for_compare(path)
-    for allowed in ALLOWED_DIRS:
+    allowed_dirs = (active_workspace_root(), SANDBOX_TEMP_DIR)
+    for allowed in allowed_dirs:
         root = normalize_for_compare(str(allowed))
         try:
             if os.path.commonpath([normalized, root]) == root:

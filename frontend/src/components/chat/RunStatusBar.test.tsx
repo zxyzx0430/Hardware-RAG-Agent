@@ -72,6 +72,30 @@ describe("RunStatusBar", () => {
     expect(screen.getByRole("button", { name: "取消执行" })).toBeTruthy();
   });
 
+  it("uses the client send clock for a live run so it matches Activity", () => {
+    const now = 1_000_000;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    resetStore(
+      makeView({ startedAt: now - 10_000 }),
+      { streamingStartTime: now - 30_000 },
+    );
+
+    render(<RunStatusBar sessionId={sessionId} onOpenSource={vi.fn()} />);
+
+    expect(screen.getByText(/30\.00秒/)).toBeTruthy();
+    expect(screen.queryByText(/10\.00秒/)).toBeNull();
+  });
+
+  it("falls back to backend started_at when no client start exists", () => {
+    const now = 1_000_000;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    resetStore(makeView({ startedAt: now - 12_000 }), { streamingStartTime: null });
+
+    render(<RunStatusBar sessionId={sessionId} onOpenSource={vi.fn()} />);
+
+    expect(screen.getByText(/12\.00秒/)).toBeTruthy();
+  });
+
   it("shows the restoring banner while reattaching", () => {
     resetStore(makeView({ phase: "restoring", lastEventType: null }));
 

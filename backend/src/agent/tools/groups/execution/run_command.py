@@ -30,7 +30,7 @@ from pydantic import BaseModel, Field
 
 from src.agent.core.toolkit.tool_spec import RiskLevel, ToolSpec
 from src.agent.exceptions import ToolContext
-from src.agent.path_guard import validate_path
+from src.agent.path_guard import active_workspace_root, validate_path
 from src.agent.tools.groups.file_ops._git_snapshot import git_snapshot_context
 from src.config.settings import ROOT_DIR
 
@@ -221,6 +221,8 @@ class RunCommandTool(ToolSpec):
         command = args.get("command", "")
         requested_timeout_ms = args.get("timeout_ms", DEFAULT_TIMEOUT_MS)
         cwd = args.get("cwd", "")
+        if not cwd:
+            cwd = str(active_workspace_root())
         if cwd:
             ok, reason = validate_path(cwd, is_write=False)
             if not ok:
@@ -455,7 +457,7 @@ def _positional_destination(command: str) -> list[str]:
 
 def _resolve_and_validate(raw: list[str], cwd: str) -> list[str]:
     """Resolve relative paths to absolute (vs cwd/ROOT_DIR) and deny-list check."""
-    base = cwd or str(ROOT_DIR)
+    base = cwd or str(active_workspace_root())
     resolved: list[str] = []
     for target in raw:
         abs_path = _resolve_target(target, base)

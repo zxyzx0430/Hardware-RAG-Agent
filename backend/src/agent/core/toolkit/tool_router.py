@@ -256,7 +256,9 @@ class ToolRouter:
                 return self._finish_ledger_decision(
                     race, call_id, spec, audit_args, ctx,
                 )
+        capture = self._begin_change_capture(call_id, spec, args, ctx)
         envelope = await self._run_pipeline(state, validated=True)
+        self._finish_change_capture(capture, envelope)
         reference = _archive_tool_observation(envelope, spec, ctx)
         result = _with_observation_status(envelope, reference)
         if ledger is not None:
@@ -300,6 +302,25 @@ class ToolRouter:
         envelope = _build_envelope(state, result, error)
         self._validate_output_schema(state, envelope)
         return self._truncate_long_output(envelope)
+
+    def _begin_change_capture(
+        self, call_id: str, spec: ToolSpec, args: dict[str, Any], ctx: ToolContext,
+    ) -> Any:
+        try:
+            from src.agent import change_capture
+            return change_capture.begin_capture(call_id, spec, args, ctx)
+        except Exception:
+            logger.debug("change capture begin failed", exc_info=True)
+            return None
+
+    def _finish_change_capture(self, capture: Any, envelope: ToolResultEnvelope) -> None:
+        if capture is None:
+            return
+        try:
+            from src.agent import change_capture
+            change_capture.finish_capture(capture, envelope)
+        except Exception:
+            logger.debug("change capture finish failed", exc_info=True)
 
     async def _run_with_timeout(
         self, state: _DispatchState

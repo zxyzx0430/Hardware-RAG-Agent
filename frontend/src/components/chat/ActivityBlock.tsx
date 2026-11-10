@@ -3,6 +3,7 @@ import type { ActivityBlock as ActivityBlockData, ActivityStep } from "../../typ
 import { useI18n } from "../../i18n";
 import { formatDuration } from "../../utils/format";
 import { useAppStore } from "../../stores/useAppStore";
+import { useChatStore } from "../../stores/useChatStore";
 import { MarkdownRenderer } from "../shared/MarkdownRenderer";
 import { isSkillToolName, isValidSkillId, isValidSkillResourcePath, type SkillToolName } from "../../utils/skillTrace";
 
@@ -11,7 +12,7 @@ const TOOLSTEP_TIMER_INTERVAL_MS = 10;
 
 const ActivityBlock = memo(function ActivityBlock({ activity, msgId, startTime }: { activity: ActivityBlockData; msgId: string; startTime?: number }) {
   const { t } = useI18n();
-  const stepCount = activity.steps.length;
+  const toolStepCount = activity.steps.filter((step) => step.type === 'tool').length;
   const isRunning = activity.status === 'running';
   // activityDone: activity 已结束（done/error/等），活跃流式期间为 false。
   // 用于阻止 pending step 在历史消息/已结束 activity 上启动定时器。
@@ -48,7 +49,7 @@ const ActivityBlock = memo(function ActivityBlock({ activity, msgId, startTime }
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="activity-chevron"><polyline points="6 9 12 15 18 9"/></svg>
         <span className="activity-header-label">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="svg-accent" style={{ flexShrink: 0, marginRight: 4 }}><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
-          {stepCount === 0 && isRunning ? '...' : `${t('activityLabel')}: ${stepCount} ${t('tools')}`}
+          {toolStepCount === 0 && isRunning ? '...' : `${t('activityLabel')}: ${toolStepCount} ${t('tools')}`}
         </span>
         <span className="activity-header-duration">
           {isRunning ? <span className="activity-spinner" /> : null}
@@ -254,8 +255,13 @@ const ToolStep = memo(function ToolStep({ step, running, activityDone }: { step:
   const [elapsed, setElapsed] = useState(0);
   const { t } = useI18n();
   const setExplorerOpen = useAppStore((s) => s.setExplorerOpen);
+  const setRightPanelOpen = useAppStore((s) => s.setRightPanelOpen);
+  const setRightMode = useAppStore((s) => s.setRightMode);
+  const setRightContentTab = useAppStore((s) => s.setRightContentTab);
   const openFile = useAppStore((s) => s.openFile);
   const openDiffForFile = useAppStore((s) => s.openDiffForFile);
+  const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const setSelectedChangeItem = useChatStore((s) => s.setSelectedChangeItem);
   const stepStatus = step.status || (running ? 'running' : 'done');
   // isPending 护栏：仅当 step.status === 'pending' 且 activity 仍未结束时才视为 pending。
   // activity 已 done 时，pending step 走静态分支（显示 step.duration || 0），不启动 setInterval。
@@ -268,11 +274,20 @@ const ToolStep = memo(function ToolStep({ step, running, activityDone }: { step:
   }, [isPending, step.startTime]);
 
   const hasDiff = !!step.file_path && stepStatus !== 'pending';
+  const hasChange = !!step.change_item_id && stepStatus !== 'pending';
   const handleViewDiff = (e: MouseEvent) => {
     e.stopPropagation();
     if (!step.file_path) return;
     setExplorerOpen(true);
     openFile(step.file_path).then(() => openDiffForFile(step.file_path!));
+  };
+  const handleViewChange = (e: MouseEvent) => {
+    e.stopPropagation();
+    if (!step.change_item_id || !activeSessionId) return;
+    setSelectedChangeItem(activeSessionId, step.change_item_id);
+    setRightPanelOpen(true);
+    setRightMode('content');
+    setRightContentTab(activeSessionId, 'changes');
   };
 
   return (
@@ -297,6 +312,12 @@ const ToolStep = memo(function ToolStep({ step, running, activityDone }: { step:
         ) : null}
         {step.decision_source ? (
           <span className="decision-source">{step.decision_source}</span>
+        ) : null}
+        {hasChange ? (
+          <button className="tool-diff-btn" onClick={handleViewChange} title={t('changesTab', '变更')}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+            <span>{t('changesTab', '变更')}</span>
+          </button>
         ) : null}
         {hasDiff ? (
           <button className="tool-diff-btn" onClick={handleViewDiff} title={t('viewDiff', '查看 diff')}>

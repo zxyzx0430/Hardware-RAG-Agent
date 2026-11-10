@@ -1,6 +1,7 @@
 // API 请求/响应类型 — 保持与现有组件兼容的导出集合
 
 import type { SourceRef, ActivityBlock, ContentPart, TodoItem } from './session';
+import type { ChangeItem } from './change';
 import type { ReasoningMode } from './reasoning';
 import type { ProviderInfo } from './settings';
 import type { KBItem } from './kb';
@@ -125,6 +126,10 @@ export interface ToolResultSSEEvent {
       target_pane?: string;
       render_data?: unknown;
     };
+    metadata?: {
+      change_item_id?: string;
+      [key: string]: unknown;
+    };
   } | string;
   duration?: number;
   success?: boolean;
@@ -142,6 +147,46 @@ export interface TodoUpdateSSEEvent {
 export interface PlanUpdateSSEEvent {
   type: 'plan_update';
   plan: Plan;
+}
+
+export interface ChangeSetUpdatedSSEEvent {
+  type: 'change_set_updated';
+  change_set_id: string;
+  session_id?: string;
+  workspace_root?: string;
+}
+
+export interface ChangeItemUpdatedSSEEvent {
+  type: 'change_item_updated';
+  change_set_id: string;
+  item: ChangeItem;
+}
+
+export interface ChangeReviewedSSEEvent {
+  type: 'change_reviewed';
+  change_set_id: string;
+  result?: unknown;
+  results?: unknown[];
+  status?: string;
+}
+
+export interface ChangeRevertedSSEEvent {
+  type: 'change_reverted';
+  change_set_id: string;
+  item_id?: string | null;
+  status?: string;
+}
+
+export interface ValidationStartedSSEEvent {
+  type: 'validation_started';
+  change_set_id: string;
+  validation_id: string;
+}
+
+export interface ValidationFinishedSSEEvent {
+  type: 'validation_finished';
+  change_set_id: string;
+  validation: unknown;
 }
 
 /** Agent-initiated permission downgrade (currently only to plan mode). */
@@ -255,6 +300,12 @@ export type ChatSSEEvent = RunEventMeta & (
   | SourceSSEEvent
   | TodoUpdateSSEEvent
   | PlanUpdateSSEEvent
+  | ChangeSetUpdatedSSEEvent
+  | ChangeItemUpdatedSSEEvent
+  | ChangeReviewedSSEEvent
+  | ChangeRevertedSSEEvent
+  | ValidationStartedSSEEvent
+  | ValidationFinishedSSEEvent
   | PermissionModeChangedSSEEvent
   | ProgressSSEEvent
   | BuildCompileLogSSEEvent
@@ -589,6 +640,8 @@ export interface BackendSession {
   branch_from_message_id?: string | null;
   /** Per-session context window budget (tokens). Default 262144 (256K). */
   context_window?: number;
+  /** User-authorized external Explorer root bound to this chat session. */
+  workspace_root?: string | null;
   /** True while the Agent's persisted plan-mode request is active. */
   plan_mode_requested?: boolean;
   /** ISO date string */

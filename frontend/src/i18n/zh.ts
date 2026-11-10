@@ -446,6 +446,7 @@ const zh: Record<string, string> = {
 
   // Plan mode - banner, panel, status
   planTab: '计划',
+  changesTab: '变更',
   planPendingTitle: '计划 v{n} 待批准',
   planApprovedTitle: '计划 v{n} 已批准',
   planView: '查看',
@@ -871,6 +872,12 @@ const zh: Record<string, string> = {
   runEventArtifact: '产物',
   runEventTodo: '任务清单',
   runEventPlan: '计划',
+  runEventChangeSet: '变更集',
+  runEventChangeItem: '变更项',
+  runEventChangeReview: '变更审阅',
+  runEventChangeRevert: '变更撤销',
+  runEventValidationStart: '开始验证',
+  runEventValidationEnd: '验证完成',
   runEventPermission: '权限',
   runEventContext: '上下文',
   runEventProgress: '进度',
@@ -880,6 +887,12 @@ const zh: Record<string, string> = {
   runResumeRequested: '已请求从检查点恢复运行',
   runResumeFailed: '恢复运行失败',
   runReattachFailed: '无法重新连接到这次执行',
+
+  // Workspace binding
+  bindWorkspace: '绑定当前文件夹到当前对话',
+  unbindWorkspace: '解除当前对话的工作区绑定',
+  workspaceBound: '已绑定到当前对话',
+  workspaceUnbound: '已解除工作区绑定',
 
   // Model dropdown
   modelSearchPlaceholder: '搜索模型或服务商…',

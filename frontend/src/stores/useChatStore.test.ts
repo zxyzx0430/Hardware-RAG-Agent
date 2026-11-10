@@ -1494,6 +1494,52 @@ describe("useChatStore", () => {
     expect(apiSSEPaths).toEqual([]);
   });
 
+  it("新一轮保存成功后清除上一轮遗留的 pending 标记", async () => {
+    const sessionId = "stale-pending-after-next-turn";
+    saveToStorage("sessions", [{ id: sessionId }]);
+    const pendingKey = `hwrag_pending_save_${encodeURIComponent(sessionId)}`;
+    const oldUser = { id: "stale-user", role: "user" as const, content: "上一轮问题", timestamp: 1 };
+    const oldAssistant = { id: "stale-assistant", role: "assistant" as const, content: "上一轮未保存回答", timestamp: 2 };
+    const newUser = { id: "next-user", role: "user" as const, content: "新一轮问题", timestamp: 3 };
+    const newAssistant = { id: "next-assistant", role: "assistant" as const, content: "新一轮回答", timestamp: 4 };
+    localStorage.setItem(pendingKey, JSON.stringify([oldAssistant.id]));
+
+    const store = await importStore();
+    store.setState({
+      activeSessionId: sessionId,
+      messages: [oldUser, oldAssistant, newUser, newAssistant],
+      sessionMessages: { [sessionId]: [oldUser, oldAssistant, newUser, newAssistant] },
+      pendingSaveBySession: { [sessionId]: "pending" },
+    });
+
+    await store.getState().persistLastTurn(sessionId);
+
+    expect(store.getState().pendingSaveBySession?.[sessionId]).toBeUndefined();
+    expect(localStorage.getItem(pendingKey)).toBeNull();
+  });
+
+  it("重试保存成功后清除不属于当前待保存集合的旧标记", async () => {
+    const sessionId = "stale-pending-after-retry";
+    saveToStorage("sessions", [{ id: sessionId }]);
+    const pendingKey = `hwrag_pending_save_${encodeURIComponent(sessionId)}`;
+    const staleId = "stale-before-retry";
+    const user = { id: "retry-user", role: "user" as const, content: "待保存问题", timestamp: 1 };
+    const assistant = { id: "retry-assistant", role: "assistant" as const, content: "待保存回答", timestamp: 2 };
+    localStorage.setItem(pendingKey, JSON.stringify([staleId, assistant.id]));
+
+    const store = await importStore();
+    store.setState({
+      activeSessionId: sessionId,
+      messages: [user, assistant],
+      sessionMessages: { [sessionId]: [user, assistant] },
+      pendingSaveBySession: { [sessionId]: "pending" },
+    });
+    await store.getState().retryPendingSave(sessionId);
+
+    expect(store.getState().pendingSaveBySession?.[sessionId]).toBeUndefined();
+    expect(localStorage.getItem(pendingKey)).toBeNull();
+  });
+
   it("续跑更新失败且待保存标记不可写时，刷新从本地分片恢复同 ID 助手消息", async () => {
     const sessionId = "resume-save-marker-unavailable";
     saveToStorage("sessions", [{ id: sessionId }]);

@@ -225,6 +225,7 @@ def _serialize_session(
         "branch_from_session_id": s.branch_from_session_id,
         "branch_from_message_id": s.branch_from_message_id,
         "context_window": _cap_agent_session_context_window(s.context_window),
+        "workspace_root": getattr(s, "workspace_root", None),
         "version": getattr(s, "version", 0) or 0,
         "plan_mode_requested": bool(plan_mode_requested),
         "created_at": to_utc_iso_z(s.created_at),

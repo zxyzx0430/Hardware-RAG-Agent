@@ -39,6 +39,9 @@ class Session(Base):
     branch_from_session_id = Column(Text, nullable=True)
     branch_from_message_id = Column(Text, nullable=True)
     context_window = Column(Integer, default=CONTEXT_WINDOW_256K)  # per-session context budget (tokens)
+    # User-authorized external Explorer root bound to this chat session.
+    # NULL means the default Agent project root.
+    workspace_root = Column(Text, nullable=True)
     version = Column(Integer, default=0, nullable=False)  # bumped on every message/session mutation
     messages_imported = Column(Integer, default=0, nullable=False)  # one-shot legacy import guard
     created_at = Column(DateTime, default=datetime.datetime.now(datetime.timezone.utc))
