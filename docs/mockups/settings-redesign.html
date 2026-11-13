@@ -1,0 +1,1162 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Hardware RAG Agent · 设置（交互稿）</title>
+<style>
+  :root {
+    --font-sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+    --font-mono: "JetBrains Mono", "Cascadia Mono", ui-monospace, "SFMono-Regular", Consolas, "Microsoft YaHei", monospace;
+    --bg: #ecece7;
+    --window: #fbfbf8;
+    --side: #f2f2ed;
+    --card: #ffffff;
+    --card-2: #f7f7f3;
+    --border: #e5e5de;
+    --border-strong: #d8d8cf;
+    --fg: #20201d;
+    --muted: #70706a;
+    --faint: #9a9a92;
+    --accent: #7c5cff;
+    --accent-soft: #eeeaff;
+    --accent-fg: #ffffff;
+    --success: #1f9d63;
+    --success-soft: #e6f6ee;
+    --warn: #b7791f;
+    --warn-soft: #fdf3df;
+    --danger: #d14343;
+    --danger-soft: #fdecec;
+    --shadow: 0 24px 70px rgba(25, 25, 20, .18), 0 2px 8px rgba(25, 25, 20, .06);
+    --radius: 14px;
+    --radius-sm: 9px;
+  }
+  [data-theme="dark"] {
+    --bg: #141412;
+    --window: #1b1b18;
+    --side: #20201d;
+    --card: #242420;
+    --card-2: #2a2a25;
+    --border: #34342e;
+    --border-strong: #41413a;
+    --fg: #f0f0e9;
+    --muted: #a3a39a;
+    --faint: #7b7b73;
+    --accent: #9c86ff;
+    --accent-soft: #2e2748;
+    --accent-fg: #14131d;
+    --success: #54c08c;
+    --success-soft: #1d3529;
+    --warn: #d8a54a;
+    --warn-soft: #3a2f1b;
+    --danger: #ef7373;
+    --danger-soft: #3d2020;
+    --shadow: 0 24px 70px rgba(0, 0, 0, .5), 0 2px 8px rgba(0, 0, 0, .3);
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    font-family: var(--font-sans);
+    background:
+      radial-gradient(900px 500px at 12% -10%, rgba(124, 92, 255, .10), transparent 60%),
+      radial-gradient(700px 420px at 92% 108%, rgba(31, 157, 99, .08), transparent 60%),
+      var(--bg);
+    color: var(--fg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 28px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .window {
+    width: min(1180px, 96vw);
+    height: min(820px, 92vh);
+    background: var(--window);
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    box-shadow: var(--shadow);
+    display: flex;
+    overflow: hidden;
+  }
+
+  /* ── Sidebar ───────────────────────────── */
+  .sidebar {
+    width: 272px;
+    flex: 0 0 272px;
+    background: var(--side);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    padding: 18px 12px 12px;
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 2px 10px 16px;
+  }
+  .brand-mark {
+    width: 28px; height: 28px; border-radius: 8px;
+    background: linear-gradient(135deg, #8a6dff, #5f43e6);
+    display: grid; place-items: center; color: #fff;
+    box-shadow: 0 4px 12px rgba(124, 92, 255, .35);
+    flex: 0 0 auto;
+  }
+  .brand h1 { font-size: 17px; font-weight: 650; margin: 0; letter-spacing: -.01em; }
+  .brand small { display: block; font-size: 11px; color: var(--muted); font-weight: 400; margin-top: 1px; }
+
+  .search {
+    position: relative;
+    margin: 0 6px 14px;
+  }
+  .search svg { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--faint); }
+  .search input {
+    width: 100%; height: 34px;
+    padding: 0 10px 0 32px;
+    border: 1px solid transparent;
+    background: var(--card-2);
+    border-radius: 9px;
+    color: var(--fg);
+    font: inherit; font-size: 12.5px;
+    outline: none;
+    transition: border-color .15s, background .15s;
+  }
+  .search input:focus { border-color: var(--border-strong); background: var(--card); }
+  .search input::placeholder { color: var(--faint); }
+
+  .nav { flex: 1; overflow-y: auto; padding: 0 2px 8px; }
+  .nav::-webkit-scrollbar { width: 6px; }
+  .nav::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 999px; }
+  .nav-group { margin-bottom: 14px; }
+  .nav-label {
+    font-size: 10.5px; font-weight: 650; letter-spacing: .07em;
+    text-transform: uppercase; color: var(--faint);
+    padding: 6px 12px 5px;
+  }
+  .nav-item {
+    width: 100%; height: 36px;
+    display: flex; align-items: center; gap: 10px;
+    padding: 0 10px;
+    border: 0; background: transparent;
+    color: var(--fg);
+    border-radius: 9px;
+    font: inherit; font-size: 13px;
+    cursor: pointer;
+    text-align: left;
+    transition: background .13s, color .13s;
+  }
+  .nav-item svg { width: 17px; height: 17px; color: var(--muted); flex: 0 0 auto; }
+  .nav-item:hover { background: var(--card-2); }
+  .nav-item.active { background: var(--card); box-shadow: 0 1px 3px rgba(20,20,15,.06); font-weight: 600; }
+  .nav-item.active svg { color: var(--accent); }
+  .nav-item .badge {
+    margin-left: auto; font-family: var(--font-mono); font-size: 10px;
+    background: var(--accent-soft); color: var(--accent);
+    border-radius: 999px; padding: 1px 7px;
+  }
+  .nav-empty { display: none; padding: 18px 12px; color: var(--faint); font-size: 12px; text-align: center; }
+
+  .side-footer {
+    border-top: 1px solid var(--border);
+    padding: 12px 10px 4px;
+    display: flex; align-items: center; justify-content: space-between;
+    color: var(--faint); font-size: 10.5px;
+  }
+  .side-footer .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); display: inline-block; margin-right: 6px; }
+
+  /* ── Content ───────────────────────────── */
+  .content { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--window); }
+  .content-head {
+    padding: 26px 34px 18px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: flex-start; justify-content: space-between;
+    gap: 20px;
+    background: var(--window);
+  }
+  .content-head h2 { margin: 0; font-size: 23px; font-weight: 650; letter-spacing: -.02em; }
+  .content-head p { margin: 5px 0 0; font-size: 12.5px; color: var(--muted); }
+  .close-btn {
+    width: 30px; height: 30px; border-radius: 8px;
+    border: 1px solid var(--border); background: transparent; color: var(--muted);
+    display: grid; place-items: center; cursor: pointer;
+  }
+  .close-btn:hover { background: var(--card-2); color: var(--fg); }
+
+  .content-scroll { flex: 1; overflow-y: auto; padding: 24px 34px 46px; }
+  .content-scroll::-webkit-scrollbar { width: 8px; }
+  .content-scroll::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 999px; }
+
+  .panel { display: none; animation: fade .18s ease; }
+  .panel.active { display: block; }
+  @keyframes fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 6px 20px;
+    margin-bottom: 16px;
+    box-shadow: 0 1px 2px rgba(20, 20, 15, .03);
+  }
+  .card.flush { padding: 18px 20px; }
+  .card-title { font-size: 12px; font-weight: 650; color: var(--muted); letter-spacing: .02em; padding: 14px 0 2px; }
+  .row {
+    display: flex; align-items: flex-start; justify-content: space-between;
+    gap: 24px; padding: 16px 0;
+    border-top: 1px solid var(--border);
+  }
+  .row:first-child { border-top: 0; }
+  .row-main { min-width: 0; }
+  .row-title { font-size: 13.5px; font-weight: 600; }
+  .row-desc { font-size: 12.5px; color: var(--muted); margin-top: 4px; line-height: 1.55; max-width: 480px; }
+  .row-control { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding-top: 2px; }
+
+  .pill { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; padding: 3px 9px; font-size: 11px; font-weight: 550; }
+  .pill.ok { background: var(--success-soft); color: var(--success); }
+  .pill.warn { background: var(--warn-soft); color: var(--warn); }
+  .pill.off { background: var(--card-2); color: var(--faint); }
+  .pill .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+  .switch {
+    width: 40px; height: 23px; border-radius: 999px;
+    background: var(--border-strong); border: 0; position: relative; cursor: pointer;
+    transition: background .15s; flex: 0 0 auto;
+  }
+  .switch[aria-checked="true"] { background: var(--accent); }
+  .switch .knob {
+    position: absolute; top: 2.5px; left: 2.5px; width: 18px; height: 18px;
+    background: #fff; border-radius: 50%; box-shadow: 0 1px 3px rgba(0,0,0,.22);
+    transition: transform .15s;
+  }
+  .switch[aria-checked="true"] .knob { transform: translateX(17px); }
+
+  .segmented { display: inline-flex; padding: 3px; gap: 2px; background: var(--card-2); border-radius: 9px; }
+  .segmented button {
+    border: 0; background: transparent; color: var(--muted);
+    font: inherit; font-size: 12px; padding: 5px 12px; border-radius: 7px; cursor: pointer;
+  }
+  .segmented button.active { background: var(--card); color: var(--fg); font-weight: 600; box-shadow: 0 1px 3px rgba(20,20,15,.08); }
+
+  .btn {
+    height: 32px; padding: 0 12px; border-radius: 8px;
+    border: 1px solid var(--border-strong); background: var(--card); color: var(--fg);
+    font: inherit; font-size: 12px; cursor: pointer;
+  }
+  .btn:hover { background: var(--card-2); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: 600; }
+  .btn.primary:hover { filter: brightness(1.05); }
+  .btn.small { height: 28px; font-size: 11.5px; padding: 0 10px; }
+  .btn.ghost { border-color: transparent; background: transparent; color: var(--muted); }
+  .btn.ghost:hover { background: var(--card-2); color: var(--fg); }
+
+  .input, .select, textarea.input {
+    height: 34px; border-radius: 8px; border: 1px solid var(--border-strong);
+    background: var(--card); color: var(--fg); font: inherit; font-size: 12.5px;
+    padding: 0 10px; outline: none;
+  }
+  .input:focus, .select:focus, textarea.input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .select { min-width: 220px; }
+  textarea.input { height: auto; min-height: 100px; padding: 10px; resize: vertical; line-height: 1.6; }
+  .input.mono { font-family: var(--font-mono); }
+
+  .field { margin: 14px 0 18px; }
+  .field-label { font-size: 12px; font-weight: 600; margin-bottom: 7px; }
+  .field-hint { font-size: 11.5px; color: var(--muted); margin-top: 6px; }
+  .range-row { display: flex; align-items: center; gap: 12px; }
+  input[type="range"] { flex: 1; accent-color: var(--accent); height: 4px; }
+  .range-val { font-family: var(--font-mono); font-size: 12px; color: var(--muted); min-width: 48px; text-align: right; }
+
+  /* Provider cards */
+  .provider-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; padding: 14px 0 18px; }
+  .provider-card {
+    border: 1px solid var(--border); border-radius: 10px; padding: 12px 13px;
+    background: var(--card); text-align: left; cursor: pointer; font: inherit; color: var(--fg);
+    transition: border-color .13s, background .13s;
+  }
+  .provider-card:hover { border-color: var(--border-strong); }
+  .provider-card.active { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .provider-name { font-size: 12.5px; font-weight: 600; display: block; }
+  .provider-meta { font-size: 10.5px; color: var(--muted); margin-top: 4px; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* Stats */
+  .stat-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; padding: 14px 0 6px; }
+  .stat {
+    border: 1px solid var(--border); border-radius: 11px; background: var(--card);
+    padding: 12px 14px;
+  }
+  .stat-label { font-size: 10.5px; color: var(--muted); }
+  .stat-value { font-family: var(--font-mono); font-size: 22px; font-weight: 600; margin-top: 4px; letter-spacing: -.02em; }
+  .stat-value.accent { color: var(--accent); }
+  .stat-value.green { color: var(--success); }
+  .stat-value.purple { color: #8b5cf6; }
+
+  .chart-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 16px 0 6px; }
+  .chart-title { font-size: 12.5px; font-weight: 650; }
+  .chart-legend { display: flex; gap: 14px; font-size: 10.5px; color: var(--muted); }
+  .chart-legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .legend-dot { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+  .chart-wrap { padding: 6px 0 14px; }
+  .chart-wrap svg { display: block; width: 100%; height: auto; }
+
+  .model-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--border); }
+  .model-row:first-child { border-top: 0; }
+  .model-name { width: 170px; flex: 0 0 170px; font-family: var(--font-mono); font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .model-track { flex: 1; height: 8px; border-radius: 999px; background: var(--card-2); overflow: hidden; }
+  .model-fill { height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--accent), #4fc08d); }
+  .model-tokens { flex: 0 0 auto; font-family: var(--font-mono); font-size: 10.5px; color: var(--muted); white-space: nowrap; }
+
+  /* Logs */
+  .chip-row { display: flex; gap: 6px; flex-wrap: wrap; padding: 12px 0 6px; }
+  .chip {
+    height: 26px; padding: 0 10px; border-radius: 7px; border: 1px solid var(--border);
+    background: var(--card); color: var(--muted); font: inherit; font-size: 11px; cursor: pointer;
+  }
+  .chip.active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  .log-box {
+    margin: 8px 0 14px; background: var(--card-2); border: 1px solid var(--border);
+    border-radius: 10px; padding: 12px 14px; height: 300px; overflow: auto;
+    font-family: var(--font-mono); font-size: 11px; line-height: 1.75;
+  }
+  .log-line { display: flex; gap: 8px; white-space: nowrap; }
+  .log-ts { color: var(--faint); flex: 0 0 auto; }
+  .log-tag { color: var(--accent); flex: 0 0 auto; }
+  .log-line.error { color: var(--danger); }
+  .log-line.warn { color: var(--warn); }
+  .log-line.ok { color: var(--success); }
+  .log-line.hidden { display: none; }
+
+  /* Table */
+  .table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 10px 0 14px; }
+  .table th { text-align: left; font-size: 10.5px; font-weight: 650; color: var(--muted); padding: 9px 10px; border-bottom: 1px solid var(--border); }
+  .table td { padding: 10px; border-bottom: 1px solid var(--border); color: var(--fg); }
+  .table td.mono { font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+
+  /* Tools / MCP */
+  .list-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 14px 0; border-top: 1px solid var(--border); }
+  .list-row:first-child { border-top: 0; }
+  .list-title { font-size: 12.5px; font-weight: 600; font-family: var(--font-mono); }
+  .list-desc { font-size: 11.5px; color: var(--muted); margin-top: 3px; }
+  .list-actions { display: flex; gap: 8px; align-items: center; }
+
+  /* Skills */
+  .skill-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 14px 0; }
+  .skill-card { border: 1px solid var(--border); border-radius: 11px; padding: 14px; background: var(--card); }
+  .skill-card h4 { margin: 0; font-size: 12.5px; font-family: var(--font-mono); }
+  .skill-card p { margin: 6px 0 12px; font-size: 11.5px; color: var(--muted); line-height: 1.55; }
+  .skill-actions { display: flex; gap: 8px; }
+
+  /* About */
+  .about-row { display: flex; justify-content: space-between; padding: 12px 0; border-top: 1px solid var(--border); font-size: 12.5px; }
+  .about-row:first-child { border-top: 0; }
+  .about-key { color: var(--muted); }
+  .about-val { font-family: var(--font-mono); font-size: 11.5px; }
+
+  /* Modal */
+  .modal-mask {
+    position: fixed; inset: 0; background: rgba(15, 15, 12, .38);
+    display: none; align-items: center; justify-content: center; z-index: 50; padding: 30px;
+    backdrop-filter: blur(3px);
+  }
+  .modal-mask.open { display: flex; }
+  .modal {
+    width: min(720px, 92vw); max-height: 78vh; overflow: hidden;
+    background: var(--card); border: 1px solid var(--border); border-radius: 14px;
+    box-shadow: var(--shadow); display: flex; flex-direction: column;
+  }
+  .modal-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--border); }
+  .modal-head h3 { margin: 0; font-size: 14px; font-family: var(--font-mono); }
+  .modal-body { padding: 18px 22px; overflow: auto; font-size: 12.5px; line-height: 1.75; }
+  .modal-body h1, .modal-body h2, .modal-body h3 { font-size: 14px; margin: 14px 0 6px; }
+  .modal-body p { margin: 8px 0; color: var(--muted); }
+  .modal-body code { font-family: var(--font-mono); font-size: 11px; background: var(--card-2); padding: 1px 5px; border-radius: 4px; }
+
+  .toast {
+    position: fixed; left: 50%; bottom: 34px; transform: translate(-50%, 12px);
+    background: #1f1f1c; color: #f7f7f2; font-size: 12px;
+    padding: 9px 14px; border-radius: 9px; opacity: 0; pointer-events: none;
+    transition: opacity .18s, transform .18s; z-index: 80;
+  }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+  @media (max-width: 860px) {
+    body { padding: 0; }
+    .window { width: 100vw; height: 100vh; border-radius: 0; border: 0; }
+    .sidebar { width: 218px; flex-basis: 218px; }
+    .content-head, .content-scroll { padding-left: 20px; padding-right: 20px; }
+    .stat-grid, .provider-grid, .skill-grid { grid-template-columns: 1fr 1fr; }
+  }
+</style>
+</head>
+<body data-theme="light">
+  <div class="window">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+        </div>
+        <div>
+          <h1>设置</h1>
+          <small>Hardware RAG Agent</small>
+        </div>
+      </div>
+
+      <div class="search">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input id="settingsSearch" type="search" placeholder="搜索设置" autocomplete="off" />
+      </div>
+
+      <nav class="nav" id="settingsNav">
+        <div class="nav-group" data-group="general">
+          <div class="nav-label">通用</div>
+          <button class="nav-item active" data-panel="appearance" data-title="外观" data-desc="主题、语言与聊天字体大小">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.66 6.34l1.41-1.41"/></svg>
+            <span>外观</span>
+          </button>
+          <button class="nav-item" data-panel="api" data-title="API 配置" data-desc="服务商、模型分配与 API Key">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.78 7.78 5.5 5.5 0 0 1 7.78-7.78zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+            <span>API 配置</span>
+          </button>
+          <button class="nav-item" data-panel="rag" data-title="RAG 参数" data-desc="检索数量、相关度与知识库范围">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5"/><path d="M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3"/></svg>
+            <span>RAG 参数</span>
+          </button>
+        </div>
+
+        <div class="nav-group" data-group="memory">
+          <div class="nav-label">记忆与能力</div>
+          <button class="nav-item" data-panel="memory" data-title="记忆" data-desc="长期记忆与自动记忆">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9.5 2A2.5 2.5 0 0 0 7 4.5v.55A3.5 3.5 0 0 0 4 8.5c0 .77.25 1.48.67 2.06A3.5 3.5 0 0 0 4 15.5 3.5 3.5 0 0 0 7 19v.5A2.5 2.5 0 0 0 9.5 22h.5V2h-.5z"/><path d="M14.5 2a2.5 2.5 0 0 1 2.5 2.5v.55a3.5 3.5 0 0 1 3 3.45c0 .77-.25 1.48-.67 2.06A3.5 3.5 0 0 1 20 15.5 3.5 3.5 0 0 1 17 19v.5a2.5 2.5 0 0 1-2.5 2.5H14V2h.5z"/></svg>
+            <span>记忆</span>
+          </button>
+          <button class="nav-item" data-panel="memory-hub" data-title="记忆与硬件档案" data-desc="记忆条目、硬件档案与项目记忆">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="5" width="14" height="14" rx="2"/><rect x="9" y="9" width="6" height="6" rx="1"/><path d="M9 1v4M15 1v4M9 19v4M15 19v4M1 9h4M1 15h4M19 9h4M19 15h4"/></svg>
+            <span>记忆与硬件档案</span>
+          </button>
+          <button class="nav-item" data-panel="tools" data-title="工具" data-desc="Agent 当前可调用的工具">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.3-2.3 2.5-2.5z"/></svg>
+            <span>工具</span>
+          </button>
+          <button class="nav-item" data-panel="skills" data-title="技能" data-desc="已安装的 Markdown 技能">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 3a2 2 0 0 1 4 0v2h3a2 2 0 0 1 2 2v3h-2a2 2 0 0 0 0 4h2v3a2 2 0 0 1-2 2h-3v-2a2 2 0 0 0-4 0v2H7a2 2 0 0 1-2-2v-3H3a2 2 0 0 1 0-4h2V7a2 2 0 0 1 2-2h3V3z"/></svg>
+            <span>技能</span>
+          </button>
+          <button class="nav-item" data-panel="mcp" data-title="MCP 服务" data-desc="Model Context Protocol 服务连接">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="7" rx="2"/><rect x="2" y="14" width="20" height="7" rx="2"/><path d="M6 6.5h.01M6 17.5h.01"/></svg>
+            <span>MCP 服务</span>
+          </button>
+        </div>
+
+        <div class="nav-group" data-group="diagnostics">
+          <div class="nav-label">使用与诊断</div>
+          <button class="nav-item" data-panel="usage" data-title="用量" data-desc="Token 用量、缓存与模型分布">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+            <span>用量</span>
+          </button>
+          <button class="nav-item" data-panel="logs" data-title="日志" data-desc="前端运行日志与级别过滤">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9h10M7 13h6" stroke-linecap="round"/></svg>
+            <span>日志</span>
+          </button>
+          <button class="nav-item" data-panel="audit" data-title="工具审计" data-desc="Agent 工具调用与权限决策记录">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8 4v6c0 5-3.4 9.4-8 10-4.6-.6-8-5-8-10V6l8-4z"/><path d="M9 12l2 2 4-4"/></svg>
+            <span>工具审计</span>
+          </button>
+        </div>
+
+        <div class="nav-group" data-group="about">
+          <div class="nav-label">关于</div>
+          <button class="nav-item" data-panel="about" data-title="关于" data-desc="版本、构建与运行环境">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+            <span>关于</span>
+          </button>
+        </div>
+        <div class="nav-empty" id="navEmpty">没有匹配的设置项</div>
+      </nav>
+
+      <div class="side-footer">
+        <span><span class="dot"></span>本地运行</span>
+        <span>v0.1.0</span>
+      </div>
+    </aside>
+
+    <main class="content">
+      <div class="content-head">
+        <div>
+          <h2 id="panelTitle">外观</h2>
+          <p id="panelDesc">主题、语言与聊天字体大小</p>
+        </div>
+        <button class="close-btn" title="关闭设置" onclick="toast('这只是交互稿，关闭按钮不会退出')">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+
+      <div class="content-scroll">
+        <!-- 外观 -->
+        <section class="panel active" id="panel-appearance">
+          <div class="card">
+            <div class="card-title">界面</div>
+            <div class="row">
+              <div class="row-main">
+                <div class="row-title">主题</div>
+                <div class="row-desc">切换应用的明暗外观；跟随系统会使用操作系统的深浅色设置。</div>
+              </div>
+              <div class="row-control">
+                <div class="segmented" id="themeSeg">
+                  <button data-theme-choice="light" class="active">浅色</button>
+                  <button data-theme-choice="dark">深色</button>
+                  <button data-theme-choice="system">跟随系统</button>
+                </div>
+              </div>
+            </div>
+            <div class="row">
+              <div class="row-main">
+                <div class="row-title">语言</div>
+                <div class="row-desc">界面文案与帮助信息的显示语言。</div>
+              </div>
+              <div class="row-control">
+                <div class="segmented">
+                  <button class="active" onclick="toast('交互稿：语言切换仅作展示')">中文</button>
+                  <button onclick="toast('交互稿：语言切换仅作展示')">English</button>
+                </div>
+              </div>
+            </div>
+            <div class="row">
+              <div class="row-main">
+                <div class="row-title">聊天字体大小</div>
+                <div class="row-desc">只影响对话正文，不改变设置页与侧边栏。</div>
+              </div>
+              <div class="row-control">
+                <input type="range" min="12" max="20" step="1" value="14" id="chatFontRange" style="width: 170px" />
+                <span class="range-val" id="chatFontVal">14 px</span>
+              </div>
+            </div>
+          </div>
+          <div class="card flush">
+            <div class="field-label">预览</div>
+            <div id="chatPreview" style="font-size:14px;line-height:1.8;color:var(--fg);max-width:620px">
+              STM32F103C8T6 的 ADC 为 12 位，共 10 个外部通道；PA0–PA7、PB0–PB1 可复用为 ADC 输入。
+            </div>
+          </div>
+        </section>
+
+        <!-- API -->
+        <section class="panel" id="panel-api">
+          <div class="card">
+            <div class="card-title">服务商</div>
+            <div class="provider-grid">
+              <button class="provider-card active">
+                <span class="provider-name">Local Router</span>
+                <span class="provider-meta">9router.zxyzx.bbroot.com/v1</span>
+                <span class="pill ok" style="margin-top:8px"><span class="dot"></span>已验证 · 131 个模型</span>
+              </button>
+              <button class="provider-card">
+                <span class="provider-name">Clean Env Router</span>
+                <span class="provider-meta">9router.zxyzx.bbroot.com/v1</span>
+                <span class="pill warn" style="margin-top:8px"><span class="dot"></span>未验证</span>
+              </button>
+              <button class="provider-card">
+                <span class="provider-name">Fix Setup Router</span>
+                <span class="provider-meta">9router.zxyzx.bbroot.com/v1</span>
+                <span class="pill warn" style="margin-top:8px"><span class="dot"></span>未验证</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">模型分配</div>
+            <div class="row">
+              <div class="row-main">
+                <div class="row-title">对话 / Agent 模型</div>
+                <div class="row-desc">用于聊天、计划与工具调用。</div>
+              </div>
+              <div class="row-control">
+                <select class="select">
+                  <option>ocgo/deepseek-v4.1-flash</option>
+                  <option>ccgo/deepseek/deepseek-v4.1-flash</option>
+                  <option>ccgo/claude-sonnet-5</option>
+                  <option>Text</option>
+                </select>
+              </div>
+            </div>
+            <div class="row">
+              <div class="row-main">
+                <div class="row-title">图像生成模型</div>
+                <div class="row-desc">用于生成配图与示意图。</div>
+              </div>
+              <div class="row-control">
+                <select class="select"><option>未配置</option><option>ccgo/gpt-5.5</option></select>
+              </div>
+            </div>
+            <div class="row">
+              <div class="row-main">
+                <div class="row-title">视觉理解模型</div>
+                <div class="row-desc">用于读取截图、PDF 页面与图片附件。</div>
+              </div>
+              <div class="row-control">
+                <select class="select"><option>未配置</option><option>ccgo/claude-sonnet-5</option></select>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">API Key</div>
+            <div class="row">
+              <div class="row-main">
+                <div class="row-title">Local Router</div>
+                <div class="row-desc">密钥会加密保存在本机，不会出现在日志或导出文件中。</div>
+              </div>
+              <div class="row-control">
+                <input class="input mono" type="password" value="sk-ff9•••••••••••••••7399" style="width:240px" />
+                <button class="btn small" onclick="toast('显示 / 隐藏 Key（交互稿）')">显示</button>
+                <button class="btn small primary" onclick="toast('验证通过：131 个模型')">验证</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- RAG -->
+        <section class="panel" id="panel-rag">
+          <div class="card">
+            <div class="card-title">检索</div>
+            <div class="field">
+              <div class="field-label">Top K</div>
+              <div class="range-row">
+                <input type="range" min="1" max="20" value="5" data-out="topKOut" />
+                <span class="range-val" id="topKOut">5</span>
+              </div>
+              <div class="field-hint">每次检索返回的文档片段数量；越大上下文越完整，也越费 Token。</div>
+            </div>
+            <div class="field">
+              <div class="field-label">相关度阈值</div>
+              <div class="range-row">
+                <input type="range" min="0" max="100" value="35" data-out="relOut" />
+                <span class="range-val" id="relOut">35%</span>
+              </div>
+            </div>
+            <div class="field">
+              <div class="field-label">温度</div>
+              <div class="range-row">
+                <input type="range" min="0" max="100" value="30" data-out="tempOut" />
+                <span class="range-val" id="tempOut">0.30</span>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title">知识库范围</div>
+            <div class="row">
+              <div class="row-main">
+                <div class="row-title">启用的知识库</div>
+                <div class="row-desc">只在这些知识库中检索；清空表示全部启用。</div>
+              </div>
+              <div class="row-control" style="flex-wrap:wrap;justify-content:flex-end;max-width:460px">
+                <span class="chip active">stm32f103c8</span>
+                <span class="chip active">esp32-s3</span>
+                <span class="chip">freertos-manual</span>
+                <span class="chip">硬件调试笔记</span>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title">高级</div>
+            <div class="row">
+              <div class="row-main"><div class="row-title">重排序（Rerank）</div><div class="row-desc">用 bge-reranker 对初筛结果二次排序。</div></div>
+              <div class="row-control"><button class="switch" aria-checked="true" onclick="toggleSwitch(this)"><span class="knob"></span></button></div>
+            </div>
+            <div class="row">
+              <div class="row-main"><div class="row-title">混合检索</div><div class="row-desc">向量检索与 BM25 关键词检索融合。</div></div>
+              <div class="row-control"><button class="switch" aria-checked="true" onclick="toggleSwitch(this)"><span class="knob"></span></button></div>
+            </div>
+            <div class="row">
+              <div class="row-main"><div class="row-title">查询改写</div><div class="row-desc">先让模型重写问题，再检索。</div></div>
+              <div class="row-control"><button class="switch" aria-checked="false" onclick="toggleSwitch(this)"><span class="knob"></span></button></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Memory -->
+        <section class="panel" id="panel-memory">
+          <div class="card">
+            <div class="card-title">长期记忆</div>
+            <div class="field">
+              <textarea class="input" style="width:100%;min-height:140px" id="ltmInput">- 用户主要做 STM32 / ESP32 嵌入式开发
+- 常用工具链：Keil、PlatformIO、OpenOCD
+- 回答偏好：先给结论，再给寄存器/引脚依据</textarea>
+              <div class="field-hint"><span id="ltmCount">0</span> 字符 · 保存后会在新会话中注入</div>
+            </div>
+            <button class="btn primary" onclick="toast('长期记忆已保存（交互稿）')">保存记忆</button>
+          </div>
+          <div class="card">
+            <div class="row">
+              <div class="row-main"><div class="row-title">自动记忆</div><div class="row-desc">从对话中自动提取稳定偏好与项目信息，写入记忆库。</div></div>
+              <div class="row-control"><button class="switch" aria-checked="true" onclick="toggleSwitch(this)"><span class="knob"></span></button></div>
+            </div>
+            <div class="row">
+              <div class="row-main"><div class="row-title">会话工作记忆</div><div class="row-desc">压缩长对话时保留任务目标、约束和已完成事项。</div></div>
+              <div class="row-control"><button class="switch" aria-checked="true" onclick="toggleSwitch(this)"><span class="knob"></span></button></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Memory hub -->
+        <section class="panel" id="panel-memory-hub">
+          <div class="stat-grid">
+            <div class="stat"><div class="stat-label">记忆条目</div><div class="stat-value">128</div></div>
+            <div class="stat"><div class="stat-label">硬件档案</div><div class="stat-value">3</div></div>
+            <div class="stat"><div class="stat-label">最近更新</div><div class="stat-value" style="font-size:14px">今天 09:42</div></div>
+          </div>
+          <div class="card">
+            <div class="card-title">硬件档案</div>
+            <div class="list-row">
+              <div><div class="list-title">STM32F103C8T6</div><div class="list-desc">ARM Cortex-M3 · 72 MHz · 64 KB Flash · 20 KB RAM</div></div>
+              <div class="list-actions"><span class="pill ok">已启用</span><button class="btn small" onclick="toast('查看档案（交互稿）')">查看</button></div>
+            </div>
+            <div class="list-row">
+              <div><div class="list-title">ESP32-S3</div><div class="list-desc">Xtensa LX7 双核 · 240 MHz · Wi-Fi / BLE · 45 GPIO</div></div>
+              <div class="list-actions"><span class="pill ok">已启用</span><button class="btn small" onclick="toast('查看档案（交互稿）')">查看</button></div>
+            </div>
+            <div class="list-row">
+              <div><div class="list-title">nRF52840</div><div class="list-desc">ARM Cortex-M4F · BLE 5 · Thread / Zigbee</div></div>
+              <div class="list-actions"><span class="pill off">未启用</span><button class="btn small" onclick="toast('启用档案（交互稿）')">启用</button></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Usage -->
+        <section class="panel" id="panel-usage">
+          <div class="stat-grid">
+            <div class="stat"><div class="stat-label">输入 Token</div><div class="stat-value">171.6K</div></div>
+            <div class="stat"><div class="stat-label">新增输入</div><div class="stat-value accent">71.6K</div></div>
+            <div class="stat"><div class="stat-label">输出 Token</div><div class="stat-value green">3.5K</div></div>
+            <div class="stat"><div class="stat-label">总计 Token</div><div class="stat-value">175.1K</div></div>
+            <div class="stat"><div class="stat-label">缓存输入</div><div class="stat-value purple">100.0K</div></div>
+            <div class="stat"><div class="stat-label">缓存命中率</div><div class="stat-value">58.3%</div></div>
+          </div>
+          <div class="card">
+            <div class="chart-head">
+              <div class="chart-title">近 30 天用量</div>
+              <div style="display:flex;align-items:center;gap:10px">
+                <div class="segmented" id="chartSeg">
+                  <button data-chart="line" class="active">折线</button>
+                  <button data-chart="bar">柱状</button>
+                </div>
+              </div>
+            </div>
+            <div class="chart-legend">
+              <span><i class="legend-dot" style="background:var(--accent)"></i>输入</span>
+              <span><i class="legend-dot" style="background:var(--success)"></i>输出</span>
+              <span><i class="legend-dot" style="background:#8b5cf6"></i>缓存输入</span>
+            </div>
+            <div class="chart-wrap" id="usageChart"></div>
+          </div>
+          <div class="card">
+            <div class="card-title">模型用量分布</div>
+            <div class="model-row">
+              <div class="model-name">deepseek-v4.1-flash</div>
+              <div class="model-track"><div class="model-fill" style="width:88%"></div></div>
+              <div class="model-tokens">175.1K · 5 次 · 缓存 100.0K · 58.3%</div>
+            </div>
+            <div class="model-row">
+              <div class="model-name">ccgo/claude-sonnet-5</div>
+              <div class="model-track"><div class="model-fill" style="width:24%"></div></div>
+              <div class="model-tokens">42.3K · 2 次 · 缓存 12.1K · 28.6%</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Logs -->
+        <section class="panel" id="panel-logs">
+          <div class="card">
+            <div class="card-title">前端日志</div>
+            <div class="chip-row" id="logChips">
+              <button class="chip active" data-level="error">ERROR</button>
+              <button class="chip active" data-level="warn">WARN</button>
+              <button class="chip active" data-level="info">INFO</button>
+              <button class="chip active" data-level="ok">OK</button>
+              <button class="chip active" data-level="debug">DEBUG</button>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center;padding:4px 0 6px">
+              <input class="input" style="flex:1" placeholder="过滤日志内容…" id="logSearch" />
+              <button class="btn small" onclick="toast('日志已刷新（交互稿）')">刷新</button>
+              <button class="btn small" onclick="toast('已复制到剪贴板（交互稿）')">复制</button>
+              <button class="btn small" onclick="toast('日志已清空（交互稿）')">清空</button>
+            </div>
+            <div class="log-box" id="logBox">
+              <div class="log-line info" data-level="info"><span class="log-ts">10:42:11</span><span class="log-tag">[chat]</span><span>sendMessage model=ocgo/deepseek-v4.1-flash topK=5</span></div>
+              <div class="log-line ok" data-level="ok"><span class="log-ts">10:42:13</span><span class="log-tag">[usage]</span><span>usage chunk: in=17114 out=157 cached=0</span></div>
+              <div class="log-line info" data-level="info"><span class="log-ts">10:42:14</span><span class="log-tag">[changes]</span><span>loadChangeSets session=s1794121479552</span></div>
+              <div class="log-line warn" data-level="warn"><span class="log-ts">10:43:02</span><span class="log-tag">[workspace]</span><span>workspace root not authorized; tool call skipped</span></div>
+              <div class="log-line error" data-level="error"><span class="log-ts">10:43:02</span><span class="log-tag">[tool]</span><span>search_docs failed: timeout after 30000ms</span></div>
+              <div class="log-line debug" data-level="debug"><span class="log-ts">10:43:03</span><span class="log-tag">[explorer]</span><span>expand folder E:\Desktop\agent\backend</span></div>
+              <div class="log-line ok" data-level="ok"><span class="log-ts">10:43:05</span><span class="log-tag">[changes]</span><span>reverted change item ce_01H...b7</span></div>
+              <div class="log-line info" data-level="info"><span class="log-ts">10:43:09</span><span class="log-tag">[settings]</span><span>切换对话模型: ocgo/deepseek-v4.1-flash</span></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Audit -->
+        <section class="panel" id="panel-audit">
+          <div class="card">
+            <div class="card-title">工具调用记录</div>
+            <table class="table">
+              <thead><tr><th>时间</th><th>工具</th><th>决策</th><th>耗时</th></tr></thead>
+              <tbody>
+                <tr><td class="mono">10:42:13</td><td class="mono">search_docs</td><td><span class="pill ok">auto_allow</span></td><td class="mono">47.6s</td></tr>
+                <tr><td class="mono">10:42:14</td><td class="mono">read_file</td><td><span class="pill ok">auto_allow</span></td><td class="mono">0.2s</td></tr>
+                <tr><td class="mono">10:43:02</td><td class="mono">write_file</td><td><span class="pill warn">needs approval</span></td><td class="mono">—</td></tr>
+                <tr><td class="mono">10:43:05</td><td class="mono">run_command</td><td><span class="pill ok">auto_allow</span></td><td class="mono">12.4s</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- MCP -->
+        <section class="panel" id="panel-mcp">
+          <div class="card">
+            <div class="card-title">服务</div>
+            <div class="list-row">
+              <div><div class="list-title">filesystem</div><div class="list-desc">npx -y @modelcontextprotocol/server-filesystem E:\Desktop\agent</div></div>
+              <div class="list-actions"><span class="pill ok">已连接</span><button class="switch" aria-checked="true" onclick="toggleSwitch(this)"><span class="knob"></span></button></div>
+            </div>
+            <div class="list-row">
+              <div><div class="list-title">github</div><div class="list-desc">npx -y @modelcontextprotocol/server-github</div></div>
+              <div class="list-actions"><span class="pill off">未连接</span><button class="switch" aria-checked="false" onclick="toggleSwitch(this)"><span class="knob"></span></button></div>
+            </div>
+            <div class="list-row">
+              <div><div class="list-title">sqlite</div><div class="list-desc">本地数据库只读查询</div></div>
+              <div class="list-actions"><span class="pill ok">已连接</span><button class="switch" aria-checked="true" onclick="toggleSwitch(this)"><span class="knob"></span></button></div>
+            </div>
+            <div style="padding:14px 0"><button class="btn primary" onclick="toast('添加 MCP 服务（交互稿）')">添加服务</button></div>
+          </div>
+        </section>
+
+        <!-- Tools -->
+        <section class="panel" id="panel-tools">
+          <div class="card">
+            <div class="card-title">Agent 工具</div>
+            <div class="list-row">
+              <div><div class="list-title">search_docs</div><div class="list-desc">在已启用知识库中做向量 + 关键词检索</div></div>
+              <div class="list-actions"><button class="switch" aria-checked="true" onclick="toggleSwitch(this)"><span class="knob"></span></button></div>
+            </div>
+            <div class="list-row">
+              <div><div class="list-title">list_files / read_file</div><div class="list-desc">读取已授权工作区中的文件</div></div>
+              <div class="list-actions"><button class="switch" aria-checked="true" onclick="toggleSwitch(this)"><span class="knob"></span></button></div>
+            </div>
+            <div class="list-row">
+              <div><div class="list-title">write_file</div><div class="list-desc">写入文件；会生成 ChangeSet 并进入待审阅列表</div></div>
+              <div class="list-actions"><button class="switch" aria-checked="true" onclick="toggleSwitch(this)"><span class="knob"></span></button></div>
+            </div>
+            <div class="list-row">
+              <div><div class="list-title">run_command</div><div class="list-desc">执行受限命令；高风险命令需要确认</div></div>
+              <div class="list-actions"><button class="switch" aria-checked="false" onclick="toggleSwitch(this)"><span class="knob"></span></button></div>
+            </div>
+            <div class="list-row">
+              <div><div class="list-title">web_search</div><div class="list-desc">通过 Tavily 搜索网页</div></div>
+              <div class="list-actions"><button class="switch" aria-checked="true" onclick="toggleSwitch(this)"><span class="knob"></span></button></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Skills -->
+        <section class="panel" id="panel-skills">
+          <div class="card">
+            <div class="card-title">已安装技能</div>
+            <div class="skill-grid">
+              <div class="skill-card">
+                <h4>gitnexus-cli</h4>
+                <p>运行 GitNexus CLI：索引仓库、查看状态、生成 wiki。</p>
+                <div class="skill-actions"><button class="btn small" onclick="openSkill('gitnexus-cli')">查看</button><button class="btn small ghost" onclick="toast('打开 SKILL.md（交互稿）')">打开文件</button></div>
+              </div>
+              <div class="skill-card">
+                <h4>hardware-profile</h4>
+                <p>读取与更新芯片硬件档案：引脚、时钟、外设与封装信息。</p>
+                <div class="skill-actions"><button class="btn small" onclick="openSkill('hardware-profile')">查看</button><button class="btn small ghost" onclick="toast('打开 SKILL.md（交互稿）')">打开文件</button></div>
+              </div>
+              <div class="skill-card">
+                <h4>tdd</h4>
+                <p>红-绿-重构的测试驱动开发流程与检查清单。</p>
+                <div class="skill-actions"><button class="btn small" onclick="openSkill('tdd')">查看</button><button class="btn small ghost" onclick="toast('打开 SKILL.md（交互稿）')">打开文件</button></div>
+              </div>
+              <div class="skill-card">
+                <h4>pdf</h4>
+                <p>读取、拆分、合并 PDF，并提取表格与页面截图。</p>
+                <div class="skill-actions"><button class="btn small" onclick="openSkill('pdf')">查看</button><button class="btn small ghost" onclick="toast('打开 SKILL.md（交互稿）')">打开文件</button></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- About -->
+        <section class="panel" id="panel-about">
+          <div class="card">
+            <div class="about-row"><span class="about-key">产品</span><span class="about-val">Hardware RAG Agent</span></div>
+            <div class="about-row"><span class="about-key">版本</span><span class="about-val">0.1.0</span></div>
+            <div class="about-row"><span class="about-key">构建日期</span><span class="about-val">2026-11-11</span></div>
+            <div class="about-row"><span class="about-key">运行环境</span><span class="about-val">Windows 10 · Python 3.13 · Node 22</span></div>
+            <div class="about-row"><span class="about-key">许可证</span><span class="about-val">MIT</span></div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <!-- Skill modal -->
+  <div class="modal-mask" id="skillModal">
+    <div class="modal">
+      <div class="modal-head">
+        <h3 id="skillModalTitle">SKILL.md</h3>
+        <button class="close-btn" onclick="closeSkill()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div class="modal-body" id="skillModalBody"></div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+<script>
+  const $ = (s, r = document) => r.querySelector(s);
+  const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+
+  // ── Sidebar navigation ──────────────────────────────
+  const navItems = $$('.nav-item');
+  const panelTitle = $('#panelTitle');
+  const panelDesc = $('#panelDesc');
+  function selectPanel(id) {
+    navItems.forEach(b => b.classList.toggle('active', b.dataset.panel === id));
+    $$('.panel').forEach(p => p.classList.toggle('active', p.id === `panel-${id}`));
+    const item = navItems.find(b => b.dataset.panel === id);
+    if (item) {
+      panelTitle.textContent = item.dataset.title;
+      panelDesc.textContent = item.dataset.desc;
+    }
+    const scroller = $('.content-scroll');
+    if (scroller) scroller.scrollTop = 0;
+    if (id === 'usage') drawChart();
+  }
+  navItems.forEach(b => b.addEventListener('click', () => selectPanel(b.dataset.panel)));
+
+  // ── Search ──────────────────────────────────────────
+  $('#settingsSearch').addEventListener('input', (e) => {
+    const q = e.target.value.trim().toLowerCase();
+    let visible = 0;
+    $$('.nav-group').forEach(group => {
+      let groupVisible = 0;
+      $$('.nav-item', group).forEach(item => {
+        const text = `${item.dataset.title} ${item.textContent}`.toLowerCase();
+        const show = !q || text.includes(q);
+        item.style.display = show ? '' : 'none';
+        if (show) { groupVisible++; visible++; }
+      });
+      group.style.display = groupVisible ? '' : 'none';
+    });
+    $('#navEmpty').style.display = visible ? 'none' : 'block';
+  });
+
+  // ── Theme ───────────────────────────────────────────
+  const themeSeg = $('#themeSeg');
+  const mq = window.matchMedia('(prefers-color-scheme: dark)');
+  function applyTheme(choice) {
+    const resolved = choice === 'system' ? (mq.matches ? 'dark' : 'light') : choice;
+    document.body.dataset.theme = resolved;
+    $$('button', themeSeg).forEach(b => b.classList.toggle('active', b.dataset.themeChoice === choice));
+  }
+  $$('button', themeSeg).forEach(b => b.addEventListener('click', () => applyTheme(b.dataset.themeChoice)));
+  mq.addEventListener('change', () => {
+    const active = $('button.active', themeSeg);
+    if (active && active.dataset.themeChoice === 'system') applyTheme('system');
+  });
+
+  // ── Switches ────────────────────────────────────────
+  window.toggleSwitch = (el) => {
+    el.setAttribute('aria-checked', el.getAttribute('aria-checked') === 'true' ? 'false' : 'true');
+  };
+
+  // ── Sliders ─────────────────────────────────────────
+  $$('input[type="range"][data-out]').forEach(r => {
+    const update = () => {
+      const out = document.getElementById(r.dataset.out);
+      if (!out) return;
+      let v = r.value;
+      if (r.dataset.out === 'relOut') v = `${v}%`;
+      if (r.dataset.out === 'tempOut') v = (Number(v) / 100).toFixed(2);
+      out.textContent = v;
+    };
+    r.addEventListener('input', update);
+    update();
+  });
+  $('#chatFontRange').addEventListener('input', (e) => {
+    $('#chatFontVal').textContent = `${e.target.value} px`;
+    $('#chatPreview').style.fontSize = `${e.target.value}px`;
+  });
+
+  // ── Long-term memory count ──────────────────────────
+  const ltm = $('#ltmInput');
+  const ltmCount = $('#ltmCount');
+  const syncLtm = () => ltmCount.textContent = ltm.value.length;
+  ltm.addEventListener('input', syncLtm);
+  syncLtm();
+
+  // ── Logs filter ─────────────────────────────────────
+  const activeLevels = new Set(['error', 'warn', 'info', 'ok', 'debug']);
+  $('#logChips').addEventListener('click', (e) => {
+    const chip = e.target.closest('.chip');
+    if (!chip) return;
+    const level = chip.dataset.level;
+    if (activeLevels.has(level)) { activeLevels.delete(level); chip.classList.remove('active'); }
+    else { activeLevels.add(level); chip.classList.add('active'); }
+    filterLogs();
+  });
+  $('#logSearch').addEventListener('input', filterLogs);
+  function filterLogs() {
+    const q = $('#logSearch').value.trim().toLowerCase();
+    $$('#logBox .log-line').forEach(line => {
+      const okLevel = activeLevels.has(line.dataset.level);
+      const okText = !q || line.textContent.toLowerCase().includes(q);
+      line.classList.toggle('hidden', !(okLevel && okText));
+    });
+  }
+
+  // ── Chart ───────────────────────────────────────────
+  const chartData = {
+    labels: ['11-05', '11-06', '11-07', '11-08', '11-09', '11-10', '11-11'],
+    input:  [42.1, 61.4, 38.2, 80.5, 55.3, 67.8, 171.6],
+    output: [3.1, 4.8, 2.2, 6.9, 3.7, 4.4, 3.5],
+    cached: [20.2, 36.8, 18.4, 50.1, 30.9, 42.6, 100.0],
+  };
+  let chartMode = 'line';
+
+  function drawChart() {
+    const host = $('#usageChart');
+    if (!host) return;
+    host.innerHTML = '';
+    const W = 780, H = 220, pad = { l: 46, r: 14, t: 14, b: 28 };
+    const cw = W - pad.l - pad.r, ch = H - pad.t - pad.b;
+    const max = Math.max(...chartData.input) * 1.08;
+    const y = v => pad.t + ch - (v / max) * ch;
+    const x = i => pad.l + (chartData.labels.length === 1 ? cw / 2 : (i * cw) / (chartData.labels.length - 1));
+    const ns = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(ns, 'svg');
+    svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+    svg.setAttribute('role', 'img');
+    svg.setAttribute('aria-label', 'Token 用量趋势');
+    svg.style.width = '100%';
+    svg.style.height = 'auto';
+
+    const gridColor = getComputedStyle(document.body).getPropertyValue('--border').trim();
+    const muted = getComputedStyle(document.body).getPropertyValue('--muted').trim();
+    const accent = getComputedStyle(document.body).getPropertyValue('--accent').trim();
+    const success = getComputedStyle(document.body).getPropertyValue('--success').trim();
+    const purple = '#8b5cf6';
+
+    for (let i = 0; i <= 4; i++) {
+      const val = (max / 4) * i;
+      const yy = y(val);
+      const line = document.createElementNS(ns, 'line');
+      line.setAttribute('x1', pad.l); line.setAttribute('x2', W - pad.r);
+      line.setAttribute('y1', yy); line.setAttribute('y2', yy);
+      line.setAttribute('stroke', gridColor); line.setAttribute('stroke-dasharray', '3 4');
+      svg.appendChild(line);
+      const t = document.createElementNS(ns, 'text');
+      t.setAttribute('x', pad.l - 8); t.setAttribute('y', yy + 3);
+      t.setAttribute('text-anchor', 'end'); t.setAttribute('font-size', '9.5');
+      t.setAttribute('fill', muted); t.setAttribute('font-family', 'var(--font-mono)');
+      t.textContent = `${val.toFixed(0)}K`;
+      svg.appendChild(t);
+    }
+    chartData.labels.forEach((label, i) => {
+      const t = document.createElementNS(ns, 'text');
+      t.setAttribute('x', x(i)); t.setAttribute('y', H - 8);
+      t.setAttribute('text-anchor', 'middle'); t.setAttribute('font-size', '9.5');
+      t.setAttribute('fill', muted); t.setAttribute('font-family', 'var(--font-mono)');
+      t.textContent = label;
+      svg.appendChild(t);
+    });
+
+    if (chartMode === 'line') {
+      const series = [
+        { key: 'input', color: accent, dashed: false },
+        { key: 'output', color: success, dashed: false },
+        { key: 'cached', color: purple, dashed: true },
+      ];
+      series.forEach(s => {
+        const pts = chartData[s.key].map((v, i) => `${x(i)},${y(v)}`).join(' ');
+        const path = document.createElementNS(ns, 'polyline');
+        path.setAttribute('points', pts);
+        path.setAttribute('fill', 'none');
+        path.setAttribute('stroke', s.color);
+        path.setAttribute('stroke-width', '2');
+        path.setAttribute('stroke-linejoin', 'round');
+        path.setAttribute('stroke-linecap', 'round');
+        if (s.dashed) path.setAttribute('stroke-dasharray', '5 4');
+        svg.appendChild(path);
+        chartData[s.key].forEach((v, i) => {
+          const c = document.createElementNS(ns, 'circle');
+          c.setAttribute('cx', x(i)); c.setAttribute('cy', y(v)); c.setAttribute('r', '2.6');
+          c.setAttribute('fill', s.color);
+          svg.appendChild(c);
+        });
+      });
+    } else {
+      const groupW = cw / chartData.labels.length;
+      const barW = Math.min(14, groupW * 0.22);
+      chartData.labels.forEach((_, i) => {
+        const cx = pad.l + groupW * i + groupW / 2;
+        [['input', accent, -barW - 2], ['cached', purple, 2]].forEach(([key, color, dx]) => {
+          const v = chartData[key][i];
+          const h = (v / max) * ch;
+          const r = document.createElementNS(ns, 'rect');
+          r.setAttribute('x', cx + dx); r.setAttribute('y', pad.t + ch - h);
+          r.setAttribute('width', barW); r.setAttribute('height', h);
+          r.setAttribute('rx', '2.5'); r.setAttribute('fill', color);
+          svg.appendChild(r);
+        });
+      });
+    }
+    host.appendChild(svg);
+  }
+  $$('#chartSeg button').forEach(b => b.addEventListener('click', () => {
+    chartMode = b.dataset.chart;
+    $$('#chartSeg button').forEach(x => x.classList.toggle('active', x === b));
+    drawChart();
+  }));
+
+  // ── Skill modal ─────────────────────────────────────
+  const skillDocs = {
+    'gitnexus-cli': `## gitnexus-cli\n\n运行 GitNexus CLI 命令。\n\n- \`analyze\`：索引仓库\n- \`status\`：查看索引状态\n- \`wiki\`：生成仓库 wiki\n\n使用前请先确认当前目录是目标仓库。`,
+    'hardware-profile': `## hardware-profile\n\n读取与更新芯片硬件档案。\n\n- 引脚定义、封装与复用功能\n- 时钟树与外设实例\n- 数据手册来源与页码\n\n修改档案前需要确认来源。`,
+    'tdd': `## tdd\n\n测试驱动开发流程。\n\n1. 先写失败测试（红）\n2. 写最小实现（绿）\n3. 重构并保持测试通过\n\n每个行为只写一个测试。`,
+    'pdf': `## pdf\n\nPDF 处理技能。\n\n- 读取文本与表格\n- 拆分 / 合并页面\n- 导出页面截图\n\n扫描版 PDF 需要 OCR。`,
+  };
+  window.openSkill = (name) => {
+    $('#skillModalTitle').textContent = `${name}/SKILL.md`;
+    const body = $('#skillModalBody');
+    body.innerHTML = '';
+    const pre = document.createElement('div');
+    pre.style.fontFamily = 'var(--font-mono)';
+    pre.style.fontSize = '12px';
+    pre.style.whiteSpace = 'pre-wrap';
+    pre.textContent = skillDocs[name] || '（未找到技能内容）';
+    body.appendChild(pre);
+    $('#skillModal').classList.add('open');
+  };
+  window.closeSkill = () => $('#skillModal').classList.remove('open');
+  $('#skillModal').addEventListener('click', (e) => { if (e.target.id === 'skillModal') closeSkill(); });
+
+  // ── Toast ───────────────────────────────────────────
+  let toastTimer = null;
+  window.toast = (msg) => {
+    const el = $('#toast');
+    el.textContent = msg;
+    el.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.remove('show'), 1800);
+  };
+
+  // initial
+  drawChart();
+  window.addEventListener('resize', () => { if ($('#panel-usage').classList.contains('active')) drawChart(); });
+</script>
+</body>
+</html>

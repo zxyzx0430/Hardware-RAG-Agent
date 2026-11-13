@@ -1,0 +1,999 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Hardware RAG Agent · 知识库 / 收藏夹（交互稿）</title>
+<style>
+  :root {
+    --font-sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+    --font-mono: "JetBrains Mono", "Cascadia Mono", ui-monospace, "SFMono-Regular", Consolas, "Microsoft YaHei", monospace;
+    --bg: #ecece7;
+    --window: #fbfbf8;
+    --side: #f2f2ed;
+    --card: #ffffff;
+    --card-2: #f7f7f3;
+    --border: #e5e5de;
+    --border-strong: #d8d8cf;
+    --fg: #20201d;
+    --muted: #70706a;
+    --faint: #9a9a92;
+    --accent: #7c5cff;
+    --accent-soft: #eeeaff;
+    --accent-fg: #ffffff;
+    --success: #1f9d63;
+    --success-soft: #e6f6ee;
+    --warn: #b7791f;
+    --warn-soft: #fdf3df;
+    --danger: #d14343;
+    --danger-soft: #fdecec;
+    --blue: #3b82f6;
+    --blue-soft: #e8f1fe;
+    --shadow: 0 24px 70px rgba(25, 25, 20, .18), 0 2px 8px rgba(25, 25, 20, .06);
+    --radius: 14px;
+  }
+  [data-theme="dark"] {
+    --bg: #141412;
+    --window: #1b1b18;
+    --side: #20201d;
+    --card: #242420;
+    --card-2: #2a2a25;
+    --border: #34342e;
+    --border-strong: #41413a;
+    --fg: #f0f0e9;
+    --muted: #a3a39a;
+    --faint: #7b7b73;
+    --accent: #9c86ff;
+    --accent-soft: #2e2748;
+    --accent-fg: #14131d;
+    --success: #54c08c;
+    --success-soft: #1d3529;
+    --warn: #d8a54a;
+    --warn-soft: #3a2f1b;
+    --danger: #ef7373;
+    --danger-soft: #3d2020;
+    --blue: #6aa6ff;
+    --blue-soft: #1b2c44;
+    --shadow: 0 24px 70px rgba(0, 0, 0, .5), 0 2px 8px rgba(0, 0, 0, .3);
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    font-family: var(--font-sans);
+    background:
+      radial-gradient(900px 500px at 12% -10%, rgba(124, 92, 255, .10), transparent 60%),
+      radial-gradient(700px 420px at 92% 108%, rgba(31, 157, 99, .08), transparent 60%),
+      var(--bg);
+    color: var(--fg);
+    display: flex; align-items: center; justify-content: center;
+    padding: 28px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .window {
+    width: min(1200px, 97vw);
+    height: min(830px, 93vh);
+    background: var(--window);
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    box-shadow: var(--shadow);
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* ── App header ─────────────────────────── */
+  .app-head {
+    height: 62px; flex: 0 0 62px;
+    display: flex; align-items: center; gap: 18px;
+    padding: 0 20px;
+    border-bottom: 1px solid var(--border);
+    background: var(--window);
+  }
+  .app-brand { display: flex; align-items: center; gap: 9px; min-width: 210px; }
+  .brand-mark {
+    width: 28px; height: 28px; border-radius: 8px;
+    background: linear-gradient(135deg, #8a6dff, #5f43e6);
+    display: grid; place-items: center; color: #fff;
+    box-shadow: 0 4px 12px rgba(124, 92, 255, .35);
+  }
+  .app-brand b { font-size: 13.5px; font-weight: 650; letter-spacing: -.01em; }
+  .app-brand small { display: block; font-size: 10px; color: var(--muted); font-weight: 400; margin-top: 1px; }
+
+  .page-switch {
+    display: flex; gap: 3px; padding: 3px;
+    background: var(--card-2); border-radius: 10px;
+  }
+  .page-switch button {
+    border: 0; background: transparent; color: var(--muted);
+    font: inherit; font-size: 12.5px; padding: 6px 16px; border-radius: 8px; cursor: pointer;
+    display: flex; align-items: center; gap: 7px;
+  }
+  .page-switch button svg { width: 15px; height: 15px; }
+  .page-switch button.active { background: var(--card); color: var(--fg); font-weight: 600; box-shadow: 0 1px 3px rgba(20,20,15,.08); }
+
+  .head-spacer { flex: 1; }
+  .head-actions { display: flex; align-items: center; gap: 8px; }
+  .status-pill { display: inline-flex; align-items: center; gap: 6px; font-size: 10.5px; color: var(--muted); }
+  .status-pill .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); }
+  .icon-btn {
+    width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--border);
+    background: transparent; color: var(--muted); display: grid; place-items: center; cursor: pointer;
+  }
+  .icon-btn:hover { background: var(--card-2); color: var(--fg); }
+
+  /* ── Body / pages ───────────────────────── */
+  .app-body { flex: 1; min-height: 0; display: flex; }
+  .page { display: none; flex: 1; min-height: 0; }
+  .page.active { display: flex; }
+
+  /* ── Rail ───────────────────────────────── */
+  .rail {
+    width: 250px; flex: 0 0 250px;
+    background: var(--side);
+    border-right: 1px solid var(--border);
+    display: flex; flex-direction: column;
+    padding: 16px 10px 10px;
+  }
+  .rail-head { display: flex; align-items: center; justify-content: space-between; padding: 0 8px 10px; }
+  .rail-head h2 { margin: 0; font-size: 12px; font-weight: 650; color: var(--muted); letter-spacing: .04em; text-transform: uppercase; }
+  .rail-head button {
+    border: 0; background: transparent; color: var(--muted); width: 24px; height: 24px;
+    border-radius: 6px; cursor: pointer; display: grid; place-items: center;
+  }
+  .rail-head button:hover { background: var(--card-2); color: var(--fg); }
+
+  .rail-list { flex: 1; overflow-y: auto; padding: 0 2px; }
+  .rail-list::-webkit-scrollbar { width: 6px; }
+  .rail-list::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 999px; }
+  .rail-item {
+    width: 100%; display: flex; align-items: center; gap: 9px;
+    min-height: 36px; padding: 0 9px; margin-bottom: 2px;
+    border: 0; border-radius: 9px; background: transparent; color: var(--fg);
+    font: inherit; font-size: 12.5px; text-align: left; cursor: pointer;
+  }
+  .rail-item:hover { background: var(--card-2); }
+  .rail-item.active { background: var(--card); font-weight: 600; box-shadow: 0 1px 3px rgba(20,20,15,.06); }
+  .rail-item .rail-icon { width: 16px; height: 16px; color: var(--muted); flex: 0 0 auto; }
+  .rail-item.active .rail-icon { color: var(--accent); }
+  .rail-item .rail-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rail-item .rail-count { font-family: var(--font-mono); font-size: 10px; color: var(--faint); flex: 0 0 auto; }
+  .rail-item.active .rail-count { color: var(--accent); }
+  .rail-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
+  .rail-divider { height: 1px; background: var(--border); margin: 8px 8px 10px; }
+  .rail-label { padding: 8px 9px 5px; font-size: 10px; font-weight: 650; letter-spacing: .07em; text-transform: uppercase; color: var(--faint); }
+  .rail-footer { border-top: 1px solid var(--border); padding: 10px 8px 2px; }
+  .rail-footer button {
+    width: 100%; height: 34px; border-radius: 8px; border: 1px dashed var(--border-strong);
+    background: transparent; color: var(--muted); font: inherit; font-size: 12px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+  }
+  .rail-footer button:hover { color: var(--fg); border-color: var(--accent); background: var(--accent-soft); }
+
+  /* ── Main ───────────────────────────────── */
+  .main { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--window); }
+  .main-head {
+    padding: 22px 28px 16px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: flex-start; justify-content: space-between; gap: 20px;
+  }
+  .main-head h1 { margin: 0; font-size: 21px; font-weight: 650; letter-spacing: -.02em; }
+  .main-head p { margin: 5px 0 0; font-size: 12px; color: var(--muted); }
+  .head-meta { display: flex; align-items: center; gap: 6px; margin-top: 9px; flex-wrap: wrap; }
+  .main-actions { display: flex; align-items: center; gap: 8px; padding-top: 2px; }
+  .btn {
+    height: 32px; padding: 0 12px; border-radius: 8px;
+    border: 1px solid var(--border-strong); background: var(--card); color: var(--fg);
+    font: inherit; font-size: 12px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+    white-space: nowrap;
+  }
+  .btn:hover { background: var(--card-2); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: 600; }
+  .btn.primary:hover { filter: brightness(1.05); }
+  .btn.small { height: 28px; font-size: 11.5px; padding: 0 10px; }
+  .btn.ghost { border-color: transparent; background: transparent; color: var(--muted); }
+  .btn.ghost:hover { background: var(--card-2); color: var(--fg); }
+  .btn.danger { color: var(--danger); border-color: var(--border-strong); background: transparent; }
+
+  .scroll { flex: 1; overflow-y: auto; padding: 20px 28px 40px; }
+  .scroll::-webkit-scrollbar { width: 8px; }
+  .scroll::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 999px; }
+
+  /* Stats */
+  .stat-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 16px; }
+  .stat { background: var(--card); border: 1px solid var(--border); border-radius: 11px; padding: 12px 14px; }
+  .stat-label { font-size: 10.5px; color: var(--muted); }
+  .stat-value { font-family: var(--font-mono); font-size: 20px; font-weight: 600; margin-top: 4px; letter-spacing: -.02em; }
+  .stat-value.accent { color: var(--accent); }
+
+  /* Toolbar */
+  .toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+  .search-box { position: relative; flex: 1; min-width: 220px; max-width: 360px; }
+  .search-box svg { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--faint); }
+  .search-box input {
+    width: 100%; height: 32px; border-radius: 8px; border: 1px solid var(--border-strong);
+    background: var(--card); color: var(--fg); font: inherit; font-size: 12px; padding: 0 10px 0 31px; outline: none;
+  }
+  .search-box input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .chip-row { display: flex; gap: 5px; flex-wrap: wrap; }
+  .chip {
+    height: 28px; padding: 0 10px; border-radius: 7px; border: 1px solid var(--border);
+    background: var(--card); color: var(--muted); font: inherit; font-size: 11px; cursor: pointer;
+  }
+  .chip.active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+
+  /* Document list */
+  .doc-list { border: 1px solid var(--border); border-radius: 12px; background: var(--card); overflow: hidden; }
+  .doc-head, .doc-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 110px 80px 92px 96px 136px;
+    gap: 12px; align-items: center; padding: 0 16px;
+  }
+  .doc-head {
+    height: 34px; background: var(--card-2); border-bottom: 1px solid var(--border);
+    font-size: 10px; font-weight: 650; color: var(--muted); letter-spacing: .03em;
+  }
+  .doc-row { min-height: 58px; border-bottom: 1px solid var(--border); }
+  .doc-row:last-child { border-bottom: 0; }
+  .doc-row:hover { background: var(--card-2); }
+  .doc-main { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .doc-icon {
+    width: 30px; height: 34px; border-radius: 6px; background: var(--accent-soft);
+    display: grid; place-items: center; color: var(--accent); flex: 0 0 auto;
+  }
+  .doc-icon.md { background: var(--success-soft); color: var(--success); }
+  .doc-icon.test { background: var(--warn-soft); color: var(--warn); }
+  .doc-info { min-width: 0; }
+  .doc-name { font-size: 12.5px; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .doc-sub { display: flex; gap: 6px; align-items: center; margin-top: 3px; flex-wrap: wrap; }
+  .tag { font-size: 9.5px; padding: 1px 5px; border-radius: 4px; background: var(--card-2); color: var(--muted); }
+  .tag.method { background: var(--accent-soft); color: var(--accent); font-family: var(--font-mono); }
+  .status { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--muted); }
+  .status .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); }
+  .status.ok .dot { background: var(--success); }
+  .status.indexing .dot { background: var(--warn); animation: pulse 1.2s infinite; }
+  .status.error .dot { background: var(--danger); }
+  @keyframes pulse { 50% { opacity: .35; } }
+  .mono { font-family: var(--font-mono); font-size: 10.5px; color: var(--muted); }
+  .row-actions { display: flex; align-items: center; gap: 4px; justify-content: flex-end; }
+  .row-actions button {
+    width: 26px; height: 26px; border-radius: 6px; border: 0; background: transparent;
+    color: var(--muted); display: grid; place-items: center; cursor: pointer;
+  }
+  .row-actions button:hover { background: var(--card-2); color: var(--fg); }
+  .row-actions button.danger:hover { background: var(--danger-soft); color: var(--danger); }
+  .row-actions .switch { width: 36px; height: 21px; margin-left: 4px; }
+  .row-actions .switch .knob { left: 2px; top: 2px; }
+
+  .switch { width: 36px; height: 21px; border-radius: 999px; background: var(--border-strong); border: 0; position: relative; cursor: pointer; transition: background .15s; flex: 0 0 auto; }
+  .switch[aria-checked="true"] { background: var(--accent); }
+  .switch .knob { position: absolute; top: 2px; left: 2px; width: 17px; height: 17px; background: #fff; border-radius: 50%; box-shadow: 0 1px 3px rgba(0,0,0,.22); transition: transform .15s; }
+  .switch[aria-checked="true"] .knob { transform: translateX(15px); }
+
+  .upload-zone {
+    margin-top: 14px; border: 1px dashed var(--border-strong); border-radius: 12px;
+    padding: 18px; display: flex; align-items: center; justify-content: center; gap: 10px;
+    color: var(--muted); font-size: 12px; cursor: pointer; background: var(--card);
+  }
+  .upload-zone:hover { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+  .upload-zone svg { width: 20px; height: 20px; }
+  .upload-progress { margin-top: 10px; border: 1px solid var(--border); background: var(--card); border-radius: 10px; padding: 10px 12px; display: none; }
+  .upload-progress.show { display: block; }
+  .progress-line { display: flex; align-items: center; gap: 10px; font-size: 11px; color: var(--muted); }
+  .progress-track { flex: 1; height: 6px; border-radius: 999px; background: var(--card-2); overflow: hidden; }
+  .progress-fill { height: 100%; width: 0; background: var(--accent); border-radius: 999px; transition: width .2s; }
+
+  /* Dropdown */
+  .dropdown { position: relative; }
+  .dropdown-panel {
+    position: absolute; top: calc(100% + 6px); right: 0; z-index: 20; width: 250px;
+    background: var(--card); border: 1px solid var(--border); border-radius: 11px;
+    box-shadow: var(--shadow); padding: 8px; display: none;
+  }
+  .dropdown-panel.open { display: block; }
+  .dropdown-title { font-size: 10.5px; color: var(--muted); padding: 4px 6px 7px; }
+  .check-row { display: flex; align-items: center; gap: 8px; padding: 6px; border-radius: 6px; font-size: 12px; cursor: pointer; }
+  .check-row:hover { background: var(--card-2); }
+  .check-row input { accent-color: var(--accent); }
+  .check-row span { flex: 1; }
+
+  /* Bookmarks */
+  .bm-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .bm-card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+    padding: 14px 15px 12px; display: flex; flex-direction: column; gap: 8px;
+    transition: border-color .13s, box-shadow .13s;
+  }
+  .bm-card:hover { border-color: var(--border-strong); box-shadow: 0 2px 10px rgba(20,20,15,.05); }
+  .bm-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .bm-session { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .role-badge { font-size: 9.5px; padding: 2px 6px; border-radius: 5px; background: var(--blue-soft); color: var(--blue); flex: 0 0 auto; }
+  .role-badge.assistant { background: var(--accent-soft); color: var(--accent); }
+  .bm-preview { font-size: 12px; line-height: 1.6; color: var(--fg); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; min-height: 57px; }
+  .bm-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; border-top: 1px solid var(--border); padding-top: 9px; }
+  .bm-meta { display: flex; align-items: center; gap: 8px; font-size: 10.5px; color: var(--faint); }
+  .bm-folder { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); }
+  .bm-actions { display: flex; gap: 2px; }
+  .bm-actions button { width: 24px; height: 24px; border: 0; background: transparent; color: var(--faint); border-radius: 5px; cursor: pointer; display: grid; place-items: center; }
+  .bm-actions button:hover { background: var(--card-2); color: var(--fg); }
+  .bm-actions button.danger:hover { background: var(--danger-soft); color: var(--danger); }
+
+  .empty {
+    border: 1px dashed var(--border-strong); border-radius: 12px; padding: 46px 20px;
+    display: flex; flex-direction: column; align-items: center; gap: 7px; color: var(--faint); font-size: 12px;
+  }
+  .empty svg { width: 28px; height: 28px; opacity: .6; }
+
+  /* Modal shared */
+  .modal-mask {
+    position: fixed; inset: 0; background: rgba(15,15,12,.38); z-index: 50;
+    display: none; align-items: center; justify-content: center; padding: 30px; backdrop-filter: blur(3px);
+  }
+  .modal-mask.open { display: flex; }
+  .modal {
+    width: min(560px, 92vw); max-height: 82vh; background: var(--card);
+    border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow);
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  .modal.wide { width: min(760px, 94vw); }
+  .modal-head { padding: 15px 18px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+  .modal-head h3 { margin: 0; font-size: 14px; font-weight: 650; }
+  .modal-body { padding: 16px 18px; overflow: auto; }
+  .modal-foot { padding: 12px 18px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 8px; }
+  .modal-close { width: 26px; height: 26px; border-radius: 6px; border: 0; background: transparent; color: var(--muted); cursor: pointer; display: grid; place-items: center; }
+  .modal-close:hover { background: var(--card-2); color: var(--fg); }
+
+  .field { margin-bottom: 14px; }
+  .field-label { font-size: 11.5px; font-weight: 600; margin-bottom: 6px; }
+  .field-hint { font-size: 10.5px; color: var(--muted); margin-top: 5px; }
+  .input, .select {
+    width: 100%; height: 34px; border-radius: 8px; border: 1px solid var(--border-strong);
+    background: var(--card); color: var(--fg); font: inherit; font-size: 12.5px; padding: 0 10px; outline: none;
+  }
+  .input:focus, .select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .method-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .method-card {
+    border: 1px solid var(--border); border-radius: 10px; padding: 11px; cursor: pointer; background: var(--card);
+    text-align: left; font: inherit; color: var(--fg);
+  }
+  .method-card:hover { border-color: var(--border-strong); }
+  .method-card.active { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .method-card b { display: block; font-size: 12px; }
+  .method-card span { display: block; font-size: 10.5px; color: var(--muted); margin-top: 4px; line-height: 1.5; }
+
+  .kb-manage-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 0; border-top: 1px solid var(--border); }
+  .kb-manage-row:first-of-type { border-top: 0; }
+  .kb-manage-name { font-size: 12.5px; font-weight: 600; }
+  .kb-manage-meta { font-size: 10.5px; color: var(--muted); margin-top: 2px; }
+  .kb-manage-actions { display: flex; gap: 4px; }
+  .kb-manage-actions button { width: 26px; height: 26px; border-radius: 6px; border: 0; background: transparent; color: var(--muted); cursor: pointer; display: grid; place-items: center; }
+  .kb-manage-actions button:hover { background: var(--card-2); color: var(--fg); }
+
+  .toast {
+    position: fixed; left: 50%; bottom: 34px; transform: translate(-50%, 12px);
+    background: #1f1f1c; color: #f7f7f2; font-size: 12px; padding: 9px 14px; border-radius: 9px;
+    opacity: 0; pointer-events: none; transition: opacity .18s, transform .18s; z-index: 80;
+  }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+  .toast.error { background: var(--danger); }
+
+  @media (max-width: 900px) {
+    body { padding: 0; }
+    .window { width: 100vw; height: 100vh; border-radius: 0; border: 0; }
+    .rail { width: 210px; flex-basis: 210px; }
+    .doc-head, .doc-row { grid-template-columns: minmax(0, 1fr) 90px 70px 90px; }
+    .doc-head > :nth-child(4), .doc-row > :nth-child(4),
+    .doc-head > :nth-child(5), .doc-row > :nth-child(5) { display: none; }
+    .bm-grid { grid-template-columns: 1fr; }
+    .stat-grid { grid-template-columns: 1fr 1fr; }
+  }
+</style>
+</head>
+<body data-theme="light">
+  <div class="window">
+    <header class="app-head">
+      <div class="app-brand">
+        <div class="brand-mark">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+        </div>
+        <div>
+          <b>Hardware RAG Agent</b>
+          <small>硬件知识库与收藏</small>
+        </div>
+      </div>
+      <div class="page-switch">
+        <button class="active" data-page="knowledge">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5"/><path d="M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3"/></svg>
+          知识库
+        </button>
+        <button data-page="bookmarks">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+          收藏夹
+        </button>
+      </div>
+      <div class="head-spacer"></div>
+      <div class="head-actions">
+        <span class="status-pill"><span class="dot"></span>本地运行</span>
+        <button class="icon-btn" id="themeBtn" title="切换深浅色">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.66 6.34l1.41-1.41"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <div class="app-body">
+      <!-- ══ Knowledge page ══ -->
+      <section class="page active" id="page-knowledge">
+        <aside class="rail">
+          <div class="rail-head">
+            <h2>知识库</h2>
+            <button title="新建知识库" onclick="openKbManager()">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+            </button>
+          </div>
+          <div class="rail-list" id="kbRail">
+            <button class="rail-item active" data-kb="all" data-title="全部文档" data-desc="所有知识库中的文档与索引状态">
+              <svg class="rail-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+              <span class="rail-name">全部文档</span><span class="rail-count">24</span>
+            </button>
+            <div class="rail-divider"></div>
+            <div class="rail-label">知识库</div>
+            <button class="rail-item" data-kb="stm32" data-title="STM32F103C8" data-desc="STM32F103C8T6 数据手册、参考手册与引脚定义">
+              <span class="rail-dot" style="background:#7c5cff"></span>
+              <span class="rail-name">STM32F103C8</span><span class="rail-count">12</span>
+            </button>
+            <button class="rail-item" data-kb="esp32" data-title="ESP32-S3" data-desc="ESP32-S3 数据手册、Wi-Fi 与 BLE 文档">
+              <span class="rail-dot" style="background:#1f9d63"></span>
+              <span class="rail-name">ESP32-S3</span><span class="rail-count">7</span>
+            </button>
+            <button class="rail-item" data-kb="freertos" data-title="FreeRTOS 手册" data-desc="FreeRTOS 内核、任务调度与移植文档">
+              <span class="rail-dot" style="background:#3b82f6"></span>
+              <span class="rail-name">FreeRTOS 手册</span><span class="rail-count">3</span>
+            </button>
+            <button class="rail-item" data-kb="notes" data-title="硬件调试笔记" data-desc="个人调试记录、示波器截图与问题复盘">
+              <span class="rail-dot" style="background:#b7791f"></span>
+              <span class="rail-name">硬件调试笔记</span><span class="rail-count">2</span>
+            </button>
+            <div class="rail-label">测试</div>
+            <button class="rail-item" data-kb="test" data-title="测试知识库" data-desc="RAG 评测与上传测试数据；默认隐藏">
+              <span class="rail-dot" style="background:#9a9a92"></span>
+              <span class="rail-name">测试数据</span><span class="rail-count">3</span>
+            </button>
+          </div>
+          <div class="rail-footer">
+            <button onclick="openKbManager()">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+              管理知识库
+            </button>
+          </div>
+        </aside>
+
+        <main class="main">
+          <div class="main-head">
+            <div>
+              <h1 id="kbTitle">全部文档</h1>
+              <p id="kbDesc">所有知识库中的文档与索引状态</p>
+              <div class="head-meta" id="kbMeta">
+                <span class="tag method" id="kbMethodTag">hybrid</span>
+                <span class="tag" id="kbEmbedTag">OpenAI · text-embedding-3-small</span>
+                <span class="tag" id="kbCountTag">24 个文档 · 3,284 chunks</span>
+              </div>
+            </div>
+            <div class="main-actions">
+              <div class="dropdown">
+                <button class="btn" id="scopeBtn" onclick="toggleScope(event)">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+                  搜索范围
+                  <span class="tag method" id="scopeCount" style="display:none">2</span>
+                </button>
+                <div class="dropdown-panel" id="scopePanel">
+                  <div class="dropdown-title">聊天检索时使用的知识库；不勾选表示全部</div>
+                  <label class="check-row"><input type="checkbox" checked /><span>STM32F103C8</span><span class="mono">12</span></label>
+                  <label class="check-row"><input type="checkbox" checked /><span>ESP32-S3</span><span class="mono">7</span></label>
+                  <label class="check-row"><input type="checkbox" /><span>FreeRTOS 手册</span><span class="mono">3</span></label>
+                  <label class="check-row"><input type="checkbox" /><span>硬件调试笔记</span><span class="mono">2</span></label>
+                  <div style="display:flex;justify-content:flex-end;padding:6px 4px 2px">
+                    <button class="btn small ghost" onclick="toast('已清空搜索范围，恢复全部知识库')">全部</button>
+                  </div>
+                </div>
+              </div>
+              <button class="btn primary" onclick="openUpload()">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12M7 8l5-5 5 5M4 21h16"/></svg>
+                上传文档
+              </button>
+            </div>
+          </div>
+
+          <div class="scroll">
+            <div class="stat-grid">
+              <div class="stat"><div class="stat-label">文档总数</div><div class="stat-value">24</div></div>
+              <div class="stat"><div class="stat-label">已启用</div><div class="stat-value">21</div></div>
+              <div class="stat"><div class="stat-label">Chunks</div><div class="stat-value accent">3,284</div></div>
+              <div class="stat"><div class="stat-label">最近更新</div><div class="stat-value" style="font-size:14px">11-11 10:42</div></div>
+            </div>
+
+            <div class="toolbar">
+              <div class="search-box">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.35-4.35"/></svg>
+                <input id="docSearch" placeholder="搜索文档名、类型或标签…" />
+              </div>
+              <div class="chip-row" id="statusChips">
+                <button class="chip active" data-status="all">全部</button>
+                <button class="chip" data-status="ok">已索引</button>
+                <button class="chip" data-status="indexing">索引中</button>
+                <button class="chip" data-status="error">失败</button>
+              </div>
+            </div>
+
+            <div class="doc-list" id="docList">
+              <div class="doc-head">
+                <span>文档</span><span>状态</span><span>Chunks</span><span>大小</span><span>更新</span><span style="text-align:right">操作</span>
+              </div>
+              <div class="doc-row" data-kb="stm32" data-status="ok" data-name="stm32f103c8 datasheet reference manual pdf">
+                <div class="doc-main"><div class="doc-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></div><div class="doc-info"><div class="doc-name">stm32f103c8_datasheet.pdf</div><div class="doc-sub"><span class="tag">Reference Manual</span><span class="tag method">hybrid</span></div></div></div>
+                <span class="status ok"><span class="dot"></span>已索引</span><span class="mono">428</span><span class="mono">12.4 MB</span><span class="mono">11-11</span>
+                <div class="row-actions"><button title="预览" onclick="previewDoc('stm32f103c8_datasheet.pdf')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg></button><button title="重新索引" onclick="toast('已提交重新索引')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button><button class="danger" title="删除" onclick="confirmDeleteDoc('stm32f103c8_datasheet.pdf')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button><button class="switch" style="margin-left:4px" aria-checked="true" onclick="toggleSwitch(this)" title="启用 / 停用"><span class="knob"></span></button></div>
+              </div>
+              <div class="doc-row" data-kb="stm32" data-status="ok" data-name="10 stm32f103 reference manual docx">
+                <div class="doc-main"><div class="doc-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></div><div class="doc-info"><div class="doc-name">10-stm32f103-reference-manual.docx</div><div class="doc-sub"><span class="tag">Reference Manual</span><span class="tag method">agent</span></div></div></div>
+                <span class="status ok"><span class="dot"></span>已索引</span><span class="mono">286</span><span class="mono">8.1 MB</span><span class="mono">11-10</span>
+                <div class="row-actions"><button title="预览" onclick="previewDoc('10-stm32f103-reference-manual.docx')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg></button><button title="重新索引" onclick="toast('已提交重新索引')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button><button class="danger" title="删除" onclick="confirmDeleteDoc('10-stm32f103-reference-manual.docx')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button><button class="switch" style="margin-left:4px" aria-checked="true" onclick="toggleSwitch(this)" title="启用 / 停用"><span class="knob"></span></button></div>
+              </div>
+              <div class="doc-row" data-kb="stm32" data-status="ok" data-name="stm32 f103 pinout markdown md">
+                <div class="doc-main"><div class="doc-icon md"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h10M4 18h16"/></svg></div><div class="doc-info"><div class="doc-name">stm32-f103-pinout.md</div><div class="doc-sub"><span class="tag">Markdown</span><span class="tag method">hybrid</span></div></div></div>
+                <span class="status ok"><span class="dot"></span>已索引</span><span class="mono">42</span><span class="mono">24 KB</span><span class="mono">11-09</span>
+                <div class="row-actions"><button title="预览" onclick="previewDoc('stm32-f103-pinout.md')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg></button><button title="重新索引" onclick="toast('已提交重新索引')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button><button class="danger" title="删除" onclick="confirmDeleteDoc('stm32-f103-pinout.md')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button><button class="switch" style="margin-left:4px" aria-checked="true" onclick="toggleSwitch(this)" title="启用 / 停用"><span class="knob"></span></button></div>
+              </div>
+              <div class="doc-row" data-kb="esp32" data-status="ok" data-name="esp32 s3 datasheet reference manual pdf">
+                <div class="doc-main"><div class="doc-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></div><div class="doc-info"><div class="doc-name">esp32-s3_datasheet.pdf</div><div class="doc-sub"><span class="tag">Reference Manual</span><span class="tag method">hybrid</span></div></div></div>
+                <span class="status ok"><span class="dot"></span>已索引</span><span class="mono">214</span><span class="mono">9.8 MB</span><span class="mono">11-09</span>
+                <div class="row-actions"><button title="预览" onclick="previewDoc('esp32-s3_datasheet.pdf')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg></button><button title="重新索引" onclick="toast('已提交重新索引')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button><button class="danger" title="删除" onclick="confirmDeleteDoc('esp32-s3_datasheet.pdf')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button><button class="switch" style="margin-left:4px" aria-checked="true" onclick="toggleSwitch(this)" title="启用 / 停用"><span class="knob"></span></button></div>
+              </div>
+              <div class="doc-row" data-kb="esp32" data-status="indexing" data-name="esp32 wifi markdown md">
+                <div class="doc-main"><div class="doc-icon md"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h10M4 18h16"/></svg></div><div class="doc-info"><div class="doc-name">esp32-wifi.md</div><div class="doc-sub"><span class="tag">Markdown</span><span class="tag method">hybrid</span></div></div></div>
+                <span class="status indexing"><span class="dot"></span>索引中</span><span class="mono">18</span><span class="mono">12 KB</span><span class="mono">11-11</span>
+                <div class="row-actions"><button title="预览" onclick="previewDoc('esp32-wifi.md')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg></button><button title="重新索引" onclick="toast('已提交重新索引')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button><button class="danger" title="删除" onclick="confirmDeleteDoc('esp32-wifi.md')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button><button class="switch" style="margin-left:4px" aria-checked="true" onclick="toggleSwitch(this)" title="启用 / 停用"><span class="knob"></span></button></div>
+              </div>
+              <div class="doc-row" data-kb="freertos" data-status="ok" data-name="freertos manual pdf">
+                <div class="doc-main"><div class="doc-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></div><div class="doc-info"><div class="doc-name">FreeRTOS-v10.5-manual.pdf</div><div class="doc-sub"><span class="tag">Reference Manual</span><span class="tag method">hybrid</span></div></div></div>
+                <span class="status ok"><span class="dot"></span>已索引</span><span class="mono">356</span><span class="mono">6.2 MB</span><span class="mono">11-08</span>
+                <div class="row-actions"><button title="预览" onclick="previewDoc('FreeRTOS-v10.5-manual.pdf')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg></button><button title="重新索引" onclick="toast('已提交重新索引')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button><button class="danger" title="删除" onclick="confirmDeleteDoc('FreeRTOS-v10.5-manual.pdf')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button><button class="switch" style="margin-left:4px" aria-checked="true" onclick="toggleSwitch(this)" title="启用 / 停用"><span class="knob"></span></button></div>
+              </div>
+              <div class="doc-row" data-kb="notes" data-status="error" data-name="debug notes markdown md">
+                <div class="doc-main"><div class="doc-icon test"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h10M4 18h16"/></svg></div><div class="doc-info"><div class="doc-name">调试笔记-ESP32-无法启动.md</div><div class="doc-sub"><span class="tag">Notes</span><span class="tag method">hybrid</span></div></div></div>
+                <span class="status error"><span class="dot"></span>索引失败</span><span class="mono">0</span><span class="mono">4 KB</span><span class="mono">11-07</span>
+                <div class="row-actions"><button title="预览" onclick="previewDoc('调试笔记-ESP32-无法启动.md')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg></button><button title="重新索引" onclick="toast('已提交重新索引')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button><button class="danger" title="删除" onclick="confirmDeleteDoc('调试笔记-ESP32-无法启动.md')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button><button class="switch" style="margin-left:4px" aria-checked="false" onclick="toggleSwitch(this)" title="启用 / 停用"><span class="knob"></span></button></div>
+              </div>
+              <div class="doc-row" data-kb="test" data-status="ok" data-name="test multimodal pdf">
+                <div class="doc-main"><div class="doc-icon test"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></div><div class="doc-info"><div class="doc-name">test-multimodal-pdf.pdf</div><div class="doc-sub"><span class="tag">Test</span><span class="tag method">multimodal</span></div></div></div>
+                <span class="status ok"><span class="dot"></span>已索引</span><span class="mono">88</span><span class="mono">3.3 MB</span><span class="mono">11-06</span>
+                <div class="row-actions"><button title="预览" onclick="previewDoc('test-multimodal-pdf.pdf')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg></button><button title="重新索引" onclick="toast('已提交重新索引')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button><button class="danger" title="删除" onclick="confirmDeleteDoc('test-multimodal-pdf.pdf')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button><button class="switch" style="margin-left:4px" aria-checked="true" onclick="toggleSwitch(this)" title="启用 / 停用"><span class="knob"></span></button></div>
+              </div>
+            </div>
+
+            <div class="upload-progress" id="uploadProgress">
+              <div class="progress-line"><span id="uploadName">stm32f103c8_errata.pdf</span><div class="progress-track"><div class="progress-fill" id="progressFill"></div></div><span id="progressText">0%</span></div>
+            </div>
+
+            <div class="upload-zone" onclick="openUpload()">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v12"/><path d="M7 8l5-5 5 5"/><path d="M4 21h16"/></svg>
+              <span>拖拽 PDF / DOCX / Markdown 到此处，或点击上传</span>
+            </div>
+          </div>
+        </main>
+      </section>
+
+      <!-- ══ Bookmarks page ══ -->
+      <section class="page" id="page-bookmarks">
+        <aside class="rail">
+          <div class="rail-head">
+            <h2>收藏夹</h2>
+            <button title="新建收藏夹" onclick="openNewFolder()">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+            </button>
+          </div>
+          <div class="rail-list" id="bmFolders">
+            <button class="rail-item active" data-folder="all" data-title="全部收藏" data-desc="所有会话中收藏的消息">
+              <svg class="rail-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+              <span class="rail-name">全部收藏</span><span class="rail-count">18</span>
+            </button>
+            <div class="rail-divider"></div>
+            <div class="rail-label">文件夹</div>
+            <button class="rail-item" data-folder="default" data-title="默认" data-desc="未分类的收藏消息">
+              <svg class="rail-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+              <span class="rail-name">默认</span><span class="rail-count">6</span>
+            </button>
+            <button class="rail-item" data-folder="stm32" data-title="STM32 调试" data-desc="STM32 相关的寄存器、引脚与故障排查">
+              <svg class="rail-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+              <span class="rail-name">STM32 调试</span><span class="rail-count">5</span>
+            </button>
+            <button class="rail-item" data-folder="esp32" data-title="ESP32" data-desc="ESP32-S3 的 Wi-Fi、BLE 与外设配置">
+              <svg class="rail-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+              <span class="rail-name">ESP32</span><span class="rail-count">4</span>
+            </button>
+            <button class="rail-item" data-folder="papers" data-title="论文与手册" data-desc="数据手册、应用笔记与论文摘录">
+              <svg class="rail-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+              <span class="rail-name">论文与手册</span><span class="rail-count">3</span>
+            </button>
+          </div>
+          <div class="rail-footer">
+            <button onclick="openNewFolder()">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+              新建收藏夹
+            </button>
+          </div>
+        </aside>
+
+        <main class="main">
+          <div class="main-head">
+            <div>
+              <h1 id="bmTitle">全部收藏</h1>
+              <p id="bmDesc">所有会话中收藏的消息</p>
+            </div>
+            <div class="main-actions">
+              <div class="search-box">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.35-4.35"/></svg>
+                <input id="bmSearch" placeholder="搜索收藏内容…" />
+              </div>
+              <button class="btn primary" onclick="openNewFolder()">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+                新建收藏夹
+              </button>
+            </div>
+          </div>
+
+          <div class="scroll">
+            <div class="bm-grid" id="bmGrid">
+              <article class="bm-card" data-folder="stm32" data-text="stm32f103 adc 通道数 外部通道 pa0 pa7 pb0 pb1">
+                <div class="bm-top"><span class="bm-session">查一下 stm32 的一些基本信息</span><span class="role-badge assistant">助手</span></div>
+                <div class="bm-preview">STM32F103 的 ADC 为 12 位，共 10 个外部通道；PA0–PA7、PB0–PB1 可复用为 ADC 输入。采样时间与外部阻抗有关，建议先看数据手册的 ADC 电气特性表。</div>
+                <div class="bm-foot"><div class="bm-meta"><span class="bm-folder"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>STM32 调试</span><span>2 小时前</span></div><div class="bm-actions"><button title="打开" onclick="toast('跳转到原消息')"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg></button><button title="移动" onclick="openMove(this)"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></button><button class="danger" title="删除" onclick="deleteBookmark(this)"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button></div></div>
+              </article>
+              <article class="bm-card" data-folder="esp32" data-text="esp32 s3 gpio 45 引脚 qfn56 封装">
+                <div class="bm-top"><span class="bm-session">ESP32-S3 GPIO 数量与封装</span><span class="role-badge assistant">助手</span></div>
+                <div class="bm-preview">ESP32-S3 有 45 个可编程 GPIO。注意 GPIO22–GPIO25 不存在；GPIO26–GPIO32 接封装内 flash/PSRAM，优先留给片外存储。</div>
+                <div class="bm-foot"><div class="bm-meta"><span class="bm-folder"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>ESP32</span><span>昨天</span></div><div class="bm-actions"><button title="打开" onclick="toast('跳转到原消息')"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg></button><button title="移动" onclick="openMove(this)"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></button><button class="danger" title="删除" onclick="deleteBookmark(this)"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button></div></div>
+              </article>
+              <article class="bm-card" data-folder="papers" data-text="stm32f103 参考手册 时钟树 ahb apb2 apb1">
+                <div class="bm-top"><span class="bm-session">STM32 时钟树怎么配置</span><span class="role-badge assistant">助手</span></div>
+                <div class="bm-preview">复位后默认使用内部 RC 8 MHz；AHB 和 APB2 最高 72 MHz，APB1 最高 36 MHz。切换外部晶振时要先使能 HSE 并等待稳定，再配置 PLL。</div>
+                <div class="bm-foot"><div class="bm-meta"><span class="bm-folder"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>论文与手册</span><span>2 天前</span></div><div class="bm-actions"><button title="打开" onclick="toast('跳转到原消息')"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg></button><button title="移动" onclick="openMove(this)"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></button><button class="danger" title="删除" onclick="deleteBookmark(this)"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button></div></div>
+              </article>
+              <article class="bm-card" data-folder="default" data-text="freertos 任务优先级 调度 抢占式">
+                <div class="bm-top"><span class="bm-session">FreeRTOS 任务优先级问题</span><span class="role-badge assistant">助手</span></div>
+                <div class="bm-preview">FreeRTOS 中数值越大优先级越高；同优先级任务按时间片轮转。中断里只能调用 FromISR 版本 API，并且要检查 xHigherPriorityTaskWoken。</div>
+                <div class="bm-foot"><div class="bm-meta"><span class="bm-folder"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>默认</span><span>3 天前</span></div><div class="bm-actions"><button title="打开" onclick="toast('跳转到原消息')"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg></button><button title="移动" onclick="openMove(this)"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></button><button class="danger" title="删除" onclick="deleteBookmark(this)"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button></div></div>
+              </article>
+              <article class="bm-card" data-folder="stm32" data-text="stm32 串口 usart 波特率 时钟">
+                <div class="bm-top"><span class="bm-session">串口一直收到乱码</span><span class="role-badge">用户</span></div>
+                <div class="bm-preview">USART1 挂在 APB2 上，波特率计算要用对应的时钟频率；检查 HSE 是否起振、PLL 是否配置成功，再确认 TX/RX 是否交叉连接。</div>
+                <div class="bm-foot"><div class="bm-meta"><span class="bm-folder"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>STM32 调试</span><span>4 天前</span></div><div class="bm-actions"><button title="打开" onclick="toast('跳转到原消息')"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg></button><button title="移动" onclick="openMove(this)"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></button><button class="danger" title="删除" onclick="deleteBookmark(this)"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button></div></div>
+              </article>
+              <article class="bm-card" data-folder="esp32" data-text="esp32 s3 下载 启动 strapping 引脚">
+                <div class="bm-top"><span class="bm-session">ESP32-S3 下载模式进不去</span><span class="role-badge assistant">助手</span></div>
+                <div class="bm-preview">按住 BOOT（GPIO0）再复位进入下载模式；检查 GPIO0/GPIO45/GPIO46 这些 strapping 引脚在上电时的电平，避免被外设拉偏。</div>
+                <div class="bm-foot"><div class="bm-meta"><span class="bm-folder"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>ESP32</span><span>5 天前</span></div><div class="bm-actions"><button title="打开" onclick="toast('跳转到原消息')"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg></button><button title="移动" onclick="openMove(this)"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></button><button class="danger" title="删除" onclick="deleteBookmark(this)"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button></div></div>
+              </article>
+            </div>
+            <div class="empty" id="bmEmpty" style="display:none">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+              <span>这个收藏夹还是空的</span>
+              <span style="font-size:11px">在聊天里点击消息旁的收藏按钮即可加入</span>
+            </div>
+          </div>
+        </main>
+      </section>
+    </div>
+  </div>
+
+  <!-- Upload chunk method modal -->
+  <div class="modal-mask" id="uploadModal">
+    <div class="modal">
+      <div class="modal-head"><h3>选择切块方式</h3><button class="modal-close" onclick="closeModal('uploadModal')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button></div>
+      <div class="modal-body">
+        <p style="margin:0 0 12px;font-size:11.5px;color:var(--muted)">文件将上传到 <b id="uploadTargetKb">全部文档</b>。切块方式决定检索粒度和索引成本。</p>
+        <div class="method-grid" id="methodGrid">
+          <button class="method-card active" data-method="hybrid"><b>Hybrid</b><span>结构化切块 + 向量/关键词混合检索，最稳。</span></button>
+          <button class="method-card" data-method="agent"><b>Agent</b><span>由模型理解文档结构后切块，质量更高、更慢。</span></button>
+          <button class="method-card" data-method="multimodal"><b>Multimodal</b><span>保留页面截图与表格，用于扫描版 PDF。</span></button>
+        </div>
+      </div>
+      <div class="modal-foot"><button class="btn" onclick="closeModal('uploadModal')">取消</button><button class="btn primary" onclick="startUpload()">开始上传</button></div>
+    </div>
+  </div>
+
+  <!-- KB manager modal -->
+  <div class="modal-mask" id="kbManagerModal">
+    <div class="modal wide">
+      <div class="modal-head"><h3>管理知识库</h3><button class="modal-close" onclick="closeModal('kbManagerModal')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button></div>
+      <div class="modal-body">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+          <div style="font-size:12px;font-weight:650">已有知识库</div>
+          <button class="btn small primary" onclick="document.getElementById('newKbForm').scrollIntoView({behavior:'smooth'})">新建知识库</button>
+        </div>
+        <div id="kbManageList">
+          <div class="kb-manage-row"><div><div class="kb-manage-name">STM32F103C8</div><div class="kb-manage-meta">hybrid · text-embedding-3-small · 12 文档 / 756 chunks</div></div><div class="kb-manage-actions"><button title="编辑">✎</button><button title="导出">⇩</button><button title="导入">⇧</button><button title="删除" onclick="toast('删除知识库需要确认（交互稿）')">×</button></div></div>
+          <div class="kb-manage-row"><div><div class="kb-manage-name">ESP32-S3</div><div class="kb-manage-meta">hybrid · text-embedding-3-small · 7 文档 / 232 chunks</div></div><div class="kb-manage-actions"><button title="编辑">✎</button><button title="导出">⇩</button><button title="导入">⇧</button><button title="删除" onclick="toast('删除知识库需要确认（交互稿）')">×</button></div></div>
+          <div class="kb-manage-row"><div><div class="kb-manage-name">FreeRTOS 手册</div><div class="kb-manage-meta">agent · claude-sonnet-5 · 3 文档 / 356 chunks</div></div><div class="kb-manage-actions"><button title="编辑">✎</button><button title="导出">⇩</button><button title="导入">⇧</button><button title="删除" onclick="toast('删除知识库需要确认（交互稿）')">×</button></div></div>
+          <div class="kb-manage-row"><div><div class="kb-manage-name">硬件调试笔记</div><div class="kb-manage-meta">hybrid · text-embedding-3-small · 2 文档 / 51 chunks</div></div><div class="kb-manage-actions"><button title="编辑">✎</button><button title="导出">⇩</button><button title="导入">⇧</button><button title="删除" onclick="toast('删除知识库需要确认（交互稿）')">×</button></div></div>
+        </div>
+
+        <div id="newKbForm" style="margin-top:18px;padding-top:16px;border-top:1px solid var(--border)">
+          <div style="font-size:12px;font-weight:650;margin-bottom:12px">新建知识库</div>
+          <div class="field"><div class="field-label">名称 *</div><input class="input" id="newKbName" placeholder="例如：STM32F4 参考手册" /></div>
+          <div class="field"><div class="field-label">描述</div><input class="input" placeholder="这个知识库包含哪些文档" /></div>
+          <div class="field"><div class="field-label">切块方式</div>
+            <div class="method-grid">
+              <button class="method-card active"><b>Hybrid</b><span>默认，适合大多数手册。</span></button>
+              <button class="method-card"><b>Agent</b><span>结构复杂的文档。</span></button>
+              <button class="method-card"><b>Multimodal</b><span>扫描版 PDF。</span></button>
+            </div>
+          </div>
+          <div class="field"><div class="field-label">Embedding 模型 *</div><input class="input" value="text-embedding-3-small" /></div>
+          <div class="field"><div class="field-label">Embedding Base URL</div><input class="input" placeholder="留空使用全局默认" /></div>
+          <div style="display:flex;justify-content:flex-end;gap:8px"><button class="btn" onclick="closeModal('kbManagerModal')">取消</button><button class="btn primary" onclick="createKb()">创建知识库</button></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Delete doc confirm -->
+  <div class="modal-mask" id="deleteModal">
+    <div class="modal" style="width:min(420px,92vw)">
+      <div class="modal-head"><h3>删除文档</h3><button class="modal-close" onclick="closeModal('deleteModal')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button></div>
+      <div class="modal-body"><p style="margin:0;font-size:12.5px;line-height:1.65;color:var(--muted)">确定删除 <b id="deleteDocName" style="color:var(--fg)"></b>？该文档的索引和 chunks 会一并删除，无法恢复。</p></div>
+      <div class="modal-foot"><button class="btn" onclick="closeModal('deleteModal')">取消</button><button class="btn danger" onclick="doDeleteDoc()">删除</button></div>
+    </div>
+  </div>
+
+  <!-- Move bookmark modal -->
+  <div class="modal-mask" id="moveModal">
+    <div class="modal" style="width:min(420px,92vw)">
+      <div class="modal-head"><h3>移动到收藏夹</h3><button class="modal-close" onclick="closeModal('moveModal')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button></div>
+      <div class="modal-body" id="moveFolderList"></div>
+    </div>
+  </div>
+
+  <!-- New folder modal -->
+  <div class="modal-mask" id="folderModal">
+    <div class="modal" style="width:min(420px,92vw)">
+      <div class="modal-head"><h3>新建收藏夹</h3><button class="modal-close" onclick="closeModal('folderModal')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button></div>
+      <div class="modal-body"><div class="field"><div class="field-label">名称</div><input class="input" id="newFolderName" placeholder="例如：电源设计" /></div></div>
+      <div class="modal-foot"><button class="btn" onclick="closeModal('folderModal')">取消</button><button class="btn primary" onclick="createFolder()">创建</button></div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+<script>
+  const $ = (s, r = document) => r.querySelector(s);
+  const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+
+  // ── Page switch ─────────────────────────────
+  $$('.page-switch button').forEach(b => b.addEventListener('click', () => {
+    $$('.page-switch button').forEach(x => x.classList.toggle('active', x === b));
+    $$('.page').forEach(p => p.classList.toggle('active', p.id === `page-${b.dataset.page}`));
+  }));
+
+  // ── Theme ───────────────────────────────────
+  $('#themeBtn').addEventListener('click', () => {
+    document.body.dataset.theme = document.body.dataset.theme === 'dark' ? 'light' : 'dark';
+  });
+
+  // ── Toast ───────────────────────────────────
+  let toastTimer = null;
+  window.toast = (msg) => {
+    const el = $('#toast');
+    el.textContent = msg;
+    el.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.remove('show'), 1800);
+  };
+  window.toggleSwitch = (el) => {
+    el.setAttribute('aria-checked', el.getAttribute('aria-checked') === 'true' ? 'false' : 'true');
+  };
+  window.closeModal = (id) => $('#' + id).classList.remove('open');
+  $$('.modal-mask').forEach(m => m.addEventListener('click', e => { if (e.target === m) m.classList.remove('open'); }));
+
+  // ── KB rail filtering ───────────────────────
+  const kbState = { kb: 'all' };
+  function applyDocFilters() {
+    const q = ($('#docSearch').value || '').trim().toLowerCase();
+    const status = ($('#statusChips .chip.active')?.dataset.status) || 'all';
+    let visible = 0;
+    $$('#docList .doc-row').forEach(row => {
+      const kbOk = kbState.kb === 'all' || row.dataset.kb === kbState.kb;
+      const statusOk = status === 'all' || row.dataset.status === status;
+      const textOk = !q || (row.dataset.name || '').includes(q) || row.textContent.toLowerCase().includes(q);
+      const show = kbOk && statusOk && textOk;
+      row.style.display = show ? '' : 'none';
+      if (show) visible++;
+    });
+    let empty = $('#docEmpty');
+    if (!empty) {
+      empty = document.createElement('div');
+      empty.id = 'docEmpty';
+      empty.className = 'empty';
+      empty.style.marginTop = '12px';
+      empty.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><span>没有匹配的文档</span>';
+      $('#docList').after(empty);
+    }
+    empty.style.display = visible ? 'none' : 'flex';
+  }
+  $$('#kbRail .rail-item').forEach(item => item.addEventListener('click', () => {
+    $$('#kbRail .rail-item').forEach(x => x.classList.toggle('active', x === item));
+    kbState.kb = item.dataset.kb;
+    $('#kbTitle').textContent = item.dataset.title;
+    $('#kbDesc').textContent = item.dataset.desc;
+    const kbs = { all: ['hybrid', 'OpenAI · text-embedding-3-small', '24 个文档 · 3,284 chunks'], stm32: ['hybrid', 'text-embedding-3-small', '12 个文档 · 756 chunks'], esp32: ['hybrid', 'text-embedding-3-small', '7 个文档 · 232 chunks'], freertos: ['agent', 'claude-sonnet-5', '3 个文档 · 356 chunks'], notes: ['hybrid', 'text-embedding-3-small', '2 个文档 · 51 chunks'], test: ['multimodal', 'text-embedding-3-small', '3 个文档 · 88 chunks'] };
+    const [method, embed, count] = kbs[item.dataset.kb] || kbs.all;
+    $('#kbMethodTag').textContent = method;
+    $('#kbEmbedTag').textContent = embed;
+    $('#kbCountTag').textContent = count;
+    applyDocFilters();
+  }));
+  $('#docSearch').addEventListener('input', applyDocFilters);
+  $('#statusChips').addEventListener('click', e => {
+    const chip = e.target.closest('.chip'); if (!chip) return;
+    $$('#statusChips .chip').forEach(x => x.classList.toggle('active', x === chip));
+    applyDocFilters();
+  });
+
+  // ── Search scope dropdown ───────────────────
+  window.toggleScope = (e) => {
+    e.stopPropagation();
+    $('#scopePanel').classList.toggle('open');
+    const count = $$('#scopePanel input:checked').length;
+    const badge = $('#scopeCount');
+    badge.style.display = count ? '' : 'none';
+    badge.textContent = String(count);
+  };
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('.dropdown')) $('#scopePanel')?.classList.remove('open');
+  });
+  $$('#scopePanel input').forEach(cb => cb.addEventListener('change', () => {
+    const count = $$('#scopePanel input:checked').length;
+    const badge = $('#scopeCount');
+    badge.style.display = count ? '' : 'none';
+    badge.textContent = String(count);
+  }));
+
+  // ── Upload flow ─────────────────────────────
+  let uploadMethod = 'hybrid';
+  window.openUpload = () => {
+    $('#uploadTargetKb').textContent = $('#kbTitle').textContent;
+    $('#uploadModal').classList.add('open');
+  };
+  $$('#methodGrid .method-card').forEach(card => card.addEventListener('click', () => {
+    $$('#methodGrid .method-card').forEach(x => x.classList.toggle('active', x === card));
+    uploadMethod = card.dataset.method;
+  }));
+  let uploadTimer = null;
+  window.startUpload = () => {
+    closeModal('uploadModal');
+    const prog = $('#uploadProgress');
+    prog.classList.add('show');
+    $('#uploadName').textContent = 'stm32f103c8_errata.pdf';
+    let p = 0;
+    const fill = $('#progressFill'), text = $('#progressText');
+    fill.style.width = '0%'; text.textContent = '0%';
+    clearInterval(uploadTimer);
+    uploadTimer = setInterval(() => {
+      p = Math.min(100, p + Math.ceil(Math.random() * 12));
+      fill.style.width = p + '%'; text.textContent = p + '%';
+      if (p >= 100) {
+        clearInterval(uploadTimer);
+        text.textContent = '索引中…';
+        setTimeout(() => {
+          prog.classList.remove('show');
+          toast('上传完成：stm32f103c8_errata.pdf 已进入索引');
+        }, 1200);
+      }
+    }, 260);
+  };
+
+  // ── Doc actions ─────────────────────────────
+  let deleteTarget = null;
+  window.previewDoc = (name) => toast(`打开文档预览：${name}`);
+  window.confirmDeleteDoc = (name) => {
+    deleteTarget = name;
+    $('#deleteDocName').textContent = name;
+    $('#deleteModal').classList.add('open');
+  };
+  window.doDeleteDoc = () => {
+    closeModal('deleteModal');
+    toast(`已删除 ${deleteTarget || '文档'}`);
+  };
+
+  // ── KB manager ──────────────────────────────
+  window.openKbManager = () => $('#kbManagerModal').classList.add('open');
+  window.createKb = () => {
+    const name = ($('#newKbName').value || '').trim();
+    if (!name) { toast('请输入知识库名称'); return; }
+    const row = document.createElement('div');
+    row.className = 'kb-manage-row';
+    row.innerHTML = `<div><div class="kb-manage-name">${name.replace(/[<>&]/g, '')}</div><div class="kb-manage-meta">hybrid · text-embedding-3-small · 0 文档 / 0 chunks</div></div><div class="kb-manage-actions"><button title="编辑">✎</button><button title="导出">⇩</button><button title="导入">⇧</button><button title="删除" onclick="toast('删除知识库需要确认（交互稿）')">×</button></div>`;
+    $('#kbManageList').appendChild(row);
+    $('#newKbName').value = '';
+    toast(`已创建知识库：${name}`);
+  };
+
+  // ── Bookmarks ───────────────────────────────
+  const folderNames = {
+    default: '默认', stm32: 'STM32 调试', esp32: 'ESP32', papers: '论文与手册',
+  };
+  const bmState = { folder: 'all' };
+  function applyBmFilters() {
+    const q = ($('#bmSearch').value || '').trim().toLowerCase();
+    let visible = 0;
+    $$('#bmGrid .bm-card').forEach(card => {
+      const folderOk = bmState.folder === 'all' || card.dataset.folder === bmState.folder;
+      const textOk = !q || (card.dataset.text || '').includes(q) || card.textContent.toLowerCase().includes(q);
+      const show = folderOk && textOk;
+      card.style.display = show ? '' : 'none';
+      if (show) visible++;
+    });
+    $('#bmEmpty').style.display = visible ? 'none' : 'flex';
+  }
+  $$('#bmFolders .rail-item').forEach(item => item.addEventListener('click', () => {
+    $$('#bmFolders .rail-item').forEach(x => x.classList.toggle('active', x === item));
+    bmState.folder = item.dataset.folder;
+    $('#bmTitle').textContent = item.dataset.title;
+    $('#bmDesc').textContent = item.dataset.desc;
+    applyBmFilters();
+  }));
+  $('#bmSearch').addEventListener('input', applyBmFilters);
+
+  let moveTarget = null;
+  window.openMove = (btn) => {
+    moveTarget = btn.closest('.bm-card');
+    const list = $('#moveFolderList');
+    list.innerHTML = '';
+    Object.entries(folderNames).forEach(([id, name]) => {
+      const b = document.createElement('button');
+      b.className = 'rail-item';
+      b.style.marginBottom = '4px';
+      b.innerHTML = `<svg class="rail-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg><span class="rail-name">${name}</span>`;
+      b.addEventListener('click', () => {
+        moveTarget.dataset.folder = id;
+        moveTarget.querySelector('.bm-folder').innerHTML = `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>${name}`;
+        closeModal('moveModal');
+        applyBmFilters();
+        toast(`已移动到「${name}」`);
+      });
+      list.appendChild(b);
+    });
+    $('#moveModal').classList.add('open');
+  };
+  window.deleteBookmark = (btn) => {
+    const card = btn.closest('.bm-card');
+    card.remove();
+    applyBmFilters();
+    toast('已删除收藏');
+  };
+  window.openNewFolder = () => $('#folderModal').classList.add('open');
+  window.createFolder = () => {
+    const name = ($('#newFolderName').value || '').trim();
+    if (!name) { toast('请输入收藏夹名称'); return; }
+    const btn = document.createElement('button');
+    btn.className = 'rail-item';
+    btn.dataset.folder = 'new-' + Date.now();
+    btn.dataset.title = name;
+    btn.dataset.desc = `${name}中的收藏消息`;
+    btn.innerHTML = `<svg class="rail-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg><span class="rail-name">${name.replace(/[<>&]/g, '')}</span><span class="rail-count">0</span>`;
+    btn.addEventListener('click', () => {
+      $$('#bmFolders .rail-item').forEach(x => x.classList.toggle('active', x === btn));
+      bmState.folder = btn.dataset.folder;
+      $('#bmTitle').textContent = btn.dataset.title;
+      $('#bmDesc').textContent = btn.dataset.desc;
+      applyBmFilters();
+    });
+    $('#bmFolders').appendChild(btn);
+    $('#newFolderName').value = '';
+    closeModal('folderModal');
+    toast(`已创建收藏夹：${name}`);
+  };
+
+  applyDocFilters();
+  applyBmFilters();
+</script>
+</body>
+</html>
