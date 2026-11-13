@@ -197,6 +197,22 @@ def _build_rag_context(results: list[Any]) -> str:
     )
 
 
+def _sum_usage_calls(calls: dict[str, dict]) -> dict:
+    """Sum the latest usage snapshot of each model call for the done event."""
+    fields = ("prompt_tokens", "completion_tokens", "total_tokens", "cached_tokens")
+    total = {key: 0 for key in fields}
+    for part in calls.values():
+        for key in fields:
+            value = part.get(key, 0)
+            total[key] += value if type(value) is int and value >= 0 else 0
+    for part in reversed(list(calls.values())):
+        model = part.get("model")
+        if isinstance(model, str) and model:
+            total["model"] = model
+            break
+    return total
+
+
 def _record_token_usage(
     model: str,
     provider: str,
@@ -214,23 +230,34 @@ def _record_token_usage(
 ) -> None:
     """记录 Token 用量到数据库（失败不抛异常，仅 warning）。"""
     try:
+        served_model = usage_data.get("model")
+        record_model = served_model if isinstance(served_model, str) and served_model.strip() else model
         with get_db_ctx() as db:
-            record = TokenUsage(
-                model=model,
-                provider=provider or "",
+            existing = None
+            if call_id:
+                query = db.query(TokenUsage).filter(TokenUsage.call_id == call_id)
+                if run_id:
+                    query = query.filter(TokenUsage.run_id == run_id)
+                existing = query.first()
+            record = existing or TokenUsage(
                 session_id=session_id or "",
                 trace_id=trace_id or current_trace_id(),
                 run_id=run_id,
                 call_id=call_id,
-                prompt_tokens=usage_data.get("prompt_tokens", 0),
-                completion_tokens=usage_data.get("completion_tokens", 0),
-                cached_tokens=usage_data.get("cached_tokens", cached_tokens),
-                total_tokens=usage_data.get("total_tokens", 0),
-                cost_usd=cost_usd,
-                latency_ms=latency_ms,
-                status=status,
-                source=source,
             )
-            db.add(record)
+            # A second usage event for the same call is the provider's real
+            # numbers replacing 9Router's estimate; update in place.
+            record.model = record_model
+            record.provider = provider or ""
+            record.prompt_tokens = usage_data.get("prompt_tokens", 0)
+            record.completion_tokens = usage_data.get("completion_tokens", 0)
+            record.cached_tokens = usage_data.get("cached_tokens", cached_tokens)
+            record.total_tokens = usage_data.get("total_tokens", 0)
+            record.cost_usd = cost_usd
+            record.latency_ms = latency_ms
+            record.status = status
+            record.source = source
+            if existing is None:
+                db.add(record)
     except Exception as db_err:
         logger.warning(f"Failed to record token usage: {db_err}")

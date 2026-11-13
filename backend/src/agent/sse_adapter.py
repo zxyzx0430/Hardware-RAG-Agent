@@ -426,9 +426,10 @@ async def stream_agent_to_sse(
                 unregister_queue(session_id, state["tool_event_queue"])
             timing.finish(outcome, error_type=error_type)
     usage = state.get("usage")
-    if isinstance(usage, dict) and any(usage.get(key, 0) for key in (
-        "prompt_tokens", "completion_tokens", "total_tokens",
-    )):
+    if (not state.get("usage_event_count")
+            and isinstance(usage, dict) and any(usage.get(key, 0) for key in (
+                "prompt_tokens", "completion_tokens", "total_tokens",
+            ))):
         yield sse_event("usage", {"usage": usage})
     logger.info("stream_agent_to_sse done total_steps=%s", state.get("step_index", 0))
 
@@ -766,18 +767,26 @@ async def _handle_message_chunk(
     parts: list[str] = []
     _append_reasoning_event(parts, msg_chunk, state)
     _append_text_event(parts, msg_chunk, state)
-    _capture_usage(msg_chunk, state)
+    per_call = _capture_usage(msg_chunk, state)
+    if per_call is not None:
+        call_id, usage = per_call
+        parts.append(sse_event("usage", {"usage": usage, "call_id": call_id}))
     accumulate_tokens(msg_chunk.content, state)
     return "\n".join(parts) if parts else None
 
 
-def _capture_usage(msg_chunk: AIMessageChunk, state: dict) -> None:
-    """Accumulate provider-reported usage exactly once per model response."""
+def _capture_usage(msg_chunk: AIMessageChunk, state: dict) -> tuple[str, dict] | None:
+    """Record usage for one model call; repeated chunks for a call replace it.
+
+    9Router emits an estimated usage chunk first and the real provider usage
+    second with the same message id. Keeping the latest per id avoids summing
+    the estimate and the real numbers together.
+    """
     raw = getattr(msg_chunk, "usage_metadata", None)
     if callable(getattr(raw, "model_dump", None)):
         raw = raw.model_dump()
     if not isinstance(raw, dict):
-        return
+        return None
     input_tokens = _as_int(raw.get("input_tokens"))
     output_tokens = _as_int(raw.get("output_tokens"))
     total_tokens = _as_int(raw.get("total_tokens")) or input_tokens + output_tokens
@@ -788,17 +797,49 @@ def _capture_usage(msg_chunk: AIMessageChunk, state: dict) -> None:
         if not cached_tokens:
             cached_tokens = _as_int(input_details.get("cached_tokens"))
     if not (input_tokens or output_tokens or total_tokens):
+        return None
+    call_id = getattr(msg_chunk, "id", None)
+    if not isinstance(call_id, str) or not call_id:
+        call_id = f"call-{state.get('usage_event_count', 0) + 1}"
+    per_call = {
+        "prompt_tokens": input_tokens,
+        "completion_tokens": output_tokens,
+        "total_tokens": total_tokens,
+        "cached_tokens": cached_tokens,
+    }
+    _capture_served_model(msg_chunk, per_call)
+    calls = state.setdefault("usage_by_call", {})
+    previous = calls.get(call_id)
+    if previous and not per_call.get("model") and previous.get("model"):
+        per_call["model"] = previous["model"]
+    calls[call_id] = per_call
+    state["usage_event_count"] = state.get("usage_event_count", 0) + 1
+    state["usage"] = _sum_usage_calls(calls)
+    return call_id, per_call
+
+
+def _sum_usage_calls(calls: dict[str, dict]) -> dict:
+    fields = ("prompt_tokens", "completion_tokens", "total_tokens", "cached_tokens")
+    total = {key: 0 for key in fields}
+    for part in calls.values():
+        for key in fields:
+            total[key] += _as_int(part.get(key))
+    for part in reversed(list(calls.values())):
+        model = part.get("model")
+        if isinstance(model, str) and model:
+            total["model"] = model
+            break
+    return total
+
+
+def _capture_served_model(msg_chunk: AIMessageChunk, usage: dict) -> None:
+    """Record the model the provider actually served, not the requested route id."""
+    meta = getattr(msg_chunk, "response_metadata", None)
+    if not isinstance(meta, dict):
         return
-    usage = state.setdefault("usage", {
-        "prompt_tokens": 0,
-        "completion_tokens": 0,
-        "total_tokens": 0,
-        "cached_tokens": 0,
-    })
-    usage["prompt_tokens"] += input_tokens
-    usage["completion_tokens"] += output_tokens
-    usage["total_tokens"] += total_tokens
-    usage["cached_tokens"] += cached_tokens
+    served = meta.get("model_name") or meta.get("model")
+    if isinstance(served, str) and served.strip():
+        usage["model"] = served.strip()
 
 
 def _as_int(value: Any) -> int:

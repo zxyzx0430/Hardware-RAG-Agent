@@ -203,6 +203,12 @@ export function TokenUsagePanel() {
           <div className="stat-value" style={{ color: inputColor }}>{formatTokens(summary?.total_input ?? 0)}</div>
         </div>
         <div className="stat-card">
+          <div className="stat-label">{t('freshInputTokens')}</div>
+          <div className="stat-value" style={{ color: inputColor }}>
+            {formatTokens(Math.max((summary?.total_input ?? 0) - (summary?.total_cached ?? 0), 0))}
+          </div>
+        </div>
+        <div className="stat-card">
           <div className="stat-label">{t('outputTokens')}</div>
           <div className="stat-value" style={{ color: outputColor }}>{formatTokens(summary?.total_output ?? 0)}</div>
         </div>
@@ -218,6 +224,9 @@ export function TokenUsagePanel() {
           <div className="stat-label">{t('cacheHitRate')}</div>
           <div className="stat-value">{(hitRate * 100).toFixed(1)}%</div>
         </div>
+      </div>
+      <div style={{ margin: "-10px 0 18px", fontSize: 12, color: "var(--muted-fg)" }}>
+        {t('tokenUsageNote')}
       </div>
 
       {/* ─── Chart controls ─── */}
@@ -264,6 +273,7 @@ export function TokenUsagePanel() {
               <text
                 x={CHART_PAD.left - 8} y={tick.y + 4}
                 textAnchor="end" fontSize={10} fill="var(--muted-fg)"
+                style={{ fontFamily: "var(--font-mono)" }}
               >
                 {formatTokens(tick.val)}
               </text>
@@ -278,6 +288,7 @@ export function TokenUsagePanel() {
               <text
                 key={i} x={xPos(i)} y={CHART_H - CHART_PAD.bottom + 16}
                 textAnchor="middle" fontSize={10} fill="var(--muted-fg)"
+                style={{ fontFamily: "var(--font-mono)" }}
               >
                 {date}
               </text>

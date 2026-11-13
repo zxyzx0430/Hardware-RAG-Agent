@@ -46,7 +46,7 @@ from app.api.compaction_archive import bind_compaction_archive, compaction_princ
 from app.api.tool_events import bind_tool_event_archive
 from app.api.chat_helpers import (
     MAX_LONG_TERM_MEMORY_CHARS, resolve_long_term_memory,
-    _record_token_usage,
+    _record_token_usage, _sum_usage_calls,
     _process_attachments, _build_chat_history, _build_system_prompt,
 )
 from app.db.models import TokenUsage
@@ -2542,7 +2542,7 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
                 agent_saw_error = False
                 agent_terminal: dict[str, Any] | None = None
                 agent_usage: dict[str, Any] | None = None
-                agent_usage_recorded = False
+                agent_usage_calls: dict[str, dict] = {}
                 try:
                     assembled_history = None
                     if payload.history_mode == "server":
@@ -2578,16 +2578,18 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
                             event_type = event.get("type") if event else None
                             if event_type == "usage":
                                 usage = event.get("usage") if event else None
-                                if isinstance(usage, dict) and not agent_usage_recorded:
-                                    agent_usage = usage
+                                if isinstance(usage, dict):
+                                    call_id = event.get("call_id") or f"call-{len(agent_usage_calls) + 1}"
+                                    agent_usage_calls[call_id] = usage
+                                    agent_usage = _sum_usage_calls(agent_usage_calls)
                                     _record_token_usage(
                                         model=model, provider=provider or "",
                                         session_id=payload.session_id,
                                         usage_data=usage,
                                         run_id=run_id,
+                                        call_id=call_id,
                                         source="agent",
                                     )
-                                    agent_usage_recorded = True
                                 continue
                             if event_type == "done":
                                 agent_terminal = event
@@ -2799,6 +2801,7 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
                                 _record_token_usage(
                                     model=model, provider=provider or "",
                                     session_id=payload.session_id, usage_data=usage_data,
+                                    source="fallback",
                                 )
                         else:
                             full_response_text += chunk.content or ""
@@ -2831,6 +2834,7 @@ async def chat_sse(payload: ChatRequest, request: Request, user: dict = Depends(
                             _record_token_usage(
                                 model=model, provider=provider or "",
                                 session_id=payload.session_id, usage_data=usage_data,
+                                source="estimated",
                             )
                         except Exception as est_err:
                             logger.warning(f"Token estimation failed: {est_err}")
@@ -3832,29 +3836,41 @@ def token_usage_stats(
     """
     days = max(1, min(days, 365))  # Clamp to valid range
     import datetime
-    from sqlalchemy import func
+    from sqlalchemy import func, or_
 
     def _hit_rate(cached: int, input_tokens: int) -> float:
         return round(cached / input_tokens, 4) if input_tokens > 0 else 0.0
 
     cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
+    # Timestamps are stored in UTC; group by the machine's local day so a
+    # post-midnight call does not land on yesterday. Rows without a session are
+    # harness/probe traffic, not user usage, and would skew the chart.
+    local_day = func.date(TokenUsage.created_at, "localtime")
+    usage_scope = (
+        TokenUsage.created_at >= cutoff,
+        TokenUsage.session_id.isnot(None),
+        TokenUsage.session_id != "",
+        # Estimated tokens are guesses, not provider-reported usage; keep them
+        # for diagnostics but never chart them as real consumption.
+        or_(TokenUsage.source.is_(None), TokenUsage.source != "estimated"),
+    )
 
     try:
         with get_db_ctx() as db:
             # Daily aggregation
             daily_query = db.query(
-                func.date(TokenUsage.created_at).label("date"),
+                local_day.label("date"),
                 func.sum(TokenUsage.prompt_tokens).label("input"),
                 func.sum(TokenUsage.completion_tokens).label("output"),
                 func.sum(TokenUsage.total_tokens).label("total"),
                 func.sum(TokenUsage.cached_tokens).label("cached"),
-            ).filter(TokenUsage.created_at >= cutoff)
+            ).filter(*usage_scope)
             if session_id is not None:
                 daily_query = daily_query.filter(TokenUsage.session_id == session_id)
             daily_rows = daily_query.group_by(
-                func.date(TokenUsage.created_at)
+                local_day
             ).order_by(
-                func.date(TokenUsage.created_at)
+                local_day
             ).all()
 
             daily = []
@@ -3878,7 +3894,7 @@ def token_usage_stats(
                 func.sum(TokenUsage.total_tokens).label("total"),
                 func.sum(TokenUsage.cached_tokens).label("cached"),
                 func.count(TokenUsage.id).label("calls"),
-            ).filter(TokenUsage.created_at >= cutoff)
+            ).filter(*usage_scope)
             if session_id is not None:
                 model_query = model_query.filter(TokenUsage.session_id == session_id)
             model_rows = model_query.group_by(

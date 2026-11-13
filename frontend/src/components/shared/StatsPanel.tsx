@@ -11,6 +11,8 @@ interface DailyStat {
   input: number;
   output: number;
   total: number;
+  cached?: number;
+  hit_rate?: number;
 }
 
 interface ModelStat {
@@ -18,6 +20,8 @@ interface ModelStat {
   input: number;
   output: number;
   total: number;
+  cached?: number;
+  hit_rate?: number;
   calls: number;
 }
 
@@ -28,6 +32,8 @@ interface TokenStats {
     total_input: number;
     total_output: number;
     total_tokens: number;
+    total_cached?: number;
+    hit_rate?: number;
     days: number;
   };
 }
@@ -100,7 +106,7 @@ export function StatsPanel() {
     return () => {
       cancelled = true;
     };
-  }, [statsOpen, activeSessionId, retryCount]);
+  }, [statsOpen, activeSessionId, retryCount, messages.length]);
 
   if (!statsOpen) return null;
 
@@ -193,17 +199,27 @@ export function StatsPanel() {
         {!loading && !error && !hasRealData && (
           <div style={{ padding: "12px 16px", borderTop: "1px solid var(--border)" }}>
             <div style={{ fontSize: 12, color: "var(--muted-fg)", fontStyle: "italic" }}>
-              暂无真实用量数据，发送消息并等待 LLM 返回 usage 后可查看
+              {t("sessionUsageEmpty")}
             </div>
+            {messages.length > 0 && (
+              <div style={{ fontSize: 11, color: "var(--muted-fg)", marginTop: 6 }}>
+                {t("sessionUsageHistoryNote")}
+              </div>
+            )}
           </div>
         )}
 
         {!loading && !error && hasRealData && (
           <>
-            <div style={{ padding: 8, borderTop: "1px solid var(--border)" }}>
+            <div style={{ padding: "8px 16px", borderTop: "1px solid var(--border)", fontSize: 12, fontWeight: 600 }}>
+              {t("sessionUsageScope")}
+            </div>
+            <div style={{ padding: 8 }}>
               {[
                 ["Input Tokens", inputTokens.toLocaleString()],
                 ["Output Tokens", outputTokens.toLocaleString()],
+                [t("cachedTokens"), (stats.summary.total_cached ?? 0).toLocaleString()],
+                [t("cacheHitRate"), `${((stats.summary.hit_rate ?? 0) * 100).toFixed(1)}%`],
                 [t("statsTokens"), totalTokens.toLocaleString() + " tokens"],
               ].map(([label, value]) => (
                 <div

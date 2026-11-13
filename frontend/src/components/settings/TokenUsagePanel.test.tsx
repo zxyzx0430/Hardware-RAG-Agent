@@ -12,10 +12,12 @@ vi.mock("../../i18n", () => ({
   useI18n: () => ({ t: (key: string) => ({
     tokenUsage: "Token 用量",
     inputTokens: "输入 Token",
+    freshInputTokens: "新增输入",
     outputTokens: "输出 Token",
     totalTokens: "总计 Token",
     cachedTokens: "缓存输入",
     cacheHitRate: "缓存命中率",
+    tokenUsageNote: "输入已包含系统提示与工具定义；缓存命中是输入的一部分。",
     lineChart: "折线图",
     barChart: "柱状图",
     noTokenData: "暂无 Token 用量数据",
@@ -49,6 +51,9 @@ describe("TokenUsagePanel", () => {
     expect(screen.getByText("缓存命中率")).toBeTruthy();
     expect(screen.getAllByText("40.0%").length).toBeGreaterThan(0);
     expect(screen.getByText("400")).toBeTruthy();
+    expect(screen.getByText("新增输入")).toBeTruthy();
+    expect(screen.getByText("600")).toBeTruthy();
+    expect(screen.getByText("输入已包含系统提示与工具定义；缓存命中是输入的一部分。")).toBeTruthy();
   });
 
   it("does not fabricate cache data when the provider reports none", async () => {

@@ -323,6 +323,7 @@ class TestLLMClient:
             "prompt_tokens": 10,
             "completion_tokens": 5,
             "total_tokens": 15,
+            "cached_tokens": 0,
         }
         assert collected[1].type == "text"
         assert collected[1].content == "正文"

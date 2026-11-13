@@ -44,15 +44,50 @@ class StreamChunk:
     """流式输出的单个 chunk，区分思考内容和正文内容。"""
     type: str  # "thinking" | "text" | "usage"
     content: str
-    usage: Optional[Dict[str, int]] = None  # {"prompt_tokens", "completion_tokens", "total_tokens"}
+    usage: Optional[Dict[str, Any]] = None  # {"prompt_tokens", "completion_tokens", "total_tokens", "cached_tokens", "model"}
 
 
 @dataclass
 class LLMResponse:
     content: str
     model: str
-    usage: Optional[Dict[str, int]] = None
+    usage: Optional[Dict[str, Any]] = None
     reasoning: Optional[str] = None
+
+
+def _usage_int(value: Any) -> int:
+    """Accept only real token counts; proxies and test doubles may return junk."""
+    if type(value) is int and value >= 0:
+        return value
+    if type(value) is float and value >= 0 and value.is_integer():
+        return int(value)
+    return 0
+
+
+def _provider_usage(usage: Any, model: str | None) -> Optional[Dict[str, Any]]:
+    """Map provider usage onto the ledger fields, including cache hits.
+
+    OpenAI-compatible endpoints report cached prompt tokens either under
+    prompt_tokens_details.cached_tokens or (DeepSeek) top-level
+    prompt_cache_hit_tokens; both are subsets of prompt_tokens.
+    """
+    if usage is None:
+        return None
+    details = getattr(usage, "prompt_tokens_details", None)
+    cached = _usage_int(getattr(details, "cached_tokens", 0)) if details is not None else 0
+    if not cached:
+        cached = _usage_int(getattr(usage, "prompt_cache_hit_tokens", 0))
+    if not cached:
+        cached = _usage_int(getattr(usage, "cached_tokens", 0))
+    payload: Dict[str, Any] = {
+        "prompt_tokens": _usage_int(getattr(usage, "prompt_tokens", 0)),
+        "completion_tokens": _usage_int(getattr(usage, "completion_tokens", 0)),
+        "total_tokens": _usage_int(getattr(usage, "total_tokens", 0)),
+        "cached_tokens": cached,
+    }
+    if isinstance(model, str) and model.strip():
+        payload["model"] = model.strip()
+    return payload
 
 
 @dataclass
@@ -345,11 +380,7 @@ class LLMClient:
             return LLMResponse(
                 content=message.content or "",
                 model=resp.model,
-                usage={
-                    "prompt_tokens": resp.usage.prompt_tokens if resp.usage else 0,
-                    "completion_tokens": resp.usage.completion_tokens if resp.usage else 0,
-                    "total_tokens": resp.usage.total_tokens if resp.usage else 0,
-                } if resp.usage else None,
+                usage=_provider_usage(resp.usage, resp.model),
                 reasoning=reasoning,
             )
 
@@ -419,11 +450,7 @@ class LLMClient:
                         yield StreamChunk(
                             type="usage",
                             content="",
-                            usage={
-                                "prompt_tokens": chunk.usage.prompt_tokens or 0,
-                                "completion_tokens": chunk.usage.completion_tokens or 0,
-                                "total_tokens": chunk.usage.total_tokens or 0,
-                            },
+                            usage=_provider_usage(chunk.usage, chunk.model),
                         )
 
                     delta = chunk.choices[0].delta if chunk.choices else None

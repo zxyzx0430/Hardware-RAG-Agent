@@ -228,7 +228,11 @@ class TokenUsage(Base):
     latency_ms = Column(Integer, nullable=True)
     status = Column(String(32), default="ok")
     source = Column(String(32), default="")
-    created_at = Column(DateTime, default=datetime.datetime.now(datetime.timezone.utc))
+    # Must stay callable: a pre-evaluated default stamps every row with the
+    # process import time, collapsing all usage onto one day.
+    created_at = Column(
+        DateTime, default=lambda: datetime.datetime.now(datetime.timezone.utc),
+    )
 
 
 class ToolAudit(Base):
