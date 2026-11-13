@@ -94,6 +94,19 @@ export interface SkillTrace {
   success?: boolean;
 }
 
+export type RerankerState = "loaded" | "unavailable" | "loading" | "not_loaded";
+
+/** In-process cross-encoder reranker status reported by /api/rag/reranker. */
+export interface RerankerStatus {
+  state: RerankerState;
+  model?: string;
+  available_mb?: number | null;
+  required_mb?: number;
+  reason?: string | null;
+  loaded_at?: number | null;
+  retry_interval_sec?: number;
+}
+
 export interface ActivityStep {
   type: "thinking" | "tool";
   id: string;
@@ -126,6 +139,8 @@ export interface ActivityStep {
   placeholder?: boolean;
   /** Requested per-turn reasoning mode, used to explain an empty thinking card. */
   reasoningMode?: ReasoningMode;
+  /** Reranker availability snapshot attached to search_docs results. */
+  reranker?: RerankerStatus;
 }
 
 export interface SourceRef {

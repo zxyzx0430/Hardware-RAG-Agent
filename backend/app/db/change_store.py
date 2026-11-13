@@ -151,7 +151,7 @@ def record_event(
 
 
 def prune_change_data(*, older_than_days: int = 30) -> dict[str, int]:
-    """Delete old ChangeSets and their review/validation rows.
+    """Delete old ChangeSets and their review rows.
 
     This is a manual retention helper. It intentionally does not run at startup,
     because deleting review history must remain an explicit maintenance action.
@@ -165,22 +165,18 @@ def prune_change_data(*, older_than_days: int = 30) -> dict[str, int]:
         rows = db.query(ChangeSet).filter(ChangeSet.created_at < cutoff).all()
         set_ids = [row.id for row in rows]
         if not set_ids:
-            return {"change_sets": 0, "change_items": 0, "change_events": 0, "validations": 0}
-        from app.db.change_models import ValidationRun
+            return {"change_sets": 0, "change_items": 0, "change_events": 0}
 
         item_count = db.query(ChangeItem).filter(ChangeItem.change_set_id.in_(set_ids)).count()
         event_count = db.query(ChangeEvent).filter(ChangeEvent.change_set_id.in_(set_ids)).count()
-        validation_count = db.query(ValidationRun).filter(ValidationRun.change_set_id.in_(set_ids)).count()
         db.query(ChangeItem).filter(ChangeItem.change_set_id.in_(set_ids)).delete(synchronize_session=False)
         db.query(ChangeEvent).filter(ChangeEvent.change_set_id.in_(set_ids)).delete(synchronize_session=False)
-        db.query(ValidationRun).filter(ValidationRun.change_set_id.in_(set_ids)).delete(synchronize_session=False)
         db.query(ChangeSet).filter(ChangeSet.id.in_(set_ids)).delete(synchronize_session=False)
         db.commit()
         return {
             "change_sets": len(set_ids),
             "change_items": item_count,
             "change_events": event_count,
-            "validations": validation_count,
         }
 
 
@@ -388,62 +384,3 @@ def map_change_items_to_step(
             if parent is not None:
                 parent.updated_at = _now()
         db.commit()
-
-
-def add_validation_run(**fields: Any) -> dict[str, Any]:
-    from app.db.change_models import ValidationRun
-
-    with database.SessionLocal() as db:
-        row = ValidationRun(id=_new_id("vr"), created_at=_now(), **fields)
-        db.add(row)
-        db.commit()
-        db.refresh(row)
-        return _validation_dict(row)
-
-
-def finish_validation_run(validation_id: str, **fields: Any) -> dict[str, Any] | None:
-    from app.db.change_models import ValidationRun
-
-    with database.SessionLocal() as db:
-        row = db.query(ValidationRun).filter(ValidationRun.id == validation_id).first()
-        if row is None:
-            return None
-        for key, value in fields.items():
-            if hasattr(row, key):
-                setattr(row, key, value)
-        row.finished_at = _now()
-        db.commit()
-        db.refresh(row)
-        return _validation_dict(row)
-
-
-def list_validation_runs(change_set_id: str) -> list[dict[str, Any]]:
-    from app.db.change_models import ValidationRun
-
-    with database.SessionLocal() as db:
-        rows = (
-            db.query(ValidationRun)
-            .filter(ValidationRun.change_set_id == change_set_id)
-            .order_by(ValidationRun.created_at.asc())
-            .all()
-        )
-        return [_validation_dict(row) for row in rows]
-
-
-def _validation_dict(row: Any) -> dict[str, Any]:
-    return {
-        "id": row.id,
-        "change_set_id": row.change_set_id,
-        "run_id": row.run_id,
-        "command": row.command,
-        "cwd": row.cwd,
-        "status": row.status,
-        "exit_code": row.exit_code,
-        "duration_ms": row.duration_ms,
-        "timed_out": bool(row.timed_out),
-        "stdout": row.stdout,
-        "stderr": row.stderr,
-        "report_ref": row.report_ref,
-        "created_at": _iso(row.created_at),
-        "finished_at": _iso(row.finished_at),
-    }

@@ -102,22 +102,6 @@ def get_bound_workspace(
     return _ok({"session_id": session_id, "workspace_root": row.workspace_root})
 
 
-class GitBranchRequest(BaseModel):
-    name: str = Field(min_length=1, max_length=128)
-
-
-class GitCommitRequest(BaseModel):
-    message: str = Field(min_length=1, max_length=2000)
-    paths: list[str] = Field(default_factory=list, max_length=200)
-
-
-class GitPrRequest(BaseModel):
-    base: str = Field(default="main", max_length=128)
-    title: str = Field(default="", max_length=200)
-    body: str = Field(default="", max_length=20000)
-    push: bool = False
-
-
 def _workspace_for_request(
     session_id: str, request: Request, db: DBSession, user: dict,
 ) -> str:
@@ -126,16 +110,6 @@ def _workspace_for_request(
         return resolve_session_workspace(session_id, request)
     except Exception as exc:
         raise _fail("WORKSPACE_NOT_AUTHORIZED", str(exc), 409) from exc
-
-
-def _git_result(result: dict[str, Any]) -> dict[str, Any]:
-    if not result.get("ok"):
-        raise _fail(
-            str(result.get("code") or "GIT_OPERATION_FAILED"),
-            str(result.get("message") or "Git 操作失败"),
-            409,
-        )
-    return result
 
 
 @router.get("/sessions/{session_id}/git")
@@ -147,58 +121,3 @@ def get_git_context(
 ) -> dict[str, Any]:
     root = _workspace_for_request(session_id, request, db, user)
     return _ok(workspace_git.git_context(root))
-
-
-@router.post("/sessions/{session_id}/git/branch")
-def create_git_branch(
-    session_id: str,
-    payload: GitBranchRequest,
-    request: Request,
-    db: DBSession = Depends(get_db),
-    user: dict = Depends(current_user),
-) -> dict[str, Any]:
-    root = _workspace_for_request(session_id, request, db, user)
-    return _ok(_git_result(workspace_git.create_branch(root, payload.name)))
-
-
-@router.post("/sessions/{session_id}/git/commit")
-def commit_git_changes(
-    session_id: str,
-    payload: GitCommitRequest,
-    request: Request,
-    db: DBSession = Depends(get_db),
-    user: dict = Depends(current_user),
-) -> dict[str, Any]:
-    root = _workspace_for_request(session_id, request, db, user)
-    return _ok(_git_result(workspace_git.commit_paths(root, payload.paths, payload.message)))
-
-
-@router.get("/sessions/{session_id}/git/pr")
-def get_git_pr(
-    session_id: str,
-    request: Request,
-    db: DBSession = Depends(get_db),
-    user: dict = Depends(current_user),
-) -> dict[str, Any]:
-    root = _workspace_for_request(session_id, request, db, user)
-    # Read-only status: return the diagnostic in the payload so the UI can
-    # show NO_GITHUB_REMOTE / GH_AUTH_REQUIRED instead of a generic 409.
-    return _ok(workspace_git.pr_status(root))
-
-
-@router.post("/sessions/{session_id}/git/pr")
-def create_git_pr(
-    session_id: str,
-    payload: GitPrRequest,
-    request: Request,
-    db: DBSession = Depends(get_db),
-    user: dict = Depends(current_user),
-) -> dict[str, Any]:
-    root = _workspace_for_request(session_id, request, db, user)
-    return _ok(_git_result(workspace_git.create_draft_pr(
-        root,
-        base=payload.base,
-        title=payload.title,
-        body=payload.body,
-        push=payload.push,
-    )))

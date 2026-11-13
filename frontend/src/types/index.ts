@@ -52,6 +52,8 @@ export type {
   Message,
   ActivityBlock,
   ActivityStep,
+  RerankerState,
+  RerankerStatus,
   SourceRef,
 } from './session';
 
@@ -61,8 +63,6 @@ export type {
   ChangeItem,
   ChangeSetsResponse,
   ChangeItemDiffResponse,
-  ValidationRun,
-  ValidationStatus,
   ChangeReviewStatus,
   ChangeItemStatus,
 } from './change';

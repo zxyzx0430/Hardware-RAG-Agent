@@ -1,4 +1,4 @@
-"""ChangeSet observation, review, revert and validation endpoints."""
+"""ChangeSet observation, review and revert endpoints."""
 from __future__ import annotations
 
 import asyncio
@@ -18,7 +18,6 @@ from src.agent.change_capture import (
     emit_change_event, file_digest, read_blob, workspace_context,
 )
 from src.agent.change_revert import revert_change_item, revert_change_set
-from src.agent.validation_runner import run_validation
 
 router = APIRouter(prefix="/api", tags=["changes"])
 
@@ -51,20 +50,16 @@ def _require_set(db: DBSession, change_set_id: str, user: dict) -> dict[str, Any
     return row
 
 
+# Rejecting a change means reverting it. The revert path records
+# review_status="rejected", so review and revert cannot diverge.
 class ItemReviewRequest(BaseModel):
-    review_status: Literal["accepted", "rejected"]
+    review_status: Literal["accepted"]
     review_note: str | None = Field(default=None, max_length=2000)
 
 
 class SetReviewRequest(BaseModel):
-    review_status: Literal["accepted", "rejected"]
+    review_status: Literal["accepted"]
     review_note: str | None = Field(default=None, max_length=2000)
-
-
-class ValidationRequest(BaseModel):
-    command: str = Field(min_length=1, max_length=2000)
-    cwd: str = Field(default="", max_length=1000)
-    timeout_ms: int = Field(default=30000, ge=1000, le=300000)
 
 
 @router.get("/workspace/context")
@@ -242,36 +237,3 @@ def revert_set(
     result = revert_change_set(change_set)
     refreshed = change_store.get_change_set(change_set_id)
     return _ok({"result": result, "change_set": refreshed})
-
-
-@router.get("/change-sets/{change_set_id}/validations")
-def list_validations(
-    change_set_id: str,
-    db: DBSession = Depends(get_db),
-    user: dict = Depends(current_user),
-) -> dict[str, Any]:
-    _require_set(db, change_set_id, user)
-    return _ok({"validations": change_store.list_validation_runs(change_set_id)})
-
-
-@router.post("/change-sets/{change_set_id}/validations/run")
-async def run_validation_endpoint(
-    change_set_id: str,
-    payload: ValidationRequest,
-    db: DBSession = Depends(get_db),
-    user: dict = Depends(current_user),
-) -> dict[str, Any]:
-    change_set = _require_set(db, change_set_id, user)
-    result = await run_validation(
-        change_set=change_set,
-        command=payload.command,
-        cwd=payload.cwd,
-        timeout_ms=payload.timeout_ms,
-    )
-    if not result.get("ok"):
-        return {
-            "success": False,
-            "data": result,
-            "error": {"code": "VALIDATION_FAILED", "message": result.get("error", "validation failed")},
-        }
-    return _ok(result)

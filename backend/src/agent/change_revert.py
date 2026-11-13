@@ -36,6 +36,7 @@ def _revert_one(item: dict[str, Any], workspace_root: str) -> dict[str, Any]:
     if not isinstance(path, str) or not path:
         return {"item_id": item_id, "ok": False, "error": "unobserved item has no file path"}
     if item.get("status") == "reverted":
+        change_store.update_change_item(item_id, review_status="rejected")
         return {"item_id": item_id, "ok": True, "already_reverted": True}
     if item.get("status") != "observed":
         return {"item_id": item_id, "ok": False, "error": f"item status is {item.get('status')}"}
@@ -82,7 +83,7 @@ def _revert_one(item: dict[str, Any], workspace_root: str) -> dict[str, Any]:
         except OSError as exc:
             return {"item_id": item_id, "ok": False, "error": str(exc)}
 
-    change_store.update_change_item(item_id, status="reverted")
+    change_store.update_change_item(item_id, status="reverted", review_status="rejected")
     change_store.record_event(
         change_set_id=item["change_set_id"],
         change_item_id=item_id,

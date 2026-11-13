@@ -439,6 +439,8 @@
 | `implemented` | `POST` | `/api/feedback` | 提交消息反馈（👍/👎） | `apiPost('feedback', ...)` | JSON |
 | `implemented` | `GET` | `/api/feedback/{session_id}` | 查询会话的反馈记录 | `apiGet('feedback/{session_id}')` | JSON |
 | `implemented` | `POST` | `/api/search` | 全文搜索历史消息 | `apiPost('search', ...)` | JSON |
+| `implemented` | `GET` | `/api/rag/reranker` | 读取 reranker 加载状态 | `apiGet('rag/reranker')` | JSON |
+| `implemented` | `POST` | `/api/rag/reranker/reload` | 后台热加载 reranker，不重启后端 | `apiPost('rag/reranker/reload', {})` | JSON |
 | `implemented` | `PATCH` | `/api/kb/collections/{kb_id}/rename` | 重命名知识库 | `apiPatch('kb/collections/{id}/rename', ...)` | JSON |
 | `implemented` | `PATCH` | `/api/kb/collections/{kb_id}/config` | 更新 KB 配置（embedding/分块策略） | `apiPatch('kb/collections/{id}/config', ...)` | JSON |
 | `implemented` | `GET` | `/api/kb/documents/{doc_id}/chunks` | 查文档的 chunk 列表 | `apiGet('kb/documents/{doc_id}/chunks')` | JSON |
@@ -447,6 +449,8 @@
 | `implemented` | `GET` | `/api/kb/chunks/{small_chunk_id}` | 查单个 chunk 详情（含 big_chunk_text） | `apiGet('kb/chunks/{small_chunk_id}')` | JSON |
 | `implemented` | `POST` | `/api/kb/{kb_id}/export` | 导出 KB 数据为 JSON | `apiPost('kb/{id}/export')` | JSON |
 | `implemented` | `POST` | `/api/kb/{kb_id}/import` | 导入 KB JSON 数据 | `apiPost('kb/{id}/import', formData)` | multipart |
+
+Reranker 控制：`GET /api/rag/reranker` 返回 `{state:"loaded"|"unavailable"|"loading"|"not_loaded", model, available_mb, required_mb, reason, loaded_at, retry_interval_sec}`；`POST /api/rag/reranker/reload` 返回 `{started, status}`，模型在 daemon 线程加载，接口不等待冷加载。`search_docs` 工具结果的 `metadata.reranker` 使用同一状态对象；`unavailable` / `loading` 时检索回退 RRF。reload 只在内存不足或模型加载失败时失败，失败原因通过 `reason` 返回，不阻塞当前请求。
 
 ## 5. 接口详情
 
@@ -2552,7 +2556,7 @@ SSE 新增：
 
 ## P2 批次 1：变更观测与只读变更集
 
-变更事实按 Run 持久化到 `change_sets` / `change_items` / `change_events`。工具仍直接写文件；本批次只捕获和展示，不提供接受/拒绝、撤销或验证。所有响应沿用 `{success, data}` envelope；会话接口校验 owner。
+变更事实按 Run 持久化到 `change_sets` / `change_items` / `change_events`。工具仍直接写文件；前端只保留捕获、审阅与撤销，Git/提交/PR/CI 与验证由 Agent 通过原生命令行工具执行。所有响应沿用 `{success, data}` envelope；会话接口校验 owner。
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
@@ -2570,47 +2574,34 @@ SSE 新增：
 
 只读内容来自本地 blob store；二进制、超过 1MiB 或非 Git 场景可能只返回 hash 和 `available:false`。`run_command` 仅对可解析的单目标写入捕获；复合 shell、build/flash、设备动作标为 `unobserved`，不能当作可撤销文件变更。
 
-## P2 批次 2–4：审阅、撤销与验证
+## P2 批次 2–4：审阅与撤销
 
 ### 审阅
 
 | 方法 | 路径 | 请求/返回 |
 | --- | --- | --- |
-| PATCH | `/api/change-items/{id}` | `{review_status:"accepted"\|"rejected", review_note?}` → `{item, change_set}`；接受时若当前文件 hash 已变化，返回 409 `CHANGE_REVIEW_CONFLICT` 并标记 conflict |
-| POST | `/api/change-sets/{id}/review` | `{review_status:"accepted"\|"rejected", review_note?}` → `{results, change_set}`；逐项应用，冲突项单独失败 |
+| PATCH | `/api/change-items/{id}` | `{review_status:"accepted", review_note?}` → `{item, change_set}`；接受时若当前文件 hash 已变化，返回 409 `CHANGE_REVIEW_CONFLICT` 并标记 conflict |
+| POST | `/api/change-sets/{id}/review` | `{review_status:"accepted", review_note?}` → `{results, change_set}`；逐项应用，冲突项单独失败 |
 
-`ChangeItem.review_status`：`pending / accepted / rejected`；`review_note`、`decided_at` 持久化。审阅只记录决定，不修改磁盘。`ChangeSet.plan_id/plan_version` 来自 Run 的 `approved_plan_id`；`plan_step_id = "{plan_id}:v{plan_version}:{step_index}"`。`set_plan_step` Agent 工具用于标记当前已批准计划的步骤。
+`ChangeItem.review_status`：`pending / accepted / rejected`；拒绝通过撤销完成，撤销成功后 `review_status=rejected`；`review_note`、`decided_at` 持久化。审阅只记录决定，不修改磁盘。`ChangeSet.plan_id/plan_version` 来自 Run 的 `approved_plan_id`；`plan_step_id = "{plan_id}:v{plan_version}:{step_index}"`。`set_plan_step` Agent 工具用于标记当前已批准计划的步骤。
 
 ### 撤销
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| POST | `/api/change-items/{id}/revert` | 撤销单个 observed 文件变更；只有当前内容等于 `after_sha256` 才执行 |
-| POST | `/api/change-sets/{id}/revert` | 按反向顺序撤销整轮 observed 文件变更；部分失败返回 `partially_reverted` |
+| POST | `/api/change-items/{id}/revert` | 拒绝并撤销单个 observed 文件变更；只有当前内容等于 `after_sha256` 才执行；成功后 `review_status=rejected` |
+| POST | `/api/change-sets/{id}/revert` | 拒绝并撤销整轮 observed 文件变更；部分失败返回 `partially_reverted`；成功撤销项 `review_status=rejected` |
 
-撤销从 blob store 恢复 before 内容；创建文件删除、删除文件重建、修改文件覆盖。当前文件 hash 不匹配、路径越界、symlink、目录、缺失 blob → 不覆盖并返回冲突/失败。`unobserved` 项不可撤销；shell/设备副作用明确不在撤销范围。所有动作写 ChangeEvent 和 RunEvent。
-
-### 验证
-
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| GET | `/api/change-sets/{id}/validations` | 返回 `{validations:[...]}` |
-| POST | `/api/change-sets/{id}/validations/run` | `{command, cwd?, timeout_ms?}`；仅允许测试/构建命令前缀（pytest、npm test、npm run、tsc、pio 等） |
-
-`ValidationRun` 字段：`id, change_set_id, run_id, command, cwd, status, exit_code, duration_ms, timed_out, stdout, stderr, created_at, finished_at`。状态为 `running/passed/failed/timeout`；命令严禁通过该 API 执行任意 shell，危险操作仍走 Agent 工具审批。SSE 新增 `change_reviewed`、`change_reverted`、`validation_started`、`validation_finished`。
+撤销从 blob store 恢复 before 内容；创建文件删除、删除文件重建、修改文件覆盖。当前文件 hash 不匹配、路径越界、symlink、目录、缺失 blob → 不覆盖并返回冲突/失败。`unobserved` 项不可撤销；shell/设备副作用明确不在撤销范围。所有动作写 ChangeEvent 和 RunEvent，SSE 推送 `change_reviewed`、`change_reverted`。
 
 ### 持久化
 
-`change_sets`、`change_items`、`change_events`、`validation_runs` 由 `init_db` 的 `Base.metadata.create_all` 创建；不修改用户 Git index/branch/HEAD/stash。工作区根默认是 Agent `PROJECT_ROOT`，ChangeItem/revert 路径必须位于该根内。
+`change_sets`、`change_items`、`change_events` 由 `init_db` 的 `Base.metadata.create_all` 创建；不修改用户 Git index/branch/HEAD/stash。工作区根默认是 Agent `PROJECT_ROOT`，ChangeItem/revert 路径必须位于该根内。
 
-## P2 批次 6：外部工作区、Git 与 PR/CI
+## P2 批次 6：外部工作区与只读 Git 上下文
 
 - `POST /api/sessions/{sid}/workspace/bind`：body `{path}`，要求当前 bearer session 已在 Explorer 打开并授权该目录；保存会话级 `workspace_root`。
 - `DELETE /api/sessions/{sid}/workspace/bind`：解除绑定，回到项目根。
-- `GET /api/sessions/{sid}/git`：返回本地 Git root、branch、HEAD、dirty/untracked、remote/upstream；remote 中的凭据会被脱敏。
-- `POST /api/sessions/{sid}/git/branch`：`{name}`，创建并切换分支；不 force。
-- `POST /api/sessions/{sid}/git/commit`：`{message, paths[]}`，只提交当前工作区内的显式路径；不 stash/reset/force。
-- `GET /api/sessions/{sid}/git/pr`：返回当前 PR 与 CI checks；无 GitHub origin 返回 `NO_GITHUB_REMOTE`，gh 未登录返回 `GH_AUTH_REQUIRED`。
-- `POST /api/sessions/{sid}/git/pr`：`{base,title,body,push}`，显式确认后推送当前分支并创建草稿 PR；不自动合并、不自动轮询 CI。
+- `GET /api/sessions/{sid}/git`：只读返回本地 Git root、branch、HEAD、dirty/untracked、remote/upstream；remote 中的凭据会被脱敏。分支、提交、推送、PR/CI 由 Agent 的 `run_command` / `git` / `gh` 原生命令执行。
 
-外部根绑定后，Agent 的 `path_guard`、相对路径解析、`run_command` 默认 cwd、私有 Git snapshot、ChangeSet、Revert 和 Validation 都限制在该 root；未重新授权的绑定会让 chat 返回 `WORKSPACE_NOT_AUTHORIZED`，不会静默回退到项目根。
+外部根绑定后，Agent 的 `path_guard`、相对路径解析、`run_command` 默认 cwd、私有 Git snapshot、ChangeSet 和 Revert 都限制在该 root；未重新授权的绑定会让 chat 返回 `WORKSPACE_NOT_AUTHORIZED`，不会静默回退到项目根。

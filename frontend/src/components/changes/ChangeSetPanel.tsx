@@ -7,10 +7,8 @@ import type {
   ChangeItem,
   ChangeItemDiffResponse,
   ChangeSet,
-  ValidationRun,
 } from "../../types/change";
 import { ChangeDiffViewer } from "./ChangeDiffViewer";
-import { WorkspaceGitPanel } from "./WorkspaceGitPanel";
 
 const EMPTY_CHANGE_SETS: ChangeSet[] = [];
 
@@ -25,12 +23,6 @@ function statusLabel(status: string, lang: string): string {
     conflict: ["冲突", "Conflict"],
     reverted: ["已撤销", "Reverted"],
     partially_reverted: ["部分撤销", "Partially reverted"],
-    passed: ["通过", "Passed"],
-    failed: ["失败", "Failed"],
-    timeout: ["超时", "Timeout"],
-    running: ["运行中", "Running"],
-    not_run: ["未运行", "Not run"],
-    "not-run": ["未运行", "Not run"],
   };
   return labels[status]?.[lang === "en" ? 1 : 0] ?? status;
 }
@@ -65,20 +57,20 @@ function ChangeItemRow({
         {additions || deletions ? ` · +${additions} −${deletions}` : ""}
       </span>
       <span className={`change-item-review review-${item.review_status}`}>
-        {reviewLabel(item.review_status, lang)}
+        {reviewLabel(item.status === "reverted" ? "rejected" : item.review_status, lang)}
       </span>
     </button>
   );
 }
 
 function ChangeSetGroup({
-  changeSet, selectedId, onSelect, onReviewSet, onRevertSet, busy,
+  changeSet, selectedId, onSelect, onAcceptSet, onRejectSet, busy,
 }: {
   changeSet: ChangeSet;
   selectedId: string | null;
   onSelect: (item: ChangeItem) => void;
-  onReviewSet: (status: "accepted" | "rejected") => void;
-  onRevertSet: () => void;
+  onAcceptSet: () => void;
+  onRejectSet: () => void;
   busy: boolean;
 }) {
   const { lang } = useI18n();
@@ -92,14 +84,11 @@ function ChangeSetGroup({
         <span className="change-set-plan">{planLabel}</span>
         <span className="change-set-status">{statusLabel(changeSet.status, lang)}</span>
         <span className="change-set-actions">
-          <button type="button" disabled={busy} onClick={() => onReviewSet("accepted")}>
+          <button type="button" disabled={busy} onClick={onAcceptSet}>
             {lang === "en" ? "Accept all" : "全部接受"}
           </button>
-          <button type="button" disabled={busy} onClick={() => onReviewSet("rejected")}>
+          <button type="button" className="danger" disabled={busy} onClick={onRejectSet}>
             {lang === "en" ? "Reject all" : "全部拒绝"}
-          </button>
-          <button type="button" className="danger" disabled={busy} onClick={onRevertSet}>
-            {lang === "en" ? "Revert run" : "撤销本轮"}
           </button>
         </span>
       </div>
@@ -134,10 +123,6 @@ export function ChangeSetPanel() {
   const [reviewNote, setReviewNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [validations, setValidations] = useState<ValidationRun[]>([]);
-  const [validationCommand, setValidationCommand] = useState("");
-  const [validationCwd, setValidationCwd] = useState("");
-  const [validationBusy, setValidationBusy] = useState(false);
 
   useEffect(() => {
     if (sessionId) void loadChangeSets(sessionId);
@@ -173,11 +158,6 @@ export function ChangeSetPanel() {
     if (sessionId) setSelectedChangeItem(sessionId, item.id);
   };
 
-  const selectedSet = useMemo(
-    () => changeSets.find((set) => set.id === selected?.change_set_id) ?? null,
-    [changeSets, selected],
-  );
-
   useEffect(() => {
     if (!selected) {
       setDiff(null);
@@ -198,34 +178,20 @@ export function ChangeSetPanel() {
     return () => { cancelled = true; };
   }, [selected]);
 
-  useEffect(() => {
-    if (!selectedSet) {
-      setValidations([]);
-      return;
-    }
-    let cancelled = false;
-    apiGet<{ validations: ValidationRun[] }>(
-      `change-sets/${encodeURIComponent(selectedSet.id)}/validations`,
-    )
-      .then((data) => { if (!cancelled) setValidations(data.validations || []); })
-      .catch(() => { if (!cancelled) setValidations([]); });
-    return () => { cancelled = true; };
-  }, [selectedSet?.id]);
-
   const refresh = async () => {
     if (sessionId) await loadChangeSets(sessionId);
   };
 
-  const reviewItem = async (status: "accepted" | "rejected") => {
+  const acceptItem = async () => {
     if (!selected) return;
     setBusy(true);
     setError(null);
     try {
       await apiPatch(`change-items/${encodeURIComponent(selected.id)}`, {
-        review_status: status,
+        review_status: "accepted",
         review_note: reviewNote || null,
       });
-      useLogStore.getState().log("ok", "changes", `${status} ${selected.path || selected.id}`);
+      useLogStore.getState().log("ok", "changes", `accepted ${selected.path || selected.id}`);
       await refresh();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -236,14 +202,14 @@ export function ChangeSetPanel() {
     }
   };
 
-  const reviewSet = async (changeSet: ChangeSet, status: "accepted" | "rejected") => {
+  const reviewSet = async (changeSet: ChangeSet) => {
     setBusy(true);
     setError(null);
     try {
       await apiPost(`change-sets/${encodeURIComponent(changeSet.id)}/review`, {
-        review_status: status,
+        review_status: "accepted",
       });
-      useLogStore.getState().log("ok", "changes", `${status} set ${changeSet.run_id}`);
+      useLogStore.getState().log("ok", "changes", `accepted set ${changeSet.run_id}`);
       await refresh();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -254,62 +220,38 @@ export function ChangeSetPanel() {
     }
   };
 
-  const revertItem = async () => {
+  const rejectItem = async () => {
     if (!selected) return;
-    if (!window.confirm(lang === "en" ? "Revert this file change?" : "撤销这个文件变更？")) return;
+    if (!window.confirm(lang === "en" ? "Reject and revert this file change?" : "拒绝并撤销这个文件变更？")) return;
     setBusy(true);
     setError(null);
     try {
       await apiPost(`change-items/${encodeURIComponent(selected.id)}/revert`, {});
-      useLogStore.getState().log("ok", "changes", `reverted ${selected.path || selected.id}`);
+      useLogStore.getState().log("ok", "changes", `rejected ${selected.path || selected.id}`);
       await refresh();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      useLogStore.getState().log("warn", "changes", `revert failed: ${message}`);
+      useLogStore.getState().log("warn", "changes", `reject failed: ${message}`);
       setError(message);
     } finally {
       setBusy(false);
     }
   };
 
-  const revertSet = async (changeSet: ChangeSet) => {
-    if (!window.confirm(lang === "en" ? "Revert all files in this run?" : "撤销本轮全部文件变更？")) return;
+  const rejectSet = async (changeSet: ChangeSet) => {
+    if (!window.confirm(lang === "en" ? "Reject and revert all files in this run?" : "拒绝并撤销本轮全部文件变更？")) return;
     setBusy(true);
     setError(null);
     try {
       await apiPost(`change-sets/${encodeURIComponent(changeSet.id)}/revert`, {});
-      useLogStore.getState().log("ok", "changes", `reverted set ${changeSet.run_id}`);
+      useLogStore.getState().log("ok", "changes", `rejected set ${changeSet.run_id}`);
       await refresh();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      useLogStore.getState().log("warn", "changes", `set revert failed: ${message}`);
+      useLogStore.getState().log("warn", "changes", `set reject failed: ${message}`);
       setError(message);
     } finally {
       setBusy(false);
-    }
-  };
-
-  const runValidation = async () => {
-    if (!selectedSet || !validationCommand.trim()) return;
-    setValidationBusy(true);
-    setError(null);
-    try {
-      await apiPost(`change-sets/${encodeURIComponent(selectedSet.id)}/validations/run`, {
-        command: validationCommand.trim(),
-        cwd: validationCwd.trim(),
-        timeout_ms: 30000,
-      });
-      useLogStore.getState().log("ok", "changes", `validation ${validationCommand.trim()}`);
-      const data = await apiGet<{ validations: ValidationRun[] }>(
-        `change-sets/${encodeURIComponent(selectedSet.id)}/validations`,
-      );
-      setValidations(data.validations || []);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      useLogStore.getState().log("warn", "changes", `validation failed: ${message}`);
-      setError(message);
-    } finally {
-      setValidationBusy(false);
     }
   };
 
@@ -342,14 +284,6 @@ export function ChangeSetPanel() {
 
       {error ? <div className="change-error" role="alert">{error}</div> : null}
 
-      {sessionId ? (
-        <WorkspaceGitPanel
-          sessionId={sessionId}
-          workspaceRoot={workspace?.root ?? null}
-          changeSets={changeSets}
-        />
-      ) : null}
-
       {loading && !changeSets.length ? (
         <div className="change-empty">{lang === "en" ? "Loading changes…" : "正在加载变更…"}</div>
       ) : !changeSets.length ? (
@@ -366,8 +300,8 @@ export function ChangeSetPanel() {
               changeSet={set}
               selectedId={selected?.id ?? null}
               onSelect={selectItem}
-              onReviewSet={(status) => void reviewSet(set, status)}
-              onRevertSet={() => void revertSet(set)}
+              onAcceptSet={() => void reviewSet(set)}
+              onRejectSet={() => void rejectSet(set)}
               busy={busy}
             />
           ))}
@@ -379,24 +313,21 @@ export function ChangeSetPanel() {
           <div className="change-detail-heading">
             <strong>{selected.path || selected.tool_name}</strong>
             <span>{statusLabel(selected.status, lang)}</span>
-            <span>{reviewLabel(selected.review_status, lang)}</span>
+            <span>{reviewLabel(selected.status === "reverted" ? "rejected" : selected.review_status, lang)}</span>
           </div>
           <div className="change-review-controls">
             <input
               type="text"
               value={reviewNote}
               onChange={(e) => setReviewNote(e.target.value)}
-              placeholder={lang === "en" ? "Review note (optional)" : "审阅备注（可选）"}
+              placeholder={lang === "en" ? "Accept note (optional)" : "接受备注（可选）"}
               maxLength={2000}
             />
-            <button type="button" disabled={busy} onClick={() => void reviewItem("accepted")}>
+            <button type="button" disabled={busy} onClick={() => void acceptItem()}>
               {lang === "en" ? "Accept" : "接受"}
             </button>
-            <button type="button" disabled={busy} onClick={() => void reviewItem("rejected")}>
-              {lang === "en" ? "Reject" : "拒绝"}
-            </button>
-            <button type="button" className="danger" disabled={busy} onClick={() => void revertItem()}>
-              {lang === "en" ? "Revert" : "撤销"}
+            <button type="button" className="danger" disabled={busy} onClick={() => void rejectItem()}>
+              {lang === "en" ? "Reject & revert" : "拒绝并撤销"}
             </button>
           </div>
           {diffLoading ? (
@@ -412,49 +343,6 @@ export function ChangeSetPanel() {
           ) : (
             <div className="change-empty">{lang === "en" ? "Diff unavailable" : "Diff 不可用"}</div>
           )}
-
-          {selectedSet ? (
-            <div className="change-verify">
-              <div className="change-verify-heading">
-                <strong>{lang === "en" ? "Validate" : "验证"}</strong>
-                <span>{lang === "en" ? "Allowlisted commands only" : "仅允许测试/构建命令"}</span>
-              </div>
-              <div className="change-verify-form">
-                <input
-                  type="text"
-                  value={validationCommand}
-                  onChange={(e) => setValidationCommand(e.target.value)}
-                  placeholder={lang === "en" ? "e.g. python -m pytest tests/foo.py" : "例如 python -m pytest tests/foo.py"}
-                />
-                <input
-                  type="text"
-                  value={validationCwd}
-                  onChange={(e) => setValidationCwd(e.target.value)}
-                  placeholder={lang === "en" ? "cwd (optional)" : "工作目录（可选）"}
-                />
-                <button type="button" disabled={validationBusy || !validationCommand.trim()} onClick={() => void runValidation()}>
-                  {validationBusy ? "…" : (lang === "en" ? "Run" : "运行")}
-                </button>
-              </div>
-              {validations.length ? (
-                <div className="change-verify-list">
-                  {validations.slice().reverse().map((run) => (
-                    <details key={run.id} className={`change-verify-run status-${run.status}`}>
-                      <summary>
-                        <span className="change-verify-command">{run.command}</span>
-                        <span>{statusLabel(run.status, lang)}</span>
-                        {run.exit_code !== null ? <span>exit {run.exit_code}</span> : null}
-                      </summary>
-                      {run.stdout ? <pre>{run.stdout}</pre> : null}
-                      {run.stderr ? <pre className="stderr">{run.stderr}</pre> : null}
-                    </details>
-                  ))}
-                </div>
-              ) : (
-                <div className="change-empty">{lang === "en" ? "No validation runs yet." : "还没有验证记录。"}</div>
-              )}
-            </div>
-          ) : null}
         </div>
       ) : null}
     </div>

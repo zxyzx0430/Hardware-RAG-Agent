@@ -66,28 +66,3 @@ export interface ChangeItemDiffResponse {
   available: boolean;
   reason: string | null;
 }
-
-export type ValidationStatus =
-  | "running"
-  | "passed"
-  | "failed"
-  | "timeout"
-  | "partial"
-  | "not-run";
-
-export interface ValidationRun {
-  id: string;
-  change_set_id: string;
-  run_id: string | null;
-  command: string;
-  cwd: string;
-  status: ValidationStatus;
-  exit_code: number | null;
-  duration_ms: number | null;
-  timed_out: boolean;
-  stdout: string;
-  stderr: string;
-  report_ref: string | null;
-  created_at: string;
-  finished_at: string | null;
-}

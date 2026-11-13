@@ -930,3 +930,49 @@ Vite 的 advisory 报告 Prism chunk 621.06 kB、主 bundle 1,020.16 kB（minifi
 - 全后端隔离脚本未完成：该脚本只复制 `backend/`，`tests/test_gc_data_integrity.py` 无法导入 `scripts/gc_data_integrity.py`，在收集阶段退出；这是既有隔离脚本边界，不是本次 P2 断言失败。
 - 前端全量：**89 files / 571 tests passed**；`npm run build`（`tsc -b` + Vite）通过。
 - 未验证：真实 GitHub PR/CI（为避免自动远端写入，仅做 gh auth/本地 remote 检查和 mock/错误路径）；浏览器外部根按钮点击由组件/API 组合验证，未替代完整人工验收。
+
+## 2026-11-12 P2 用户面收敛：保留 diff/review/revert，移除 Git/PR/CI 与验证 UI
+
+- 前端移除 `WorkspaceGitPanel`、验证表单/记录和 `.workspace-git-*` / `.change-verify-*` 样式；保留“变更”页的工作区基线、ChangeSet/文件列表、Monaco Diff、审阅备注、接受/拒绝/撤销和计划步骤归因。
+- 后端定向：`python -m pytest -q tests/test_change_capture.py tests/test_change_routes.py tests/test_change_workflow.py tests/test_workspace_git.py tests/test_workspace_scope.py --disable-warnings`，**11 passed**，exit 0。测试同时暴露并修复了 `workspace_git.git_context` 解析 `git status --porcelain` 时被 `strip()` 吃掉首行前导空格、导致 dirty 路径少一个字符的既有 bug。
+- 前端定向：`npm test -- src/components/changes/ChangeSetPanel.test.tsx src/components/changes/ChangeDiffViewer.test.tsx`，**2 files / 8 tests passed**；`npm run build`（`tsc -b` + Vite）通过。
+- 路由探针（当前代码新起 58081 端口实例）：`GET /api/sessions/{sid}/git` 返回 200 只读上下文；`POST /git/branch`、`POST /git/commit`、`GET/POST /git/pr`、`GET /change-sets/{id}/validations`、`POST /change-sets/{id}/validations/run` 均为 404；保留的 `POST /change-sets/{id}/revert` 返回业务错误 `CHANGE_SET_NOT_FOUND`，证明路由仍在。
+- 真实浏览器（本会话 Vite 5175）：临时会话 + 注入的 ChangeSet 验证“变更”页显示工作区基线、运行分组、文件项和 Diff；接受后显示“已接受”，拒绝后显示“已拒绝”，撤销后文件从 `after` 恢复为 `before`；页面不再出现 Git/PR/CI 或验证表单。临时会话、ChangeSet 行、blob 和临时目录已清理。
+- 控制台：正常切换/操作无新增错误。测试期间的错误仅来自两处：一次故意构造的 hash 不匹配导致 409（测试夹具问题），以及强制整页 reload 时 Monaco `TextModel got disposed before DiffEditorWidget model got reset` 的卸载竞态（既有依赖行为，非本次移除引入）。
+- 未验证/边界：未跑前后端全量；浏览器验收使用注入的 ChangeSet 而非真实 Agent 写文件链路；Git/PR/CI 与验证不再有前端入口，改为由 Agent 原生命令行执行，未做真实远端 PR 验收。未提交、未推送。
+
+## 2026-11-13 撤销即拒绝：审阅动作收敛
+
+- 语义：撤销一个 ChangeItem 或整轮 ChangeSet 成功时，同时写入 `review_status=rejected`；`PATCH /api/change-items/{id}` 与 `POST /api/change-sets/{id}/review` 只接受 `accepted`，拒绝统一走 revert 端点。
+- 前端：文件操作收敛为“接受 / 拒绝并撤销”，整轮操作收敛为“全部接受 / 全部拒绝”；不再有独立的“拒绝”和“撤销”按钮。
+- 后端定向：`pytest -q tests/test_change_capture.py tests/test_change_routes.py tests/test_change_workflow.py tests/test_workspace_git.py tests/test_workspace_scope.py --disable-warnings`，**11 passed**。
+- 前端定向：`vitest run src/components/changes/ChangeSetPanel.test.tsx`，**6 passed**；`npm run build` 通过。
+- 未跑全量；未提交、未推送。
+
+## 2026-11-13 产品 Agent 自动 Git 版本控制
+
+- 规则位置：`backend/src/agent/prompts.py` 的 `_SYSTEM_PROMPT_BODY` 新增“Git 版本控制（默认自动执行，不需要用户提醒）”。`AGENTS.md` 只供开发助手使用，产品 Agent 不读取。
+- 行为：改代码前查 `git status`；每个逻辑单元自动本地提交；只处理本次修改的文件；修改已有文件用 `git commit -m "type: ..." -- <file...>`，新增/删除先 `git add <file>`；禁止 `git add -A` / `git add .` / 裸 `git commit`；push、PR、force push、`reset --hard`、覆盖用户的 checkout/restore 必须先确认。
+- 自动放行：`command_policy.py` 仅对 `git add <paths>`、`git commit -m <msg> -- <paths>`、`git switch -c <branch>`、`git checkout -b <branch>` 走 ALLOW；其余 Git 写操作仍 ASK。
+- 测试：`pytest -q tests/test_security_boundaries.py::TestCommandPolicy tests/test_tool_api_permission_gate.py tests/test_agent_stream_reliability.py tests/test_rag_answer_prompt.py --disable-warnings`，**102 passed**；`is_auto_allowable` 7 组安全/不安全命令实测与预期一致。
+- 安全审查修复：命令策略在 Git 写操作判定前拒绝换行、Unicode 空白和控制字符；路径必须是带扩展名的普通文件，点号目录也会被 `is_dir()` 拒绝；`#` 不允许出现在提交信息或路径中。对应绕过（换行拼接、U+2028 空白 token、`#` 注释截断 pathspec、目录 operand）已加入 `TestCommandPolicy` 回归。
+- 未验证：真实 Agent 端到端自动提交；未跑全量。`tests/test_security_boundaries.py` 全文件另有 2 项 path_guard/grep 环境相关失败，未证明与本次改动相关。
+
+## 2026-11-13 Reranker 状态与热加载
+
+- 后端：新增 `GET /api/rag/reranker`、`POST /api/rag/reranker/reload`；`search_docs` 工具结果在 `metadata.reranker` 返回 `loaded / unavailable / loading / not_loaded`、模型名、可用/所需内存和失败原因。reload 在 daemon 线程加载，不阻塞请求，不需要重启后端。
+- 前端：`search_docs` 的活动块下方显示状态行；活动块折叠时仍可见。不可用/未加载时显示“尝试恢复”，点击后进入“加载中…”并按 2 秒轮询，成功后显示“重排模型已启用”，不会自动重新检索。
+- 后端定向：`test_reranker_control.py` + `test_reranker_fallback.py` + `test_search_docs_source_version.py` + `test_source_registry.py`，**38 passed**。
+- 前端定向：`RerankerStatusRow.test.tsx` + `ActivityBlock.test.tsx` + `useChatStore.test.ts`，**94 passed**；`npm run build` 通过。
+- API 实测：真实 `POST /api/tool` 调用 `search_docs` 返回 `metadata.reranker.state=loaded`；`POST /api/rag/reranker/reload` 在内存不足时返回 `started=true`、`loading`，随后 `unavailable`；内存释放后再次点击，状态在约 6 秒内变为 `loaded`，后端日志确认 `Loaded base model`，全程未重启后端。
+- 浏览器：因上游模型返回 `Model is unavailable`，无法用真实对话触发 `search_docs`；用注入的 `search_docs` activity 在真实页面验证了折叠状态下状态行、内存提示和“尝试恢复”按钮。点击后页面依次显示“加载中…”和“重排模型已启用”。临时会话已删除。
+- 未验证：真实模型对话触发 `search_docs` 的完整链路；未跑全量测试套件。未提交、未推送。
+
+## 2026-11-14 Markdown 渲染修复
+
+- 代码块：改由 `pre` 统一渲染 fenced block，单行且无语言标记的 ``` 代码块不再被误判为 inline code；`code` 只负责行内代码。
+- 来源引用：`transformSourceRefs` 同时跳过 fenced 和 inline code，避免把代码里的 `[srcN]` 改成来源按钮。
+- 表格：单元格改为 `word-break: normal; overflow-wrap: break-word`，避免英文单词被栏宽拦腰截断；图片增加 `max-width: 100%`。
+- 运行条：`completed / failed / cancelled / interrupted` 状态不再 sticky，避免吸顶条裁掉下一条 Markdown 标题后只剩一条悬空下边框。
+- 测试：`vitest run src/components/shared/MarkdownRenderer.test.tsx`，**4 passed**；`npm run build` 通过。
+- 未验证：真实会话的浏览器目视回归；需要硬刷新后确认截图中的横线是否消失。

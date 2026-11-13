@@ -203,3 +203,18 @@ def test_system_prompt_requires_markdown_for_tool_progress_narration():
     assert "不要写成长段落，也不要用标题或 fenced code block" in prompt
     assert "标题、表格和代码块留给最终回答" in prompt
     assert "进度叙述不要重复最终答案" in prompt
+
+
+def test_system_prompt_requires_automatic_git_version_control():
+    prompt = build_system_prompt()
+
+    assert "Git 版本控制（默认自动执行，不需要用户提醒）" in prompt
+    assert "git status --short --branch" in prompt
+    assert "不要等用户提醒" in prompt
+    assert "git add -A" in prompt
+    assert "git commit -m" in prompt
+    assert "按路径提交" in prompt
+    assert "带扩展名的普通文件" in prompt
+    assert "issue-123" in prompt
+    assert "git push" in prompt
+    assert "明确同意" in prompt

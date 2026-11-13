@@ -114,6 +114,29 @@ class TestCommandPolicy:
             "git log -n abc",
             "git status ..\\..\\Windows",
             "pwd extra",
+            "git add -A",
+            "git add .",
+            "git add src/*",
+            "git add .env",
+            "git add src",
+            "git add src/a.ts\ngit push origin main",
+            "git add src/a.ts\r\ngit push origin main",
+            "git add src/a.ts\x0bgit push origin main",
+            "git add src/a.ts\x00",
+            "git add \u2028-A",
+            "git add \u2028--force\u2028.env",
+            "git commit -m \"feat: add x\"",
+            "git commit -am \"feat: add x\"",
+            "git commit --amend -m \"fix: x\" -- src/a.ts",
+            "git commit -m \"fix: x\" -- .",
+            "git commit -m \"fix: x\" -- src",
+            "git commit -m \"fix: x\" -- #",
+            "git commit -m \"fix: x; Remove-Item important.txt\" -- src/a.ts",
+            "git commit -m \"fix: x\" -- src/a.ts && git push",
+            "git push origin main",
+            "git switch main",
+            "git checkout main",
+            "git reset --hard",
         ],
     )
     def test_unsafe_commands_are_not_auto_allowable(self, command: str) -> None:
@@ -124,12 +147,26 @@ class TestCommandPolicy:
     @pytest.mark.parametrize(
         "command",
         ["pwd", "git status", "git status --short", "git diff --stat",
-         "git log -n 3 --oneline", "git show --stat HEAD"],
+         "git log -n 3 --oneline", "git show --stat HEAD",
+         "git add src/a.ts", "git add -- src/a.ts src/b.ts",
+         "git add src/a.test.ts",
+         "git commit -m \"feat(ui): add x\" -- src/a.ts",
+         "git commit -m \"fix: issue-123\" -- src/a.ts",
+         "git switch -c agent/p2-simplify",
+         "git checkout -b agent/p2-simplify"],
     )
     def test_safe_commands_remain_auto_allowable(self, command: str) -> None:
         from src.agent.core.toolkit.command_policy import is_auto_allowable
 
         assert is_auto_allowable(command) is True
+
+    def test_dot_directory_is_not_auto_allowable(self, tmp_path) -> None:
+        from src.agent.core.toolkit.command_policy import is_auto_allowable
+
+        directory = tmp_path / "v1.2"
+        directory.mkdir()
+        assert is_auto_allowable(f"git add {directory}") is False
+        assert is_auto_allowable(f'git commit -m "chore: x" -- {directory}') is False
 
     def test_bypass_mode_does_not_skip_high_risk(self) -> None:
         from src.agent.core.toolkit.permission_classifier import (

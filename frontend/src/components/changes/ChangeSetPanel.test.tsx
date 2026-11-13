@@ -16,8 +16,6 @@ vi.mock("../../api/client", () => ({
   getSessionToken: () => null,
 }));
 
-vi.mock("./WorkspaceGitPanel", () => ({ WorkspaceGitPanel: () => null }));
-
 vi.mock("@monaco-editor/react", () => ({
   DiffEditor: ({ original, modified }: { original?: string; modified?: string }) => (
     <div data-testid="monaco-diff">{`${original} → ${modified}`}</div>
@@ -56,18 +54,6 @@ beforeEach(() => {
   apiPostMock.mockReset().mockResolvedValue({});
   apiPatchMock.mockReset().mockResolvedValue({});
   apiGetMock.mockImplementation((path: string) => {
-    if (path.includes("/git/pr")) {
-      return Promise.resolve({ ok: true, pr: null, checks: [] });
-    }
-    if (path.includes("/git")) {
-      return Promise.resolve({
-        ok: true, root: "E:/project", is_git: false, branch: null,
-        head: null, dirty: [], untracked: [], remote_url: null, upstream: null,
-      });
-    }
-    if (path.includes("/validations")) {
-      return Promise.resolve({ validations: [] });
-    }
     if (path.includes("change-items/")) {
       return Promise.resolve({
         item,
@@ -129,12 +115,12 @@ describe("ChangeSetPanel", () => {
     ));
   });
 
-  it("reverts a captured run after confirmation", async () => {
+  it("rejects and reverts a captured run after confirmation", async () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<ChangeSetPanel />);
 
-    await waitFor(() => expect(screen.getByRole("button", { name: "撤销本轮" })).toBeTruthy());
-    fireEvent.click(screen.getByRole("button", { name: "撤销本轮" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "全部拒绝" })).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "全部拒绝" }));
 
     await waitFor(() => expect(apiPostMock).toHaveBeenCalledWith(
       "change-sets/cs_1/revert",
@@ -143,19 +129,29 @@ describe("ChangeSetPanel", () => {
     confirm.mockRestore();
   });
 
-  it("runs an allowlisted validation command", async () => {
+  it("rejects and reverts a single item after confirmation", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<ChangeSetPanel />);
 
-    await waitFor(() => expect(screen.getByPlaceholderText("例如 python -m pytest tests/foo.py")).toBeTruthy());
-    fireEvent.change(screen.getByPlaceholderText("例如 python -m pytest tests/foo.py"), {
-      target: { value: "python -m pytest tests/foo.py -q" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "运行" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "拒绝并撤销" })).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "拒绝并撤销" }));
 
     await waitFor(() => expect(apiPostMock).toHaveBeenCalledWith(
-      "change-sets/cs_1/validations/run",
-      expect.objectContaining({ command: "python -m pytest tests/foo.py -q" }),
+      "change-items/ci_1/revert",
+      {},
     ));
+    confirm.mockRestore();
+  });
+
+  it("does not render removed Git or validation controls", async () => {
+    render(<ChangeSetPanel />);
+
+    await waitFor(() => expect(screen.getAllByText("src/a.c").length).toBeGreaterThan(0));
+    expect(screen.queryByText("Git / PR / CI")).toBeNull();
+    expect(screen.queryByText("验证")).toBeNull();
+    expect(screen.queryByPlaceholderText("例如 python -m pytest tests/foo.py")).toBeNull();
+    expect(screen.queryByRole("button", { name: "撤销" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "拒绝" })).toBeNull();
   });
 
   it("shows an explicit empty state when no changes were captured", async () => {

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, String, Text
 
 from app.db.database import Base
 
@@ -86,30 +86,3 @@ class ChangeEvent(Base):
     event_type = Column(String(64), nullable=False)
     payload_json = Column(Text, nullable=False, default="{}")
     created_at = Column(DateTime, nullable=False, default=_utc_now)
-
-
-class ValidationRun(Base):
-    """One explicit validation command and its captured evidence."""
-
-    __tablename__ = "validation_runs"
-    __table_args__ = (
-        Index("idx_validation_runs_set", "change_set_id"),
-        Index("idx_validation_runs_created", "created_at"),
-    )
-
-    id = Column(String(64), primary_key=True)
-    change_set_id = Column(
-        String(64), ForeignKey("change_sets.id", ondelete="CASCADE"), nullable=False,
-    )
-    run_id = Column(String(64), nullable=True)
-    command = Column(Text, nullable=False)
-    cwd = Column(Text, nullable=False, default="")
-    status = Column(String(32), nullable=False, default="running")
-    exit_code = Column(Integer, nullable=True)
-    duration_ms = Column(Integer, nullable=True)
-    timed_out = Column(Boolean, nullable=False, default=False)
-    stdout = Column(Text, nullable=False, default="")
-    stderr = Column(Text, nullable=False, default="")
-    report_ref = Column(String(128), nullable=True)
-    created_at = Column(DateTime, nullable=False, default=_utc_now)
-    finished_at = Column(DateTime, nullable=True)
