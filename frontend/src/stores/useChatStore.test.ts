@@ -848,6 +848,45 @@ describe("useChatStore", () => {
     );
   });
 
+  it("captures reranker status from a search_docs tool result", async () => {
+    const store = await importStore();
+    store.setState({ messages: [], sessionMessages: {}, activeSessionId: "s1", isStreaming: false });
+
+    store.getState().sendMessage("查手册");
+    capturedCallbacks!.onEvent({
+      type: "tool_call", call_id: "search-1", tool: "search_docs", args: { query: "GPIO" },
+    });
+    capturedCallbacks!.onEvent({
+      type: "tool_result",
+      call_id: "search-1",
+      tool: "search_docs",
+      success: true,
+      duration: 120,
+      result: {
+        output: "结果",
+        data: {},
+        metadata: {
+          reranker: {
+            state: "unavailable",
+            model: "BAAI/bge-reranker-base",
+            available_mb: 1675,
+            required_mb: 2048,
+            reason: "insufficient memory",
+          },
+        },
+      },
+    });
+    capturedCallbacks!.onEvent({ type: "done", success: true });
+    capturedCallbacks!.onDone!();
+
+    const step = store.getState().messages[1].activity?.steps.find((s) => s.call_id === "search-1");
+    expect(step?.reranker).toMatchObject({
+      state: "unavailable",
+      available_mb: 1675,
+      required_mb: 2048,
+    });
+  });
+
   it("聊天连接超时时停止生成并保留已收到的回答", async () => {
     const store = await importStore();
     store.setState({

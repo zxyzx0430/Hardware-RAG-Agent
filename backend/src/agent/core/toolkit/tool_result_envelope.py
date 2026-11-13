@@ -53,6 +53,9 @@ class ResultMetadata(BaseModel):
         default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()
     )
     kb_coverage_hint: str | None = None
+    # Cross-encoder reranker load status, lifted from search_docs results.
+    # Shape: see src.rag.reranker.get_reranker_status().
+    reranker: dict[str, Any] | None = None
     # Set to True by ToolRouter when envelope.output was truncated to
     # OUTPUT_TRUNCATE_THRESHOLD (full payload preserved in `data`).
     compacted: bool = False

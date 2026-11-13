@@ -241,7 +241,18 @@ def _build_search_result(results: list, ctx: ToolContext) -> dict:
     max_score = _extract_max_score(results)
     hint = _update_coverage_counter(ctx, max_score)
     output_dict["kb_coverage_hint"] = hint
+    output_dict["reranker"] = _reranker_status()
     return output_dict
+
+
+def _reranker_status() -> dict[str, Any] | None:
+    """Best-effort reranker load status; never fails the search itself."""
+    try:
+        from src.rag.reranker import get_reranker_status
+        return get_reranker_status()
+    except Exception:
+        logger.warning("reranker status unavailable", exc_info=True)
+        return None
 
 
 def _update_coverage_counter(ctx: ToolContext, max_score: float) -> str | None:

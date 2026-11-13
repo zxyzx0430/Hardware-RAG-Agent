@@ -47,6 +47,7 @@ from app.api.crud import db_router
 from app.api.mcp_routes import router as mcp_router
 from app.api.feedback_routes import router as feedback_router
 from app.api.search_routes import router as search_router
+from app.api.rag_routes import router as rag_router
 from app.api.agent_sandbox_routes import router as agent_sandbox_router
 from app.api.skill_routes import router as skill_router
 from app.api.explorer_routes import router as explorer_router
@@ -395,6 +396,7 @@ def create_app() -> FastAPI:
     app.include_router(mcp_router)
     app.include_router(feedback_router)
     app.include_router(search_router)
+    app.include_router(rag_router)
     app.include_router(agent_sandbox_router)
     app.include_router(skill_router)
     app.include_router(explorer_router)

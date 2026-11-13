@@ -68,6 +68,9 @@ SUGGEST_NOT_FOUND: str = "工具未注册，请检查工具名拼写。"
 OUTPUT_TRUNCATE_THRESHOLD: int = 8000
 _TRUNCATE_SUFFIX: str = "...(已截断，完整数据见 data)"
 
+# Result-dict keys lifted into envelope.metadata instead of envelope.data.
+_LIFTED_RESULT_KEYS: tuple[str, ...] = ("output", "kb_coverage_hint", "reranker")
+
 # ═══════════════════════════════════════════
 # Module-level registry
 # ═══════════════════════════════════════════
@@ -434,20 +437,29 @@ def _success_envelope(
 ) -> ToolResultEnvelope:
     """Build a success envelope from execute's result dict.
 
-    Extracts `kb_coverage_hint` (populated by search_docs) from the result
-    dict into envelope.metadata. All other non-`output` keys flow into `data`.
+    Extracts `kb_coverage_hint` (populated by search_docs) and the `reranker`
+    load status from the result dict into envelope.metadata. All other
+    non-`output` keys flow into `data`.
     """
-    output = str(result.get("output", ""))
-    hint = result.get("kb_coverage_hint")
-    excluded = ("output", "kb_coverage_hint")
-    data = {k: v for k, v in result.items() if k not in excluded} or None
+    data = {
+        k: v for k, v in result.items() if k not in _LIFTED_RESULT_KEYS
+    } or None
     return ToolResultEnvelope(
         success=True,
-        output=output,
+        output=str(result.get("output", "")),
         data=data,
         error=None,
-        metadata=_metadata(state, hint),
+        metadata=_metadata(
+            state,
+            result.get("kb_coverage_hint"),
+            _reranker_payload(result.get("reranker")),
+        ),
     )
+
+
+def _reranker_payload(value: Any) -> dict[str, Any] | None:
+    """Accept only dict-shaped reranker status lifted from a tool result."""
+    return value if isinstance(value, dict) else None
 
 
 def _error_envelope(
@@ -516,13 +528,18 @@ def _spec_mismatch_envelope(
     )
 
 
-def _metadata(state: _DispatchState, hint: str | None = None) -> ResultMetadata:
-    """Build ResultMetadata with elapsed time + optional coverage hint."""
+def _metadata(
+    state: _DispatchState,
+    hint: str | None = None,
+    reranker: dict[str, Any] | None = None,
+) -> ResultMetadata:
+    """Build ResultMetadata with elapsed time + optional lifted result fields."""
     return ResultMetadata(
         tool_name=state.spec.name,
         duration_ms=_now_ms() - state.start_ms,
         call_id=state.call_id,
         kb_coverage_hint=hint,
+        reranker=reranker,
     )
 
 

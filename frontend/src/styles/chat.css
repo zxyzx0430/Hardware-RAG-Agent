@@ -94,13 +94,15 @@
 }
 
 /* 表格 */
-.markdown-body .table-wrapper { overflow-x: auto; margin: 8px 0; }
+.markdown-body .table-wrapper { overflow-x: auto; margin: 8px 0; max-width: 100%; }
 .markdown-body table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .markdown-body th, .markdown-body td {
   padding: 8px 12px; border: 1px solid var(--border); text-align: left;
+  word-break: normal; overflow-wrap: break-word;
 }
 .markdown-body th { background: var(--muted); font-weight: 600; }
 .markdown-body tr:nth-child(even) { background: var(--table-row-alt); }
+.markdown-body img { max-width: 100%; height: auto; border-radius: var(--radius-sm); }
 
 /* 任务列表 */
 .markdown-body input[type="checkbox"] { margin-right: 6px; }
@@ -494,6 +496,40 @@
   font-size: 11px; font-family: var(--font-mono); line-height: 1.6; color: var(--fg);
   margin: 0; white-space: pre-wrap; word-break: break-all;
 }
+
+/* Reranker status row — stays visible under the search_docs header even when
+   the tool body is collapsed. Compact monochrome layout with ellipsis guards. */
+.reranker-status-row {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+  padding: 5px 12px; border-top: 1px solid var(--tool-border);
+  font-size: 11px; line-height: 1.5; color: var(--muted-fg);
+}
+.reranker-status-dot {
+  width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+  background: var(--muted-fg);
+}
+.reranker-status-row.loaded .reranker-status-dot { background: var(--success); }
+.reranker-status-row.unavailable .reranker-status-dot { background: var(--danger); }
+.reranker-status-row.loading .reranker-status-dot { background: var(--warn); }
+.reranker-status-label { color: var(--fg); font-weight: 500; flex-shrink: 0; }
+.reranker-status-row.unavailable .reranker-status-label { color: var(--danger); }
+.reranker-status-meta {
+  font-family: var(--font-mono); min-width: 0; flex-shrink: 1;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.reranker-status-reason {
+  min-width: 0; flex: 1;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.reranker-retry-btn {
+  margin-left: auto; flex-shrink: 0;
+  padding: 2px 8px; border-radius: var(--radius-sm); cursor: pointer;
+  border: 1px solid var(--border); background: var(--card); color: var(--fg);
+  font-size: 11px; transition: background 0.15s;
+}
+.reranker-retry-btn:hover:not(:disabled) { background: var(--muted); }
+.reranker-retry-btn:disabled { opacity: 0.5; cursor: default; }
+
 .svg-accent { color: var(--primary); }
 
 /* ── InputBar ── */
@@ -1345,6 +1381,14 @@
   color: var(--muted-fg);
 }
 .run-status-bar.restoring { border-bottom-color: var(--primary); }
+/* Terminal runs stay in the document flow: a sticky completed bar clips the
+   next heading and leaves its 1px underline floating over the content. */
+.run-status-bar.status-completed,
+.run-status-bar.status-failed,
+.run-status-bar.status-cancelled,
+.run-status-bar.status-interrupted {
+  position: static;
+}
 .run-status-header {
   display: flex;
   align-items: center;

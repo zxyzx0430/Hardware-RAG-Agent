@@ -5,6 +5,7 @@ import { formatDuration } from "../../utils/format";
 import { useAppStore } from "../../stores/useAppStore";
 import { useChatStore } from "../../stores/useChatStore";
 import { MarkdownRenderer } from "../shared/MarkdownRenderer";
+import RerankerStatusRow from "./RerankerStatusRow";
 import { isSkillToolName, isValidSkillId, isValidSkillResourcePath, type SkillToolName } from "../../utils/skillTrace";
 
 const ACTIVITY_TIMER_INTERVAL_MS = 10;
@@ -13,6 +14,12 @@ const TOOLSTEP_TIMER_INTERVAL_MS = 10;
 const ActivityBlock = memo(function ActivityBlock({ activity, msgId, startTime }: { activity: ActivityBlockData; msgId: string; startTime?: number }) {
   const { t } = useI18n();
   const toolStepCount = activity.steps.filter((step) => step.type === 'tool').length;
+  // Reranker state is process-wide; the latest search_docs result is enough.
+  // Render it outside the collapsed body so it stays visible after completion.
+  const rerankerStatus = activity.steps
+    .slice()
+    .reverse()
+    .find((step) => step.name === 'search_docs' && step.reranker)?.reranker;
   const isRunning = activity.status === 'running';
   // activityDone: activity 已结束（done/error/等），活跃流式期间为 false。
   // 用于阻止 pending step 在历史消息/已结束 activity 上启动定时器。
@@ -56,6 +63,7 @@ const ActivityBlock = memo(function ActivityBlock({ activity, msgId, startTime }
           {isRunning ? '' : (measuredDuration > 0 ? t('doneIn') + ' ' : '')}{measuredDuration > 0 ? formatDuration(displayDuration) : '—'}
         </span>
       </button>
+      {rerankerStatus ? <RerankerStatusRow status={rerankerStatus} /> : null}
       {!collapsed ? (
         <div className="activity-steps" id={`act-body-${msgId}`}>
           <div className="activity-chain">

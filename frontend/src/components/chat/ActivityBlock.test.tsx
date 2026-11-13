@@ -7,6 +7,12 @@ vi.mock("../../i18n", () => ({
   useI18n: () => ({ t: (key: string, fallback?: string) => fallback ?? key }),
 }));
 
+vi.mock("./RerankerStatusRow", () => ({
+  default: ({ status }: { status: { state: string } }) => (
+    <div data-testid="reranker-status-row">{status.state}</div>
+  ),
+}));
+
 vi.mock("../../stores/useAppStore", () => {
   const state = {
     setExplorerOpen: () => {},
@@ -370,5 +376,43 @@ describe("ActivityBlock step count", () => {
 
     expect(container.textContent).toContain("2 tools");
     expect(container.textContent).not.toContain("4 tools");
+  });
+});
+
+describe("ActivityBlock reranker status", () => {
+  it("shows the status row even when the activity block is collapsed", () => {
+    const step: ActivityStep = {
+      id: "search-1",
+      type: "tool",
+      name: "search_docs",
+      status: "done",
+      result: "chunks",
+      reranker: { state: "unavailable", available_mb: 512, required_mb: 2048 },
+    };
+    const activity = { durationMs: 5, steps: [step], status: "done" } as ActivityBlockData;
+
+    const { container } = render(<ActivityBlock activity={activity} msgId="reranker-step" />);
+
+    expect(screen.getByTestId("reranker-status-row").textContent).toBe("unavailable");
+    expect(container.querySelector(".activity-steps")).toBeNull();
+  });
+
+  it("does not show a status row without reranker metadata or for other tools", () => {
+    const steps = [
+      { id: "search-2", type: "tool", name: "search_docs", status: "done" },
+      {
+        id: "other-1",
+        type: "tool",
+        name: "write_file",
+        status: "done",
+        reranker: { state: "loaded" },
+      },
+    ] as unknown as ActivityStep[];
+    const activity = { durationMs: 5, steps, status: "done" } as ActivityBlockData;
+
+    render(<ActivityBlock activity={activity} msgId="no-reranker" />);
+    fireEvent.click(screen.getAllByRole("button")[0]);
+
+    expect(screen.queryByTestId("reranker-status-row")).toBeNull();
   });
 });

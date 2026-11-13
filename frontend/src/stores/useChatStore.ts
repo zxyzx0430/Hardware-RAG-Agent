@@ -48,7 +48,7 @@
 // 优先级：demo 后第 1 周（不阻塞 7.15 demo）
 // 前置条件：补齐 useChatStore 单元测试（streaming / resume / persist 三条主路径）后再动手
 import { create } from "zustand";
-import type { Message, SourceRef, ActivityStep, Session, ContentPart, TodoItem } from "../types/session";
+import type { Message, SourceRef, ActivityStep, Session, ContentPart, TodoItem, RerankerStatus } from "../types/session";
 import type { ChatRequest, ChatSSEEvent, Attachment, BackendMessage, RunStateResponse, RunStatus } from "../types/api";
 import type { Plan } from "../types/plan";
 import type { ChangeSet, ChangeSetsResponse, WorkspaceContext } from "../types/change";
@@ -1002,6 +1002,34 @@ function _extractChangeItemId(toolName: string, result: unknown): string | undef
   return typeof id === "string" && id ? id : undefined;
 }
 
+/** Reranker states accepted from the backend; anything else is ignored. */
+const _RERANKER_STATES = new Set<RerankerStatus["state"]>([
+  "loaded", "unavailable", "loading", "not_loaded",
+]);
+
+/** Extract the reranker status attached to a search_docs tool_result metadata. */
+function _extractReranker(toolName: string, result: unknown): RerankerStatus | undefined {
+  if (toolName !== "search_docs") return undefined;
+  if (!result || typeof result !== "object" || Array.isArray(result)) return undefined;
+  const metadata = (result as Record<string, unknown>).metadata;
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return undefined;
+  const raw = (metadata as Record<string, unknown>).reranker;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.state !== "string" || !_RERANKER_STATES.has(r.state as RerankerStatus["state"])) {
+    return undefined;
+  }
+  return {
+    state: r.state as RerankerStatus["state"],
+    model: typeof r.model === "string" ? r.model : undefined,
+    available_mb: typeof r.available_mb === "number" ? r.available_mb : null,
+    required_mb: typeof r.required_mb === "number" ? r.required_mb : undefined,
+    reason: typeof r.reason === "string" ? r.reason : null,
+    loaded_at: typeof r.loaded_at === "number" ? r.loaded_at : null,
+    retry_interval_sec: typeof r.retry_interval_sec === "number" ? r.retry_interval_sec : undefined,
+  };
+}
+
 /** Append an ImagePart to existing message content (string | ContentPart[]).
  *  If content is a string, convert to ContentPart[] with text + image.
  *  If content is already ContentPart[], append the image. */
@@ -1860,6 +1888,8 @@ function _applyChatEvent(event: ChatSSEEvent, requestSessionId: string, terminal
         // File-editing tools: extract file_path for "查看 diff" button
         const filePath = _extractFilePath(sse.tool, sse.result);
         const changeItemId = _extractChangeItemId(sse.tool, sse.result);
+        // Reranker availability snapshot for the search_docs status row.
+        const reranker = _extractReranker(sse.tool, sse.result);
 
         if (isActive) {
           const steps = s.streamingSteps.map((step) =>
@@ -1868,6 +1898,7 @@ function _applyChatEvent(event: ChatSSEEvent, requestSessionId: string, terminal
                   ...step, status: newStatus, result: resultText,
                   duration: sse.duration, file_path: filePath ?? step.file_path,
                   change_item_id: changeItemId ?? step.change_item_id,
+                  reranker: reranker ?? step.reranker,
                 }
               : step
           );
@@ -1896,6 +1927,7 @@ function _applyChatEvent(event: ChatSSEEvent, requestSessionId: string, terminal
                     ...step, status: newStatus, result: resultText,
                     duration: sse.duration, file_path: filePath ?? step.file_path,
                     change_item_id: changeItemId ?? step.change_item_id,
+                    reranker: reranker ?? step.reranker,
                   }
                 : step
             );
@@ -2600,8 +2632,11 @@ export const useChatStore = create<ChatState>((set, get) => {
   function _updateResumeToolResult(evt: Extract<ChatSSEEvent, { type: "tool_result" }>, sid: string, resumeSteps: ActivityStep[]): void {
     const resultText = _flattenToolResult(evt.result);
     const status: ActivityStep["status"] = evt.success === false ? "error" : "done";
+    const reranker = _extractReranker(evt.tool, evt.result);
     const steps = resumeSteps.map((step) =>
-      step.call_id === evt.call_id ? { ...step, status, result: resultText, duration: evt.duration } : step
+      step.call_id === evt.call_id
+        ? { ...step, status, result: resultText, duration: evt.duration, reranker: reranker ?? step.reranker }
+        : step
     );
     resumeSteps.splice(0, resumeSteps.length, ...steps);
     _syncResumeActivity(sid, resumeSteps);

@@ -1,4 +1,4 @@
-import { useState, useCallback, lazy, Suspense, useEffect, memo, useMemo, type ComponentProps } from "react";
+import { useState, useCallback, lazy, Suspense, useEffect, memo, useMemo, isValidElement, type ComponentProps, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { copyToClipboard } from "../../utils/clipboard";
@@ -32,10 +32,10 @@ interface MarkdownRendererProps {
  * 用 fenced code block 分段，只对非代码段替换，避免破坏代码块内的引用。
  */
 function transformSourceRefs(content: string): string {
-  const segments = content.split(/(```[\s\S]*?```)/g);
+  const segments = content.split(/(```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]*`)/g);
   return segments
     .map((seg, i) => {
-      if (i % 2 === 1) return seg; // 代码段原样保留
+      if (i % 2 === 1) return seg; // fenced or inline code: leave untouched
       return seg
         .replace(/\[\^(\d+)\]\(src\1\)/g, '[src$1](#src-$1)')
         .replace(/\[\^(\d+)\]/g, '[src$1](#src-$1)')
@@ -242,25 +242,28 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
   const components = useMemo(
     () => ({
       code({ className, children, ...props }: ComponentProps<"code">) {
-        const match = /language-(\w+)/.exec(className || "");
-        const codeStr = String(children).replace(/\n$/, "");
-        // 判断是否为代码块（有语言标记或包含换行）
-        if (match || codeStr.includes("\n")) {
-          return (
-            <CodeBlock
-              language={match?.[1] || ""}
-              code={codeStr}
-              streaming={streaming}
-              onPushCodeToPreview={onPushCodeToPreview}
-              onOpenInEditor={onOpenInEditor}
-            />
-          );
-        }
-        // 行内代码
+        // Fenced blocks are rendered by the `pre` component below. This keeps
+        // single-line, language-less fences from being mistaken for inline code.
         return (
-          <code className="inline-code" {...props}>
+          <code className={className || "inline-code"} {...props}>
             {children}
           </code>
+        );
+      },
+      pre({ children }: ComponentProps<"pre">) {
+        const child = Array.isArray(children) ? children[0] : children;
+        if (!isValidElement(child)) return <pre>{children}</pre>;
+        const childProps = child.props as { className?: string; children?: ReactNode };
+        const codeStr = String(childProps.children ?? "").replace(/\n$/, "");
+        const match = /language-(\w+)/.exec(childProps.className || "");
+        return (
+          <CodeBlock
+            language={match?.[1] || ""}
+            code={codeStr}
+            streaming={streaming}
+            onPushCodeToPreview={onPushCodeToPreview}
+            onOpenInEditor={onOpenInEditor}
+          />
         );
       },
       // 表格样式

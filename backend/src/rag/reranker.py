@@ -38,6 +38,22 @@ _RETRY_INTERVAL_S: float = float(settings.reranker_retry_interval_sec)
 _LOAD_LOCK = threading.Lock()
 _PREDICT_LOCK = threading.Lock()
 
+# ── Load status (read by /api/rag/reranker and search_docs metadata) ──
+STATE_NOT_LOADED: str = "not_loaded"
+STATE_LOADING: str = "loading"
+STATE_LOADED: str = "loaded"
+STATE_UNAVAILABLE: str = "unavailable"
+
+# _CONTROL_LOCK guards the status fields below. It is never held while the
+# model loads, so status reads and reload requests stay non-blocking.
+_CONTROL_LOCK = threading.Lock()
+# Number of in-flight load attempts (a reload reservation counts as one).
+_ACTIVE_LOADS: int = 0
+_LAST_REASON: str | None = None
+_LAST_AVAILABLE_MB: int | None = None
+_LAST_REQUIRED_MB: int = int(settings.reranker_min_available_mb)
+_LOADED_AT: float | None = None
+
 
 def get_reranker():
     """Load the cross-encoder model (singleton).
@@ -49,54 +65,194 @@ def get_reranker():
     global _RERANKER
     if _RERANKER is not None:
         return _RERANKER if _RERANKER is not False else None
-    with _LOAD_LOCK:
-        if _RERANKER is not None:
-            return _RERANKER if _RERANKER is not False else None
+    _enter_load()
+    try:
+        with _LOAD_LOCK:
+            if _RERANKER is not None:
+                return _RERANKER if _RERANKER is not False else None
+            return _load_model()
+    finally:
+        _end_load()
+
+
+def _load_model() -> Optional[object]:
+    """Blocking load body. Caller holds _LOAD_LOCK."""
+    available_mb = _available_memory_mb()
+    required_mb = int(settings.reranker_min_available_mb)
+    _record_memory(available_mb, required_mb)
+    if available_mb is not None and available_mb < required_mb:
+        reason = (
+            f"insufficient memory: {available_mb} MB available, "
+            f"{required_mb} MB required"
+        )
+        logger.warning(
+            "[Reranker] Skipping load: only %d MB available, need >= %d MB; "
+            "retrieval will use RRF fallback",
+            available_mb, required_mb,
+        )
+        _mark_unavailable(reason)
+        return None
+    try:
+        model = _load_cross_encoder()
+    except Exception as exc:  # noqa: BLE001 — degraded mode is a feature
+        logger.error("[Reranker] Base model load failed: %s", exc)
+        _mark_unavailable(f"model load failed: {exc}")
+        return None
+    _mark_loaded(model)
+    _log_loaded(model)
+    return model
+
+
+def _load_cross_encoder() -> object:
+    """Import and construct the cross-encoder; raises on failure."""
+    from sentence_transformers import CrossEncoder
+    _configure_torch_threads()
+    logger.info("[Reranker] Loading %s (base model, fast load)...", _RERANKER_MODEL)
+    return CrossEncoder(_RERANKER_MODEL, max_length=512)
+
+
+def _configure_torch_threads() -> None:
+    """Pin torch to one thread; the app must stay single-threaded natively."""
+    import torch
+    try:
+        torch.set_num_threads(1)
+        torch.set_num_interop_threads(1)
+    except (RuntimeError, ValueError):
+        # Interop threads can only be set before parallel work starts;
+        # a late call is harmless if another module already initialized.
+        pass
+
+
+def _log_loaded(model: object) -> None:
+    """Log load completion with a parameter count when the model exposes it."""
+    logger.info("[Reranker] Loaded base model (FP32, ~280MB)")
+    try:
+        n_params = sum(p.numel() for p in model.model.parameters())
+        logger.info("[Reranker] Loaded OK, params=%.1fM", n_params / 1e6)
+    except Exception:
+        logger.info("[Reranker] Loaded OK")
+
+
+def _available_memory_mb() -> int | None:
+    """Read available system RAM; None when psutil cannot answer."""
+    try:
+        import psutil
+        return int(psutil.virtual_memory().available / (1024 * 1024))
+    except Exception:
+        return None
+
+
+def _record_memory(available_mb: int | None, required_mb: int) -> None:
+    """Store the latest memory readings exposed by the status object."""
+    global _LAST_AVAILABLE_MB, _LAST_REQUIRED_MB
+    with _CONTROL_LOCK:
+        _LAST_AVAILABLE_MB = available_mb
+        _LAST_REQUIRED_MB = required_mb
+
+
+def _mark_loaded(model: object) -> None:
+    """Publish a successfully loaded model and its load timestamp."""
+    global _RERANKER, _LAST_REASON, _LOADED_AT
+    with _CONTROL_LOCK:
+        _RERANKER = model
+        _LAST_REASON = None
+        _LOADED_AT = time.time()
+
+
+def _mark_unavailable(reason: str) -> None:
+    """Publish the unavailable sentinel together with a human-readable reason."""
+    global _RERANKER, _LAST_REASON
+    with _CONTROL_LOCK:
+        _RERANKER = False
+        _LAST_REASON = reason
+
+
+def _enter_load() -> None:
+    """Mark a load attempt as in flight; status reads report 'loading'."""
+    global _ACTIVE_LOADS
+    with _CONTROL_LOCK:
+        _ACTIVE_LOADS += 1
+
+
+def _end_load() -> None:
+    """Release one load slot (never below zero)."""
+    global _ACTIVE_LOADS
+    with _CONTROL_LOCK:
+        _ACTIVE_LOADS = max(0, _ACTIVE_LOADS - 1)
+
+
+def get_reranker_status() -> dict:
+    """Return the current load status without touching the blocking loader.
+
+    Never waits for a cold load, so API routes and tool results stay fast.
+    """
+    with _CONTROL_LOCK:
+        return _status_locked()
+
+
+def _status_locked() -> dict:
+    """Build the status object. Caller must hold _CONTROL_LOCK."""
+    return {
+        "state": _state_locked(),
+        "model": _RERANKER_MODEL,
+        "available_mb": _LAST_AVAILABLE_MB,
+        "required_mb": _LAST_REQUIRED_MB,
+        "reason": _LAST_REASON,
+        "loaded_at": _LOADED_AT,
+        "retry_interval_sec": _RETRY_INTERVAL_S,
+    }
+
+
+def _state_locked() -> str:
+    """Resolve the status enum from singleton state. Caller holds the lock."""
+    if _ACTIVE_LOADS > 0:
+        return STATE_LOADING
+    if _RERANKER is None:
+        return STATE_NOT_LOADED
+    return STATE_UNAVAILABLE if _RERANKER is False else STATE_LOADED
+
+
+def reload_reranker() -> dict:
+    """Reset the singleton and load in a daemon thread; return immediately.
+
+    Returns ``{"started": bool, "status": <status object>}``. While any load
+    is already in flight the call is a no-op (``started=False``), so two
+    threads never load the model concurrently.
+    """
+    global _RERANKER, _failed_at, _LAST_REASON, _LOADED_AT, _ACTIVE_LOADS
+    with _CONTROL_LOCK:
+        if _ACTIVE_LOADS > 0:
+            return {"started": False, "status": _status_locked()}
+        _ACTIVE_LOADS = 1
+        _RERANKER = None
+        _failed_at = None
+        _LAST_REASON = None
+        _LOADED_AT = None
         try:
-            import psutil
-            available_mb = int(psutil.virtual_memory().available / (1024 * 1024))
-        except Exception:
-            available_mb = None
-        required_mb = int(settings.reranker_min_available_mb)
-        if available_mb is not None and available_mb < required_mb:
-            logger.warning(
-                "[Reranker] Skipping load: only %d MB available, need >= %d MB; "
-                "retrieval will use RRF fallback",
-                available_mb, required_mb,
-            )
-            _RERANKER = False
-            return None
-        try:
-            from sentence_transformers import CrossEncoder
-            import torch
-            try:
-                torch.set_num_threads(1)
-                torch.set_num_interop_threads(1)
-            except (RuntimeError, ValueError):
-                # Interop threads can only be set before parallel work starts;
-                # a late call is harmless if another module already initialized.
-                pass
-            logger.info(f"[Reranker] Loading {_RERANKER_MODEL} (base model, fast load)...")
-            model = CrossEncoder(_RERANKER_MODEL, max_length=512)
-            _RERANKER = model
-            logger.info("[Reranker] Loaded base model (FP32, ~280MB)")
-            try:
-                n_params = sum(p.numel() for p in model.model.parameters())
-                logger.info(f"[Reranker] Loaded OK, params={n_params / 1e6:.1f}M")
-            except Exception:
-                logger.info("[Reranker] Loaded OK")
-            return model
-        except Exception as e:
-            logger.error(f"[Reranker] Base model load failed: {e}")
-            _RERANKER = False  # mark as unavailable (don't retry on every search)
-            return None
+            threading.Thread(
+                target=_reload_worker, daemon=True, name="reranker-reload",
+            ).start()
+        except Exception as exc:  # noqa: BLE001 — surface as a failed start
+            _ACTIVE_LOADS = 0
+            _LAST_REASON = f"reload failed: {exc}"
+            return {"started": False, "status": _status_locked()}
+        return {"started": True, "status": _status_locked()}
+
+
+def _reload_worker() -> None:
+    """Daemon-thread body for reload_reranker()."""
+    try:
+        get_reranker()
+    except Exception as exc:  # noqa: BLE001 — status must report the failure
+        logger.error("[Reranker] Reload failed: %s", exc)
+        _mark_unavailable(f"model load failed: {exc}")
+    finally:
+        _end_load()
 
 
 def _is_reranker_in_cooldown() -> bool:
     """True if reranker recently failed and is within the retry backoff window."""
-    if _failed_at is None:
-        return False
-    return time.time() - _failed_at < _RETRY_INTERVAL_S
+    return _failed_at is not None and time.time() - _failed_at < _RETRY_INTERVAL_S
 
 
 def _safe_float_score(s) -> float:
@@ -115,17 +271,10 @@ def _ranked_scores(raw_scores, top_k: int) -> list[tuple[int, float]]:
 
 
 def rerank(query: str, chunks: list[str], top_k: int = 0) -> list[tuple[int, float]]:
-    """Rerank chunks by query relevance using cross-encoder.
+    """Rerank chunks by query relevance; returns (index, score) desc.
 
-    Args:
-        query: User query text
-        chunks: List of chunk content strings
-        top_k: If >0, only return top_k results; if 0, return all (reranked)
-
-    Returns:
-        List of (original_index, rerank_score) sorted by score descending.
-        If reranker unavailable or in cooldown, returns indices in original
-        order with score=0.0 so caller can fall back to RRF order gracefully.
+    If the reranker is unavailable or in cooldown, returns the original
+    order with score=0.0 so the caller can fall back to RRF gracefully.
     """
     if not chunks:
         return []
