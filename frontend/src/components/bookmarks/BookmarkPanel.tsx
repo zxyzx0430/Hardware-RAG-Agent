@@ -1,17 +1,40 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useChatStore } from "../../stores/useChatStore";
 import { useBookmarkStore } from "../../stores/useBookmarkStore";
 import { useAppStore } from "../../stores/useAppStore";
 import { useI18n } from "../../i18n";
 import { useToastStore } from "../../stores/useToastStore";
-import { renderMessageContent as renderContent } from "../../utils/content";
+import "../../styles/bookmarks.css";
 
 const MINUTE_MS = 60 * 1000;
 const HOUR_MS = 60 * MINUTE_MS;
 const DAY_MS = 24 * HOUR_MS;
 const WEEK_MS = 7 * DAY_MS;
+const ALL_FOLDERS = "all";
 
-function formatBookmarkTime(ts: number, t: (key: string) => string) {
+const ICONS = {
+  folder: "M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z",
+  bookmark: "M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z",
+  search: "M21 21l-4.35-4.35M11 18a7 7 0 1 1 0-14 7 7 0 0 1 0 14z",
+  plus: "M12 5v14M5 12h14",
+  chevron: "M9 18l6-6-6-6",
+  trash: "M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2",
+  pencil: "M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z",
+  close: "M18 6 6 18M6 6l12 12",
+  check: "M20 6 9 17l-5-5",
+} as const;
+
+type Folder = { id: string; name: string };
+
+function Icon({ path, size = 14 }: { path: string; size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d={path} />
+    </svg>
+  );
+}
+
+function formatBookmarkTime(ts: number, t: (key: string, fallback?: string) => string) {
   const diff = Date.now() - ts;
   if (diff < MINUTE_MS) return t('bookmarkTime');
   if (diff < HOUR_MS) return `${Math.floor(diff / MINUTE_MS)}${t('minutesAgo')}`;
@@ -21,366 +44,344 @@ function formatBookmarkTime(ts: number, t: (key: string) => string) {
   return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
-/* ---------- Folder selection dialog ---------- */
-function FolderSelectDialog({
-  title,
-  folders,
-  onSelect,
-  onClose,
-  onCreateFolder,
-}: {
+function EmptyState({ title, hint }: { title: string; hint: string }) {
+  return (
+    <div className="bm-empty">
+      <Icon path={ICONS.bookmark} size={28} />
+      <div className="bm-empty-title">{title}</div>
+      <div className="bm-empty-hint">{hint}</div>
+    </div>
+  );
+}
+
+type FolderSelectDialogProps = {
   title: string;
-  folders: { id: string; name: string }[];
+  folders: Folder[];
   onSelect: (folderId: string) => void;
   onClose: () => void;
   onCreateFolder: (name: string) => string;
-}) {
+};
+
+function FolderSelectDialog({ title, folders, onSelect, onClose, onCreateFolder }: FolderSelectDialogProps) {
   const { t } = useI18n();
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
 
-  const handleConfirmCreate = () => {
+  const confirmCreate = () => {
     const trimmed = name.trim();
     if (!trimmed) {
-      useToastStore.getState().showWarning("请输入书签夹名称");
+      useToastStore.getState().showWarning(t('folderNameRequired', '请输入收藏夹名称'));
       return;
     }
-    const newId = onCreateFolder(trimmed);
-    setName("");
-    setCreating(false);
-    // 创建后直接选中新文件夹,省去用户再点一次
-    onSelect(newId);
+    onSelect(onCreateFolder(trimmed));
   };
 
   return (
-    <div
-      style={{
-        position: "fixed", inset: 0, zIndex: 9999,
-        display: "flex", alignItems: "center", justifyContent: "center",
-        background: "rgba(0,0,0,0.35)",
-      }}
-      onClick={onClose}
-    >
-      <div
-        style={{
-          background: "var(--card-bg, #fff)", borderRadius: 8,
-          minWidth: 260, maxWidth: 340, padding: 16,
-          boxShadow: "0 8px 32px rgba(0,0,0,0.18)",
-        }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-          <div style={{ fontWeight: 600, fontSize: 13 }}>{title}</div>
+    <div className="bm-dialog-mask" onClick={onClose}>
+      <div className="bm-dialog" role="dialog" aria-modal="true" aria-label={title} onClick={(e) => e.stopPropagation()}>
+        <div className="bm-dialog-head">
+          <h3>{title}</h3>
           {!creating && (
-            <button
-              onClick={() => setCreating(true)}
-              title={t('newBtn')}
-              style={{
-                display: "flex", alignItems: "center", gap: 4, fontSize: 11,
-                border: "1px solid var(--border)", borderRadius: 4, padding: "2px 8px",
-                background: "transparent", color: "inherit", cursor: "pointer",
-              }}
-            >
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
+            <button className="bm-btn bm-btn-small" onClick={() => setCreating(true)}>
+              <Icon path={ICONS.plus} size={11} />
               {t('newBtn')}
             </button>
           )}
         </div>
-
         {creating && (
-          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
+          <div className="bm-dialog-create">
             <input
-              type="text"
+              className="bm-input"
+              autoFocus
               value={name}
               onChange={(e) => setName(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter") handleConfirmCreate();
+                if (e.key === "Enter") confirmCreate();
                 if (e.key === "Escape") { setCreating(false); setName(""); }
               }}
               placeholder={t('folderNamePlaceholder')}
-              autoFocus
-              style={{
-                flex: 1, background: "var(--input-bg, #fff)", border: "1px solid var(--border)",
-                borderRadius: 4, padding: "4px 8px", fontSize: 12, color: "inherit", outline: "none",
-              }}
+              aria-label={t('folderNamePlaceholder')}
             />
-            <button
-              onClick={handleConfirmCreate}
-              style={{ fontSize: 11, padding: "4px 8px", borderRadius: 4, border: "none", background: "var(--accent)", color: "#fff", cursor: "pointer" }}
-            >
-              {t('determineBtn')}
+            <button className="bm-icon-btn" title={t('determineBtn')} aria-label={t('determineBtn')} onClick={confirmCreate}>
+              <Icon path={ICONS.check} size={13} />
             </button>
-            <button
-              onClick={() => { setCreating(false); setName(""); }}
-              style={{ fontSize: 11, padding: "4px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "inherit", cursor: "pointer" }}
-            >
-              {t('cancel')}
+            <button className="bm-icon-btn" title={t('cancel')} aria-label={t('cancel')} onClick={() => { setCreating(false); setName(""); }}>
+              <Icon path={ICONS.close} size={13} />
             </button>
           </div>
         )}
-
-        {folders.map((f) => (
-          <button
-            key={f.id}
-            onClick={() => onSelect(f.id)}
-            style={{
-              display: "flex", alignItems: "center", gap: 8, width: "100%",
-              padding: "8px 10px", border: "none", borderRadius: 4,
-              background: "transparent", cursor: "pointer", fontSize: 12,
-              color: "inherit", textAlign: "left",
-            }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = "var(--hover-bg, rgba(0,0,0,0.06))")}
-            onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: "var(--muted-fg)", flexShrink: 0 }}>
-              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-            </svg>
-            {f.name}
-          </button>
-        ))}
-        <button
-          onClick={onClose}
-          style={{
-            marginTop: 8, width: "100%", padding: "6px 0", border: "1px solid var(--border)",
-            borderRadius: 4, background: "transparent", cursor: "pointer",
-            fontSize: 11, color: "inherit",
-          }}
-        >
-          {t('cancel')}
-        </button>
+        <div className="bm-dialog-list">
+          {folders.map((f) => (
+            <button key={f.id} className="bm-dialog-folder" onClick={() => onSelect(f.id)}>
+              <Icon path={ICONS.folder} size={14} />
+              <span>{f.name}</span>
+            </button>
+          ))}
+        </div>
+        <div className="bm-dialog-foot">
+          <button className="bm-btn" onClick={onClose}>{t('cancel')}</button>
+        </div>
       </div>
     </div>
   );
 }
 
-/* ---------- Main panel ---------- */
 export function BookmarkPanel() {
   const { t } = useI18n();
-  const bookmarkFolders = useBookmarkStore((s) => s.bookmarkFolders);
+  const folders = useBookmarkStore((s) => s.bookmarkFolders);
   const bookmarkData = useBookmarkStore((s) => s.bookmarkData);
   const bookmarkTargetMsgId = useBookmarkStore((s) => s.bookmarkTargetMsgId);
-  const removeBookmark = useBookmarkStore((s) => s.removeBookmark);
-  const addBookmarkFolder = useBookmarkStore((s) => s.addBookmarkFolder);
-  const deleteBookmarkFolder = useBookmarkStore((s) => s.deleteBookmarkFolder);
   const setBookmarkTargetMsgId = useBookmarkStore((s) => s.setBookmarkTargetMsgId);
+  const addBookmarkFolder = useBookmarkStore((s) => s.addBookmarkFolder);
   const addBookmarkToFolder = useBookmarkStore((s) => s.addBookmarkToFolder);
   const moveBookmarkToFolder = useBookmarkStore((s) => s.moveBookmarkToFolder);
+  const removeBookmark = useBookmarkStore((s) => s.removeBookmark);
   const renameBookmarkFolder = useBookmarkStore((s) => s.renameBookmarkFolder);
+  const deleteBookmarkFolder = useBookmarkStore((s) => s.deleteBookmarkFolder);
 
-  const [newFolderMode, setNewFolderMode] = useState(false);
+  const [selected, setSelected] = useState<string>(ALL_FOLDERS);
+  const [query, setQuery] = useState("");
+  const [creatingFolder, setCreatingFolder] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
-  const [moveTargetMsgId, setMoveTargetMsgId] = useState<string | null>(null);
-  const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  const [moveTargetMsgId, setMoveTargetMsgId] = useState<string | null>(null);
 
-  const allBookmarkIds = Object.keys(bookmarkData);
+  const activeFolderId = selected !== ALL_FOLDERS && folders.some((f) => f.id === selected) ? selected : ALL_FOLDERS;
+  const folderNames = useMemo(() => new Map(folders.map((f) => [f.id, f.name])), [folders]);
+  const counts = useMemo(() => {
+    const next = new Map<string, number>();
+    for (const entry of Object.values(bookmarkData)) next.set(entry.folderId, (next.get(entry.folderId) ?? 0) + 1);
+    return next;
+  }, [bookmarkData]);
+  const total = Object.keys(bookmarkData).length;
+  const normalizedQuery = query.trim().toLowerCase();
+  const visible = useMemo(() => Object.entries(bookmarkData)
+    .map(([id, entry]) => ({ id, ...entry, folderName: folderNames.get(entry.folderId) ?? "" }))
+    .filter((entry) => {
+      if (activeFolderId !== ALL_FOLDERS && entry.folderId !== activeFolderId) return false;
+      if (!normalizedQuery) return true;
+      return [entry.sessionTitle, entry.content, entry.folderName]
+        .some((value) => value.toLowerCase().includes(normalizedQuery));
+    })
+    .sort((a, b) => b.bookmarkedAt - a.bookmarkedAt),
+  [bookmarkData, folderNames, activeFolderId, normalizedQuery]);
 
-  const handleNavigate = (bookmarkId: string, sessionId?: string) => {
-    useAppStore.getState().setActiveNav("chat");
-    if (sessionId) {
-      useChatStore.getState().setActiveSession(sessionId);
-    }
-    setTimeout(() => {
-      document.getElementById("msg-" + bookmarkId)?.scrollIntoView({ behavior: "smooth", block: "center" });
-    }, 100);
-  };
+  const activeFolderName = folders.find((f) => f.id === activeFolderId)?.name;
+  const title = activeFolderId === ALL_FOLDERS ? t('allBookmarks', '全部收藏') : activeFolderName ?? t('bookmarks');
+  const countLabel = t('bookmarkTotal', '共 {n} 条收藏').replace('{n}', String(visible.length));
+  const subtitle = normalizedQuery ? `${countLabel} · 「${query.trim()}」` : countLabel;
+  const emptyState = total === 0
+    ? { title: t('noBookmarks', '还没有收藏'), hint: t('bookmarkHintShort') }
+    : normalizedQuery
+      ? { title: t('noMatchBookmarks', '没有匹配的收藏'), hint: t('noMatchBookmarksHint', '换个关键词试试') }
+      : { title: t('bmEmptyFolder', '这个收藏夹还是空的'), hint: t('bmEmptyFolderHint', '在聊天里收藏消息后，可移动到该收藏夹') };
 
-  const handleDelete = (msgId: string) => {
-    removeBookmark(msgId);
-  };
-
-  const handleNewFolder = () => {
+  const startCreateFolder = () => { setNewFolderName(""); setCreatingFolder(true); };
+  const confirmCreateFolder = () => {
     const name = newFolderName.trim();
     if (!name) {
-      useToastStore.getState().showWarning("请输入文件夹名称");
+      useToastStore.getState().showWarning(t('folderNameRequired', '请输入收藏夹名称'));
       return;
     }
-    addBookmarkFolder(name);
+    setSelected(addBookmarkFolder(name));
+    setCreatingFolder(false);
     setNewFolderName("");
-    setNewFolderMode(false);
   };
-
-  const handleDeleteFolder = (folderId: string) => {
-    deleteBookmarkFolder(folderId);
-  };
-
-  const handleStartRename = (folderId: string, currentName: string) => {
-    setRenamingFolderId(folderId);
-    setRenameValue(currentName);
-  };
-
-  const handleConfirmRename = () => {
-    if (renamingFolderId && renameValue.trim()) {
-      renameBookmarkFolder(renamingFolderId, renameValue.trim());
-    }
-    setRenamingFolderId(null);
+  const startRename = (folder: Folder) => { setRenamingId(folder.id); setRenameValue(folder.name); };
+  const confirmRename = () => {
+    if (renamingId && renameValue.trim()) renameBookmarkFolder(renamingId, renameValue.trim());
+    setRenamingId(null);
     setRenameValue("");
   };
-
-  const handleFolderSelectForBookmark = (folderId: string) => {
-    if (bookmarkTargetMsgId) {
-      addBookmarkToFolder(bookmarkTargetMsgId, folderId);
-    }
-  };
-
-  const handleFolderSelectForMove = (folderId: string) => {
-    if (moveTargetMsgId) {
-      moveBookmarkToFolder(moveTargetMsgId, folderId);
-    }
+  const handleFolderSelect = (folderId: string) => {
+    if (bookmarkTargetMsgId) addBookmarkToFolder(bookmarkTargetMsgId, folderId);
+    if (moveTargetMsgId) moveBookmarkToFolder(moveTargetMsgId, folderId);
+    setSelected(folderId);
+    setBookmarkTargetMsgId(null);
     setMoveTargetMsgId(null);
   };
-
-  if (allBookmarkIds.length === 0 && !bookmarkTargetMsgId) {
-    return (
-      <div className="content-page bookmark-page">
-        <div className="content-page-header">
-          <div className="content-page-title">{t('bookmarks')}</div>
-        </div>
-        <div className="content-page-scroll bookmark-scroll-page">
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: 200, opacity: 0.5, fontSize: 13, gap: 8 }}>
-            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" /></svg>
-            <span>{t('noBookmarkContent')}</span>
-            <span style={{ fontSize: 11 }}>{t('bookmarkHintShort')}</span>
-          </div>
-        </div>
-
-        {/* Folder selection dialog for new bookmark */}
-        {bookmarkTargetMsgId && (
-          <FolderSelectDialog
-            title={t('selectFolderTitle')}
-            folders={bookmarkFolders}
-            onSelect={handleFolderSelectForBookmark}
-            onClose={() => setBookmarkTargetMsgId(null)}
-            onCreateFolder={addBookmarkFolder}
-          />
-        )}
-      </div>
-    );
-  }
+  const openBookmark = (bookmarkId: string, sessionId: string) => {
+    useAppStore.getState().setActiveNav("chat");
+    useChatStore.getState().setActiveSession(sessionId);
+    setTimeout(() => document.getElementById(`msg-${bookmarkId}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 100);
+  };
 
   return (
-    <div className="content-page bookmark-page">
-      <div className="content-page-header">
-        <div className="content-page-title">{t('bookmarks')}</div>
-        <button className="btn-new" onClick={() => setNewFolderMode(true)}>
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
-          {t('newBtn')}
-        </button>
-      </div>
-
-      {newFolderMode && (
-        <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", borderBottom: "1px solid var(--border)" }}>
-          <input
-            type="text"
-            value={newFolderName}
-            onChange={(e) => setNewFolderName(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") handleNewFolder(); if (e.key === "Escape") { setNewFolderMode(false); setNewFolderName(""); } }}
-            placeholder={t('folderNamePlaceholder')}
-            autoFocus
-            style={{ flex: 1, background: "var(--input-bg, #fff)", border: "1px solid var(--border)", borderRadius: 4, padding: "4px 8px", fontSize: 12, color: "inherit", outline: "none" }}
-          />
-          <button onClick={handleNewFolder} style={{ fontSize: 11, padding: "4px 8px", borderRadius: 4, border: "none", background: "var(--accent)", color: "#fff", cursor: "pointer" }}>{t('determineBtn')}</button>
-          <button onClick={() => { setNewFolderMode(false); setNewFolderName(""); }} style={{ fontSize: 11, padding: "4px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "inherit", cursor: "pointer" }}>{t('cancel')}</button>
-        </div>
-      )}
-
-      <div className="content-page-scroll bookmark-scroll-page">
-        {bookmarkFolders.map((folder) => {
-          const folderItems = allBookmarkIds
-            .filter((id) => bookmarkData[id].folderId === folder.id)
-            .map((id) => ({ id, ...bookmarkData[id] }));
-          const isRenaming = renamingFolderId === folder.id;
-          return (
-            <div className="bookmark-folder" key={folder.id}>
-              <div className="bookmark-folder-header">
-                <div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0 }}>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: "var(--muted-fg)", flexShrink: 0 }}><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /></svg>
+    <div className="content-page bm-page">
+      <div className="bm-layout">
+        <aside className="bm-rail" aria-label={t('bookmarks')}>
+          <div className="bm-rail-head">
+            <span className="bm-rail-label">{t('folders', '文件夹')}</span>
+          </div>
+          <div className="bm-rail-list">
+            <div className={`bm-rail-row${activeFolderId === ALL_FOLDERS ? " active" : ""}`}>
+              <button
+                className="bm-rail-item"
+                onClick={() => setSelected(ALL_FOLDERS)}
+                aria-current={activeFolderId === ALL_FOLDERS ? "true" : undefined}
+              >
+                <Icon path={ICONS.bookmark} size={15} />
+                <span className="bm-rail-name">{t('allBookmarks', '全部收藏')}</span>
+                <span className="bm-rail-count">{total}</span>
+              </button>
+            </div>
+            <div className="bm-rail-divider" />
+            {folders.map((folder) => {
+              const active = folder.id === activeFolderId;
+              const isRenaming = folder.id === renamingId;
+              return (
+                <div key={folder.id} className={`bm-rail-row${active ? " active" : ""}`}>
                   {isRenaming ? (
                     <input
-                      type="text"
+                      className="bm-rail-rename"
+                      autoFocus
                       value={renameValue}
                       onChange={(e) => setRenameValue(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === "Enter") handleConfirmRename(); if (e.key === "Escape") { setRenamingFolderId(null); setRenameValue(""); } }}
-                      onBlur={handleConfirmRename}
-                      autoFocus
-                      style={{
-                        flex: 1, background: "var(--input-bg, #fff)", border: "1px solid var(--border)",
-                        borderRadius: 3, padding: "1px 4px", fontSize: 12, color: "inherit", outline: "none",
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") confirmRename();
+                        if (e.key === "Escape") { setRenamingId(null); setRenameValue(""); }
                       }}
+                      onBlur={confirmRename}
+                      aria-label={t('rename')}
                     />
                   ) : (
-                    <span className="bookmark-folder-name">{folder.name}</span>
+                    <button
+                      className="bm-rail-item"
+                      onClick={() => setSelected(folder.id)}
+                      title={folder.name}
+                      aria-current={active ? "true" : undefined}
+                    >
+                      <Icon path={ICONS.folder} size={15} />
+                      <span className="bm-rail-name">{folder.name}</span>
+                      <span className="bm-rail-count">{counts.get(folder.id) ?? 0}</span>
+                    </button>
                   )}
-                </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <span className="bookmark-folder-count">{folderItems.length}</span>
                   {folder.id !== "default" && !isRenaming && (
-                    <>
-                      <button
-                        onClick={() => handleStartRename(folder.id, folder.name)}
-                        title={t('rename')}
-                        style={{ background: "none", border: "none", cursor: "pointer", color: "var(--muted-fg)", fontSize: 13, lineHeight: 1, padding: "0 2px", display: "inline-flex", alignItems: "center" }}
-                      >
-                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" /></svg>
+                    <span className="bm-rail-actions">
+                      <button className="bm-icon-btn" title={t('rename')} aria-label={`${t('rename')} ${folder.name}`} onClick={() => startRename(folder)}>
+                        <Icon path={ICONS.pencil} size={11} />
                       </button>
-                      <button
-                        onClick={() => handleDeleteFolder(folder.id)}
-                        title={t('deleteFolder')}
-                        style={{ background: "none", border: "none", cursor: "pointer", color: "var(--muted-fg)", fontSize: 13, lineHeight: 1, padding: "0 2px" }}
-                      >
-                        &times;
+                      <button className="bm-icon-btn" title={t('deleteFolder')} aria-label={`${t('deleteFolder')} ${folder.name}`} onClick={() => deleteBookmarkFolder(folder.id)}>
+                        <Icon path={ICONS.close} size={11} />
                       </button>
-                    </>
+                    </span>
                   )}
                 </div>
+              );
+            })}
+          </div>
+          <div className="bm-rail-foot">
+            {creatingFolder ? (
+              <div className="bm-rail-create">
+                <input
+                  className="bm-input"
+                  autoFocus
+                  value={newFolderName}
+                  onChange={(e) => setNewFolderName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") confirmCreateFolder();
+                    if (e.key === "Escape") { setCreatingFolder(false); setNewFolderName(""); }
+                  }}
+                  placeholder={t('folderNamePlaceholder')}
+                  aria-label={t('folderNamePlaceholder')}
+                />
+                <button className="bm-icon-btn" title={t('determineBtn')} aria-label={t('determineBtn')} onClick={confirmCreateFolder}>
+                  <Icon path={ICONS.check} size={13} />
+                </button>
+                <button className="bm-icon-btn" title={t('cancel')} aria-label={t('cancel')} onClick={() => { setCreatingFolder(false); setNewFolderName(""); }}>
+                  <Icon path={ICONS.close} size={13} />
+                </button>
               </div>
-              {!folderItems.length ? (
-                <div className="bookmark-empty" style={{ padding: 12, fontSize: 11, opacity: 0.5 }}>{t('noCollection')}</div>
-              ) : folderItems.map((item) => {
-                const preview = `${item.role === "user" ? "👤" : "🤖"} ${renderContent(item.content).slice(0, 80)}${renderContent(item.content).length > 80 ? "…" : ""}`;
-                return (
-                  <div className="bookmark-item" key={item.id}>
-                    <div className="bookmark-item-title">{item.sessionTitle}</div>
-                    <div className="bookmark-item-meta">{preview}</div>
-                    <div className="bookmark-item-footer">
-                      <span className="bookmark-item-time">{formatBookmarkTime(item.bookmarkedAt, t)}</span>
-                      <span className="bookmark-item-actions">
-                        <button className="bookmark-item-action-btn" title={t('open')} onClick={() => handleNavigate(item.id, item.sessionId)}>
-                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="9 18 15 12 9 6" /></svg>
+            ) : (
+              <button className="bm-new-folder" onClick={startCreateFolder}>
+                <Icon path={ICONS.plus} size={12} />
+                {t('bmNewFolder', '新建收藏夹')}
+              </button>
+            )}
+          </div>
+        </aside>
+
+        <main className="bm-main">
+          <header className="bm-head">
+            <div className="bm-head-text">
+              <h1 className="bm-title" title={title}>{title}</h1>
+              <p className="bm-sub">{subtitle}</p>
+            </div>
+            <div className="bm-head-actions">
+              <div className="bm-search">
+                <span className="bm-search-icon"><Icon path={ICONS.search} size={13} /></span>
+                <input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder={t('searchBookmarks', '搜索收藏内容…')}
+                  aria-label={t('searchBookmarks', '搜索收藏内容…')}
+                />
+                {query && (
+                  <button className="bm-search-clear" title={t('clearSearch', '清除搜索')} aria-label={t('clearSearch', '清除搜索')} onClick={() => setQuery("")}>
+                    <Icon path={ICONS.close} size={11} />
+                  </button>
+                )}
+              </div>
+              <button className="bm-btn bm-btn-primary" onClick={startCreateFolder}>
+                <Icon path={ICONS.plus} size={12} />
+                {t('bmNewFolder', '新建收藏夹')}
+              </button>
+            </div>
+          </header>
+
+          <div className="bm-scroll">
+            {visible.length === 0 ? (
+              <EmptyState title={emptyState.title} hint={emptyState.hint} />
+            ) : (
+              <div className="bm-grid">
+                {visible.map((entry) => (
+                  <article className="bm-card" key={entry.id} data-bookmark-id={entry.id}>
+                    <div className="bm-card-top">
+                      <span className="bm-card-title" title={entry.sessionTitle}>{entry.sessionTitle}</span>
+                      <span className="bm-role">{entry.role === "user" ? t('userLabel') : t('assistantLabel', '助手')}</span>
+                    </div>
+                    <p className="bm-preview">{entry.content || t('noPreview', '暂无预览内容')}</p>
+                    <div className="bm-card-foot">
+                      <span className="bm-folder" title={entry.folderName}>
+                        <Icon path={ICONS.folder} size={11} />
+                        <span>{entry.folderName || t('unfiled', '未分类')}</span>
+                      </span>
+                      <span className="bm-time">{formatBookmarkTime(entry.bookmarkedAt, t)}</span>
+                      <span className="bm-card-actions">
+                        <button className="bm-icon-btn" title={t('open')} aria-label={t('open')} onClick={() => openBookmark(entry.id, entry.sessionId)}>
+                          <Icon path={ICONS.chevron} size={12} />
                         </button>
-                        <button className="bookmark-item-action-btn" title={t('moveTo')} onClick={() => setMoveTargetMsgId(item.id)}>
-                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /></svg>
+                        <button className="bm-icon-btn" title={t('moveTo')} aria-label={t('moveTo')} onClick={() => setMoveTargetMsgId(entry.id)}>
+                          <Icon path={ICONS.folder} size={12} />
                         </button>
-                        <button className="bookmark-item-action-btn" title={t('delete')} onClick={() => handleDelete(item.id)}>
-                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
+                        <button className="bm-icon-btn bm-danger" title={t('delete')} aria-label={t('delete')} onClick={() => removeBookmark(entry.id)}>
+                          <Icon path={ICONS.trash} size={12} />
                         </button>
                       </span>
                     </div>
-                  </div>
-                );
-              })}
-            </div>
-          );
-        })}
+                  </article>
+                ))}
+              </div>
+            )}
+          </div>
+        </main>
       </div>
 
-      {/* Folder selection dialog for new bookmark (bookmarkTargetMsgId) */}
       {bookmarkTargetMsgId && (
         <FolderSelectDialog
           title={t('selectFolderTitle')}
-          folders={bookmarkFolders}
-          onSelect={handleFolderSelectForBookmark}
+          folders={folders}
+          onSelect={handleFolderSelect}
           onClose={() => setBookmarkTargetMsgId(null)}
           onCreateFolder={addBookmarkFolder}
         />
       )}
-
-      {/* Folder selection dialog for move */}
       {moveTargetMsgId && (
         <FolderSelectDialog
           title={t('moveToFolder')}
-          folders={bookmarkFolders}
-          onSelect={handleFolderSelectForMove}
+          folders={folders}
+          onSelect={handleFolderSelect}
           onClose={() => setMoveTargetMsgId(null)}
           onCreateFolder={addBookmarkFolder}
         />

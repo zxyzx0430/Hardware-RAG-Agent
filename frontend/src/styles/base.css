@@ -1,8 +1,8 @@
 
 :root {
   --font-size: 14px;
-  --font-sans: 'Inter', system-ui, sans-serif;
-  --font-mono: 'JetBrains Mono', monospace;
+  --font-sans: 'Inter', 'Microsoft YaHei', 'PingFang SC', 'Noto Sans CJK SC', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Cascadia Mono', 'Microsoft YaHei', 'PingFang SC', 'Noto Sans CJK SC', monospace;
   --bg: #F7F8FA;
   --fg: #1C1E26;
   --card: #FFFFFF;

@@ -1,4 +1,6 @@
-import { useRef, useState, useEffect } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
+import type { KBDoc } from "../../types/api";
 import { useKnowledgeStore } from "../../stores/useKnowledgeStore";
 import { useLogStore } from "../../stores/useLogStore";
 import { useToastStore } from "../../stores/useToastStore";
@@ -10,78 +12,194 @@ import { formatFileSize } from "../../utils/format";
 import { Modal } from "../shared/Modal";
 import { KbCollectionManager } from "./KbCollectionManager";
 import { UploadChunkMethodDialog } from "./UploadChunkMethodDialog";
+import "../../styles/knowledge.css";
 
-// Test KB name patterns that should be hidden from regular users by default.
-const TEST_KB_PATTERNS: RegExp[] = [
-  /^pdf-multimodal-test-/i,
-  /^eval_hybrid-/i,
-  /^eval_agent-/i,
-  /^docx-test-/i,
-  /^gapfix-test-/i,
-  /^rag-eval-/i,
-  /^rag-multimodal-review-/i,
-  /-test-/i,
-];
+type StatusFilter = "all" | "indexed" | "indexing" | "error";
+type StatusKind = Exclude<StatusFilter, "all">;
 
-function isTestKb(name: string): boolean {
-  return TEST_KB_PATTERNS.some((re) => re.test(name));
+function statusKind(status: KBDoc["status"]): StatusKind {
+  return status === "indexing" || status === "error" ? status : "indexed";
 }
 
-type KbLike = { name: string; is_builtin?: boolean };
+function matchesQuery(doc: KBDoc, query: string): boolean {
+  if (!query) return true;
+  return [doc.name, doc.docType, ...doc.tags].some((value) => value.toLowerCase().includes(query));
+}
 
-function filterVisibleKbs<T extends KbLike>(kbs: T[], showTest: boolean): T[] {
-  if (showTest) return kbs;
-  return kbs.filter((kb) => kb.is_builtin || !isTestKb(kb.name));
+function Icon({ children, size = 13 }: { children: ReactNode; size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {children}
+    </svg>
+  );
+}
+
+function DocRow({
+  item, kbName, onPreview, onRefresh, onDelete, onToggle,
+}: {
+  item: KBDoc;
+  kbName?: string;
+  onPreview: () => void;
+  onRefresh: () => void;
+  onDelete: () => void;
+  onToggle: () => void;
+}) {
+  const { t, lang } = useI18n();
+  const kind = statusKind(item.status);
+  const statusText = kind === "indexing"
+    ? (lang === "zh" ? "索引中" : "Indexing")
+    : kind === "error"
+      ? (lang === "zh" ? "失败" : "Failed")
+      : (lang === "zh" ? "已索引" : "Indexed");
+  const isMarkdown = /\.(md|markdown)$/i.test(item.name) || /markdown/i.test(item.docType);
+  return (
+    <div className="kbv-row">
+      <div className="kbv-doc">
+        <span className={`kbv-doc-icon${isMarkdown ? " md" : ""}`}>
+          <Icon size={15}>{isMarkdown ? <><path d="M4 6h16M4 12h10M4 18h16" /></> : <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /></>}</Icon>
+        </span>
+        <div className="kbv-doc-info">
+          <div className="kbv-doc-name" title={item.name}>{item.name}</div>
+          <div className="kbv-doc-sub">
+            <span className="kbv-tag" title={item.docType}>{item.docType}</span>
+            {item.chunk_method_used ? <span className="kbv-tag kbv-tag-mono" title={item.chunk_method_used}>{item.chunk_method_used}</span> : null}
+            {kbName ? <span className="kbv-tag" title={kbName}>{kbName}</span> : null}
+            {item.tags.slice(0, 2).map((tag) => <span className="kbv-tag" title={tag} key={tag}>{tag}</span>)}
+          </div>
+          {kind === "error" && item.errorMessage ? <div className="kbv-doc-error" title={item.errorMessage}>{item.errorMessage}</div> : null}
+        </div>
+      </div>
+      <span className={`kbv-status ${kind}`}><span className="kbv-dot" />{statusText}</span>
+      <span className="kbv-cell kbv-num">{item.chunks.toLocaleString()}</span>
+      <span className="kbv-cell">{item.size}</span>
+      <span className="kbv-cell">{item.updatedAt}</span>
+      <div className="kbv-rowactions">
+        <button type="button" className="kbv-iconbtn" title={t("previewBtn")} aria-label={t("previewBtn")} onClick={onPreview}>
+          <Icon><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8S1 12 1 12z" /><circle cx="12" cy="12" r="3" /></Icon>
+        </button>
+        <button type="button" className="kbv-iconbtn" title={t("refreshBtn")} aria-label={t("refreshBtn")} onClick={onRefresh}>
+          <Icon><polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" /></Icon>
+        </button>
+        <button type="button" className="kbv-iconbtn kbv-iconbtn-danger" title={t("delete")} aria-label={t("delete")} onClick={onDelete}>
+          <Icon><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></Icon>
+        </button>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={item.enabled}
+          className={`kbv-switch${item.enabled ? " on" : ""}`}
+          title={t("enabled")}
+          onClick={onToggle}
+        >
+          <span className="kbv-knob" />
+        </button>
+      </div>
+    </div>
+  );
 }
 
 export function KnowledgePanel() {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const {
     items, isUploading, setIsUploading, addItem, toggleItem, deleteItemWithAPI, fetchItems,
-    collections, activeKbId, fetchCollections, setActiveKb, fetchDocChunks,
+    collections, activeKbId, fetchCollections, fetchDocChunks,
     uploadProgress, setUploadProgress, removeUploadProgress, pollIndexingStatus,
   } = useKnowledgeStore();
-  const {
-    activeSessionId, selectedKbIds, kbScopeIssue, toggleKbSelection,
-    setSelectedKbIds, beginKbScopeRepair, verifySelectedKbScope,
-  } = useChatStore();
   const inputRef = useRef<HTMLInputElement>(null);
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [dragOver, setDragOver] = useState(false);
   const [showKbManager, setShowKbManager] = useState(false);
-  const [chunkMethodOverride, setChunkMethodOverride] = useState<string>("");
-  const [showSearchScope, setShowSearchScope] = useState(false);
+  const [chunkMethodOverride, setChunkMethodOverride] = useState("");
   const [pendingFiles, setPendingFiles] = useState<File[] | null>(null);
   const [showChunkMethodDialog, setShowChunkMethodDialog] = useState(false);
-  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<KBDoc | null>(null);
 
-  // Load collections on mount
   useEffect(() => {
     fetchCollections();
-  }, [fetchCollections]);
+    fetchItems();
+    return () => useKnowledgeStore.getState().stopPolling();
+  }, [fetchCollections, fetchItems]);
 
-  const selectedKbScopeKey = selectedKbIds.join("\u0000");
-  useEffect(() => {
-    if (selectedKbIds.length > 0 && kbScopeIssue === null) {
-      void verifySelectedKbScope();
-    }
-  }, [activeSessionId, selectedKbScopeKey, kbScopeIssue, selectedKbIds.length, verifySelectedKbScope]);
-
-  // When active KB changes (including mount): reset chunk method override and reload items filtered by KB
-  useEffect(() => {
-    setChunkMethodOverride("");
-    fetchItems(activeKbId);
-  }, [activeKbId, fetchItems]);
-
-  const enabledCount = items.filter((i) => i.enabled).length;
-  const totalChunks = items.reduce((sum, i) => sum + i.chunks, 0);
-  const visibleCollections = filterVisibleKbs(collections, false);
-
-  // Active KB object (for default chunk method)
-  const activeKb = collections.find((k) => k.id === activeKbId);
+  const enabledCount = items.filter((item) => item.enabled).length;
+  const totalChunks = items.reduce((sum, item) => sum + item.chunks, 0);
+  const lastUpdated = items.reduce((latest, item) => (item.updatedAt > latest ? item.updatedAt : latest), "");
+  const kbNameById = useMemo(() => new Map(collections.map((kb) => [kb.id, kb.name])), [collections]);
+  const activeKb = collections.find((kb) => kb.id === activeKbId);
   const effectiveChunkMethod = chunkMethodOverride || activeKb?.chunk_method || "hybrid";
+  const filteredItems = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return items.filter((doc) => (statusFilter === "all" || statusKind(doc.status) === statusFilter) && matchesQuery(doc, needle));
+  }, [items, statusFilter, query]);
+
+  const handleFiles = async (files: FileList | File[], methodOverride?: string) => {
+    if (!files?.length) return;
+    setIsUploading(true);
+    for (const file of Array.from(files)) await uploadOne(file, methodOverride || chunkMethodOverride);
+    setIsUploading(false);
+  };
+
+  const uploadOne = async (file: File, method: string) => {
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("kb_id", activeKbId);
+    if (method) formData.append("chunk_method", method);
+    const progressKey = `${file.name}-${Date.now()}`;
+    try {
+      const { promise, abort } = apiUploadWithProgress<{ doc_id: string; filename: string; chunks: number; status?: string; chunk_method_used?: string }>(
+        "kb/upload",
+        formData,
+        (percent) => setUploadProgress((prev) => ({ ...prev, [progressKey]: { phase: "uploading", percent, chunks: 0, abort } })),
+      );
+      setUploadProgress((prev) => ({ ...prev, [progressKey]: { phase: "uploading", percent: 0, chunks: 0, abort } }));
+      const res = await promise;
+      const docId = res.doc_id ?? `kb-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      const docStatus = (res.status ?? "indexing") as KBDoc["status"];
+      addItem({
+        id: docId,
+        name: res.filename ?? file.name,
+        size: formatFileSize(file.size),
+        chunks: res.chunks ?? 0,
+        status: docStatus,
+        enabled: true,
+        updatedAt: new Date().toISOString().slice(0, 10),
+        docType: file.name.endsWith(".pdf") ? "Reference Manual" : file.name.endsWith(".md") ? "Markdown" : "Text",
+        tags: [],
+        kb_id: activeKbId,
+        chunk_method_used: res.chunk_method_used ?? effectiveChunkMethod,
+      });
+      if (docStatus === "indexing") {
+        setUploadProgress((prev) => ({ ...prev, [progressKey]: { phase: "indexing", percent: 100, chunks: res.chunks ?? 0 } }));
+        pollIndexingStatus(docId, progressKey);
+      } else {
+        removeUploadProgress(progressKey);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : t("fileIncompatible");
+      removeUploadProgress(progressKey);
+      if (message === "aborted") {
+        useLogStore.getState().log("info", "kb", `上传已取消: ${file.name}`);
+        return;
+      }
+      useLogStore.getState().log("error", "kb", `上传失败: ${file.name} - ${message}`);
+      addItem({
+        id: `kb-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        name: file.name,
+        size: formatFileSize(file.size),
+        chunks: 0,
+        status: "error",
+        enabled: false,
+        updatedAt: new Date().toISOString().slice(0, 10),
+        docType: "Technical Reference",
+        tags: [],
+        kb_id: activeKbId,
+        errorMessage: message,
+      });
+    }
+  };
 
   const handleFileSelect = (files: FileList | null) => {
-    if (!files?.length) return;
+    if (!files?.length) { useToastStore.getState().showWarning("请选择文件"); return; }
     setPendingFiles(Array.from(files));
     setShowChunkMethodDialog(true);
   };
@@ -89,10 +207,8 @@ export function KnowledgePanel() {
   const handleConfirmChunkMethod = (method: string) => {
     setChunkMethodOverride(method);
     setShowChunkMethodDialog(false);
-    if (pendingFiles) {
-      handleFiles(pendingFiles, method);
-      setPendingFiles(null);
-    }
+    if (pendingFiles) void handleFiles(pendingFiles, method);
+    setPendingFiles(null);
     if (inputRef.current) inputRef.current.value = "";
   };
 
@@ -102,394 +218,203 @@ export function KnowledgePanel() {
     if (inputRef.current) inputRef.current.value = "";
   };
 
-  const handleFiles = async (files: FileList | null | File[], methodOverride?: string) => {
-    if (!files?.length) {
-      useToastStore.getState().showWarning("请选择文件");
-      return;
-    }
-    setIsUploading(true);
-    for (const file of Array.from(files)) {
-      const formData = new FormData();
-      formData.append("file", file);
-      formData.append("kb_id", activeKbId);
-      const methodToUse = methodOverride || chunkMethodOverride;
-      if (methodToUse) {
-        formData.append("chunk_method", methodToUse);
-      }
-      const progressKey = `${file.name}-${Date.now()}`;
-      try {
-        const { promise, abort } = apiUploadWithProgress<{ doc_id: string; filename: string; chunks: number; status?: string; chunk_method_used?: string }>(
-          "kb/upload",
-          formData,
-          (percent) => setUploadProgress((prev) => ({ ...prev, [progressKey]: { phase: 'uploading', percent, chunks: 0, abort } })),
-        );
-        // 记录 abort 函数,取消按钮要用
-        setUploadProgress((prev) => ({ ...prev, [progressKey]: { phase: 'uploading', percent: 0, chunks: 0, abort } }));
-        const res = await promise;
-        const docId = res.doc_id ?? `kb-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-        const docStatus = (res.status ?? "indexing") as "indexed" | "indexing" | "error";
-        addItem({
-          id: docId,
-          name: res.filename ?? file.name,
-          size: formatFileSize(file.size),
-          chunks: res.chunks ?? 0,
-          status: docStatus,
-          enabled: true,
-          updatedAt: new Date().toISOString().slice(0, 10),
-          docType: file.name.endsWith(".pdf") ? "Reference Manual" : file.name.endsWith(".md") ? "Markdown" : "Text",
-          tags: [],
-          kb_id: activeKbId,
-          chunk_method_used: res.chunk_method_used ?? effectiveChunkMethod,
-        });
-        // 上传完成:切换到 indexing 阶段或清理 progress
-        if (docStatus === "indexing") {
-          setUploadProgress((prev) => ({ ...prev, [progressKey]: { phase: 'indexing', percent: 100, chunks: res.chunks ?? 0 } }));
-          pollIndexingStatus(docId, progressKey);
-        } else {
-          removeUploadProgress(progressKey);
-        }
-      } catch (e) {
-        const errMsg = e instanceof Error ? e.message : t('fileIncompatible');
-        removeUploadProgress(progressKey);
-        if (errMsg === 'aborted') {
-          useLogStore.getState().log("info", "kb", `上传已取消: ${file.name}`);
-          continue;
-        }
-        useLogStore.getState().log("error", "kb", `上传失败: ${file.name} - ${errMsg}`);
-        addItem({
-          id: `kb-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-          name: file.name,
-          size: formatFileSize(file.size),
-          chunks: 0,
-          status: "error",
-          enabled: false,
-          updatedAt: new Date().toISOString().slice(0, 10),
-          docType: "Technical Reference",
-          tags: [],
-          errorMessage: errMsg,
-        });
-      }
-    }
-    setIsUploading(false);
-  };
-
   const handlePreview = (itemId: string) => {
-    useAppStore.getState().setActiveNav('chat');
+    useAppStore.getState().setActiveNav("chat");
     useAppStore.getState().setRightPanelOpen(true);
-    useAppStore.getState().setRightMode('content');
+    useAppStore.getState().setRightMode("content");
     const sid = useChatStore.getState().activeSessionId;
-    if (sid) {
-      useChatStore.getState().setSessionFileViewerSource(sid, "kb-item", itemId);
-    }
-    // Pre-fetch chunks so the right-panel ChunkViewer has data ready immediately
-    fetchDocChunks(itemId);
+    if (sid) useChatStore.getState().setSessionFileViewerSource(sid, "kb-item", itemId);
+    void fetchDocChunks(itemId);
   };
 
   const handleRefresh = () => {
-    fetchItems(activeKbId);
-    fetchCollections();
+    void fetchItems();
+    void fetchCollections();
   };
 
+  const handleDelete = async () => {
+    const target = deleteTarget;
+    if (!target) return;
+    setDeleteTarget(null);
+    try {
+      await deleteItemWithAPI(target.id);
+    } catch {
+      // Store logs the failure and rolls the row back.
+    }
+  };
+
+  const statusOptions: { key: StatusFilter; label: string }[] = [
+    { key: "all", label: t("all") },
+    { key: "indexed", label: lang === "zh" ? "已索引" : "Indexed" },
+    { key: "indexing", label: lang === "zh" ? "索引中" : "Indexing" },
+    { key: "error", label: lang === "zh" ? "失败" : "Failed" },
+  ];
+
   return (
-    <div className="content-page kb-page">
+    <div className="kbv-page">
       <input ref={inputRef} type="file" multiple accept=".pdf,.md,.txt,.py,.c,.h,.ino,.xlsx,.xls,.csv,.json,.docx,.doc" style={{ display: "none" }} onChange={(e) => handleFileSelect(e.target.files)} />
 
-      <div className="content-page-header kb-header-page">
-        <div className="content-page-title-wrap">
-          <div className="content-page-title">{t('knowledgeBase')}</div>
-          <div className="content-page-stats">
-            <span>{t('enabled')}</span>
-            <span>{enabledCount} / {items.length}</span>
-            <span>{totalChunks.toLocaleString()}</span>
+      <header className="kbv-head">
+        <div className="kbv-head-main">
+          <h1 className="kbv-title">{lang === "zh" ? "全部文档" : "All documents"}</h1>
+          <p className="kbv-desc">{lang === "zh" ? "所有知识库中的文档与索引状态" : "Documents and index status across every knowledge base"}</p>
+          <div className="kbv-head-meta">
+            <span className="kbv-meta-item">{items.length} {lang === "zh" ? "个文档" : "documents"}</span>
+            <span className="kbv-meta-item">{totalChunks.toLocaleString()} chunks</span>
+            <span className="kbv-meta-item">{collections.length} {lang === "zh" ? "个知识库" : "knowledge bases"}</span>
           </div>
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <button className="btn-new" onClick={() => setShowKbManager(true)} title={t('manageKb')}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ verticalAlign: "middle", marginRight: 4 }}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-            {t('manageKb')}
+        <div className="kbv-actions">
+          <button type="button" className="kbv-btn kbv-btn-primary" onClick={() => inputRef.current?.click()}>
+            <Icon><path d="M12 3v12M7 8l5-5 5 5M4 21h16" /></Icon>
+            {t("uploadDoc")}
+          </button>
+          <button type="button" className="kbv-btn" onClick={() => setShowKbManager(true)} title={t("manageKb")}>
+            <Icon><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" /></Icon>
+            {t("manageKb")}
           </button>
         </div>
-      </div>
+      </header>
 
-      {/* 上传/索引进度卡片 */}
-      {Object.entries(uploadProgress).length > 0 && (
-        <div style={{ margin: "0 16px 8px", display: "flex", flexDirection: "column", gap: 6 }}>
-          {Object.entries(uploadProgress).map(([key, p]) => {
-            const fileName = key.replace(/-\d+$/, "");
-            return (
-              <div key={key} style={{
-                padding: "8px 12px", borderRadius: 6, background: "var(--thinking-bg)",
-                border: "1px solid var(--border)", fontSize: 12,
-                display: "flex", alignItems: "center", gap: 10,
-              }}>
-                <span style={{ flexShrink: 0, color: "var(--muted-fg)", fontSize: 11, maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {fileName}
-                </span>
-                {p.phase === 'uploading' ? (
-                  <>
-                    <div style={{ flex: 1, height: 6, borderRadius: 3, background: "var(--border)", overflow: "hidden" }}>
-                      <div style={{ width: `${p.percent}%`, height: "100%", background: "var(--primary)", transition: "width 0.2s", borderRadius: 3 }} />
-                    </div>
-                    <span style={{ flexShrink: 0, minWidth: 80 }}>{t('uploadingPercent').replace('{percent}', String(p.percent))}</span>
-                  </>
-                ) : (
-                  <span style={{ flex: 1 }}>
-                    {p.chunks > 0
-                      ? t('indexingChunks').replace('{n}', String(p.chunks))
-                      : t('indexing')}
-                  </span>
-                )}
-                <button
-                  onClick={() => {
-                    if (p.phase === 'uploading' && p.abort) p.abort();
-                    else removeUploadProgress(key);
-                  }}
-                  style={{ flexShrink: 0, fontSize: 11, color: "var(--danger)", background: "transparent", border: "1px solid var(--border)", borderRadius: 4, padding: "2px 8px", cursor: "pointer" }}
-                >
-                  {t('cancelUpload')}
-                </button>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {/* Active KB info card */}
-      {activeKb && (
-        <div style={{
-          margin: "0 16px 8px", padding: "8px 12px", borderRadius: 6,
-          background: "var(--thinking-bg)", border: "1px solid var(--border)",
-        }}>
-          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2, wordBreak: "break-all" }}>
-            {activeKb.name}
+      <div className="kbv-scroll">
+        {Object.keys(uploadProgress).length > 0 ? (
+          <div className="kbv-progress">
+            {Object.entries(uploadProgress).map(([key, progress]) => {
+              const fileName = key.replace(/-\d+$/, "");
+              return (
+                <div className="kbv-progress-row" key={key}>
+                  <span className="kbv-progress-name" title={fileName}>{fileName}</span>
+                  {progress.phase === "uploading" ? (
+                    <>
+                      <span className="kbv-progress-track"><span className="kbv-progress-fill" style={{ width: `${progress.percent}%` }} /></span>
+                      <span className="kbv-progress-text">{t("uploadingPercent").replace("{percent}", String(progress.percent))}</span>
+                    </>
+                  ) : (
+                    <span className="kbv-progress-text">
+                      {progress.chunks > 0 ? t("indexingChunks").replace("{n}", String(progress.chunks)) : t("indexing")}
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    className="kbv-progress-cancel"
+                    onClick={() => {
+                      if (progress.phase === "uploading" && progress.abort) progress.abort();
+                      else removeUploadProgress(key);
+                    }}
+                  >
+                    {t("cancelUpload")}
+                  </button>
+                </div>
+              );
+            })}
           </div>
-          <div style={{ fontSize: 11, color: "var(--muted-fg)" }}>
-            {activeKb.chunk_method === "agent" ? t('agent') : activeKb.chunk_method === "multimodal" ? t('multimodal') : t('hybrid')}
-            {activeKb.embedding_model ? ` · ${activeKb.embedding_model}` : ""}
-            {` · ${t('docCount')}: ${activeKb.doc_count}`}
-            {` · ${t('chunkCount')}: ${activeKb.chunk_count}`}
-          </div>
-        </div>
-      )}
+        ) : null}
 
-      {/* KB selector + chunk method override + search scope */}
-      <div style={{ padding: "0 16px 12px", display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-start" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <label style={{ fontSize: 12, color: "var(--muted-fg)" }}>{t('targetKb')}:</label>
-          <select
-            value={activeKbId}
-            onChange={(e) => setActiveKb(e.target.value)}
-            style={{
-              fontSize: 12, padding: "2px 6px", borderRadius: 4,
-              border: "1px solid var(--border)", background: "var(--bg)", color: "var(--fg)",
-            }}
-          >
-            {visibleCollections.length === 0 && <option value="builtin-001">{t('builtinKb')}</option>}
-            {visibleCollections.map((kb) => (
-              <option key={kb.id} value={kb.id}>
-                {kb.name}{kb.is_builtin ? ` (${t('builtinKb')})` : ""}
-              </option>
+        <div className="kbv-stats">
+          <div className="kbv-stat"><div className="kbv-stat-label">{lang === "zh" ? "文档总数" : "Documents"}</div><div className="kbv-stat-value">{items.length}</div></div>
+          <div className="kbv-stat"><div className="kbv-stat-label">{t("enabled")}</div><div className="kbv-stat-value">{enabledCount}</div></div>
+          <div className="kbv-stat"><div className="kbv-stat-label">Chunks</div><div className="kbv-stat-value">{totalChunks.toLocaleString()}</div></div>
+          <div className="kbv-stat"><div className="kbv-stat-label">{lang === "zh" ? "最近更新" : "Last updated"}</div><div className="kbv-stat-value kbv-stat-date">{lastUpdated || "—"}</div></div>
+        </div>
+
+        <div className="kbv-toolbar">
+          <div className="kbv-search">
+            <Icon><circle cx="11" cy="11" r="7" /><path d="m21 21-4.35-4.35" /></Icon>
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder={lang === "zh" ? "搜索文档名、类型或标签…" : "Search name, type, or tag…"}
+              aria-label={lang === "zh" ? "搜索文档" : "Search documents"}
+            />
+          </div>
+          <div className="kbv-chips" role="group" aria-label={lang === "zh" ? "状态筛选" : "Status filter"}>
+            {statusOptions.map((option) => (
+              <button
+                type="button"
+                key={option.key}
+                className={`kbv-chip${statusFilter === option.key ? " active" : ""}`}
+                aria-pressed={statusFilter === option.key}
+                onClick={() => setStatusFilter(option.key)}
+              >
+                {option.label}
+              </button>
             ))}
-          </select>
-        </div>
-
-        {/* Search scope toggle button */}
-        <div style={{ position: "relative" }}>
-          <button
-            onClick={() => setShowSearchScope((v) => !v)}
-            style={{
-              fontSize: 12, padding: "3px 10px", borderRadius: 4,
-              border: "1px solid var(--border)", background: selectedKbIds.length > 0 ? "var(--accent)" : "var(--card)",
-              color: "var(--fg)", cursor: "pointer", display: "flex", alignItems: "center", gap: 4,
-            }}
-          >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-            {t('chatSearchScope')}
-            {selectedKbIds.length > 0 && <span style={{ fontSize: 10, background: "var(--primary)", color: "var(--primary-fg)", padding: "0 4px", borderRadius: 3 }}>{selectedKbIds.length}</span>}
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ transform: showSearchScope ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s' }}><polyline points="6 9 12 15 18 9"/></svg>
+          </div>
+          <button type="button" className="kbv-btn kbv-refresh" onClick={handleRefresh} title={t("refreshBtn")}>
+            <Icon><polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" /></Icon>
+            {t("refreshBtn")}
           </button>
-          {showSearchScope && (
-            <div style={{
-              position: "absolute", top: "calc(100% + 4px)", left: 0, zIndex: 10,
-              minWidth: 220, maxHeight: 240, overflowY: "auto",
-              background: "var(--card)", border: "1px solid var(--border)", borderRadius: 6,
-              padding: "8px", boxShadow: "var(--shadow-md)",
-            }}>
-              <div style={{ fontSize: 11, color: "var(--muted-fg)", marginBottom: 6 }}>{t('searchAllHint')}</div>
-              {kbScopeIssue && (
-                <div role="alert" aria-live="assertive" style={{ border: "1px solid var(--danger, #b42318)", borderRadius: 4, padding: 7, marginBottom: 7, fontSize: 11 }}>
-                  <div style={{ marginBottom: 6 }}>{t(`kbScope${kbScopeIssue === "verification_failed" ? "VerificationFailed" : kbScopeIssue === "storage_error" ? "StorageError" : kbScopeIssue[0].toUpperCase() + kbScopeIssue.slice(1)}`)}</div>
-                  {kbScopeIssue === "verification_failed" ? (
-                    <button type="button" onClick={() => void verifySelectedKbScope()}>{t('kbScopeRetryVerification')}</button>
-                  ) : kbScopeIssue !== "repair" ? (
-                    <button type="button" onClick={beginKbScopeRepair}>{t('kbScopeReselect')}</button>
-                  ) : null}
-                  <button type="button" onClick={() => setSelectedKbIds([])} style={{ marginLeft: 6 }}>{t('kbScopeUseAll')}</button>
-                </div>
-              )}
-              {visibleCollections.length > 0 ? (
-                <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-                  {visibleCollections.map((kb) => (
-                    <label
-                      key={kb.id}
-                      style={{
-                        display: "flex", alignItems: "center", gap: 6,
-                        padding: "3px 6px", borderRadius: 4, cursor: "pointer",
-                        background: selectedKbIds.includes(kb.id) ? "var(--accent)" : "transparent",
-                        fontSize: 12,
-                      }}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={selectedKbIds.includes(kb.id)}
-                        onChange={() => toggleKbSelection(kb.id)}
-                        disabled={kbScopeIssue !== null && kbScopeIssue !== "repair"}
-                        style={{ margin: 0 }}
-                      />
-                      <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{kb.name}</span>
-                      {kb.is_builtin && (
-                        <span style={{ fontSize: 9, padding: "1px 3px", borderRadius: 2, background: "var(--primary)", color: "var(--primary-fg)", flexShrink: 0 }}>
-                          {t('builtinKb')}
-                        </span>
-                      )}
-                    </label>
-                  ))}
-                </div>
-              ) : (
-                <div style={{ fontSize: 11, color: "var(--muted-fg)", padding: "4px 0" }}>{t('noKb')}</div>
-              )}
-            </div>
-          )}
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <span style={{ fontSize: 12, color: "var(--muted-fg)" }}>
-            {t('chunkMethod')}: {activeKb?.chunk_method === "agent" ? t('agent') : activeKb?.chunk_method === "multimodal" ? t('multimodal') : t('hybrid')}
-          </span>
+        <div className="kbv-list">
+          <div className="kbv-rowhead" aria-hidden="true">
+            <span>{lang === "zh" ? "文档" : "Document"}</span>
+            <span>{lang === "zh" ? "状态" : "Status"}</span>
+            <span>Chunks</span>
+            <span>{lang === "zh" ? "大小" : "Size"}</span>
+            <span>{lang === "zh" ? "更新" : "Updated"}</span>
+            <span className="kbv-rowhead-actions">{lang === "zh" ? "操作" : "Actions"}</span>
+          </div>
+          {filteredItems.map((item) => (
+            <DocRow
+              key={item.id}
+              item={item}
+              kbName={item.kb_id ? kbNameById.get(item.kb_id) : undefined}
+              onPreview={() => handlePreview(item.id)}
+              onRefresh={handleRefresh}
+              onDelete={() => setDeleteTarget(item)}
+              onToggle={() => toggleItem(item.id)}
+            />
+          ))}
         </div>
-      </div>
-
-      <div className="content-page-scroll kb-scroll-page">
-        {items.map((item) => (
-          <div className="kb-item" key={item.id}>
-            <div className="kb-item-row-main">
-              <div className="kb-item-left">
-                <div className="kb-item-top">
-                  <div className="kb-item-name-wrap">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color:'var(--primary)' }}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-                    <span className={`kb-item-name ${item.enabled ? 'enabled' : 'disabled'}`} aria-label={`${item.name}, ${item.docType}, ${item.enabled ? t('enabled') : t('disabled')}, ${item.status === 'indexing' ? t('indexing') : item.status === 'error' ? t('indexFailed') : `${item.chunks.toLocaleString()} ${t('indexed')}`}`}>{item.name}</span>
-                  </div>
-                </div>
-                <div className="kb-item-status">
-                  <div style={{ display:'flex', alignItems:'center', gap:6 }}>
-                    <span className={`kb-status-dot ${item.status}`}></span>
-                    <span className="kb-status-label">{item.status === 'indexing' ? t('indexing') : item.status === 'error' ? t('indexFailed') : `${item.chunks.toLocaleString()} ${t('indexed')}`}</span>
-                  </div>
-                </div>
-                <div className="kb-extended">
-                  <span>{item.docType}</span>
-                  {item.chunk_method_used && <span className="kb-tag">{item.chunk_method_used}</span>}
-                  {item.tags.map((tag) => <span className="kb-tag" key={tag}>{tag}</span>)}
-                </div>
-                <div className="kb-item-meta"><span>{item.size}</span></div>
-                {item.status === 'error' && item.errorMessage ? <div className="kb-error"><span style={{ color: 'var(--danger)' }}>◉</span>{item.errorMessage}</div> : null}
-              </div>
-
-              <div className="kb-item-right">
-                <button className="kb-item-icon-btn" title={t('previewBtn')} onClick={() => handlePreview(item.id)}>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>
-                </button>
-                <button className="kb-item-icon-btn" title={t('refreshBtn')} onClick={handleRefresh}>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-                </button>
-                <button className="kb-item-icon-btn" title={t('delete')} onClick={() => setDeleteConfirmId(item.id)}>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-                </button>
-                <div className={`toggle-switch ${item.enabled ? 'on' : 'off'}`} onClick={() => toggleItem(item.id)}><span className="toggle-knob"></span></div>
-                <span className="kb-item-date">{item.updatedAt}</span>
-              </div>
-            </div>
+        {filteredItems.length === 0 ? (
+          <div className="kbv-empty">
+            <Icon size={26}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /></Icon>
+            <span>{items.length === 0 ? (lang === "zh" ? "还没有文档，上传一个开始构建知识库" : "No documents yet. Upload one to get started.") : (lang === "zh" ? "没有匹配的文档" : "No matching documents")}</span>
           </div>
-        ))}
+        ) : null}
 
-        <div className="kb-footer-upload">
-          <div
-            className={`kb-upload-large${dragOver ? ' drag-over' : ''}`}
-            onClick={() => inputRef.current?.click()}
-            onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-            onDragLeave={() => setDragOver(false)}
-            onDrop={(e) => { e.preventDefault(); setDragOver(false); handleFileSelect(e.dataTransfer.files); }}
-          >
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M12 3v12"/><path d="M7 8l5-5 5 5"/><path d="M4 21h16"/></svg>
-            <div style={{ fontSize: 13 }}>{isUploading ? t('uploading') : t('uploadDoc')}</div>
-            {effectiveChunkMethod === "agent" && (
-              <div style={{ fontSize: 11, color: "var(--muted-fg)", marginTop: 4 }}>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ verticalAlign: "middle", marginRight: 4 }}><path d="M9 18h6"/><path d="M10 22h4"/><path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .23 2.23 1.5 3.5A4.61 4.61 0 0 1 8.91 14"/></svg>
-                {t('agentChunkHint')}
-              </div>
-            )}
-          </div>
+        <div
+          className={`kbv-upload${dragOver ? " drag-over" : ""}`}
+          role="button"
+          tabIndex={0}
+          onClick={() => inputRef.current?.click()}
+          onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") inputRef.current?.click(); }}
+          onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={(e) => { e.preventDefault(); setDragOver(false); handleFileSelect(e.dataTransfer.files); }}
+        >
+          <Icon size={20}><path d="M12 3v12M7 8l5-5 5 5M4 21h16" /></Icon>
+          <span>{isUploading ? t("uploading") : (lang === "zh" ? "拖拽 PDF / DOCX / Markdown 到此处，或点击上传" : "Drop PDF / DOCX / Markdown here, or click to upload")}</span>
+          {effectiveChunkMethod === "agent" ? <span className="kbv-upload-hint">{t("agentChunkHint")}</span> : null}
         </div>
       </div>
 
       <KbCollectionManager open={showKbManager} onClose={() => setShowKbManager(false)} />
 
-      {showChunkMethodDialog && pendingFiles && (
+      {showChunkMethodDialog && pendingFiles ? (
         <UploadChunkMethodDialog
           files={pendingFiles}
           defaultMethod={activeKb?.chunk_method || "hybrid"}
           onConfirm={handleConfirmChunkMethod}
           onCancel={handleCancelChunkMethod}
         />
-      )}
+      ) : null}
 
-      {deleteConfirmId && (() => {
-        const item = items.find((i) => i.id === deleteConfirmId);
-        if (!item) return null;
-        return (
-          <Modal onClose={() => setDeleteConfirmId(null)}>
-            <div
-              onClick={(e) => e.stopPropagation()}
-              style={{
-                background: "var(--bg)", borderRadius: 8, padding: 20,
-                width: "90%", maxWidth: 400, margin: "auto",
-                border: "1px solid var(--border)",
-                boxShadow: "var(--shadow-lg)",
-              }}
-            >
-              <h3 style={{ margin: "0 0 12px", fontSize: 15, fontWeight: 600 }}>
-                {t('deleteDocConfirmTitle')}
-              </h3>
-              <p style={{ margin: "0 0 18px", fontSize: 13, color: "var(--muted-fg)", lineHeight: 1.5 }}>
-                {t('deleteDocConfirmMsg').replace('{name}', item.name)}
-              </p>
-              <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-                <button
-                  className="kb-item-icon-btn"
-                  onClick={() => setDeleteConfirmId(null)}
-                  style={{ padding: "6px 14px", fontSize: 12, border: "1px solid var(--border)", borderRadius: 6 }}
-                >
-                  {t('cancel')}
-                </button>
-                <button
-                  onClick={async () => {
-                    const id = deleteConfirmId;
-                    setDeleteConfirmId(null);
-                    await deleteItemWithAPI(id);
-                  }}
-                  style={{
-                    padding: "6px 14px", fontSize: 12, borderRadius: 6,
-                    background: "var(--danger)", color: "var(--primary-fg)",
-                    border: "none", cursor: "pointer", fontWeight: 500,
-                  }}
-                >
-                  {t('delete')}
-                </button>
+      {deleteTarget ? (
+        <Modal onClose={() => setDeleteTarget(null)}>
+          <div className="kbv-dialog-wrap">
+            <div className="kbv-dialog" onClick={(e) => e.stopPropagation()}>
+              <h3 className="kbv-dialog-title">{t("deleteDocConfirmTitle")}</h3>
+              <p className="kbv-dialog-text">{t("deleteDocConfirmMsg").replace("{name}", deleteTarget.name)}</p>
+              <div className="kbv-dialog-actions">
+                <button type="button" className="kbv-btn" onClick={() => setDeleteTarget(null)}>{t("cancel")}</button>
+                <button type="button" className="kbv-btn kbv-btn-danger" onClick={handleDelete}>{t("delete")}</button>
               </div>
             </div>
-          </Modal>
-        );
-      })()}
+          </div>
+        </Modal>
+      ) : null}
     </div>
   );
 }

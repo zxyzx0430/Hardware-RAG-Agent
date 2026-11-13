@@ -8,24 +8,21 @@
   background: var(--card); flex-shrink: 0;
 }
 .nav-logo {
-  width: 32px; height: 32px; border-radius: var(--radius);
-  background: var(--primary); display: flex; align-items: center;
+  width: 32px; height: 32px; border-radius: 8px;
+  background: var(--fg); display: flex; align-items: center;
   justify-content: center; margin-bottom: 16px;
 }
-.nav-logo svg { color: var(--primary-fg); }
+.nav-logo svg { color: var(--card); }
 .nav-group { display: flex; flex-direction: column; gap: 2px; width: 100%; padding: 0 4px; }
 .nav-btn {
   position: relative; display: flex; align-items: center; justify-content: center;
-  width: 100%; height: 32px; border-radius: var(--radius-sm);
-  color: var(--muted-fg); transition: all 0.15s;
+  width: 100%; height: 34px; border-radius: 8px;
+  color: var(--muted-fg); transition: background 0.15s, color 0.15s;
 }
 .nav-btn:hover:not(.nav-dim) { background: var(--muted); color: var(--fg); }
-.nav-btn.active { background: var(--accent); color: var(--accent-fg); }
+.nav-btn.active { background: var(--muted); color: var(--fg); }
 .nav-btn.nav-dim { color: rgba(138,143,168,0.35); cursor: default; }
-.nav-btn .active-bar {
-  position: absolute; left: 0; top: 50%; transform: translateY(-50%);
-  width: 2px; height: 16px; border-radius: 0 2px 2px 0; background: var(--primary);
-}
+.nav-btn .active-bar { display: none; }
 .nav-divider { width: 24px; border-top: 1px solid var(--border); margin: 12px auto; }
 .nav-bottom { margin-top: auto; }
 
@@ -188,3 +185,21 @@
 .topbar-btn:hover { color: var(--fg); background: var(--muted); }
 .topbar-btn.active { color: var(--primary); background: var(--accent); }
 .topbar-divider { width: 1px; height: 16px; background: var(--border); margin: 0 4px; }
+
+/* Chat surfaces: black/white/gray base with the app blue as a controlled accent. */
+#mainArea,
+.left-panel-wrap,
+.right-panel-wrap {
+  --primary: #3B63D4;
+  --primary-fg: #FFFFFF;
+  --accent: #EDF1F8;
+  --accent-fg: #2B3A55;
+}
+.dark #mainArea,
+.dark .left-panel-wrap,
+.dark .right-panel-wrap {
+  --primary: #6E8FFF;
+  --primary-fg: #0F1115;
+  --accent: #232A38;
+  --accent-fg: #DCE4F5;
+}

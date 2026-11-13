@@ -1,0 +1,422 @@
+/* Settings shell: black/white sidebar + content layout. Scoped to .settings-layout. */
+
+.settings-layout {
+  --set-bg: #FFFFFF;
+  --set-side: #F7F7F8;
+  --set-border: #E4E4E6;
+  --set-border-strong: #CECED2;
+  --set-fg: #111113;
+  --set-muted: #6A6A6E;
+  --set-faint: #9A9A9E;
+  --set-hover: #ECECEE;
+  --set-active: #E8E8EA;
+  --set-accent: #3B63D4;
+  --set-accent-soft: #EDF1FC;
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--set-bg);
+  color: var(--set-fg);
+  font-family: var(--font-sans);
+}
+
+.dark .settings-layout {
+  --set-bg: #171719;
+  --set-side: #1C1C1E;
+  --set-border: #303034;
+  --set-border-strong: #44444A;
+  --set-fg: #F2F2F2;
+  --set-muted: #A6A6A6;
+  --set-faint: #77777C;
+  --set-hover: #262628;
+  --set-active: #2C2C30;
+  --set-accent: var(--primary);
+  --set-accent-soft: rgba(79, 127, 255, 0.15);
+}
+
+/* ── Sidebar ─────────────────────────────────────── */
+
+.settings-sidebar {
+  flex: 0 0 260px;
+  width: 260px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 18px 12px 12px;
+  background: var(--set-side);
+  border-right: 1px solid var(--set-border);
+  overflow: hidden;
+}
+
+.settings-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 2px 8px 16px;
+  min-width: 0;
+}
+
+.settings-brand-mark {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  background: var(--set-fg);
+  color: var(--set-bg);
+}
+
+.settings-brand-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.settings-brand-title {
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  line-height: 1.25;
+  color: var(--set-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-brand-sub {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--set-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-search {
+  position: relative;
+  display: block;
+  margin: 0 4px 12px;
+  min-width: 0;
+}
+
+.settings-search svg {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--set-faint);
+  pointer-events: none;
+}
+
+.settings-search input {
+  width: 100%;
+  min-width: 0;
+  height: 34px;
+  padding: 0 10px 0 32px;
+  border: 1px solid var(--set-border);
+  border-radius: 8px;
+  background: var(--set-bg);
+  color: var(--set-fg);
+  font-family: inherit;
+  font-size: 12.5px;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.settings-search input:focus {
+  border-color: var(--set-accent);
+  box-shadow: 0 0 0 3px var(--set-accent-soft);
+}
+
+.settings-search input::placeholder {
+  color: var(--set-faint);
+}
+
+.settings-nav {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0 2px 8px;
+}
+
+.settings-nav::-webkit-scrollbar {
+  width: 6px;
+}
+
+.settings-nav::-webkit-scrollbar-thumb {
+  background: var(--set-border-strong);
+  border-radius: 999px;
+}
+
+.settings-nav-group {
+  margin-bottom: 12px;
+  min-width: 0;
+}
+
+.settings-nav-label {
+  padding: 8px 10px 5px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--set-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-nav-item {
+  width: 100%;
+  height: 36px;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--set-fg);
+  font-family: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.13s, color 0.13s;
+}
+
+.settings-nav-item svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  color: var(--set-muted);
+  stroke-width: 1.7;
+}
+
+.settings-nav-item:hover {
+  background: var(--set-hover);
+}
+
+.settings-nav-item.active {
+  background: var(--set-active);
+  font-weight: 600;
+}
+
+.settings-nav-item.active svg {
+  color: var(--set-accent);
+}
+
+.settings-nav-item:focus-visible {
+  outline: 2px solid var(--set-accent);
+  outline-offset: 2px;
+}
+
+.settings-nav-item-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-nav-empty {
+  padding: 18px 10px;
+  font-size: 12px;
+  color: var(--set-faint);
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+/* ── Content ─────────────────────────────────────── */
+
+.settings-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--set-bg);
+  overflow: hidden;
+}
+
+.settings-content-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  min-width: 0;
+  padding: 26px 34px 18px;
+  border-bottom: 1px solid var(--set-border);
+}
+
+.settings-content-head-main {
+  min-width: 0;
+  flex: 1;
+  max-width: 1200px;
+}
+
+.settings-content-scroll > * {
+  max-width: 1200px;
+}
+
+/* The overlay already has left/right anchors; a vw-based width overflows by the
+   scrollbar width on Windows and produces a horizontal scrollbar. */
+.settings-overlay {
+  width: auto !important;
+}
+
+.settings-content-title {
+  margin: 0;
+  font-size: 28px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  color: var(--set-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-content-desc {
+  margin: 6px 0 0;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--set-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-close-btn {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--set-border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--set-muted);
+  cursor: pointer;
+  transition: background 0.13s, color 0.13s;
+}
+
+.settings-close-btn:hover {
+  background: var(--set-hover);
+  color: var(--set-fg);
+}
+
+.settings-close-btn:focus-visible {
+  outline: 2px solid var(--set-accent);
+  outline-offset: 2px;
+}
+
+.settings-content-scroll {
+  padding: 24px 34px 48px;
+  overflow-x: hidden;
+}
+
+.settings-content-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+
+.settings-content-scroll::-webkit-scrollbar-thumb {
+  background: var(--set-border-strong);
+  border-radius: 999px;
+}
+
+/* Panel typography + overflow guards (shell only, no panel restructure) */
+
+.settings-layout .settings-section {
+  min-width: 0;
+}
+
+.settings-layout .settings-section h3 {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.settings-layout .provider-name,
+.settings-layout .tool-key-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-layout .api-key-row,
+.settings-layout .api-key-row > .form-input {
+  min-width: 0;
+}
+
+.settings-layout .verify-btn,
+.settings-layout .settings-btn {
+  white-space: nowrap;
+}
+
+/* ── Narrow widths ───────────────────────────────── */
+
+@media (max-width: 1100px) {
+  .settings-sidebar {
+    flex-basis: 228px;
+    width: 228px;
+  }
+
+  .settings-content-head {
+    padding: 22px 24px 16px;
+  }
+
+  .settings-content-scroll {
+    padding: 20px 24px 40px;
+  }
+}
+
+@media (max-width: 860px) {
+  .settings-sidebar {
+    flex-basis: 204px;
+    width: 204px;
+  }
+
+  .settings-content-title {
+    font-size: 24px;
+  }
+}
+
+/* Panels inside the shell follow the same neutral controls. */
+.settings-layout {
+  --primary: var(--set-fg);
+  --primary-fg: var(--set-bg);
+}
+
+.settings-layout input:not([type="range"]):not([type="checkbox"]):not([type="radio"]),
+.settings-layout select,
+.settings-layout textarea,
+.settings-layout .form-input {
+  background: var(--set-bg);
+  border: 1px solid var(--set-border-strong);
+  border-radius: 8px;
+}
+
+.settings-layout input:not([type="range"]):not([type="checkbox"]):not([type="radio"]):focus,
+.settings-layout select:focus,
+.settings-layout textarea:focus,
+.settings-layout .form-input:focus {
+  border-color: var(--set-accent);
+  outline: none;
+  box-shadow: 0 0 0 3px var(--set-accent-soft);
+}
+
+.settings-layout .settings-section h3 {
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.settings-layout .provider-card {
+  border-radius: 10px;
+}
+
+.settings-layout .verify-btn,
+.settings-layout .btn-new,
+.settings-layout .settings-btn {
+  border-radius: 8px;
+}

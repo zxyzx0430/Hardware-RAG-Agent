@@ -36,6 +36,9 @@ interface KnowledgeState {
   deleteItem: (id: string) => void;
   setIsUploading: (v: boolean) => void;
   fetchItems: (kbId?: string) => Promise<void>;
+  /** Whether the last document fetch covered all KBs or one KB. */
+  itemsScope: "all" | "kb";
+  stopPolling: () => void;
   deleteItemWithAPI: (id: string) => Promise<void>;
 
   // ─── Collection-level (multi-KB) ───
@@ -91,6 +94,12 @@ function saveActiveKbId(id: string): void {
 export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
   // ─── Document-level ───
   items: [],
+  itemsScope: "all",
+  stopPolling: () => {
+    for (const timer of pollTimers) window.clearTimeout(timer);
+    pollTimers.clear();
+    pollingDocIds.clear();
+  },
   isUploading: false,
 
   setItems: (items) => set({ items }),
@@ -127,7 +136,7 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
           kb_id: doc.kb_id,
           chunk_method_used: doc.chunk_method_used,
         }));
-        set({ items });
+        set({ items, itemsScope: kbId ? "kb" : "all" });
         useLogStore.getState().log("ok", "kb", `加载 ${items.length} 个知识库文档`);
         // U3: 回到页面后重启未完成文档的轮询（pollIndexingStatus 内部会去重）
         for (const doc of items) {
@@ -150,8 +159,8 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
     set((s) => ({ items: s.items.filter((x) => x.id !== id) }));
     try {
       await apiPost("kb/delete", { doc_id: id });
-      // 成功后重新加载列表，确保前端与后端一致
-      const kbId = get().activeKbId;
+      // 成功后重新加载列表，确保前端与后端一致；保持当前“全部/单库”范围
+      const kbId = get().itemsScope === "all" ? undefined : get().activeKbId;
       await get().fetchItems(kbId);
     } catch (e) {
       // API 失败：回滚本地状态
@@ -410,7 +419,7 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
         return;
       }
       try {
-        const currentKbId = get().activeKbId;
+        const currentKbId = get().itemsScope === "all" ? undefined : get().activeKbId;
         await get().fetchItems(currentKbId);
         const item = get().items.find((i) => i.id === docId);
         if (item) {

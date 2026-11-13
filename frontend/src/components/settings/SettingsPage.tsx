@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from "react";
+import type { ReactNode } from "react";
 import { useAppStore } from "../../stores/useAppStore";
 import { useSettingsStore } from "../../stores/useSettingsStore";
 import { useChatStore } from "../../stores/useChatStore";
@@ -14,8 +15,134 @@ import { TokenUsagePanel } from "./TokenUsagePanel";
 import { AuditLogPanel } from "./AuditLogPanel";
 import { MemoryHubPanel } from "../memory/MemoryHubPanel";
 import { EmptyState } from "../shared/EmptyState";
+import "../../styles/settings-layout.css";
 
 const TAB_IDS = ["api", "rag", "memory", "memory-hub", "appearance", "usage", "logs", "audit", "mcp", "tools", "skills", "about"] as const;
+
+type SettingsTabId = (typeof TAB_IDS)[number];
+
+interface SettingsNavItem {
+  id: SettingsTabId;
+  labelKey?: string;
+  label?: { zh: string; en: string };
+  desc: { zh: string; en: string };
+  icon: ReactNode;
+}
+
+interface SettingsNavGroup {
+  key: string;
+  title: { zh: string; en: string };
+  items: SettingsNavItem[];
+}
+
+function NavIcon({ children }: { children: ReactNode }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {children}
+    </svg>
+  );
+}
+
+const SETTINGS_NAV_GROUPS: SettingsNavGroup[] = [
+  {
+    key: "general",
+    title: { zh: "通用", en: "General" },
+    items: [
+      {
+        id: "appearance",
+        labelKey: "appearance",
+        desc: { zh: "主题、语言与聊天字体大小", en: "Theme, language and chat font size" },
+        icon: <NavIcon><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.66 6.34l1.41-1.41" /></NavIcon>,
+      },
+      {
+        id: "api",
+        labelKey: "apiConfig",
+        desc: { zh: "服务商、模型分配与 API Key", en: "Providers, model routing and API keys" },
+        icon: <NavIcon><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.78 7.78 5.5 5.5 0 0 1 7.78-7.78zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" /></NavIcon>,
+      },
+      {
+        id: "rag",
+        labelKey: "ragParams",
+        desc: { zh: "温度、检索数量与知识库范围", en: "Temperature, retrieval size and knowledge base scope" },
+        icon: <NavIcon><ellipse cx="12" cy="5" rx="8" ry="3" /><path d="M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5" /><path d="M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3" /></NavIcon>,
+      },
+    ],
+  },
+  {
+    key: "assistant",
+    title: { zh: "助手", en: "Assistant" },
+    items: [
+      {
+        id: "memory",
+        labelKey: "memory",
+        desc: { zh: "系统提示词与长期记忆", en: "System prompt and long-term memory" },
+        icon: <NavIcon><path d="M12 5a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V8a3 3 0 0 0-3-3z" /><path d="M9 8H6a2 2 0 0 0 0 4h3M15 8h3a2 2 0 0 1 0 4h-3M9 16H7a2 2 0 0 0 0 4h2M15 16h2a2 2 0 0 1 0 4h-2" /></NavIcon>,
+      },
+      {
+        id: "memory-hub",
+        labelKey: "memoryHub",
+        desc: { zh: "记忆条目、硬件档案与项目记忆", en: "Memory entries, hardware profiles and project memory" },
+        icon: <NavIcon><rect x="5" y="5" width="14" height="14" rx="2" /><rect x="9" y="9" width="6" height="6" rx="1" /><path d="M9 1v4M15 1v4M9 19v4M15 19v4M1 9h4M1 15h4M19 9h4M19 15h4" /></NavIcon>,
+      },
+      {
+        id: "tools",
+        labelKey: "tools",
+        desc: { zh: "Agent 当前可调用的工具开关", en: "Tools currently available to the Agent" },
+        icon: <NavIcon><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.3-2.3 2.5-2.5z" /></NavIcon>,
+      },
+    ],
+  },
+  {
+    key: "capability",
+    title: { zh: "能力", en: "Capabilities" },
+    items: [
+      {
+        id: "skills",
+        labelKey: "skills",
+        desc: { zh: "已安装的 Markdown 技能", en: "Installed Markdown skills" },
+        icon: <NavIcon><path d="M10 3a2 2 0 0 1 4 0v2h3a2 2 0 0 1 2 2v3h-2a2 2 0 0 0 0 4h2v3a2 2 0 0 1-2 2h-3v-2a2 2 0 0 0-4 0v2H7a2 2 0 0 1-2-2v-3H3a2 2 0 0 1 0-4h2V7a2 2 0 0 1 2-2h3V3z" /></NavIcon>,
+      },
+      {
+        id: "mcp",
+        labelKey: "mcpService",
+        desc: { zh: "Model Context Protocol 服务连接", en: "Model Context Protocol server connections" },
+        icon: <NavIcon><rect x="2" y="3" width="20" height="7" rx="2" /><rect x="2" y="14" width="20" height="7" rx="2" /><path d="M6 6.5h.01M6 17.5h.01" /></NavIcon>,
+      },
+    ],
+  },
+  {
+    key: "runtime",
+    title: { zh: "运行", en: "Runtime" },
+    items: [
+      {
+        id: "usage",
+        labelKey: "usage",
+        desc: { zh: "Token 用量、缓存与模型分布", en: "Token usage, cache and model breakdown" },
+        icon: <NavIcon><line x1="18" y1="20" x2="18" y2="10" /><line x1="12" y1="20" x2="12" y2="4" /><line x1="6" y1="20" x2="6" y2="14" /></NavIcon>,
+      },
+      {
+        id: "logs",
+        labelKey: "logs",
+        desc: { zh: "前端运行日志与级别过滤", en: "Frontend runtime logs and level filters" },
+        icon: <NavIcon><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M7 9h10M7 13h6" /></NavIcon>,
+      },
+      {
+        id: "audit",
+        label: { zh: "工具审计", en: "Tool Audit" },
+        desc: { zh: "工具调用与权限决策记录", en: "Tool calls and permission decisions" },
+        icon: <NavIcon><path d="M12 2l8 4v6c0 5-3.4 9.4-8 10-4.6-.6-8-5-8-10V6l8-4z" /><path d="M9 12l2 2 4-4" /></NavIcon>,
+      },
+      {
+        id: "about",
+        labelKey: "about",
+        desc: { zh: "版本、构建与运行环境", en: "Version, build and runtime environment" },
+        icon: <NavIcon><circle cx="12" cy="12" r="9" /><path d="M12 11v5M12 8h.01" /></NavIcon>,
+      },
+    ],
+  },
+];
+
+const NAV_ITEMS: SettingsNavItem[] = SETTINGS_NAV_GROUPS.flatMap((group) => group.items);
 
 const TOOL_ENTRIES = [
   { id: 'web_search', label: 'Web Search', icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg> },
@@ -46,7 +173,9 @@ export function SettingsPage() {
   const currentContextWindow = useSessionStore((s) =>
     s.sessions.find((x) => x.id === activeSessionId)?.contextWindow ?? CONTEXT_WINDOW_1M
   );
-  const [tab, setTab] = useState<(typeof TAB_IDS)[number]>("api");
+  const [tab, setTab] = useState<SettingsTabId>("api");
+  const [searchQuery, setSearchQuery] = useState("");
+  const contentScrollRef = useRef<HTMLDivElement | null>(null);
   const [logRefreshKey, setLogRefreshKey] = useState(0);
   const [savedField, setSavedField] = useState<string | null>(null);
   const savedTimerRef = useRef<number | null>(null);
@@ -73,6 +202,9 @@ export function SettingsPage() {
       fetchTools();
     }
   }, [tab, fetchTools]);
+  useEffect(() => {
+    if (contentScrollRef.current) contentScrollRef.current.scrollTop = 0;
+  }, [tab]);
   const savedLabel = lang === 'zh' ? '✓ 已保存' : '✓ Saved';
   const retrievalFeedback = (key: 'topK' | 'relevanceThreshold'): string => {
     if (retrievalSettingsStorageIssue) {
@@ -207,38 +339,91 @@ export function SettingsPage() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [setActiveNav]);
 
+  const labelOf = (item: SettingsNavItem): string =>
+    item.labelKey ? t(item.labelKey) : item.label ? item.label[lang] : item.id;
+  const query = searchQuery.trim().toLowerCase();
+  const navGroups = SETTINGS_NAV_GROUPS
+    .map((group) => ({
+      key: group.key,
+      title: group.title[lang],
+      items: group.items.filter((item) => !query || labelOf(item).toLowerCase().includes(query)),
+    }))
+    .filter((group) => group.items.length > 0);
+  const activeItem = NAV_ITEMS.find((item) => item.id === tab) ?? NAV_ITEMS[0];
+  const activeLabel = labelOf(activeItem);
+  const activeDesc = activeItem.desc[lang];
+
   return (
     <div className="settings-overlay">
-      <div className="settings-shell">
-        <div className="settings-page">
-          <div className="settings-header" style={{ padding: '42px 40px 18px 40px' }}>
-            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
-              <h2 style={{ fontSize: 18, fontWeight: 600 }}>{t('settings')}</h2>
-              <button
-                className="kb-item-icon-btn"
-                onClick={() => setActiveNav("chat")}
-                aria-label={lang === 'zh' ? '关闭设置' : 'Close settings'}
-                title={lang === 'zh' ? '关闭设置' : 'Close settings'}
-                style={{ padding: 6, borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--fg)', cursor: 'pointer' }}
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
-              </button>
-            </div>
-            <div className="settings-tabs" style={{ marginTop: 20 }}>
-              {TAB_IDS.map((id) => {
-                const tabLabelMap: Record<string, string> = {
-                  api: t('apiConfig'), rag: t('ragParams'), memory: t('memory'), 'memory-hub': t('memoryHub'),
-                  appearance: t('appearance'), usage: t('usage'), logs: t('logs'),
-                  audit: '工具审计', mcp: t('mcpService'), tools: t('tools'), skills: t('skills'), about: t('about'),
-                };
-                return (
-                  <button key={id} className={`settings-tab${tab === id ? " active" : ""}`} onClick={() => setTab(id)}>{tabLabelMap[id]}</button>
-                );
-              })}
+      <div className="settings-shell settings-layout">
+        <aside className="settings-sidebar">
+          <div className="settings-brand">
+            <span className="settings-brand-mark" aria-hidden="true">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M12 3v18M4.2 7.5l15.6 9M19.8 7.5l-15.6 9" /></svg>
+            </span>
+            <div className="settings-brand-text">
+              <div className="settings-brand-title">{t('settings')}</div>
+              <div className="settings-brand-sub">{t('productName')}</div>
             </div>
           </div>
 
-          <div className="settings-scroll" style={{ padding: '28px 40px 40px 40px' }}>
+          <label className="settings-search">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><circle cx="11" cy="11" r="7" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>
+            <input
+              type="search"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder={lang === 'zh' ? '搜索设置' : 'Search settings'}
+              aria-label={lang === 'zh' ? '搜索设置' : 'Search settings'}
+              autoComplete="off"
+            />
+          </label>
+
+          <nav className="settings-nav" aria-label={t('settings')}>
+            {navGroups.map((group) => (
+              <div className="settings-nav-group" key={group.key}>
+                <div className="settings-nav-label">{group.title}</div>
+                {group.items.map((item) => {
+                  const label = labelOf(item);
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      className={`settings-nav-item${tab === item.id ? ' active' : ''}`}
+                      onClick={() => setTab(item.id)}
+                      title={label}
+                      aria-current={tab === item.id ? 'page' : undefined}
+                    >
+                      {item.icon}
+                      <span className="settings-nav-item-label">{label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
+            {navGroups.length === 0 && (
+              <div className="settings-nav-empty">{lang === 'zh' ? '没有匹配的设置项' : 'No matching settings'}</div>
+            )}
+          </nav>
+        </aside>
+
+        <main className="settings-content">
+          <header className="settings-content-head">
+            <div className="settings-content-head-main">
+              <h2 className="settings-content-title">{activeLabel}</h2>
+              <p className="settings-content-desc">{activeDesc}</p>
+            </div>
+            <button
+              className="settings-close-btn"
+              onClick={() => setActiveNav("chat")}
+              aria-label={lang === 'zh' ? '关闭设置' : 'Close settings'}
+              title={lang === 'zh' ? '关闭设置' : 'Close settings'}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+            </button>
+          </header>
+
+          <div ref={contentScrollRef} className="settings-scroll settings-content-scroll">
             {tab === 'api' && (
               <>
                 {/* 服务商列表 */}
@@ -784,7 +969,7 @@ export function SettingsPage() {
               </div>
             )}
           </div>
-        </div>
+        </main>
       </div>
     </div>
   );
